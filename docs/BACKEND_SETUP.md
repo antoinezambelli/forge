@@ -63,13 +63,7 @@ When you `ollama create` from a raw GGUF, Ollama assigns a generic chat template
 
 **The fix:** Supply a TEMPLATE block in your Modelfile that includes the model's tool-calling tokens. Copy it from the official registry model for your architecture.
 
-For Ministral 14B, use the Modelfile at `ref_docs/Modelfile.ministral` (sourced from the official `ministral-3:latest` template):
-
-```bash
-ollama create ministral:14b -f ref_docs/Modelfile.ministral
-```
-
-Or build a Modelfile manually:
+For Ministral 14B, build a Modelfile manually:
 
 1. Find the official template: `ollama show ministral-3:latest --modelfile` (if you have any version pulled), or browse the template blob at `ollama.com/library/ministral-3:latest`
 2. Create a Modelfile with `FROM`, `TEMPLATE """..."""`, and `PARAMETER stop` directives
@@ -277,6 +271,59 @@ python -m tests.eval.eval_runner --backend llamafile --runs 5 --llamafile-mode p
 | **API format** | Ollama-native | OpenAI-compatible | OpenAI-compatible |
 | **GPU offload** | Automatic | `-ngl 999` | `-ngl 999` |
 | **Eval command** | `--backend ollama` | `--backend llamafile` | `--backend llamafile` |
+
+## VRAM Requirements
+
+Weight sizes for all models tested with forge. Total VRAM usage will be higher (add ~0.5–2GB for KV cache and runtime overhead depending on context length).
+
+### 8B-class models
+
+| Model | Quant | Weights | Min VRAM | Recommended VRAM |
+|-------|-------|---------|----------|-----------------|
+| Ministral-8B Instruct | Q4_K_M | 4.8 GB | 6 GB | 8 GB |
+| Ministral-8B Instruct | Q8_0 | 8.4 GB | 10 GB | 12 GB |
+| Ministral-8B Reasoning | Q4_K_M | 4.8 GB | 6 GB | 8 GB |
+| Ministral-8B Reasoning | Q8_0 | 8.4 GB | 10 GB | 12 GB |
+| Qwen3-8B | Q4_K_M | 4.7 GB | 6 GB | 8 GB |
+| Qwen3-8B | Q8_0 | 8.1 GB | 10 GB | 12 GB |
+| Llama 3.1 8B Instruct | Q4_K_M | 4.6 GB | 6 GB | 8 GB |
+| Llama 3.1 8B Instruct | Q8_0 | 8.0 GB | 10 GB | 12 GB |
+| Mistral 7B v0.3 | Q4_K_M | 4.1 GB | 6 GB | 8 GB |
+| Mistral 7B v0.3 | Q8_0 | 7.2 GB | 8 GB | 12 GB |
+
+### 12B-class models
+
+| Model | Quant | Weights | Min VRAM | Recommended VRAM |
+|-------|-------|---------|----------|-----------------|
+| Mistral Nemo 12B | Q4_K_M | 7.0 GB | 8 GB | 12 GB |
+
+### 14B-class models
+
+| Model | Quant | Weights | Min VRAM | Recommended VRAM |
+|-------|-------|---------|----------|-----------------|
+| Ministral-14B Instruct | Q4_K_M | 7.7 GB | 10 GB | 16 GB |
+| Ministral-14B Reasoning | Q4_K_M | 7.7 GB | 10 GB | 16 GB |
+| Qwen3-14B | Q4_K_M | 8.4 GB | 10 GB | 16 GB |
+
+**Rule of thumb:** Weight size + 1–2 GB for KV cache at moderate context lengths (4–8K tokens). For longer contexts or batch inference, add more headroom.
+
+---
+
+## Smoke Test
+
+After setting up any backend, verify forge can talk to it end-to-end:
+
+```bash
+# Run the two simplest eval scenarios (no batch, fast feedback)
+python -m tests.eval.eval_runner --backend ollama --model "ministral-3:8b-instruct-2512-q4_K_M" --runs 1 --tags plumbing --scenarios basic_2step
+
+# For llama-server / llamafile (start the server first)
+python -m tests.eval.eval_runner --backend llamafile --llamafile-mode native --runs 1 --tags plumbing --scenarios basic_2step
+```
+
+If the scenario passes, your backend is wired correctly and ready for full eval runs.
+
+---
 
 ## Eval matrix (what to test)
 

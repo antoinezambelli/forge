@@ -53,6 +53,7 @@ __all__ = [
     "TextResponse",
     "ToolCall",
     "ToolDef",
+    "ToolParam",
     "ToolSpec",
     "Workflow",
     # Steps
