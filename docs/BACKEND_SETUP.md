@@ -315,10 +315,10 @@ After setting up any backend, verify forge can talk to it end-to-end:
 
 ```bash
 # Run the two simplest eval scenarios (no batch, fast feedback)
-python -m tests.eval.eval_runner --backend ollama --model "ministral-3:8b-instruct-2512-q4_K_M" --runs 1 --tags plumbing --scenarios basic_2step
+python -m tests.eval.eval_runner --backend ollama --model "ministral-3:8b-instruct-2512-q4_K_M" --runs 1 --tags plumbing --scenario basic_2step
 
 # For llama-server / llamafile (start the server first)
-python -m tests.eval.eval_runner --backend llamafile --llamafile-mode native --runs 1 --tags plumbing --scenarios basic_2step
+python -m tests.eval.eval_runner --backend llamafile --llamafile-mode native --model ministral-8b-reasoning --runs 1 --tags plumbing --scenario basic_2step
 ```
 
 If the scenario passes, your backend is wired correctly and ready for full eval runs.
