@@ -35,7 +35,7 @@ ollama pull ministral-3:8b-instruct-2512-q4_K_M
 **llama-server** (best performance):
 ```bash
 # Install from https://github.com/ggml-org/llama.cpp/releases
-llama-server -m path/to/Ministral-3-8B-Instruct-2512-Q4_K_M.gguf --jinja -ngl 999 --port 8080
+llama-server -m path/to/Ministral-3-8B-Reasoning-2512-Q4_K_M.gguf --jinja -ngl 999 --port 8080
 ```
 
 **Anthropic** (API, no local GPU needed):
