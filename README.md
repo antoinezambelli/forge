@@ -1,17 +1,101 @@
 # forge
 
-A Python framework for self-hosted LLM tool-calling and multi-step agentic workflows. Supports Ollama, llama-server (llama.cpp), Llamafile, and Anthropic as backends, with VRAM-aware context budgets, tiered compaction, and guardrail-based reliability (step enforcement, retry nudges, rescue loops).
+[![Tests](https://github.com/antoinezambelli/forge/actions/workflows/tests.yml/badge.svg)](https://github.com/antoinezambelli/forge/actions/workflows/tests.yml)
+[![Python 3.12+](https://img.shields.io/badge/python-3.12%2B-blue.svg)](https://www.python.org/downloads/)
+[![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
+
+A Python framework for self-hosted LLM tool-calling and multi-step agentic workflows. Define tools, pick a backend, run structured agent loops on consumer hardware.
+
+Supports Ollama, llama-server (llama.cpp), Llamafile, and Anthropic as backends, with VRAM-aware context budgets, tiered compaction, and guardrail-based reliability (step enforcement, retry nudges, rescue loops).
 
 ## Requirements
 
 - Python 3.12+
+- A running LLM backend (see below)
 
-## Setup
+## Install
 
 ```bash
+git clone https://github.com/antoinezambelli/forge.git
+cd forge
 python -m venv .venv
-pip install -e ".[dev]"
+pip install -e .                # core only
+pip install -e ".[anthropic]"   # + Anthropic client
+pip install -e ".[dev]"         # + test/eval dependencies
 ```
+
+### Backend setup (pick one)
+
+**Ollama** (easiest):
+```bash
+# Install from https://ollama.com/download
+ollama pull ministral-3:8b-instruct-2512-q4_K_M
+```
+
+**llama-server** (best performance):
+```bash
+# Install from https://github.com/ggml-org/llama.cpp/releases
+llama-server -m path/to/Ministral-3-8B-Instruct-2512-Q4_K_M.gguf --jinja -ngl 999 --port 8080
+```
+
+**Anthropic** (API, no local GPU needed):
+```bash
+pip install -e ".[anthropic]"
+export ANTHROPIC_API_KEY=sk-...
+```
+
+See [Backend Setup](docs/BACKEND_SETUP.md) for full instructions and [Model Guide](docs/MODEL_GUIDE.md) for which model fits your hardware.
+
+## Quick Start
+
+```python
+import asyncio
+from forge import (
+    Workflow, ToolDef, ToolSpec, ToolParam,
+    WorkflowRunner, OllamaClient,
+    ContextManager, TieredCompact,
+)
+
+def get_weather(city: str) -> str:
+    return f"72°F and sunny in {city}"
+
+workflow = Workflow(
+    name="weather",
+    description="Look up weather for a city.",
+    tools={
+        "get_weather": ToolDef(
+            spec=ToolSpec(
+                name="get_weather",
+                description="Get current weather",
+                parameters=[ToolParam("city", "string", "City name", required=True)],
+            ),
+            callable=get_weather,
+        ),
+    },
+    terminal_tool="get_weather",
+)
+
+async def main():
+    client = OllamaClient(model="ministral-3:8b-instruct-2512-q4_K_M")
+    ctx = ContextManager(strategy=TieredCompact(keep_recent=2), budget_tokens=8192)
+    runner = WorkflowRunner(client=client, context_manager=ctx)
+    await runner.run(workflow, "What's the weather in Paris?")
+
+asyncio.run(main())
+```
+
+For multi-step workflows, multi-turn conversations, and backend auto-management, see the [User Guide](docs/USER_GUIDE.md).
+
+## Backends
+
+| Backend | Best for | Native FC? |
+|---------|----------|------------|
+| **Ollama** | Easiest setup, model management built-in | Yes |
+| **llama-server** | Best performance, full control | Yes (with `--jinja`) |
+| **Llamafile** | Single binary, zero dependencies | No (prompt-injected) |
+| **Anthropic** | Frontier baseline, hybrid workflows | Yes |
+
+See [Backend Setup](docs/BACKEND_SETUP.md) for installation and [Model Guide](docs/MODEL_GUIDE.md) for which model to pick.
 
 ## Running Tests
 
@@ -19,11 +103,28 @@ pip install -e ".[dev]"
 python -m pytest tests/ -v --tb=short
 ```
 
-### Coverage
-
 ```bash
 python -m pytest tests/ --cov=forge --cov-report=term-missing
 ```
+
+## Eval Harness
+
+29 scenarios measuring how reliably a model + backend combo navigates multi-step tool-calling workflows. See [Eval Guide](docs/EVAL_GUIDE.md) for full CLI reference.
+
+```bash
+# Ollama
+python -m tests.eval.eval_runner --backend ollama --model "ministral-3:8b-instruct-2512-q4_K_M" --runs 10 --stream --verbose
+
+# Batch eval (JSONL output, automatic resume)
+python -m tests.eval.batch_eval --config all --runs 50
+
+# Reports (ASCII table, HTML dashboard, markdown views)
+python -m tests.eval.report eval_results.jsonl
+```
+
+### BFCL Benchmark
+
+Run forge against [Berkeley Function Calling Leaderboard](https://github.com/ShishirPatil/gorilla/tree/main/berkeley-function-call-leaderboard) v4 tasks (11 categories, ~2,183 entries). See [Eval Guide](docs/EVAL_GUIDE.md) for details.
 
 ## Project Structure
 
@@ -52,176 +153,25 @@ src/forge/
 tests/
   unit/                # 562 deterministic tests — no LLM backend required
   eval/                # Eval harness — model qualification against real backends
-    scenarios/         # 29 eval scenarios (lambda, stateful, compaction chain)
-      _base.py         # EvalScenario dataclass, ALL_SCENARIOS registry
-      _plumbing.py     # basic_2step, sequential_3step, error_recovery, compaction_stress
-      _model_quality.py # tool_selection, argument_fidelity, sequential_reasoning, etc.
-      _compaction.py   # phase2_compaction, relevance_detection
-      _compaction_chain.py # Multi-phase compaction retention (baseline, P1, P2, P3)
-      _stateful_plumbing.py    # Stateful variants of plumbing scenarios
-      _stateful_model_quality.py # Stateful variants of model quality scenarios
-      _stateful_compaction.py  # Stateful compaction + inventory_audit, supplier_deep_dive
-    eval_runner.py     # Run scenarios N times, collect per-run results
-    metrics.py         # Aggregate results, compute metrics, print report
-    batch_eval.py      # Batch runner — iterate configs, JSONL output, resume
-    report.py          # ASCII table + list report from JSONL, HTML dashboard, markdown views
-    ablation.py        # AblationConfig presets for guardrail isolation
-    dashboard/         # React-based interactive HTML dashboard (built via report.py --html)
-    bfcl/              # BFCL v4 benchmark integration
-      runner.py        # Single-turn + multi-turn BFCL runner
-      scorer.py        # Pass/fail scoring against ground truth
-      schema_adapter.py # BFCL JSON → forge ToolDef conversion
-      executors.py     # BFCL backend execution wrappers
-      backends/        # BFCL multi-turn backend implementations (14 APIs)
-      checker/         # AST-based call validation, multi-turn state checking
-      batch_runner.py  # Batch runner — all configs, JSONL output, resume
-      bfcl_report.py   # ASCII table report from BFCL JSONL
-      smoke_test.py    # Quick sanity check against a live backend
 ```
-
-## Usage
-
-### Single-Turn
-
-```python
-from forge.core.workflow import Workflow, ToolDef, ToolSpec, ToolParam
-from forge.core.runner import WorkflowRunner
-from forge.clients.llamafile import LlamafileClient
-from forge.server import setup_backend, BudgetMode
-
-# Define tools
-def get_weather(city: str) -> str:
-    return f"72°F and sunny in {city}"
-
-def report_weather(city: str, weather: str) -> str:
-    return f"Weather report: {weather}"
-
-workflow = Workflow(
-    name="weather",
-    description="Look up weather and report it.",
-    tools={
-        "get_weather": ToolDef(
-            spec=ToolSpec(
-                name="get_weather",
-                description="Get current weather for a city",
-                parameters=[ToolParam("city", "string", "City name", required=True)],
-            ),
-            callable=get_weather,
-        ),
-        "report_weather": ToolDef(
-            spec=ToolSpec(
-                name="report_weather",
-                description="Report the weather",
-                parameters=[
-                    ToolParam("city", "string", "City name", required=True),
-                    ToolParam("weather", "string", "Weather description", required=True),
-                ],
-            ),
-            callable=report_weather,
-        ),
-    },
-    required_steps=["get_weather"],
-    terminal_tool="report_weather",
-)
-
-# setup_backend() auto-manages llama-server: starts the process, health-checks,
-# resolves a VRAM-aware context budget, and returns a ContextManager ready to use.
-server, ctx = await setup_backend(
-    backend="llamaserver",
-    model="ministral-8b-instruct",
-    gguf_path="path/to/Ministral-3-8B-Instruct-2512-Q4_K_M.gguf",
-    budget_mode=BudgetMode.FORGE_FULL,
-)
-# Or manage the server yourself and create the ContextManager directly:
-# ctx = ContextManager(strategy=TieredCompact(keep_recent=2), budget_tokens=8192)
-
-client = LlamafileClient(model="ministral-8b-instruct", mode="native")
-runner = WorkflowRunner(client=client, context_manager=ctx, stream=True)
-await runner.run(workflow, "What's the weather in Paris?")
-await server.stop()
-```
-
-### Multi-Turn Conversations
-
-`WorkflowRunner` accepts an optional `on_message` callback that fires each time a `Message` is appended to the conversation during `run()`. This is the primary observability hook — use it for logging, eval metric collection, or building conversation history for multi-turn flows.
-
-- **Single-turn (default):** `on_message` fires for every message the runner creates — system prompt, user input, assistant responses, tool results, nudges.
-- **Multi-turn (`initial_messages`):** `run()` accepts an optional `initial_messages` parameter that seeds the conversation with prior history. `on_message` fires **only for new messages created during this turn**, not for the replayed history.
-
-`WorkflowRunner` does not manage server lifecycle or track conversation history across `run()` calls — both are the consumer's responsibility.
-
-```python
-from forge.server import setup_backend, BudgetMode
-from forge.core.runner import WorkflowRunner
-from forge.core.messages import Message, MessageMeta, MessageRole, MessageType
-
-# 1. Start server once — stays up for the lifetime of the consumer
-client = OllamaClient(model="ministral-3:8b-instruct-2512-q4_K_M")
-server, ctx = await setup_backend(
-    backend="ollama", model="ministral-3:8b-instruct-2512-q4_K_M",
-    budget_mode=BudgetMode.FORGE_FULL, client=client,
-)
-
-# 2. Consumer owns the conversation history
-conversation: list[Message] = []
-
-# Turn 0 — normal run, on_message collects everything (system prompt, user input, etc.)
-runner = WorkflowRunner(client=client, context_manager=ctx,
-                        on_message=lambda msg: conversation.append(msg))
-await runner.run(workflow, "first question")
-
-# Turn 1+ — seed with full history, append new user message
-turn_messages: list[Message] = []
-runner = WorkflowRunner(client=client, context_manager=ctx,
-                        on_message=lambda msg: turn_messages.append(msg))
-seed = list(conversation)
-seed.append(Message(MessageRole.USER, "follow-up question",
-                    MessageMeta(MessageType.USER_INPUT)))
-await runner.run(workflow, "follow-up question", initial_messages=seed)
-conversation.extend(turn_messages)
-
-# 3. Shut down when the consumer is done (not per-turn)
-await server.stop()
-```
-
-The system prompt lives in `conversation` from turn 0 — it is not rebuilt or duplicated on subsequent turns. `StepTracker` and `tool_call_counter` reset each `run()` call since they are per-turn state.
-
-## Eval Harness
-
-The eval harness measures how reliably a model + backend combo navigates multi-step tool-calling workflows. 29 scenarios across plumbing, model quality, compaction, and stateful categories. See [docs/EVAL_GUIDE.md](docs/EVAL_GUIDE.md) for full CLI reference, flag documentation, and examples.
-
-Quick start:
-
-```bash
-# Ollama
-python -m tests.eval.eval_runner --backend ollama --model "ministral-3:8b-instruct-2512-q4_K_M" --runs 10 --stream --verbose
-
-# llama-server (start server first: llama-server --jinja -m model.gguf -ngl 999 --port 8080)
-python -m tests.eval.eval_runner --backend llamafile --llamafile-mode native --model model-name --runs 10 --stream --verbose
-
-# Batch eval (JSONL output, automatic resume)
-python -m tests.eval.batch_eval --config all --runs 50
-
-# Reports (ASCII table, HTML dashboard, markdown views)
-python -m tests.eval.report eval_results.jsonl
-```
-
-### BFCL Benchmark
-
-Run forge against [Berkeley Function Calling Leaderboard](https://github.com/ShishirPatil/gorilla/tree/main/berkeley-function-call-leaderboard) v4 tasks (11 categories, ~2,183 entries). See [docs/EVAL_GUIDE.md](docs/EVAL_GUIDE.md) for details.
 
 ## Roadmap
 
-All three backends (Ollama, llama-server, Llamafile) are stable for Ministral, Qwen3, Llama 3.1, and Mistral Nemo. Open items:
-
-1. **Multi-model routing** — Model pool for managing N backends simultaneously; consumer orchestrates which client each workflow uses. See [`docs/decisions/MULTI_MODEL_ROUTING.md`](docs/decisions/MULTI_MODEL_ROUTING.md).
-2. **Tool prerequisites** — Conditional tool dependencies ("if you call B, you must have called A"). See [`docs/decisions/006-tool-prerequisites.md`](docs/decisions/006-tool-prerequisites.md).
-3. **Context window self-awareness** — Inject remaining context budget at configurable thresholds so the model knows compaction is approaching before it fires. The compaction chain scenarios (P1/P2/P3) provide the eval harness to measure whether self-awareness improves retention.
-4. **Compaction tiers** — Consumer-configurable per-phase compaction thresholds. Currently all 3 phases share one trigger (budget x 0.75). Expose phase thresholds (e.g. P1=60%, P2=75%, P3=90%) so consumers can tune the aggressiveness/retention tradeoff.
+1. **Multi-model routing** — Model pool for managing N backends simultaneously. See [`docs/decisions/MULTI_MODEL_ROUTING.md`](docs/decisions/MULTI_MODEL_ROUTING.md).
+2. **Tool prerequisites** — Conditional tool dependencies. See [`docs/decisions/006-tool-prerequisites.md`](docs/decisions/006-tool-prerequisites.md).
+3. **Context window self-awareness** — Inject remaining context budget so the model knows compaction is approaching.
+4. **Compaction tiers** — Consumer-configurable per-phase compaction thresholds.
 
 ## Documentation
 
-- [ARCHITECTURE.md](docs/ARCHITECTURE.md) — Full design document
-- [WORKFLOW.md](docs/WORKFLOW.md) — Workflow design and runner internals
-- [EVAL_GUIDE.md](docs/EVAL_GUIDE.md) — Eval harness CLI reference, batch eval, BFCL benchmark
-- [BACKEND_SETUP.md](docs/BACKEND_SETUP.md) — Backend installation and server setup
+- [User Guide](docs/USER_GUIDE.md) — Usage patterns, multi-turn, context management, guardrails
+- [Model Guide](docs/MODEL_GUIDE.md) — Which model and backend for your hardware
+- [Backend Setup](docs/BACKEND_SETUP.md) — Backend installation and server setup
+- [Eval Guide](docs/EVAL_GUIDE.md) — Eval harness CLI reference, batch eval, BFCL benchmark
+- [Architecture](docs/ARCHITECTURE.md) — Full design document
+- [Workflow Internals](docs/WORKFLOW.md) — Workflow design and runner internals
+- [Contributing](CONTRIBUTING.md) — How to set up, test, and add new backends or scenarios
+
+## License
+
+[MIT](LICENSE) — Copyright (c) 2025-2026 Antoine Zambelli

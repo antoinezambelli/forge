@@ -716,6 +716,8 @@ def write_markdown_views(
     import datetime
 
     output_dir.mkdir(parents=True, exist_ok=True)
+    raw_dir = output_dir / "raw"
+    raw_dir.mkdir(parents=True, exist_ok=True)
     timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
     legend = "\n".join(_legend_lines(scenarios))
 
@@ -727,7 +729,7 @@ def write_markdown_views(
         sc = sc or scenarios
         table = render_table_string(metrics, sc, include_legend=False)
         content = f"# {title}\n\n```\n{table}```\n\n{legend}\n\n*Generated {timestamp}*\n"
-        (output_dir / filename).write_text(content, encoding="utf-8")
+        (raw_dir / filename).write_text(content, encoding="utf-8")
         written.append((filename, description))
 
     # 1. all.md — full leaderboard (complete configs only)
@@ -781,7 +783,7 @@ def write_markdown_views(
             parts.append(f"## {family}\n\n```\n{table}```\n")
         parts.append(legend)
         parts.append(f"\n*Generated {timestamp}*\n")
-        (output_dir / "by-family.md").write_text("\n".join(parts), encoding="utf-8")
+        (raw_dir / "by-family.md").write_text("\n".join(parts), encoding="utf-8")
         written.append(("by-family.md", "Results grouped by model family"))
 
     # 9. bare-vs-reforged.md — group by model/backend/mode, show ablation variants together
@@ -799,7 +801,7 @@ def write_markdown_views(
             parts_bf.append(f"## {model} ({backend}/{mode})\n\n```\n{table}```\n")
         parts_bf.append(legend)
         parts_bf.append(f"\n*Generated {timestamp}*\n")
-        (output_dir / "bare-vs-reforged.md").write_text("\n".join(parts_bf), encoding="utf-8")
+        (raw_dir / "bare-vs-reforged.md").write_text("\n".join(parts_bf), encoding="utf-8")
         written.append(("bare-vs-reforged.md", "Bare vs reforged ablation comparison (grouped)"))
 
     # 10. by-backend.md — group same model across backends
@@ -818,7 +820,7 @@ def write_markdown_views(
             parts_bg.append(f"## {model}{tag}\n\n```\n{table}```\n")
         parts_bg.append(legend)
         parts_bg.append(f"\n*Generated {timestamp}*\n")
-        (output_dir / "by-backend.md").write_text("\n".join(parts_bg), encoding="utf-8")
+        (raw_dir / "by-backend.md").write_text("\n".join(parts_bg), encoding="utf-8")
         written.append(("by-backend.md", "Same model compared across backends"))
 
     # 11. budget.md — compaction scenarios only
@@ -832,12 +834,16 @@ def write_markdown_views(
 
     # index.md
     if written:
-        index_lines = ["# Forge Eval Reports\n"]
+        index_lines = [
+            "# Forge Eval Reports\n",
+            "For model and backend recommendations, see [Model Guide](../MODEL_GUIDE.md).\n",
+            "## Raw Data\n",
+        ]
         for filename, desc in written:
-            index_lines.append(f"- [{filename}]({filename}) — {desc}")
+            index_lines.append(f"- [{filename}](raw/{filename}) — {desc}")
         index_lines.append(f"\n*Generated {timestamp}*\n")
         (output_dir / "index.md").write_text("\n".join(index_lines), encoding="utf-8")
-        print(f"Markdown views written to {output_dir}/ ({len(written)} files + index.md)")
+        print(f"Markdown views written to {output_dir}/raw/ ({len(written)} files + index.md)")
 
 
 # ── CLI ─────────────────────────────────────────────────────────
