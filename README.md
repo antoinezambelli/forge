@@ -19,6 +19,8 @@ Supports Ollama, llama-server (llama.cpp), Llamafile, and Anthropic as backends,
 git clone https://github.com/antoinezambelli/forge.git
 cd forge
 python -m venv .venv
+.venv\Scripts\activate          # Windows
+# source .venv/bin/activate     # macOS/Linux
 pip install -e .                # core only
 pip install -e ".[anthropic]"   # + Anthropic client
 pip install -e ".[dev]"         # + test/eval dependencies
