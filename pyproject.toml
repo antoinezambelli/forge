@@ -26,6 +26,7 @@ dev = [
     "pytest-cov",
     "pytest-asyncio",
     "anthropic>=0.40",
+    "mpmath",
 ]
 
 [tool.hatch.build.targets.wheel]
