@@ -1,0 +1,154 @@
+"""Tool prompt builders for the prompt-injected tool calling path."""
+
+from __future__ import annotations
+
+import json
+import re
+
+from forge.core.workflow import ToolCall, ToolSpec
+
+
+def build_tool_prompt(tools: list[ToolSpec]) -> str:
+    """Build tool description block for prompt injection.
+
+    Args:
+        tools: The list of tool specs to describe.
+    """
+    lines = ["You have access to the following tools:", ""]
+
+    for tool in tools:
+        schema = tool.get_json_schema()
+        properties = schema.get("properties", {})
+        required = set(schema.get("required", []))
+
+        lines.append(f"## {tool.name}")
+        lines.append(f"Description: {tool.description}")
+        if properties:
+            lines.append("Parameters:")
+            for name, prop in properties.items():
+                req = " (required)" if name in required else " (optional)"
+                ptype = prop.get("type", "any")
+                desc = prop.get("description", "")
+                lines.append(f"  - {name} ({ptype}{req}): {desc}")
+                if "enum" in prop:
+                    lines.append(f"    Allowed values: {', '.join(str(v) for v in prop['enum'])}")
+        lines.append("")
+
+    lines.append("To call a tool, respond with ONLY a JSON object in this exact format:")
+    lines.append('{"tool": "<tool_name>", "args": {<arguments>}}')
+    lines.append("")
+    lines.append("Example:")
+    if tools:
+        example_tool = tools[0]
+        example_schema = example_tool.get_json_schema()
+        example_args = {
+            name: f"<{name}>" for name in example_schema.get("properties", {})
+        }
+        lines.append(json.dumps({"tool": example_tool.name, "args": example_args}))
+    lines.append("")
+    lines.append("Respond with ONLY the JSON tool call. Do not include any other text.")
+
+    return "\n".join(lines)
+
+
+def extract_tool_call(text: str, available_tools: list[str]) -> list[ToolCall]:
+    """Extract all ToolCalls from free-text model output.
+
+    Handles JSON wrapped in code fences or embedded in surrounding text.
+    Returns all valid tool calls found, or an empty list if none.
+
+    Args:
+        text: The raw model output text.
+        available_tools: List of valid tool names to match against.
+    """
+    # Strip code fences if present
+    cleaned = re.sub(r"```(?:json)?\s*\n?", "", text)
+    cleaned = re.sub(r"```", "", cleaned)
+
+    found: list[ToolCall] = []
+    # Try to find JSON objects by scanning for opening braces
+    i = 0
+    while i < len(cleaned):
+        if cleaned[i] == "{":
+            # Find matching closing brace
+            depth = 0
+            for j in range(i, len(cleaned)):
+                if cleaned[j] == "{":
+                    depth += 1
+                elif cleaned[j] == "}":
+                    depth -= 1
+                    if depth == 0:
+                        candidate = cleaned[i : j + 1]
+                        result = _try_parse_tool_call(candidate, available_tools)
+                        if result is not None:
+                            found.append(result)
+                        i = j + 1
+                        break
+            else:
+                i += 1
+        else:
+            i += 1
+    return found
+
+
+def _try_parse_tool_call(json_str: str, available_tools: list[str]) -> ToolCall | None:
+    try:
+        data = json.loads(json_str)
+    except json.JSONDecodeError:
+        return None
+
+    if not isinstance(data, dict):
+        return None
+    if data.get("tool") not in available_tools:
+        return None
+
+    return ToolCall(tool=data["tool"], args=data.get("args", {}))
+
+
+# Pattern for native FC rehearsal syntax: tool_name[ARGS]{...}
+# Reasoning models rehearse tool calls in thinking tokens using this format.
+# Captures: tool name and the JSON args blob.
+_REHEARSAL_RE = re.compile(
+    r"(\w+)\[ARGS\](\{.*\})", re.DOTALL
+)
+
+# Think tag patterns (same as llamafile._THINK_TAG_RE) — needed to strip
+# thinking blocks before rescue parsing.
+_THINK_TAG_RE = re.compile(
+    r"\[THINK\].*?\[/THINK\]|<think>.*?</think>", re.DOTALL
+)
+
+
+def rescue_tool_call(text: str, available_tools: list[str]) -> list[ToolCall]:
+    """Try to parse ToolCalls from a TextResponse that failed native FC.
+
+    Used by the runner to rescue valid tool calls that the model emitted as
+    free text instead of structured output. Returns an empty list if nothing
+    parseable is found — caller falls through to the normal retry nudge.
+
+    Parsing strategies (in order):
+    1. Prompt-injected JSON: {"tool": "name", "args": {...}}
+    2. Rehearsal syntax: tool_name[ARGS]{...}
+    """
+    # Strip think tags — the tool call may be after or outside thinking blocks
+    cleaned = _THINK_TAG_RE.sub("", text).strip()
+    if not cleaned:
+        return []
+
+    # Strategy 1: existing JSON extraction (handles code fences, embedded JSON)
+    found = extract_tool_call(cleaned, available_tools)
+
+    # Strategy 2: rehearsal syntax — tool_name[ARGS]{...}
+    # Only try if JSON extraction found nothing (avoid double-counting)
+    if not found:
+        for m in _REHEARSAL_RE.finditer(cleaned):
+            tool_name, args_str = m.group(1), m.group(2)
+            if tool_name in available_tools:
+                try:
+                    args = json.loads(args_str)
+                    if isinstance(args, dict):
+                        found.append(ToolCall(tool=tool_name, args=args))
+                except json.JSONDecodeError:
+                    pass
+
+    return found

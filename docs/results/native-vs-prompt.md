@@ -1,0 +1,70 @@
+# Forge Eval — Native vs Prompt (llama-server)
+
+```
+-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+Model/Backend                                              Scr      Acc      Cmp    Eff   Wst    Spd     N    rel   arg   tsl   b2s   s3s   crt   srn   err   dgr rel_s arg_s tsl_s b2s_s s3s_s crt_s srn_s err_s dgr_s
+-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ministral-3:8b-reasoning-2512-q4_K_M LS/N [reforged]     99.3%    99.3%   100.0%    87%   0.5   3.7s    50    100   100   100   100   100    96   100   100   100   100   100    98   100   100    96   100   100    98
+ministral-3:8b-reasoning-2512-q8_0 LS/N [reforged]       99.2%    99.2%   100.0%    87%   0.5   4.6s    50    100   100   100   100   100    94   100    98    98   100   100   100   100   100    96   100   100   100
+ministral-3:14b-instruct-2512-q4_K_M LS/N [reforged]     98.8%    98.8%   100.0%    83%   0.7   3.5s    50    100   100    96   100   100   100   100    98    96   100   100    96   100   100   100   100    96    96
+ministral-3:8b-reasoning-2512-q4_K_M LS/P [reforged]     98.1%    98.1%   100.0%    92%   0.3   2.5s    50    100   100   100   100   100   100   100    96    90   100   100   100   100   100    98   100    94    88
+ministral-3:8b-reasoning-2512-q8_0 LS/P [reforged]       98.2%    99.0%    99.2%    92%   0.4   3.3s    50    100   100    94   100   100    96   100    98   100   100   100    92   100   100   100   100    90    98
+ministral-3:8b-instruct-2512-q8_0 LS/N [reforged]        96.8%    96.8%   100.0%    82%   0.7   4.3s    50    100   100   100   100   100    96   100    90    84   100   100   100   100   100    98   100    84    90
+ministral-3:14b-instruct-2512-q4_K_M LS/P [reforged]     95.7%    95.7%   100.0%   100%   0.1   3.0s    50    100   100   100   100   100   100   100   100    68   100    98   100   100   100   100    98    98    60
+ministral-3:14b-reasoning-2512-q4_K_M LS/P [reforged]    95.7%    95.7%   100.0%    98%   0.2   3.0s    50    100   100   100   100   100    90   100   100    80   100   100   100   100   100    82   100   100    70
+qwen3:8b-q8_0 LS/P [reforged]                            95.7%    95.7%   100.0%    93%   0.3  17.8s    50    100   100   100   100   100    98   100    72    96   100   100   100   100   100    98   100    72    86
+ministral-3:14b-reasoning-2512-q4_K_M LS/N [reforged]    95.6%    95.7%    99.9%    84%   0.6   3.9s    50    100   100   100   100   100    98   100   100    74   100   100   100   100   100    94   100    98    56
+ministral-3:8b-instruct-2512-q4_K_M LS/N [reforged]      96.3%    96.3%   100.0%    81%   0.7   3.1s    50    100   100   100   100   100   100   100    82    90   100   100   100   100   100    98   100    76    88
+qwen3:8b-q4_K_M LS/N [reforged]                          95.0%    95.0%   100.0%    86%   0.5  15.0s    50    100   100   100   100   100    96   100    88    74   100   100   100    98   100    94   100    96    64
+qwen3:8b-q8_0 LS/N [reforged]                            93.9%    94.0%    99.9%    88%   0.4  20.9s    50     98   100   100   100   100    98   100    94    48   100   100   100   100   100    96   100    92    64
+qwen3:14b-q4_K_M LS/P [reforged]                         93.3%    93.3%   100.0%    91%   0.3  15.2s    50    100   100   100   100   100    96   100    66    74   100   100   100   100   100    98   100    76    70
+ministral-3:8b-instruct-2512-q8_0 LS/P [reforged]        92.7%    96.1%    96.4%    89%   0.5   3.9s    50    100   100    64   100   100    98   100    78    92   100   100    76   100   100    98   100    82    80
+ministral-3:8b-instruct-2512-q4_K_M LS/P [reforged]      91.3%    96.0%    95.1%    85%   0.7   3.1s    50     80   100    78   100   100    98   100    86    80    74    98    76   100   100    98    98    96    82
+qwen3:8b-q4_K_M LS/P [reforged]                          90.4%    90.4%   100.0%    92%   0.3  14.0s    50    100   100   100   100   100    88   100    64    56   100   100   100   100    98    92   100    60    70
+qwen3:14b-q4_K_M LS/N [reforged]                         88.4%    88.5%    99.9%    75%   0.9  19.2s    50    100   100   100   100   100    90    98    96    10   100   100   100   100   100    78   100   100    20
+qwen3:8b-q8_0 LS/P [bare]                                85.2%    97.3%    87.6%    97%   0.1  16.2s    50    100   100    92    96   100    96   100     0    94   100   100    94   100    94    76   100     0    92
+ministral-3:14b-reasoning-2512-q4_K_M LS/P [bare]        81.7%    94.0%    86.9%   100%   0.1   3.1s    50    100   100   100   100    96    78    94     0    56   100   100    96   100    96    74   100     0    80
+ministral-3:14b-instruct-2512-q4_K_M LS/P [bare]         78.3%    95.4%    82.1%   100%   0.0   3.0s    50    100    86    80   100    84    98   100     0    64   100    88    72   100    86    96    94     0    62
+qwen3:8b-q4_K_M LS/P [bare]                              76.7%    93.4%    82.1%    99%   0.1  12.3s    50    100   100    48    94   100    96   100     0    66   100   100    52    92    98    64   100     0    70
+mistral-nemo:12b-instruct-2407-q4_K_M LS/P [reforged]    75.0%    93.5%    80.2%    84%   0.7   3.7s    50    100   100    94   100     0   100    24   100    62   100   100    78   100     0    94    24   100    74
+qwen3:14b-q4_K_M LS/P [bare]                             72.6%    90.2%    80.4%   100%   0.1  14.3s    50    100   100    22   100   100    92   100     0    68   100   100    26    80   100    48   100     0    70
+ministral-3:8b-reasoning-2512-q8_0 LS/P [bare]           72.1%    99.4%    72.6%    98%   0.2   3.4s    50     36    90    36   100    94   100   100     0    84    42    96    36   100    96    96   100     0    92
+llama3.1:8b-instruct-q8_0 LS/N [reforged]                68.8%    68.9%    99.9%    85%   0.6   2.7s    50    100    98    92   100   100    54    16    58     6   100   100    90   100    84    62    20    54     4
+llama3.1:8b-instruct-q8_0 LS/P [reforged]                67.4%    69.9%    96.4%    89%   0.5   2.4s    50    100   100   100   100   100    84     8    34    18    98    98   100   100    18    86     8    40    22
+ministral-3:8b-reasoning-2512-q4_K_M LS/P [bare]         67.1%    98.7%    68.0%    99%   0.1   2.6s    50     54    76     6   100    88    90   100     0    90    50    84    10   100    92    92    96     0    80
+ministral-3:8b-instruct-2512-q8_0 LS/P [bare]            66.3%    96.3%    68.9%    99%   0.1   3.2s    50     90    98     8   100    86    98    86     0    40    94   100     8   100    66    90    88     0    42
+mistral:7b-instruct-v0.3-q8_0 LS/P [reforged]            64.7%    67.0%    96.6%    89%   0.7   3.6s    50    100    98   100   100   100    38    86     8    38   100    96     0   100    92    44    18    10    36
+qwen3:8b-q8_0 LS/N [bare]                                64.4%    94.8%    68.0%    95%   0.2  22.4s    50     94    64     0    88    98    96    76     0    66    84    80     0    92    90    94    74     0    64
+llama3.1:8b-instruct-q4_K_M LS/P [reforged]              60.6%    64.8%    93.4%    80%   0.8   2.1s    50     86   100   100   100   100    80    20    12    30    84   100   100   100     0    62     0     8     8
+mistral-nemo:12b-instruct-2407-q4_K_M LS/P [bare]        60.6%    91.3%    66.3%    84%   0.8   3.8s    50     96    98    52   100     0    98    40     0    66   100    96    50   100     0    90    34     0    70
+mistral:7b-instruct-v0.3-q4_K_M LS/P [reforged]          59.2%    61.3%    96.7%    84%   0.8   2.8s    50    100   100   100   100   100     4    84     6    30   100   100     0   100    72    12    20     8    30
+llama3.1:8b-instruct-q4_K_M LS/N [reforged]              58.0%    58.4%    99.3%    82%   0.9   2.9s    50    100    84    92   100   100    10     2    38    14   100    94    92   100    32     6    26    46     8
+qwen3:8b-q4_K_M LS/N [bare]                              58.2%    93.2%    62.4%    95%   0.2  15.7s    50     92    70     2    84    70    88    72     0    48    94    70     4    72    78    86    78     0    40
+llama3.1:8b-instruct-q8_0 LS/P [bare]                    57.2%    68.3%    83.8%    95%   0.4   2.4s    50     84   100    86   100    84    74    12     0    16    70   100    88   100    22    76     6     0    12
+llama3.1:8b-instruct-q8_0 LS/N [bare]                    54.7%    68.6%    79.7%    98%   0.1   2.1s    50    100    94    60   100    98    34    10     0     4   100    98    56    94    82    48     6     0     0
+ministral-3:8b-reasoning-2512-q8_0 LS/N [bare]           54.1%    99.2%    54.6%    95%   0.2   3.3s    50      4   100    94   100   100    90     0     0     6     0   100    92   100   100    80     0     0     8
+ministral-3:8b-reasoning-2512-q4_K_M LS/N [bare]         52.8%    99.6%    53.0%    95%   0.2   2.7s    50      4   100    72   100   100    84     0     0     8    14   100    80   100   100    74     2     0    12
+ministral-3:8b-instruct-2512-q4_K_M LS/P [bare]          50.9%    94.8%    53.7%    98%   0.2   2.6s    50     12    80    14    94    46    92    74     0    44    12    98    14   100    48    88    74     0    26
+ministral-3:14b-reasoning-2512-q4_K_M LS/N [bare]        47.6%    98.8%    48.1%    96%   0.2   3.4s    50      0   100    40    88   100    60     0     0    24     0   100    64    92   100    58     0     0    30
+llama3.1:8b-instruct-q4_K_M LS/P [bare]                  45.9%    60.6%    75.7%    97%   0.4   2.0s    50      0   100    94   100    60    62    22     0    16     0   100    96   100     0    38    22     0    16
+llama3.1:8b-instruct-q4_K_M LS/N [bare]                  44.0%    59.0%    74.6%   100%   0.0   2.8s    50     84    90    68   100   100     2     0     0     0    92    96    58   100     0     0     2     0     0
+ministral-3:14b-instruct-2512-q4_K_M LS/N [bare]         43.8%    99.2%    44.1%    97%   0.2   4.2s    50      0    98    42     0   100    84     0     0    80     0   100    26     0   100    76     0     0    82
+ministral-3:8b-instruct-2512-q8_0 LS/N [bare]            37.0%    97.7%    37.9%    93%   0.3   4.1s    50      0    98    12    18   100    92     0     0    22     0    98    10     2   100    94     0     0    20
+ministral-3:8b-instruct-2512-q4_K_M LS/N [bare]          34.1%    98.1%    34.8%    92%   0.3   3.1s    50      2    94     0     0   100   100     0     0    12     4    94     0     2   100    96     0     0    10
+qwen3:14b-q4_K_M LS/N [bare]                             32.3%    86.9%    37.2%    98%   0.1  14.8s    50    100    14    12    10    66    40    24     0    12    98    22     4    42    72    32    24     0    10
+mistral:7b-instruct-v0.3-q4_K_M LS/P [bare]              28.0%    31.6%    88.6%   100%   0.0   1.3s    50    100     0   100    58     0     2    74     0     4   100     0     0    60     0     6     0     0     0
+mistral:7b-instruct-v0.3-q8_0 LS/P [bare]                25.7%    28.9%    88.7%   100%   0.0   1.9s    50    100     0   100     6     4    30    74     0     0   100     0     0    10     2    36     0     0     0
+mistral-nemo:12b-instruct-2407-q4_K_M LS/N [reforged]     7.2%   100.0%     7.2%    42%   1.4   2.0s    50     64     0     0     0     0     0     0     0     0    66     0     0     0     0     0     0     0     0
+mistral:7b-instruct-v0.3-q4_K_M LS/N [bare]               0.8%     6.5%    11.9%   100%   0.0   0.9s    50     12     0     0     0     0     0     0     0     0     2     0     0     0     0     0     0     0     0
+mistral:7b-instruct-v0.3-q8_0 LS/N [bare]                 0.6%     4.8%    11.7%   100%   0.0   1.2s    50      4     0     0     0     0     0     0     0     0     6     0     0     0     0     0     0     0     0
+mistral:7b-instruct-v0.3-q4_K_M LS/N [reforged]           0.7%   100.0%     0.7%   100%   0.0   0.8s    50      4     0     0     0     0     0     0     0     0     8     0     0     0     0     0     0     0     0
+mistral:7b-instruct-v0.3-q8_0 LS/N [reforged]             0.6%   100.0%     0.6%    71%   0.4   1.4s    50      4     0     0     0     0     0     0     0     0     6     0     0     0     0     0     0     0     0
+mistral-nemo:12b-instruct-2407-q4_K_M LS/N [bare]         0.0%        —     0.0%     0%   0.0   0.0s    50      0     0     0     0     0     0     0     0     0     0     0     0     0     0     0     0     0     0
+-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+```
+
+Scr=score(correct/total), Acc=accuracy(correct/total, excl validate errors), Cmp=completeness(completed/total), Eff=efficiency(ideal/actual calls), Wst=avg wasted calls, Spd=avg time(excl compaction)
+rel=relevance_detection, arg=argument_fidelity, tsl=tool_selection, b2s=basic_2step, s3s=sequential_3step, crt=conditional_routing, srn=sequential_reasoning, err=error_recovery, dgr=data_gap_recovery, rel_s=relevance_detection_stateful, arg_s=argument_fidelity_stateful, tsl_s=tool_selection_stateful, b2s_s=basic_2step_stateful, s3s_s=sequential_3step_stateful, crt_s=conditional_routing_stateful, srn_s=sequential_reasoning_stateful, err_s=error_recovery_stateful, dgr_s=data_gap_recovery_stateful
+Ablation: full=all guardrails, no_rescue=no rescue loop, no_nudge=no rescue/retry nudge, no_steps=no step enforcement, no_recovery=no error recovery, no_compact=no compaction, bare=all guardrails off
+
+*Generated 2026-03-12 19:55*
