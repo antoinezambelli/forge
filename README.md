@@ -1,5 +1,9 @@
 # forge
 
+[![Tests](https://github.com/antoinezambelli/forge/actions/workflows/tests.yml/badge.svg)](https://github.com/antoinezambelli/forge/actions/workflows/tests.yml)
+[![Python 3.12+](https://img.shields.io/badge/python-3.12%2B-blue.svg)](https://www.python.org/downloads/)
+[![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
+
 A Python framework for self-hosted LLM tool-calling and multi-step agentic workflows. Define tools, pick a backend, run structured agent loops on consumer hardware.
 
 Supports Ollama, llama-server (llama.cpp), Llamafile, and Anthropic as backends, with VRAM-aware context budgets, tiered compaction, and guardrail-based reliability (step enforcement, retry nudges, rescue loops).
@@ -166,6 +170,7 @@ tests/
 - [Eval Guide](docs/EVAL_GUIDE.md) — Eval harness CLI reference, batch eval, BFCL benchmark
 - [Architecture](docs/ARCHITECTURE.md) — Full design document
 - [Workflow Internals](docs/WORKFLOW.md) — Workflow design and runner internals
+- [Contributing](CONTRIBUTING.md) — How to set up, test, and add new backends or scenarios
 
 ## License
 
