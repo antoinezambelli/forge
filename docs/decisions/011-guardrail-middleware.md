@@ -316,6 +316,24 @@ tc = ToolCall(tool=lc_call.name, args=lc_call.args)
 
 `ToolCall` and `TextResponse` don't need changes. They're already minimal, framework-agnostic types. The middleware just uses them as-is. The heavier types (`ToolDef`, `ToolSpec`, `Workflow`, `Message`) stay in their current modules, used only by `WorkflowRunner` and clients.
 
+### Future: framework adapters (v2)
+
+v1 uses forge types (`ToolCall`, `TextResponse`) at both the input and output boundaries of the middleware API. This is a deliberate consistency choice — if we return `ToolCall`, we should accept `ToolCall`. The consumer constructs them from their framework's format (one-line conversions, shown above).
+
+If real consumers later report that even this lightweight conversion is friction, the right solution is per-framework adapters — thin wrappers that handle format conversion at the edges:
+
+```python
+# Hypothetical v2
+from forge.guardrails.adapters import LangChainAdapter
+
+adapter = LangChainAdapter(validator, enforcer, errors)
+result = adapter.validate(langchain_ai_message)  # accepts LangChain types directly
+```
+
+Adapters would live in `forge.guardrails.adapters`, one module per framework (langchain, openai, crewai). Each adapter converts the framework's types to/from forge types before delegating to the core middleware classes — no changes to the middleware itself.
+
+This is explicitly deferred until a real consumer asks for it. Building adapters speculatively means tracking framework version changes and message format evolution with no signal on what anyone actually needs. The forge types are the honest, stable boundary for v1.
+
 ## Batch Tool Call Handling
 
 The runner currently processes multiple tool calls per LLM response. The middleware API handles this naturally:
