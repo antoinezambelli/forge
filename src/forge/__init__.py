@@ -27,7 +27,9 @@ from forge.context import (
 from forge.server import BudgetMode, ServerManager, setup_backend
 from forge.prompts import build_tool_prompt, extract_tool_call, rescue_tool_call, retry_nudge, step_nudge
 from forge.guardrails import (
+    CheckResult,
     ErrorTracker,
+    Guardrails,
     Nudge,
     ResponseValidator,
     StepCheck,
@@ -93,7 +95,10 @@ __all__ = [
     "BudgetMode",
     "ServerManager",
     "setup_backend",
-    # Guardrails (middleware API)
+    # Guardrails
+    "CheckResult",
+    "Guardrails",
+    # Guardrails (granular middleware)
     "ErrorTracker",
     "Nudge",
     "ResponseValidator",
