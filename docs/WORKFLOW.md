@@ -9,11 +9,11 @@ Visual guide to the forge agentic tool-calling loop.
 **Entry Point:** `WorkflowRunner.run()` in `src/forge/core/runner.py`
 
 **Critical Files:**
-- `src/forge/core/runner.py` - Agentic loop (retry, rescue, step enforcement)
+- `src/forge/core/runner.py` - Agentic loop (composes guardrail middleware internally)
 - `src/forge/core/workflow.py` - Workflow, ToolSpec, ToolCall, TextResponse
 - `src/forge/core/messages.py` - Message, MessageRole, MessageType, MessageMeta
-- `src/forge/core/steps.py` - StepTracker
-- `src/forge/guardrails/` - Composable middleware (ResponseValidator, StepEnforcer, ErrorTracker)
+- `src/forge/core/steps.py` - StepTracker (used internally by StepEnforcer)
+- `src/forge/guardrails/` - Composable middleware (ResponseValidator, StepEnforcer, ErrorTracker, Nudge)
 - `src/forge/context/manager.py` - ContextManager, CompactEvent
 - `src/forge/context/strategies.py` - TieredCompact (3-phase compaction)
 - `src/forge/clients/base.py` - LLMClient protocol
@@ -31,8 +31,8 @@ The core of forge. The runner sends messages to the LLM, inspects the response, 
 flowchart TD
     subgraph Init["Initialization"]
         BUILD["Build messages:<br/>system prompt + user input<br/>(or seed from initial_messages)"]
-        STEPS["Initialize StepTracker<br/>with required_steps"]
-        BUILD --> STEPS
+        GUARDS["Initialize guardrail middleware:<br/>ResponseValidator, StepEnforcer,<br/>ErrorTracker"]
+        BUILD --> GUARDS
     end
 
     subgraph Loop["Main Loop (up to max_iterations)"]
@@ -41,53 +41,49 @@ flowchart TD
         SEND["3b. Fold REASONING into next TOOL_CALL content,<br/>serialize & send to LLM (stream or batch)"]
         CHECK{"list[ToolCall] or<br/>TextResponse?"}
 
-        subgraph TextPath["TextResponse Path"]
-            RESCUE["rescue_tool_call()<br/>extract JSON from free text"]
-            RESCUED{"Rescued?"}
-            RETRY_COUNT{"retries &gt;<br/>max_retries?"}
-            NUDGE["Emit TEXT_RESPONSE + retry_nudge<br/>→ next iteration"]
+        subgraph TextPath["ValidationResult.needs_retry Path"]
+            VALIDATE["ResponseValidator.validate()<br/>rescue + retry + unknown tool"]
+            RESCUED{"needs_retry<br/>= False?"}
+            RETRY_COUNT{"ErrorTracker<br/>retries_exhausted?"}
+            NUDGE["Emit assistant content + nudge<br/>→ next iteration"]
             FAIL_RETRY["Raise ToolCallError"]
         end
 
         subgraph ToolPath["ToolCall Batch Path"]
-            KNOWN{"All tools exist in<br/>workflow.tools?"}
+            KNOWN{"ResponseValidator:<br/>all tools known?"}
             UNKNOWN_NUDGE["Emit TOOL_CALL + unknown_tool_nudge<br/>→ next iteration"]
-            TERMINAL{"Terminal tool<br/>in batch?"}
-            SATISFIED{"StepTracker<br/>satisfied?"}
+            TERMINAL{"StepEnforcer.check():<br/>premature terminal?"}
             STEP_NUDGE["Emit TOOL_CALL + escalating step_nudge<br/>(tier 1/2/3)"]
-            STEP_FAIL["Raise StepEnforcementError<br/>(&gt;3 attempts)"]
+            STEP_FAIL["Raise StepEnforcementError<br/>(premature_exhausted)"]
             EMIT["Emit REASONING (if present)<br/>+ TOOL_CALL message"]
             EXEC_BATCH["Execute ALL tools in batch"]
             TOOL_ERROR{"Exception type?"}
             RESOLUTION_ERR["ToolResolutionError:<br/>feed back, don't count error,<br/>don't record step"]
             EXEC_ERR["Other exception:<br/>feed back as [ToolError],<br/>count toward consecutive errors"]
-            TOOL_FAIL["Raise ToolExecutionError<br/>(consecutive &gt; max_tool_errors)"]
+            TOOL_FAIL["Raise ToolExecutionError<br/>(ErrorTracker.tool_errors_exhausted)"]
             BATCH_DONE{"Terminal tool<br/>succeeded?"}
             RETURN["Return terminal result"]
-            RECORD["StepTracker.record() per success<br/>reset premature_terminal_attempts<br/>→ next iteration"]
+            RECORD["StepEnforcer.record() per success<br/>reset_premature(), reset_errors()<br/>→ next iteration"]
         end
 
         COMPACT --> SEND --> CHECK
-        CHECK -- "TextResponse" --> RESCUE
-        CHECK -- "list[ToolCall]" --> KNOWN
+        CHECK -- "any response" --> VALIDATE
+        VALIDATE --> RESCUED
 
-        RESCUE -- "yes" --> KNOWN
-        RESCUE -- "no" --> RESCUED
-        RESCUED -- "no" --> RETRY_COUNT
+        RESCUED -- "yes (tool_calls)" --> TERMINAL
+        RESCUED -- "no (needs_retry)" --> RETRY_COUNT
         RETRY_COUNT -- "no" --> NUDGE
         RETRY_COUNT -- "yes" --> FAIL_RETRY
 
-        KNOWN -- "no" --> UNKNOWN_NUDGE
-        KNOWN -- "yes" --> TERMINAL
-        TERMINAL -- "yes + unsatisfied" --> STEP_NUDGE
-        TERMINAL -- "no / satisfied" --> EMIT
-        STEP_NUDGE -- "&gt;3 attempts" --> STEP_FAIL
+        TERMINAL -- "needs_nudge" --> STEP_NUDGE
+        TERMINAL -- "no premature" --> EMIT
+        STEP_NUDGE -- "premature_exhausted" --> STEP_FAIL
 
         EMIT --> EXEC_BATCH
         EXEC_BATCH --> TOOL_ERROR
         TOOL_ERROR -- "ToolResolutionError" --> RESOLUTION_ERR
         TOOL_ERROR -- "other Exception" --> EXEC_ERR
-        EXEC_ERR -- "consecutive &gt;<br/>max_tool_errors" --> TOOL_FAIL
+        EXEC_ERR -- "tool_errors_exhausted" --> TOOL_FAIL
         TOOL_ERROR -- "no error" --> BATCH_DONE
         BATCH_DONE -- "yes" --> RETURN
         BATCH_DONE -- "no" --> RECORD
@@ -503,4 +499,4 @@ python -m tests.eval.report eval_results.jsonl --progress
 python -m tests.eval.eval_runner --backend ollama --model "ministral-3:8b-instruct-2512-q4_K_M" --probe
 ```
 
-See [ARCHITECTURE.md](../ARCHITECTURE.md) for the full design document.
+See [ARCHITECTURE.md](ARCHITECTURE.md) for the full design document.

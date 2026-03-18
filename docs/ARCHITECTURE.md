@@ -7,7 +7,7 @@ A reusable Python library for self-hosted LLM tool-calling and multi-step agenti
 **Tested models:** Ministral 8B/14B (Instruct + Reasoning), Qwen3 8B/14B, Llama 3.1 8B, Mistral 7B v0.3, Mistral Nemo 12B, Claude Haiku/Sonnet/Opus
 **Target hardware:** 12–32GB VRAM (consumer GPUs)
 **Backends:** Ollama, llama-server (llama.cpp), Llamafile, Anthropic API (baseline)
-**License:** Apache 2.0
+**License:** MIT
 
 ---
 
@@ -109,12 +109,22 @@ Downstream consumers who inspect message history (logging, debugging, eval) get 
 │         │          │  Compact     │  │  Hardware    │  │
 │         │          │  Strategy    │  │  Profile     │  │
 │         │          └──────────────┘  └──────────────┘  │
-│  ┌──────▼──────┐  ┌──────────────┐                     │
-│  │  Step       │  │   Message    │                     │
-│  │  Tracker    │  │   Types      │                     │
-│  └─────────────┘  └──────────────┘                     │
-│         │                                               │
-│  ┌──────▼──────────────────────────────────────────┐   │
+│  ┌──────▼──────────────────────────┐                    │
+│  │  Guardrails (middleware)        │  ┌──────────────┐  │
+│  │  ┌──────────────────────────┐   │  │   Message    │  │
+│  │  │ ResponseValidator        │   │  │   Types      │  │
+│  │  │ (rescue, retry, unknown) │   │  └──────────────┘  │
+│  │  ├──────────────────────────┤   │                    │
+│  │  │ StepEnforcer             │   │                    │
+│  │  │ (wraps StepTracker,      │   │                    │
+│  │  │  premature escalation)   │   │                    │
+│  │  ├──────────────────────────┤   │                    │
+│  │  │ ErrorTracker             │   │                    │
+│  │  │ (retry + tool budgets)   │   │                    │
+│  │  └──────────────────────────┘   │                    │
+│  └─────────────┬───────────────────┘                    │
+│                │                                         │
+│  ┌─────────────▼────────────────────────────────────┐   │
 │  │              LLMClient (Protocol)                │   │
 │  │  ┌─────────────┐ ┌──────────────┐ ┌───────────┐ │   │
 │  │  │OllamaClient │ │LlamafileClnt │ │Anthropic- │ │   │
@@ -498,6 +508,124 @@ class StepTracker:
         return f"[Steps completed: {', '.join(self.completed_steps)}]"
 
 
+# ── Guardrail Middleware ──────────────────────────────────────
+#
+# Composable middleware extracted from WorkflowRunner internals.
+# The runner instantiates these per-run; they are also importable
+# for use in foreign orchestration loops (see examples/foreign_loop.py).
+
+
+@dataclass
+class Nudge:
+    """A corrective message to inject into the conversation."""
+    role: str           # Always "user"
+    content: str        # The nudge text
+    kind: str           # "retry", "unknown_tool", or "step"
+    tier: int = 0       # Escalation tier (step nudges: 1/2/3)
+
+
+@dataclass
+class ValidationResult:
+    """Result of validating an LLM response.
+
+    Exactly one of ``tool_calls`` or ``nudge`` is set:
+    - If ``needs_retry`` is False, ``tool_calls`` contains the validated calls.
+    - If ``needs_retry`` is True, ``nudge`` contains the message to inject.
+    """
+    tool_calls: list[ToolCall] | None
+    nudge: Nudge | None
+    needs_retry: bool
+
+
+class ResponseValidator:
+    """Validates LLM responses: rescues tool calls from text, checks tool names.
+
+    Stateless — safe to reuse across turns and sessions.
+
+    Args:
+        tool_names: Valid tool names for this workflow.
+        rescue_enabled: If True, attempt to parse tool calls from TextResponse
+            before generating a retry nudge.
+    """
+
+    def __init__(self, tool_names: list[str], rescue_enabled: bool = True) -> None: ...
+
+    def validate(self, response: LLMResponse) -> ValidationResult:
+        """Validate an LLM response.
+
+        Returns ValidationResult with tool_calls on success, or a Nudge on failure.
+        TextResponse path: try rescue_tool_call(), then retry nudge.
+        list[ToolCall] path: check for unknown tool names → unknown_tool_nudge.
+        """
+        ...
+
+
+@dataclass
+class StepCheck:
+    """Result of checking tool calls against step requirements."""
+    nudge: Nudge | None
+    needs_nudge: bool
+
+
+class StepEnforcer:
+    """Tracks required steps and enforces them with escalating nudges.
+
+    Wraps StepTracker internally. Stateful — instantiate per session/task.
+
+    Args:
+        required_steps: Tool names that must be called before the terminal tool.
+        terminal_tool: The tool that ends the workflow.
+        max_premature_attempts: How many premature terminal attempts before
+            the enforcer signals exhaustion.
+    """
+
+    def __init__(self, required_steps: list[str], terminal_tool: str,
+                 max_premature_attempts: int = 3) -> None: ...
+
+    def check(self, tool_calls: list[ToolCall]) -> StepCheck:
+        """Check whether tool calls include a premature terminal call.
+
+        Returns StepCheck with escalating nudge (tier 1/2/3) if premature.
+        """
+        ...
+
+    def record(self, tool_name: str) -> None: ...
+    def is_satisfied(self) -> bool: ...
+    def pending(self) -> list[str]: ...
+    def reset_premature(self) -> None: ...
+    def summary_hint(self) -> str: ...
+
+    @property
+    def premature_attempts(self) -> int: ...
+    @property
+    def premature_exhausted(self) -> bool: ...
+    @property
+    def completed_steps(self) -> dict[str, None]: ...
+
+
+class ErrorTracker:
+    """Tracks consecutive retry and tool error counts against limits.
+
+    Stateful — instantiate per session/task.
+
+    Args:
+        max_retries: Consecutive formatting/validation failures before exhaustion.
+        max_tool_errors: Consecutive tool execution errors before exhaustion.
+    """
+
+    def __init__(self, max_retries: int = 3, max_tool_errors: int = 2) -> None: ...
+
+    def record_retry(self) -> None: ...
+    def reset_retries(self) -> None: ...
+    def record_result(self, success: bool, is_soft_error: bool = False) -> None: ...
+    def reset_errors(self) -> None: ...
+
+    @property
+    def retries_exhausted(self) -> bool: ...
+    @property
+    def tool_errors_exhausted(self) -> bool: ...
+
+
 # ── Workflow Definition ────────────────────────────────────────
 
 
@@ -555,17 +683,21 @@ class WorkflowRunner:
 
     This is the core agentic loop. It:
     1. Builds the initial message list (system prompt + user input)
-    2. Sends messages to the LLM via the client (streaming or batch)
-    3. Inspects the response — if TextResponse (malformed/refusal), retries with nudge
-    4. Validates and executes returned tool calls (supports parallel batches)
-    5. Manages context budget via ContextManager
-    6. Enforces required steps via StepEnforcer
-    7. Terminates on terminal tool or max iterations
+    2. Initializes guardrail middleware (ResponseValidator, StepEnforcer, ErrorTracker)
+    3. Sends messages to the LLM via the client (streaming or batch)
+    4. Delegates response validation to ResponseValidator (rescue, retry, unknown tool)
+    5. Delegates step enforcement to StepEnforcer (premature terminal escalation)
+    6. Delegates error budgets to ErrorTracker (consecutive retries and tool errors)
+    7. Manages context budget via ContextManager
+    8. Terminates on terminal tool or max iterations
 
-    Retry logic lives here, not on the client. Every LLM call — whether it
-    returns a list[ToolCall] or TextResponse — consumes one iteration. The
-    runner tracks attempt counts, which feed directly into eval metrics
-    (retry rate, parse rate). When a model returns multiple tool calls in one
+    The runner composes middleware internally — it instantiates
+    ResponseValidator, StepEnforcer, and ErrorTracker per run(). These same
+    components are importable for use in foreign orchestration loops (see
+    examples/foreign_loop.py and ADR-011).
+
+    Every LLM call — whether it returns a list[ToolCall] or TextResponse —
+    consumes one iteration. When a model returns multiple tool calls in one
     response, the runner executes all of them in the same iteration, emitting
     one TOOL_CALL message (with N ToolCallInfo entries) and N TOOL_RESULT
     messages.
@@ -738,7 +870,10 @@ WorkflowRunner.run()
 │     [Message(SYSTEM, rendered_prompt, meta=SYSTEM_PROMPT)]
 │     [Message(USER, user_input, meta=USER_INPUT)]
 │
-├─ 2. Initialize StepTracker(required_steps)
+├─ 2. Initialize guardrail middleware
+│     validator = ResponseValidator(tool_names, rescue_enabled)
+│     step_enforcer = StepEnforcer(required_steps, terminal_tool)
+│     error_tracker = ErrorTracker(max_retries, max_tool_errors)
 │
 └─ 3. Loop (up to max_iterations):
       │
@@ -758,45 +893,45 @@ WorkflowRunner.run()
       │                        → forward chunks to on_chunk callback
       │                        → collect FINAL chunk (raise StreamError if missing)
       │
-      ├─ 3c. Response is TextResponse? (malformed / refusal)
+      ├─ 3c. ResponseValidator.validate(response)
       │       │
-      │       ├─ Try rescue_tool_call() — extract valid list[ToolCall] from free text
-      │       │    (prompt-injected JSON or rehearsal syntax). Skip if rescue_enabled=False.
-      │       ├─ Rescued? → use as ToolCall, continue to 3d
-      │       ├─ Not rescued: increment consecutive_retries counter
-      │       ├─ consecutive_retries > max_retries_per_step → raise ToolCallError
-      │       └─ Append TEXT_RESPONSE message + retry nudge, continue to next iteration
-      │           (consumes one iteration from max_iterations budget)
+      │       ├─ TextResponse → try rescue_tool_call() (skip if rescue_enabled=False)
+      │       │    ├─ Rescued? → ValidationResult(tool_calls=rescued, needs_retry=False)
+      │       │    └─ Not rescued → ValidationResult(nudge=retry_nudge, needs_retry=True)
+      │       ├─ list[ToolCall] with unknown tool → ValidationResult(nudge=unknown_tool_nudge, needs_retry=True)
+      │       └─ list[ToolCall] all known → ValidationResult(tool_calls=..., needs_retry=False)
       │
-      ├─ 3d. Got list[ToolCall] (1 or more tool calls)
+      │       If needs_retry:
+      │       ├─ error_tracker.record_retry()
+      │       ├─ error_tracker.retries_exhausted → raise ToolCallError
+      │       └─ Emit assistant content + nudge message, continue to next iteration
       │
-      ├─ 3e. Validate ALL tool names exist in workflow.tools
+      ├─ 3d. Valid tool calls — error_tracker.reset_retries()
+      │
+      ├─ 3e. StepEnforcer.check(tool_calls)
       │       │
-      │       ├─ Any unknown → increment consecutive_retries, append unknown_tool_nudge
-      │       │    (lists available tools), continue to next iteration
-      │       └─ All known → reset consecutive_retries to 0, continue to 3f
+      │       ├─ Terminal present + steps NOT satisfied → StepCheck(nudge=step_nudge, needs_nudge=True)
+      │       │    ├─ step_enforcer.premature_exhausted → raise StepEnforcementError
+      │       │    └─ Emit tool call + escalating step nudge (tier 1/2/3), continue
+      │       └─ No premature terminal → StepCheck(needs_nudge=False), continue to 3f
       │
-      ├─ 3f. Check for terminal tool in the batch
-      │       │
-      │       ├─ Terminal present + StepTracker NOT satisfied → escalating step nudge
-      │       │    (tier 1/2/3), premature_terminal_attempts > 3 → raise StepEnforcementError
-      │       └─ No terminal, or terminal + satisfied → continue to 3g
-      │
-      ├─ 3g. Execute ALL tool calls in the batch sequentially
+      ├─ 3f. Execute ALL tool calls in the batch sequentially
       │       │
       │       Emit one TOOL_CALL message with N ToolCallInfo entries, then
       │       execute each tool and emit N individual TOOL_RESULT messages.
       │       │
-      │       ├─ Tool raises → append [ToolError] as TOOL_RESULT, track last_error
+      │       ├─ ToolResolutionError → feed back to model, don't count error,
+      │       │    don't record step
+      │       ├─ Other exception → feed back as [ToolError], track last_error
       │       │    batch_had_error flag set, continue to next tool in batch
-      │       ├─ Success → StepTracker.record(), append result as TOOL_RESULT
+      │       ├─ Success → step_enforcer.record(), append result as TOOL_RESULT
       │       └─ Terminal tool in batch + succeeded → stash result for return
       │
-      ├─ 3h. Post-batch bookkeeping:
+      ├─ 3g. Post-batch bookkeeping:
       │       │
-      │       ├─ batch_had_error → increment consecutive_tool_errors
-      │       │    consecutive_tool_errors > max_tool_errors → raise ToolExecutionError
-      │       ├─ No errors → reset consecutive_tool_errors and premature_terminal_attempts
+      │       ├─ batch_had_error → error_tracker.record_result(success=False)
+      │       │    error_tracker.tool_errors_exhausted → raise ToolExecutionError
+      │       ├─ No errors → error_tracker.reset_errors(), step_enforcer.reset_premature()
       │       └─ Terminal tool succeeded → return terminal result
       │       │
       │       Messages appended per iteration:
@@ -808,7 +943,7 @@ WorkflowRunner.run()
       │       REASONING messages are folded into the following TOOL_CALL message's
       │       content field on the wire, keeping the internal list separate for compaction.
       │
-      └─ 3i. Continue loop
+      └─ 3h. Continue loop
 ```
 
 ### Message Lifecycle

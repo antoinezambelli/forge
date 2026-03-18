@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "forge"
-version = "0.1.0"
+version = "0.2.0"
 description = "A reusable framework for self-hosted LLM tool-calling and multi-step agentic workflows."
 requires-python = ">=3.12"
 license = "MIT"
