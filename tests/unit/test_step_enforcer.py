@@ -155,6 +155,56 @@ class TestStepEnforcerExhaustion:
         assert enforcer.premature_attempts == 1
 
 
+class TestStepEnforcerResetPremature:
+    """Premature attempt counter reset."""
+
+    def test_reset_clears_counter(self):
+        enforcer = StepEnforcer(
+            required_steps=["search"],
+            terminal_tool="answer",
+            max_premature_attempts=2,
+        )
+        calls = [ToolCall(tool="answer", args={})]
+        enforcer.check(calls)
+        enforcer.check(calls)
+        assert enforcer.premature_attempts == 2
+        enforcer.reset_premature()
+        assert enforcer.premature_attempts == 0
+        assert enforcer.premature_exhausted is False
+
+    def test_reset_allows_fresh_attempts(self):
+        enforcer = StepEnforcer(
+            required_steps=["search"],
+            terminal_tool="answer",
+            max_premature_attempts=2,
+        )
+        calls = [ToolCall(tool="answer", args={})]
+        enforcer.check(calls)
+        enforcer.check(calls)
+        enforcer.reset_premature()
+        # Should get fresh tier-1 nudge after reset
+        result = enforcer.check(calls)
+        assert result.nudge.tier == 1
+
+
+class TestStepEnforcerCompletedSteps:
+    """Completed steps property."""
+
+    def test_initially_empty(self):
+        enforcer = StepEnforcer(
+            required_steps=["search"], terminal_tool="answer"
+        )
+        assert enforcer.completed_steps == {}
+
+    def test_reflects_recordings(self):
+        enforcer = StepEnforcer(
+            required_steps=["search", "lookup"], terminal_tool="answer"
+        )
+        enforcer.record("search")
+        assert "search" in enforcer.completed_steps
+        assert "lookup" not in enforcer.completed_steps
+
+
 class TestStepEnforcerNoRequiredSteps:
     """Edge case: no required steps."""
 

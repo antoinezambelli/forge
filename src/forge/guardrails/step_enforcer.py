@@ -106,6 +106,15 @@ class StepEnforcer:
         """True if premature attempts exceed the limit."""
         return self._premature_attempts > self.max_premature_attempts
 
+    def reset_premature(self) -> None:
+        """Reset premature attempt counter (call after a clean batch)."""
+        self._premature_attempts = 0
+
+    @property
+    def completed_steps(self) -> dict[str, None]:
+        """Steps completed so far (for diagnostics / error reporting)."""
+        return self._tracker.completed_steps
+
     def summary_hint(self) -> str:
         """Human-readable hint for context compaction."""
         return self._tracker.summary_hint()
