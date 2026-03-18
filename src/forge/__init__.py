@@ -26,6 +26,14 @@ from forge.context import (
 )
 from forge.server import BudgetMode, ServerManager, setup_backend
 from forge.prompts import build_tool_prompt, extract_tool_call, rescue_tool_call, retry_nudge, step_nudge
+from forge.guardrails import (
+    ErrorTracker,
+    Nudge,
+    ResponseValidator,
+    StepCheck,
+    StepEnforcer,
+    ValidationResult,
+)
 from forge.errors import (
     BudgetResolutionError,
     ContextBudgetExceeded,
@@ -85,6 +93,13 @@ __all__ = [
     "BudgetMode",
     "ServerManager",
     "setup_backend",
+    # Guardrails (middleware API)
+    "ErrorTracker",
+    "Nudge",
+    "ResponseValidator",
+    "StepCheck",
+    "StepEnforcer",
+    "ValidationResult",
     # Errors
     "BudgetResolutionError",
     "ContextBudgetExceeded",

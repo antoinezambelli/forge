@@ -6,6 +6,93 @@ For model and backend selection, see [MODEL_GUIDE.md](MODEL_GUIDE.md). For backe
 
 ---
 
+## Integration Modes
+
+Forge's guardrail stack (retry nudges, step enforcement, error recovery, context compaction, VRAM budgeting) can be consumed in three ways. All three share the same underlying guardrail logic.
+
+### Mode 1: Standalone Runner (batteries included)
+
+Forge owns the full agentic loop — LLM communication, guardrail policy, tool execution, and orchestration. You provide tools and a task, forge handles everything.
+
+```python
+from forge import WorkflowRunner
+
+runner = WorkflowRunner(client=client, context_manager=ctx)
+result = await runner.run(workflow, "What's the weather in Paris?")
+```
+
+**Best for:** Projects where forge is the primary framework. Scripts, pipelines, and applications built around forge from the start. See [Single-Turn Workflow](#single-turn-workflow) and [Multi-Turn Conversations](#multi-turn-conversations) below.
+
+### Mode 2: Proxy Server (drop-in, zero code changes)
+
+> **Status: not yet implemented.** See [GitHub issue](https://github.com/antoinezambelli/forge/issues) for tracking.
+
+Forge sits between any OpenAI-compatible client and your model server, intercepting requests and applying guardrails transparently. The client doesn't know forge is there.
+
+```bash
+forge serve --port 8081 --backend llama-server --backend-port 8080
+```
+
+Then point any client at forge instead of the model server:
+
+```python
+from openai import OpenAI
+client = OpenAI(base_url="http://localhost:8081/v1")
+```
+
+**Best for:** Adding guardrails to existing tools without modifying them. Works with any tool that speaks the OpenAI-compatible API — no per-client wrappers needed.
+
+### Mode 3: Middleware (composable guardrails)
+
+Import forge's guardrail components directly into your own orchestration loop. You own the loop, forge provides the reliability logic.
+
+```python
+from forge.guardrails import ResponseValidator, StepEnforcer, ErrorTracker
+
+validator = ResponseValidator(tool_names=["search", "lookup", "answer"])
+enforcer = StepEnforcer(required_steps=["search", "lookup"], terminal_tool="answer")
+errors = ErrorTracker(max_retries=3, max_tool_errors=2)
+
+# Inside your loop:
+result = validator.validate(response)
+if result.needs_retry:
+    errors.record_retry()
+    messages.append({"role": result.nudge.role, "content": result.nudge.content})
+    continue
+
+step_check = enforcer.check(result.tool_calls)
+if step_check.needs_nudge:
+    messages.append({"role": step_check.nudge.role, "content": step_check.nudge.content})
+    continue
+
+for tc in result.tool_calls:
+    ok = execute(tc)
+    enforcer.record(tc.tool)
+    errors.record_result(success=ok)
+```
+
+**Best for:** Framework developers embedding forge's guardrails inside a custom agent, a proprietary pipeline, or another open-source framework. For a complete runnable example, see [`examples/foreign_loop.py`](../examples/foreign_loop.py). For design rationale, see [ADR-011](decisions/011-guardrail-middleware.md).
+
+### How they relate
+
+```
+forge.guardrails/            <-- extracted guardrail logic
+    ^                ^
+forge.server         forge.core.runner
+(proxy mode)         (standalone mode)
+```
+
+The middleware layer is the foundation. Both the proxy server and the standalone runner compose the same guardrail components internally. The proxy wraps them behind an OpenAI-compatible API. The runner wraps them in a complete agentic loop. The middleware exposes them as building blocks.
+
+| | Standalone | Proxy | Middleware |
+|---|---|---|---|
+| Who owns the loop? | Forge | Forge (transparent) | You |
+| Code changes needed? | Build on forge | Change one URL | Import + integrate |
+| Works with existing tools? | No | Yes | Depends on integration |
+| Best for | New projects | Existing toolchains | Framework developers |
+
+---
+
 ## Concepts
 
 A forge workflow has four main pieces:
@@ -133,7 +220,7 @@ conversation.extend(turn_messages)
 await server.stop()
 ```
 
-The system prompt lives in `conversation` from turn 0 — it is not rebuilt or duplicated on subsequent turns. `StepTracker` and `tool_call_counter` reset each `run()` call since they are per-turn state.
+The system prompt lives in `conversation` from turn 0 — it is not rebuilt or duplicated on subsequent turns. `StepEnforcer` and `tool_call_counter` reset each `run()` call since they are per-turn state.
 
 ---
 
@@ -187,3 +274,4 @@ Forge's guardrail stack runs automatically. Each layer can be independently disa
 | **Compaction** | Prevents context overflow in long conversations |
 
 The eval harness measures each guardrail's contribution — see [EVAL_GUIDE.md](EVAL_GUIDE.md) for ablation results.
+
