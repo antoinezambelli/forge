@@ -1,6 +1,6 @@
 # ADR-011: Guardrail Middleware — Composable Reliability Without Loop Ownership
 
-**Status:** Proposed (March 2026)
+**Status:** Accepted (March 2026) — Phase 1-3 implemented, Phase 4 docs updated
 
 ## Problem
 

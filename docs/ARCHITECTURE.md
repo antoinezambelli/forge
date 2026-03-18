@@ -559,7 +559,7 @@ class WorkflowRunner:
     3. Inspects the response — if TextResponse (malformed/refusal), retries with nudge
     4. Validates and executes returned tool calls (supports parallel batches)
     5. Manages context budget via ContextManager
-    6. Enforces required steps via StepTracker
+    6. Enforces required steps via StepEnforcer
     7. Terminates on terminal tool or max iterations
 
     Retry logic lives here, not on the client. Every LLM call — whether it
@@ -1077,6 +1077,13 @@ forge/
 │   │   ├── llamafile.py           # LlamafileClient (native FC or prompt-injected, OpenAI-compatible)
 │   │   └── anthropic.py           # AnthropicClient (Claude baseline via anthropic SDK)
 │   │
+│   ├── guardrails/
+│   │   ├── __init__.py            # Public API: ResponseValidator, StepEnforcer, ErrorTracker, Nudge
+│   │   ├── nudge.py               # Nudge dataclass (role, content, kind, tier)
+│   │   ├── response_validator.py  # ResponseValidator, ValidationResult (rescue + retry + unknown tool)
+│   │   ├── step_enforcer.py       # StepEnforcer, StepCheck (wraps StepTracker + premature escalation)
+│   │   └── error_tracker.py       # ErrorTracker (consecutive retry/tool error budgets)
+│   │
 │   ├── prompts/
 │   │   ├── templates.py           # build_tool_prompt(), extract_tool_call(), rescue_tool_call()
 │   │   └── nudges.py              # retry_nudge(), unknown_tool_nudge(), step_nudge() (3 tiers)
@@ -1099,6 +1106,9 @@ forge/
 │   │   ├── test_context_manager.py # ContextManager compaction triggers
 │   │   ├── test_templates.py      # Prompt builders, extract/rescue
 │   │   ├── test_nudges.py         # Nudge templates
+│   │   ├── test_response_validator.py # ResponseValidator (rescue, retry, unknown tool)
+│   │   ├── test_step_enforcer.py  # StepEnforcer (premature terminal, escalation, reset)
+│   │   ├── test_error_tracker.py  # ErrorTracker (retry/tool error budgets)
 │   │   ├── test_eval_budget.py    # Eval budget override logic
 │   │   ├── test_bfcl_backends.py  # BFCL backend wiring
 │   │   ├── test_bfcl_e2e.py       # BFCL end-to-end

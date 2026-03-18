@@ -133,7 +133,7 @@ conversation.extend(turn_messages)
 await server.stop()
 ```
 
-The system prompt lives in `conversation` from turn 0 — it is not rebuilt or duplicated on subsequent turns. `StepTracker` and `tool_call_counter` reset each `run()` call since they are per-turn state.
+The system prompt lives in `conversation` from turn 0 — it is not rebuilt or duplicated on subsequent turns. `StepEnforcer` and `tool_call_counter` reset each `run()` call since they are per-turn state.
 
 ---
 
@@ -187,3 +187,39 @@ Forge's guardrail stack runs automatically. Each layer can be independently disa
 | **Compaction** | Prevents context overflow in long conversations |
 
 The eval harness measures each guardrail's contribution — see [EVAL_GUIDE.md](EVAL_GUIDE.md) for ablation results.
+
+---
+
+## Using Guardrails Without WorkflowRunner
+
+If you have your own orchestration loop (or use a framework like LangChain or CrewAI), you can use forge's guardrails as composable middleware without adopting `WorkflowRunner`. See [ADR-011](decisions/011-guardrail-middleware.md) for design rationale.
+
+```python
+from forge.core.workflow import TextResponse, ToolCall
+from forge.guardrails import ResponseValidator, StepEnforcer, ErrorTracker
+
+# Setup (once per session)
+validator = ResponseValidator(tool_names=["search", "lookup", "answer"])
+enforcer = StepEnforcer(required_steps=["search", "lookup"], terminal_tool="answer")
+errors = ErrorTracker(max_retries=3, max_tool_errors=2)
+
+# Inside your loop:
+result = validator.validate(response)   # rescue, retry nudge, unknown tool
+if result.needs_retry:
+    errors.record_retry()
+    messages.append({"role": result.nudge.role, "content": result.nudge.content})
+    continue
+
+step_check = enforcer.check(result.tool_calls)
+if step_check.needs_nudge:
+    messages.append({"role": step_check.nudge.role, "content": step_check.nudge.content})
+    continue
+
+# Execute tools, then record results
+for tc in result.tool_calls:
+    ok = execute(tc)
+    enforcer.record(tc.tool)
+    errors.record_result(success=ok)
+```
+
+For a complete runnable example, see [`examples/foreign_loop.py`](../examples/foreign_loop.py).

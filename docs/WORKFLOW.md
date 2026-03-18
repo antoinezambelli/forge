@@ -13,6 +13,7 @@ Visual guide to the forge agentic tool-calling loop.
 - `src/forge/core/workflow.py` - Workflow, ToolSpec, ToolCall, TextResponse
 - `src/forge/core/messages.py` - Message, MessageRole, MessageType, MessageMeta
 - `src/forge/core/steps.py` - StepTracker
+- `src/forge/guardrails/` - Composable middleware (ResponseValidator, StepEnforcer, ErrorTracker)
 - `src/forge/context/manager.py` - ContextManager, CompactEvent
 - `src/forge/context/strategies.py` - TieredCompact (3-phase compaction)
 - `src/forge/clients/base.py` - LLMClient protocol

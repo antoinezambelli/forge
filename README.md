@@ -6,7 +6,7 @@
 
 A Python framework for self-hosted LLM tool-calling and multi-step agentic workflows. Define tools, pick a backend, run structured agent loops on consumer hardware.
 
-Supports Ollama, llama-server (llama.cpp), Llamafile, and Anthropic as backends, with VRAM-aware context budgets, tiered compaction, and guardrail-based reliability (step enforcement, retry nudges, rescue loops).
+Supports Ollama, llama-server (llama.cpp), Llamafile, and Anthropic as backends, with VRAM-aware context budgets, tiered compaction, and guardrail-based reliability (step enforcement, retry nudges, rescue loops). Guardrails are also available as [composable middleware](examples/foreign_loop.py) for use in your own orchestration loop.
 
 ## Requirements
 
@@ -140,6 +140,11 @@ src/forge/
     workflow.py        # ToolParam, ToolSpec, ToolDef, ToolCall, TextResponse, Workflow
     runner.py          # WorkflowRunner — the agentic loop
     steps.py           # StepTracker
+  guardrails/
+    nudge.py           # Nudge dataclass
+    response_validator.py  # ResponseValidator, ValidationResult
+    step_enforcer.py   # StepEnforcer, StepCheck
+    error_tracker.py   # ErrorTracker
   clients/
     base.py            # ChunkType, StreamChunk, LLMClient protocol
     ollama.py          # OllamaClient (native FC)
