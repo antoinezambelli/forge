@@ -32,3 +32,8 @@ bfcl_results.jsonl
 Thumbs.db
 Desktop.ini
 .DS_Store
+
+# External tools
+.opencode/
+opencode-panic-*.log
+.opencode.json
