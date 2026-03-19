@@ -25,6 +25,7 @@ logger = logging.getLogger("forge.proxy")
 def create_app(
     backend_url: str,
     max_retries: int = 3,
+    rescue_enabled: bool = True,
     timeout: float = 300.0,
 ) -> Any:
     """Create the proxy ASGI application.
@@ -32,6 +33,7 @@ def create_app(
     Args:
         backend_url: Base URL of the model server (e.g. "http://localhost:8080").
         max_retries: Max guardrail retry attempts per request.
+        rescue_enabled: Attempt to parse tool calls from plain text.
         timeout: HTTP timeout for backend requests in seconds.
 
     Returns:
@@ -40,6 +42,7 @@ def create_app(
     handler = ChatHandler(
         backend_url=backend_url,
         max_retries=max_retries,
+        rescue_enabled=rescue_enabled,
         timeout=timeout,
     )
     passthrough_client = httpx.AsyncClient(timeout=timeout)

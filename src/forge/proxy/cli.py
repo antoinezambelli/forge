@@ -41,6 +41,12 @@ def main() -> None:
         help="Backend request timeout in seconds (default: 300)",
     )
     parser.add_argument(
+        "--no-rescue",
+        action="store_true",
+        default=False,
+        help="Disable rescue parsing (don't extract tool calls from text)",
+    )
+    parser.add_argument(
         "--verbose",
         action="store_true",
         help="Enable debug logging",
@@ -68,6 +74,7 @@ def main() -> None:
     app = create_app(
         backend_url=args.backend_url,
         max_retries=args.max_retries,
+        rescue_enabled=not args.no_rescue,
         timeout=args.timeout,
     )
 
