@@ -21,12 +21,14 @@ Documentation = "https://github.com/antoinezambelli/forge/tree/main/docs"
 
 [project.optional-dependencies]
 anthropic = ["anthropic>=0.40"]
+proxy = ["uvicorn>=0.30"]
 dev = [
     "pytest",
     "pytest-cov",
     "pytest-asyncio",
     "anthropic>=0.40",
     "mpmath",
+    "uvicorn>=0.30",
 ]
 
 [tool.hatch.build.targets.wheel]
