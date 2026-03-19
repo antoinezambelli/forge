@@ -7,19 +7,13 @@ import json
 from collections.abc import Awaitable, Callable
 from typing import Any
 
-from forge.clients.base import LLMClient, StreamChunk, ChunkType
+from forge.clients.base import LLMClient, StreamChunk
 from forge.context.manager import ContextManager
+from forge.core.inference import _NUDGE_KIND_TO_TYPE, _build_tool_call_infos, run_inference
 from forge.core.messages import Message, MessageMeta, MessageRole, MessageType, ToolCallInfo
-from forge.core.workflow import LLMResponse, ToolCall, TextResponse, Workflow, ToolSpec
-from forge.errors import MaxIterationsError, StepEnforcementError, StreamError, ToolCallError, ToolExecutionError, ToolResolutionError
+from forge.core.workflow import ToolCall, TextResponse, Workflow, ToolSpec
+from forge.errors import MaxIterationsError, StepEnforcementError, ToolCallError, ToolExecutionError, ToolResolutionError
 from forge.guardrails import ErrorTracker, ResponseValidator, StepEnforcer
-
-# Maps Nudge.kind → MessageType for message emission.
-_NUDGE_KIND_TO_TYPE: dict[str, MessageType] = {
-    "retry": MessageType.RETRY_NUDGE,
-    "unknown_tool": MessageType.RETRY_NUDGE,
-    "step": MessageType.STEP_NUDGE,
-}
 
 
 class WorkflowRunner:
@@ -136,101 +130,40 @@ class WorkflowRunner:
             max_tool_errors=self.max_tool_errors,
         )
 
-        # Step 3 — Main loop (one LLM call per iteration)
+        # Step 3 — Main loop (one LLM call per iteration, retries consume iterations)
         tool_specs = workflow.get_tool_specs()
         tool_call_counter = 0
+        iteration = 0
 
-        for iteration in range(self.max_iterations):
-            # 3a — Compact context
-            messages = self.context_manager.maybe_compact(
-                messages, step_index=iteration, step_hint=step_enforcer.summary_hint()
+        while iteration < self.max_iterations:
+            # 3a — Inference: compact, fold, serialize, send, validate, retry
+            result = await run_inference(
+                messages=messages,
+                client=self.client,
+                context_manager=self.context_manager,
+                validator=validator,
+                error_tracker=error_tracker,
+                tool_specs=tool_specs,
+                tool_call_counter=tool_call_counter,
+                step_index=iteration,
+                step_hint=step_enforcer.summary_hint(),
+                max_attempts=self.max_iterations - iteration,
+                stream=self.stream,
+                on_chunk=self.on_chunk,
             )
+            # max_attempts exhausted — iteration budget spent
+            if result is None:
+                break
+            # Retries consume iterations (preserves pre-extraction semantics)
+            iteration += result.attempts
+            # Emit new messages from retries (assistant text, nudges)
+            for msg in result.new_messages:
+                if self.on_message is not None:
+                    self.on_message(msg)
+            tool_call_counter = result.tool_call_counter
+            tool_calls = result.response
 
-            # 3b — Serialize and send
-            # Fold REASONING messages into the following TOOL_CALL message's
-            # content field so the wire format has one assistant message with
-            # both content and tool_calls (valid OpenAI format, invisible to
-            # Jinja parity checker). Internal Message list stays separate for
-            # compaction.
-            fmt = getattr(self.client, "api_format", "ollama")
-            api_messages: list[dict[str, Any]] = []
-            pending_reasoning: str | None = None
-            for m in messages:
-                if m.metadata.type == MessageType.REASONING and m.role == MessageRole.ASSISTANT:
-                    pending_reasoning = m.content
-                    continue
-                d = m.to_api_dict(format=fmt)
-                if pending_reasoning is not None and m.tool_calls is not None:
-                    d["content"] = pending_reasoning
-                    pending_reasoning = None
-                elif pending_reasoning is not None:
-                    # REASONING not followed by TOOL_CALL — emit it standalone
-                    api_messages.append({"role": "assistant", "content": pending_reasoning})
-                    pending_reasoning = None
-                api_messages.append(d)
-            if pending_reasoning is not None:
-                api_messages.append({"role": "assistant", "content": pending_reasoning})
-            if self.stream:
-                response = await self._send_streaming(api_messages, tool_specs)
-            else:
-                response = await self.client.send(api_messages, tools=tool_specs)
-
-            # 3c — Validate response (rescue, retry nudge, unknown tool)
-            validation = validator.validate(response)
-
-            if validation.needs_retry:
-                error_tracker.record_retry()
-                if error_tracker.retries_exhausted:
-                    raw = response.content if isinstance(response, TextResponse) else str(
-                        [(tc.tool, tc.args) for tc in response]
-                    )
-                    raise ToolCallError(
-                        f"Retries exhausted after {self.max_retries_per_step} "
-                        "consecutive failed attempts",
-                        raw_response=raw,
-                    )
-                # Emit the assistant's original content
-                if isinstance(response, TextResponse):
-                    _emit(Message(
-                        MessageRole.ASSISTANT,
-                        response.content,
-                        MessageMeta(MessageType.TEXT_RESPONSE, step_index=iteration),
-                    ))
-                else:
-                    # Unknown tool — emit reasoning + tool call messages
-                    tool_calls = response
-                    if tool_calls[0].reasoning:
-                        _emit(Message(
-                            MessageRole.ASSISTANT,
-                            tool_calls[0].reasoning,
-                            MessageMeta(MessageType.REASONING, step_index=iteration),
-                        ))
-                    tc_infos = []
-                    for tc in tool_calls:
-                        tc_id = f"call_{tool_call_counter:09d}"
-                        tool_call_counter += 1
-                        tc_infos.append(ToolCallInfo(name=tc.tool, args=tc.args, call_id=tc_id))
-                    _emit(Message(
-                        MessageRole.ASSISTANT,
-                        "",
-                        MessageMeta(MessageType.TOOL_CALL, step_index=iteration),
-                        tool_calls=tc_infos,
-                    ))
-                # Emit nudge
-                nudge = validation.nudge
-                nudge_type = _NUDGE_KIND_TO_TYPE[nudge.kind]
-                _emit(Message(
-                    MessageRole.USER,
-                    nudge.content,
-                    MessageMeta(nudge_type, step_index=iteration),
-                ))
-                continue
-
-            # 3d — Valid tool calls: reset retry counter
-            tool_calls = validation.tool_calls
-            error_tracker.reset_retries()
-
-            # 3e — Check for premature terminal
+            # 3b — Check for premature terminal
             step_check = step_enforcer.check(tool_calls)
 
             if step_check.needs_nudge:
@@ -246,11 +179,7 @@ class WorkflowRunner:
                         tool_calls[0].reasoning,
                         MessageMeta(MessageType.REASONING, step_index=iteration),
                     ))
-                tc_infos = []
-                for tc in tool_calls:
-                    tc_id = f"call_{tool_call_counter:09d}"
-                    tool_call_counter += 1
-                    tc_infos.append(ToolCallInfo(name=tc.tool, args=tc.args, call_id=tc_id))
+                tc_infos, tool_call_counter = _build_tool_call_infos(tool_calls, tool_call_counter)
                 _emit(Message(
                     MessageRole.ASSISTANT,
                     "",
@@ -266,15 +195,9 @@ class WorkflowRunner:
                 ))
                 continue
 
-            # 3h — Execute all tool calls in the batch
-            # Assign call IDs up front so the assistant message is complete.
-            tc_infos = []
-            call_ids: list[str] = []
-            for tc in tool_calls:
-                tc_id = f"call_{tool_call_counter:09d}"
-                tool_call_counter += 1
-                tc_infos.append(ToolCallInfo(name=tc.tool, args=tc.args, call_id=tc_id))
-                call_ids.append(tc_id)
+            # 3c — Execute all tool calls in the batch
+            tc_infos, tool_call_counter = _build_tool_call_infos(tool_calls, tool_call_counter)
+            call_ids = [tc.call_id for tc in tc_infos]
 
             # Emit reasoning (from first call) and assistant message
             if tool_calls[0].reasoning:
@@ -299,13 +222,10 @@ class WorkflowRunner:
                 fn = workflow.get_callable(tc.tool)
                 try:
                     if asyncio.iscoroutinefunction(fn):
-                        result = await fn(**tc.args)
+                        result_val = await fn(**tc.args)
                     else:
-                        result = fn(**tc.args)
+                        result_val = fn(**tc.args)
                 except ToolResolutionError as exc:
-                    # Data didn't resolve — feed message back to model
-                    # but don't count toward tool error budget (soft error).
-                    # Step is NOT recorded; bounded by max_iterations.
                     _emit(Message(
                         MessageRole.TOOL,
                         f"[ToolResolutionError] {exc}",
@@ -326,14 +246,13 @@ class WorkflowRunner:
                         tool_name=tc.tool,
                         tool_call_id=tc_id,
                     ))
-                    # If this was the terminal tool, stash the exception
                     if tc.tool == workflow.terminal_tool:
                         terminal_result = exc
                     continue
 
                 # Success
                 step_enforcer.record(tc.tool)
-                result_str = result if isinstance(result, str) else json.dumps(result)
+                result_str = result_val if isinstance(result_val, str) else json.dumps(result_val)
                 _emit(Message(
                     MessageRole.TOOL,
                     result_str,
@@ -342,11 +261,10 @@ class WorkflowRunner:
                     tool_call_id=tc_id,
                 ))
 
-                # If this is the terminal tool and it succeeded, stash result
                 if tc.tool == workflow.terminal_tool:
-                    terminal_result = result
+                    terminal_result = result_val
 
-            # 3i — Post-batch bookkeeping
+            # 3d — Post-batch bookkeeping
             if batch_had_error:
                 error_tracker.record_result(success=False)
                 if error_tracker.tool_errors_exhausted:
@@ -359,7 +277,7 @@ class WorkflowRunner:
                 error_tracker.reset_errors()
                 step_enforcer.reset_premature()
 
-            # 3j — If terminal tool was in the batch and succeeded, return
+            # 3e — If terminal tool was in the batch and succeeded, return
             if terminal_result is not None and not isinstance(terminal_result, Exception):
                 return terminal_result
 
@@ -367,22 +285,3 @@ class WorkflowRunner:
         raise MaxIterationsError(
             self.max_iterations, step_enforcer.completed_steps, step_enforcer.pending()
         )
-
-    async def _send_streaming(
-        self,
-        api_messages: list[dict[str, str]],
-        tool_specs: list[ToolSpec],
-    ) -> LLMResponse:
-        """Send via streaming, forwarding chunks to on_chunk callback."""
-        response = None
-        async for chunk in self.client.send_stream(api_messages, tools=tool_specs):
-            if self.on_chunk is not None:
-                await self.on_chunk(chunk)
-            if chunk.type == ChunkType.FINAL:
-                response = chunk.response
-        if response is None:
-            raise StreamError(
-                "Stream ended without FINAL chunk — the client adapter "
-                "may be malformed or the connection was interrupted"
-            )
-        return response

@@ -10,6 +10,7 @@ from forge.core.workflow import (
     Workflow,
 )
 from forge.core.steps import StepTracker
+from forge.core.inference import InferenceResult, fold_and_serialize, run_inference
 from forge.core.runner import WorkflowRunner
 from forge.clients.base import ChunkType, LLMClient, StreamChunk
 from forge.clients.llamafile import LlamafileClient
@@ -68,6 +69,10 @@ __all__ = [
     "Workflow",
     # Steps
     "StepTracker",
+    # Inference (front half — shared by runner and proxy)
+    "InferenceResult",
+    "fold_and_serialize",
+    "run_inference",
     # Runner
     "WorkflowRunner",
     # Client

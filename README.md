@@ -4,9 +4,17 @@
 [![Python 3.12+](https://img.shields.io/badge/python-3.12%2B-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
-A Python framework for self-hosted LLM tool-calling and multi-step agentic workflows. Define tools, pick a backend, run structured agent loops on consumer hardware.
+A reliability layer for self-hosted LLM tool-calling. Forge takes an 8B model from ~38% to ~99% on multi-step agentic workflows through guardrails (rescue parsing, retry nudges, step enforcement) and context management (VRAM-aware budgets, tiered compaction).
 
-Supports Ollama, llama-server (llama.cpp), Llamafile, and Anthropic as backends, with VRAM-aware context budgets, tiered compaction, and guardrail-based reliability (step enforcement, retry nudges, rescue loops). Guardrails are also available as [composable middleware](examples/foreign_loop.py) for use in your own orchestration loop.
+Three ways to use it:
+
+- **WorkflowRunner** — Define tools, pick a backend, run structured agent loops. Forge manages the full lifecycle: system prompts, tool execution, context compaction, and guardrails. Best when you're building on forge directly.
+
+- **Guardrails middleware** — Use forge's reliability stack ([composable middleware](examples/foreign_loop.py)) inside your own orchestration loop. You control the loop; forge validates responses, rescues malformed tool calls, and enforces required steps.
+
+- **Proxy server** — Drop-in OpenAI-compatible proxy (`python -m forge.proxy`) that sits between any client (opencode, Continue, aider, etc.) and a local model server. Applies guardrails transparently — the client thinks it's talking to a smarter model.
+
+Supports Ollama, llama-server (llama.cpp), Llamafile, and Anthropic as backends.
 
 ## Requirements
 
@@ -88,6 +96,20 @@ asyncio.run(main())
 
 For multi-step workflows, multi-turn conversations, and backend auto-management, see the [User Guide](docs/USER_GUIDE.md).
 
+## Proxy Server
+
+Drop-in replacement for a local model server. Point any OpenAI-compatible client at the proxy and get forge's guardrails for free.
+
+```bash
+# External mode — you manage llama-server, forge proxies it
+python -m forge.proxy --backend-url http://localhost:8080 --port 8081
+
+# Managed mode — forge starts llama-server and the proxy together
+python -m forge.proxy --backend llamaserver --gguf path/to/model.gguf --port 8081
+```
+
+Then configure your client to use `http://localhost:8081/v1` as the API base URL.
+
 ## Backends
 
 | Backend | Best for | Native FC? |
@@ -138,6 +160,7 @@ src/forge/
   core/
     messages.py        # Message, MessageRole, MessageType, MessageMeta
     workflow.py        # ToolParam, ToolSpec, ToolDef, ToolCall, TextResponse, Workflow
+    inference.py       # run_inference() — shared front half (compact, fold, validate, retry)
     runner.py          # WorkflowRunner — the agentic loop
     steps.py           # StepTracker
   guardrails/
@@ -157,6 +180,11 @@ src/forge/
   prompts/
     templates.py       # Tool prompt builders (prompt-injected path)
     nudges.py          # Retry and step-enforcement nudge templates
+  proxy/
+    proxy.py           # ProxyServer — programmatic start/stop API
+    server.py          # Raw asyncio HTTP server, SSE streaming
+    handler.py         # Request handler — bridge between HTTP and run_inference
+    convert.py         # OpenAI messages ↔ forge Messages conversion
 tests/
   unit/                # 562 deterministic tests — no LLM backend required
   eval/                # Eval harness — model qualification against real backends
@@ -168,7 +196,7 @@ tests/
 2. **Tool prerequisites** — Conditional tool dependencies. See [`docs/decisions/006-tool-prerequisites.md`](docs/decisions/006-tool-prerequisites.md).
 3. **Context window self-awareness** — Inject remaining context budget so the model knows compaction is approaching.
 4. **Compaction tiers** — Consumer-configurable per-phase compaction thresholds.
-5. **Proxy server** — OpenAI-compatible proxy that applies guardrails transparently between any client and model server. See [User Guide](docs/USER_GUIDE.md) § Integration Modes.
+5. **Proxy server enhancements** — Request queuing for concurrent clients, client disconnect cancellation, text response intent (ADR-013).
 
 ## Documentation
 
