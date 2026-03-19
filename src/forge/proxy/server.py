@@ -286,7 +286,7 @@ async def _send_sse(send: Any, chunks: list[bytes]) -> None:
         "headers": [
             [b"content-type", b"text/event-stream"],
             [b"cache-control", b"no-cache"],
-            [b"connection", b"keep-alive"],
+            [b"connection", b"close"],
         ],
     })
     for chunk in chunks:
