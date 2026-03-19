@@ -25,26 +25,82 @@ result = await runner.run(workflow, "What's the weather in Paris?")
 
 ### Mode 2: Proxy Server (drop-in, zero code changes)
 
-> **Status: not yet implemented.** See [GitHub issue](https://github.com/antoinezambelli/forge/issues) for tracking.
+Forge sits between any OpenAI-compatible client and your model server, intercepting requests and applying guardrails transparently. The client doesn't know forge is there. See [ADR-012](decisions/012-openai-proxy.md) for design rationale.
 
-Forge sits between any OpenAI-compatible client and your model server, intercepting requests and applying guardrails transparently. The client doesn't know forge is there.
-
-```bash
-forge serve --port 8081 --backend llama-server --backend-port 8080
-```
-
-Then point any client at forge instead of the model server:
+**From Python** (programmatic start/stop):
 
 ```python
+from forge.proxy import ProxyServer
+
+# Managed mode — forge starts and manages llama-server
+proxy = ProxyServer(backend="llamaserver", gguf="path/to/model.gguf")
+proxy.start()
+
+# Point any OpenAI-compatible client at the proxy
 from openai import OpenAI
-client = OpenAI(base_url="http://localhost:8081/v1")
+client = OpenAI(base_url=f"{proxy.url}/v1", api_key="dummy")
+response = client.chat.completions.create(model="model-name", ...)
+
+proxy.stop()  # stops proxy + llama-server
 ```
+
+```python
+# External mode — connect to an already-running backend
+proxy = ProxyServer(backend_url="http://localhost:8080")
+proxy.start()
+# ... use proxy.url ...
+proxy.stop()
+```
+
+**From the command line:**
+
+```bash
+# Managed mode
+python -m forge.proxy --backend llamaserver --gguf path/to/model.gguf
+
+# External mode
+python -m forge.proxy --backend-url http://localhost:8080 --port 8081
+```
+
+**What the proxy does transparently:**
+- **Rescue parsing** — model returns a tool call as plain text, proxy extracts it and returns structured `tool_calls`
+- **Retry with nudge** — model returns garbage, proxy injects feedback and re-requests
+- **Unknown tool check** — model calls a nonexistent tool, proxy nudges and re-requests
+- **Context compaction** — message history approaching budget, proxy compacts before forwarding
 
 **Best for:** Adding guardrails to existing tools without modifying them. Works with any tool that speaks the OpenAI-compatible API — no per-client wrappers needed.
 
 ### Mode 3: Middleware (composable guardrails)
 
 Import forge's guardrail components directly into your own orchestration loop. You own the loop, forge provides the reliability logic.
+
+**Simple API** (two calls -- covers most use cases):
+
+```python
+from forge.guardrails import Guardrails
+
+guardrails = Guardrails(
+    tool_names=["search", "lookup", "answer"],
+    required_steps=["search", "lookup"],
+    terminal_tool="answer",
+)
+
+# After each LLM response:
+result = guardrails.check(response)
+
+if result.action in ("retry", "step_blocked"):
+    messages.append({"role": result.nudge.role, "content": result.nudge.content})
+    continue
+
+if result.action == "fatal":
+    raise RuntimeError(result.reason)
+
+# result.action == "execute" -- run the tools, then tell forge what succeeded:
+execute(result.tool_calls)
+done = guardrails.record([tc.tool for tc in result.tool_calls])
+```
+
+**Granular API** (individual components for custom control):
 
 ```python
 from forge.guardrails import ResponseValidator, StepEnforcer, ErrorTracker
@@ -71,22 +127,26 @@ for tc in result.tool_calls:
     errors.record_result(success=ok)
 ```
 
-**Best for:** Framework developers embedding forge's guardrails inside a custom agent, a proprietary pipeline, or another open-source framework. For a complete runnable example, see [`examples/foreign_loop.py`](../examples/foreign_loop.py). For design rationale, see [ADR-011](decisions/011-guardrail-middleware.md).
+**Best for:** Framework developers embedding forge's guardrails inside a custom agent, a proprietary pipeline, or another open-source framework. For a complete runnable example showing both APIs, see [`examples/foreign_loop.py`](../examples/foreign_loop.py). For design rationale, see [ADR-011](decisions/011-guardrail-middleware.md).
 
 ### How they relate
 
 ```
-forge.guardrails/            <-- extracted guardrail logic
-    ^                ^
-forge.server         forge.core.runner
-(proxy mode)         (standalone mode)
+forge.guardrails/            <-- guardrail middleware
+    ^           ^        ^
+forge.proxy     |    forge.core.runner
+(proxy mode)    |    (standalone mode)
+                |
+         your code
+      (middleware mode)
 ```
 
-The middleware layer is the foundation. Both the proxy server and the standalone runner compose the same guardrail components internally. The proxy wraps them behind an OpenAI-compatible API. The runner wraps them in a complete agentic loop. The middleware exposes them as building blocks.
+The middleware layer is the foundation. All three modes compose the same guardrail components internally. The proxy wraps them behind an OpenAI-compatible API. The runner wraps them in a complete agentic loop. The middleware exposes them as building blocks.
 
 | | Standalone | Proxy | Middleware |
 |---|---|---|---|
 | Who owns the loop? | Forge | Forge (transparent) | You |
+| Backend management? | `setup_backend()` | `ProxyServer(backend=...)` | You |
 | Code changes needed? | Build on forge | Change one URL | Import + integrate |
 | Works with existing tools? | No | Yes | Depends on integration |
 | Best for | New projects | Existing toolchains | Framework developers |

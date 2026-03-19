@@ -162,14 +162,6 @@ tests/
   eval/                # Eval harness — model qualification against real backends
 ```
 
-## Roadmap
-
-1. **Multi-model routing** — Model pool for managing N backends simultaneously. See [`docs/decisions/MULTI_MODEL_ROUTING.md`](docs/decisions/MULTI_MODEL_ROUTING.md).
-2. **Tool prerequisites** — Conditional tool dependencies. See [`docs/decisions/006-tool-prerequisites.md`](docs/decisions/006-tool-prerequisites.md).
-3. **Context window self-awareness** — Inject remaining context budget so the model knows compaction is approaching.
-4. **Compaction tiers** — Consumer-configurable per-phase compaction thresholds.
-5. **Proxy server** — OpenAI-compatible proxy that applies guardrails transparently between any client and model server. See [User Guide](docs/USER_GUIDE.md) § Integration Modes.
-
 ## Documentation
 
 - [User Guide](docs/USER_GUIDE.md) — Usage patterns, multi-turn, context management, guardrails
