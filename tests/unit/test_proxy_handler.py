@@ -1,10 +1,12 @@
-"""Tests for the proxy handler -- Phase 2 (guardrail validation)."""
+"""Tests for the proxy handler -- guardrail validation and compaction."""
 
 import json
 
 import httpx
 import pytest
 
+from forge.context.manager import ContextManager
+from forge.context.strategies import TieredCompact
 from forge.proxy.handler import ChatHandler
 
 
@@ -242,3 +244,69 @@ class TestUnknownTool:
         assert counts["n"] == 2
         all_text = b"".join(chunks).decode()
         assert "get_weather" in all_text
+
+
+# -- Tests: context compaction ---------------------------------
+
+
+class TestCompaction:
+    def _make_handler_with_compaction(self, responses, budget_tokens, **kwargs):
+        """Create a handler with a ContextManager attached."""
+        backend, call_count = _mock_backend(responses)
+        transport = httpx.ASGITransport(app=backend)
+        ctx = ContextManager(
+            strategy=TieredCompact(keep_recent=1),
+            budget_tokens=budget_tokens,
+        )
+        handler = ChatHandler(
+            backend_url="http://mock",
+            context_manager=ctx,
+            **kwargs,
+        )
+        handler._client = httpx.AsyncClient(transport=transport)
+        return handler, call_count
+
+    async def test_compaction_runs_before_backend_request(self):
+        """Handler compacts messages before sending to backend."""
+        handler, counts = self._make_handler_with_compaction(
+            [{"tool_calls": [{"name": "get_weather", "args": {}}]}],
+            budget_tokens=200,  # very tight budget to trigger compaction
+        )
+        # Build a request with many messages to exceed budget
+        messages = [
+            {"role": "system", "content": "You are helpful."},
+            {"role": "user", "content": "What's the weather?"},
+        ]
+        # Add several tool call/result pairs to bulk up the history
+        for i in range(10):
+            messages.append({
+                "role": "assistant", "content": None,
+                "tool_calls": [{"id": f"c{i}", "type": "function",
+                                "function": {"name": "search",
+                                             "arguments": json.dumps({"q": "x" * 200})}}],
+            })
+            messages.append({
+                "role": "tool", "content": "result " * 50,
+                "name": "search", "tool_call_id": f"c{i}",
+            })
+
+        body = {
+            "model": "test",
+            "messages": messages,
+            "tools": TOOLS,
+            "stream": True,
+        }
+        chunks, status = await handler.handle(body)
+        assert status == 200
+        assert counts["n"] >= 1
+
+    async def test_no_compaction_when_disabled(self):
+        """Handler without context_manager skips compaction."""
+        handler, counts = _make_handler([
+            {"tool_calls": [{"name": "get_weather", "args": {}}]},
+        ])
+        # handler has no context_manager (default None)
+        assert handler.context_manager is None
+        chunks, status = await handler.handle(_request(stream=True))
+        assert status == 200
+        assert counts["n"] == 1

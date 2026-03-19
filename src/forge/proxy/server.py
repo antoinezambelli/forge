@@ -17,6 +17,7 @@ from typing import Any
 
 import httpx
 
+from forge.context.manager import ContextManager
 from forge.proxy.handler import ChatHandler
 
 logger = logging.getLogger("forge.proxy")
@@ -24,6 +25,7 @@ logger = logging.getLogger("forge.proxy")
 
 def create_app(
     backend_url: str,
+    context_manager: ContextManager | None = None,
     max_retries: int = 3,
     rescue_enabled: bool = True,
     timeout: float = 300.0,
@@ -32,6 +34,7 @@ def create_app(
 
     Args:
         backend_url: Base URL of the model server (e.g. "http://localhost:8080").
+        context_manager: ContextManager for compaction. None disables compaction.
         max_retries: Max guardrail retry attempts per request.
         rescue_enabled: Attempt to parse tool calls from plain text.
         timeout: HTTP timeout for backend requests in seconds.
@@ -41,6 +44,7 @@ def create_app(
     """
     handler = ChatHandler(
         backend_url=backend_url,
+        context_manager=context_manager,
         max_retries=max_retries,
         rescue_enabled=rescue_enabled,
         timeout=timeout,

@@ -12,6 +12,7 @@ from typing import Any
 
 import httpx
 
+from forge.context.manager import ContextManager
 from forge.core.messages import Message, MessageMeta, MessageRole, MessageType
 from forge.core.workflow import TextResponse, ToolCall
 from forge.guardrails.error_tracker import ErrorTracker
@@ -46,6 +47,7 @@ class ChatHandler:
 
     Args:
         backend_url: Base URL of the model server (e.g. "http://localhost:8080").
+        context_manager: ContextManager for compaction. None disables compaction.
         max_retries: Max guardrail retry attempts per request.
         rescue_enabled: Attempt to parse tool calls from plain text.
         timeout: HTTP timeout for backend requests in seconds.
@@ -54,11 +56,13 @@ class ChatHandler:
     def __init__(
         self,
         backend_url: str,
+        context_manager: ContextManager | None = None,
         max_retries: int = 3,
         rescue_enabled: bool = True,
         timeout: float = 300.0,
     ) -> None:
         self.backend_url = backend_url.rstrip("/")
+        self.context_manager = context_manager
         self.max_retries = max_retries
         self.rescue_enabled = rescue_enabled
         self._client = httpx.AsyncClient(timeout=timeout)
@@ -81,6 +85,10 @@ class ChatHandler:
 
         # Convert inbound messages to forge types
         messages = openai_messages_to_forge(body.get("messages", []))
+
+        # Compact context if approaching budget
+        if self.context_manager is not None:
+            messages = self.context_manager.maybe_compact(messages)
 
         # Set up per-request guardrails
         validator = ResponseValidator(
