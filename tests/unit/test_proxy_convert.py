@@ -92,6 +92,78 @@ class TestOpenaiToForge:
         ])
         assert msgs[0].content == ""
 
+    def test_reasoning_content_field(self):
+        """Assistant message with explicit reasoning_content field."""
+        msgs = openai_messages_to_forge([
+            {"role": "assistant", "reasoning_content": "Let me think...", "content": "Hello!"},
+        ])
+        assert len(msgs) == 2
+        assert msgs[0].metadata.type == MessageType.REASONING
+        assert msgs[0].content == "Let me think..."
+        assert msgs[1].metadata.type == MessageType.TEXT_RESPONSE
+        assert msgs[1].content == "Hello!"
+
+    def test_think_tags_in_content(self):
+        """Assistant message with [THINK] tags in content (batch format)."""
+        msgs = openai_messages_to_forge([
+            {"role": "assistant", "content": "[THINK]reasoning here[/THINK]\nHello!"},
+        ])
+        assert len(msgs) == 2
+        assert msgs[0].metadata.type == MessageType.REASONING
+        assert "[THINK]" in msgs[0].content
+        assert msgs[1].metadata.type == MessageType.TEXT_RESPONSE
+        assert msgs[1].content == "Hello!"
+
+    def test_xml_think_tags(self):
+        """Assistant message with <think> tags (Qwen/DeepSeek style)."""
+        msgs = openai_messages_to_forge([
+            {"role": "assistant", "content": "<think>hmm</think>\nResult"},
+        ])
+        assert len(msgs) == 2
+        assert msgs[0].metadata.type == MessageType.REASONING
+        assert msgs[1].content == "Result"
+
+    def test_reasoning_only_no_content(self):
+        """reasoning_content present but no text content."""
+        msgs = openai_messages_to_forge([
+            {"role": "assistant", "reasoning_content": "thinking...", "content": ""},
+        ])
+        assert len(msgs) == 1
+        assert msgs[0].metadata.type == MessageType.REASONING
+
+    def test_no_reasoning_plain_text(self):
+        """Plain text without think tags stays TEXT_RESPONSE."""
+        msgs = openai_messages_to_forge([
+            {"role": "assistant", "content": "Just a regular response"},
+        ])
+        assert len(msgs) == 1
+        assert msgs[0].metadata.type == MessageType.TEXT_RESPONSE
+
+
+class TestStreamedReasoning:
+    def test_captures_reasoning_content_deltas(self):
+        chunks = [
+            'data: {"choices":[{"delta":{"role":"assistant"}}]}',
+            'data: {"choices":[{"delta":{"reasoning_content":"Let me "}}]}',
+            'data: {"choices":[{"delta":{"reasoning_content":"think..."}}]}',
+            'data: {"choices":[{"delta":{"content":"Hello!"}}]}',
+            'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}',
+            "data: [DONE]",
+        ]
+        response, reasoning, usage = parse_streamed_response(chunks)
+        assert isinstance(response, TextResponse)
+        assert response.content == "Hello!"
+        assert reasoning == "Let me think..."
+
+    def test_no_reasoning_returns_none(self):
+        chunks = [
+            'data: {"choices":[{"delta":{"content":"Hello"}}]}',
+            'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}',
+            "data: [DONE]",
+        ]
+        response, reasoning, usage = parse_streamed_response(chunks)
+        assert reasoning is None
+
 
 class TestForgeToOpenai:
     def test_round_trips_system(self):
@@ -217,7 +289,7 @@ class TestParseStreamedResponse:
             'data: {"choices":[{"delta":{},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":10,"completion_tokens":5}}',
             "data: [DONE]",
         ]
-        response, usage = parse_streamed_response(chunks)
+        response, _reasoning, usage = parse_streamed_response(chunks)
         assert isinstance(response, list)
         assert len(response) == 1
         assert response[0].tool == "get_weather"
@@ -232,7 +304,7 @@ class TestParseStreamedResponse:
             'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}',
             "data: [DONE]",
         ]
-        response, usage = parse_streamed_response(chunks)
+        response, _reasoning, usage = parse_streamed_response(chunks)
         assert isinstance(response, TextResponse)
         assert response.content == "Hello world"
 
@@ -243,7 +315,7 @@ class TestParseStreamedResponse:
             'data: {"choices":[{"delta":{},"finish_reason":"tool_calls"}]}',
             "data: [DONE]",
         ]
-        response, usage = parse_streamed_response(chunks)
+        response, _reasoning, usage = parse_streamed_response(chunks)
         assert isinstance(response, list)
         assert len(response) == 2
         assert response[0].tool == "search"
@@ -255,12 +327,12 @@ class TestParseStreamedResponse:
             'data: {"choices":[{"delta":{"content":"ok"}}]}',
             "data: [DONE]",
         ]
-        response, usage = parse_streamed_response(chunks)
+        response, _reasoning, usage = parse_streamed_response(chunks)
         assert isinstance(response, TextResponse)
         assert response.content == "ok"
 
     def test_empty_chunks(self):
-        response, usage = parse_streamed_response([])
+        response, _reasoning, usage = parse_streamed_response([])
         assert isinstance(response, TextResponse)
         assert response.content == ""
         assert usage is None

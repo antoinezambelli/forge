@@ -19,6 +19,7 @@ from forge.guardrails.error_tracker import ErrorTracker
 from forge.guardrails.nudge import Nudge
 from forge.guardrails.response_validator import ResponseValidator
 from forge.proxy.convert import (
+    _THINK_PATTERN,
     forge_messages_to_openai,
     openai_messages_to_forge,
     parse_batch_response,
@@ -107,12 +108,14 @@ class ChatHandler:
             # Serialize forge Messages to OpenAI format for the backend
             request_body = {**body, "messages": forge_messages_to_openai(messages)}
 
-            chunks, status, response = await self._request(request_body, is_streaming)
+            chunks, status, response, reasoning = await self._request(request_body, is_streaming)
 
             last_chunks = chunks
             last_status = status
 
-            if status != 200 or response is None:
+            if status != 200:
+                return chunks, status
+            if response is None:
                 return chunks, status
 
             # Validate through ResponseValidator
@@ -147,6 +150,14 @@ class ChatHandler:
                 nudge.kind,
                 nudge.content[:80],
             )
+
+            # Append reasoning (if present) as a separate message for compaction
+            if reasoning:
+                messages.append(Message(
+                    MessageRole.ASSISTANT,
+                    reasoning,
+                    MessageMeta(MessageType.REASONING),
+                ))
 
             # Append the model's bad response as a forge Message
             if isinstance(response, TextResponse):
@@ -185,8 +196,11 @@ class ChatHandler:
 
     async def _request(
         self, body: dict[str, Any], is_streaming: bool
-    ) -> tuple[list[bytes], int, Any]:
-        """Send request to backend, parse response into forge types."""
+    ) -> tuple[list[bytes], int, Any, str | None]:
+        """Send request to backend, parse response into forge types.
+
+        Returns (chunks, status, response, reasoning).
+        """
         url = f"{self.backend_url}/v1/chat/completions"
 
         if is_streaming:
@@ -195,30 +209,36 @@ class ChatHandler:
             ) as resp:
                 if resp.status_code != 200:
                     error_body = await resp.aread()
-                    return [error_body], resp.status_code, None
+                    return [error_body], resp.status_code, None, None
                 buf = await buffer_sse_stream(resp)
 
             chunks = iter_sse_bytes(buf)
             try:
-                response, _usage = parse_streamed_response(buf.chunks)
+                response, reasoning, _usage = parse_streamed_response(buf.chunks)
             except Exception as e:
                 logger.warning("Failed to parse streamed response: %s", e)
-                return chunks, 200, None
+                return chunks, 200, None, None
 
-            return chunks, 200, response
+            return chunks, 200, response, reasoning
         else:
             resp = await self._client.post(
                 url, json=body, headers={"Content-Type": "application/json"}
             )
             if resp.status_code != 200:
-                return [resp.content], resp.status_code, None
+                return [resp.content], resp.status_code, None, None
             try:
-                response = parse_batch_response(resp.json())
+                data = resp.json()
+                response = parse_batch_response(data)
+                # Extract reasoning from batch response (think tags in content)
+                reasoning = None
+                content = data["choices"][0]["message"].get("content") or ""
+                if content and _THINK_PATTERN.match(content):
+                    reasoning = _THINK_PATTERN.match(content).group(1)
             except Exception as e:
                 logger.warning("Failed to parse batch response: %s", e)
-                return [resp.content], 200, None
+                return [resp.content], 200, None, None
 
-            return [resp.content], 200, response
+            return [resp.content], 200, response, reasoning
 
     async def _forward_raw(
         self, body: dict[str, Any], is_streaming: bool
