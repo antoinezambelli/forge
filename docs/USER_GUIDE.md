@@ -46,6 +46,34 @@ client = OpenAI(base_url="http://localhost:8081/v1")
 
 Import forge's guardrail components directly into your own orchestration loop. You own the loop, forge provides the reliability logic.
 
+**Simple API** (two calls -- covers most use cases):
+
+```python
+from forge.guardrails import Guardrails
+
+guardrails = Guardrails(
+    tool_names=["search", "lookup", "answer"],
+    required_steps=["search", "lookup"],
+    terminal_tool="answer",
+)
+
+# After each LLM response:
+result = guardrails.check(response)
+
+if result.action in ("retry", "step_blocked"):
+    messages.append({"role": result.nudge.role, "content": result.nudge.content})
+    continue
+
+if result.action == "fatal":
+    raise RuntimeError(result.reason)
+
+# result.action == "execute" -- run the tools, then tell forge what succeeded:
+execute(result.tool_calls)
+done = guardrails.record([tc.tool for tc in result.tool_calls])
+```
+
+**Granular API** (individual components for custom control):
+
 ```python
 from forge.guardrails import ResponseValidator, StepEnforcer, ErrorTracker
 
@@ -71,7 +99,7 @@ for tc in result.tool_calls:
     errors.record_result(success=ok)
 ```
 
-**Best for:** Framework developers embedding forge's guardrails inside a custom agent, a proprietary pipeline, or another open-source framework. For a complete runnable example, see [`examples/foreign_loop.py`](../examples/foreign_loop.py). For design rationale, see [ADR-011](decisions/011-guardrail-middleware.md).
+**Best for:** Framework developers embedding forge's guardrails inside a custom agent, a proprietary pipeline, or another open-source framework. For a complete runnable example showing both APIs, see [`examples/foreign_loop.py`](../examples/foreign_loop.py). For design rationale, see [ADR-011](decisions/011-guardrail-middleware.md).
 
 ### How they relate
 
