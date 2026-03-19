@@ -1,48 +1,14 @@
-"""CLI entry point for `python -m forge.proxy` (forge serve)."""
+"""CLI entry point for `python -m forge.proxy`.
+
+Thin wrapper around ProxyServer — the programmatic API is primary.
+"""
 
 from __future__ import annotations
 
 import argparse
-import asyncio
 import logging
+import signal
 import sys
-
-
-DEFAULT_COMPACT_THRESHOLD = 0.75
-DEFAULT_KEEP_RECENT = 2
-
-
-async def _detect_budget(backend_url: str, timeout: float) -> int:
-    """Auto-detect context budget from the backend's /props endpoint.
-
-    Queries the llama-server /props endpoint for n_ctx. Raises
-    BudgetResolutionError if the backend doesn't respond or the
-    response can't be parsed.
-    """
-    import httpx
-    from forge.errors import BudgetResolutionError
-
-    base = backend_url.rstrip("/")
-    # Strip /v1 suffix if present (llama-server serves /props at root)
-    if base.endswith("/v1"):
-        base = base[:-3]
-
-    url = f"{base}/props"
-    try:
-        async with httpx.AsyncClient(timeout=timeout) as client:
-            response = await client.get(url)
-            response.raise_for_status()
-            data = response.json()
-    except Exception as exc:
-        raise BudgetResolutionError(exc)
-
-    n_ctx = data.get("default_generation_settings", {}).get("n_ctx")
-    if n_ctx is None:
-        raise BudgetResolutionError(
-            Exception(f"Backend /props response missing n_ctx: {data}")
-        )
-
-    return int(n_ctx)
 
 
 def main() -> None:
@@ -50,21 +16,39 @@ def main() -> None:
         prog="forge-proxy",
         description="OpenAI-compatible proxy server with forge guardrails.",
     )
-    parser.add_argument(
+
+    # Backend: either managed or external (mutually exclusive)
+    backend_group = parser.add_mutually_exclusive_group(required=True)
+    backend_group.add_argument(
         "--backend-url",
-        required=True,
-        help="Base URL of the model server (e.g. http://localhost:8080)",
+        help="Connect to an existing backend (e.g. http://localhost:8080)",
+    )
+    backend_group.add_argument(
+        "--backend",
+        choices=["llamaserver", "llamafile"],
+        help="Managed mode: forge starts and manages the backend process",
+    )
+
+    parser.add_argument(
+        "--gguf",
+        help="Path to GGUF model file (required for managed mode)",
+    )
+    parser.add_argument(
+        "--backend-port",
+        type=int,
+        default=8080,
+        help="Port for the managed backend (default: 8080)",
     )
     parser.add_argument(
         "--port",
         type=int,
         default=8081,
-        help="Port to listen on (default: 8081)",
+        help="Proxy listen port (default: 8081)",
     )
     parser.add_argument(
         "--host",
         default="127.0.0.1",
-        help="Host to bind to (default: 127.0.0.1)",
+        help="Proxy bind address (default: 127.0.0.1)",
     )
     parser.add_argument(
         "--budget",
@@ -75,8 +59,8 @@ def main() -> None:
     parser.add_argument(
         "--keep-recent",
         type=int,
-        default=DEFAULT_KEEP_RECENT,
-        help=f"Recent iterations to preserve during compaction (default: {DEFAULT_KEEP_RECENT})",
+        default=2,
+        help="Recent iterations to preserve during compaction (default: 2)",
     )
     parser.add_argument(
         "--max-retries",
@@ -88,7 +72,7 @@ def main() -> None:
         "--no-rescue",
         action="store_true",
         default=False,
-        help="Disable rescue parsing (don't extract tool calls from text)",
+        help="Disable rescue parsing",
     )
     parser.add_argument(
         "--no-compact",
@@ -110,58 +94,46 @@ def main() -> None:
 
     args = parser.parse_args()
 
+    if args.backend and not args.gguf:
+        parser.error("--gguf is required when using --backend (managed mode)")
+
     logging.basicConfig(
         level=logging.DEBUG if args.verbose else logging.INFO,
         format="%(asctime)s %(name)s %(levelname)s %(message)s",
     )
-    log = logging.getLogger("forge.proxy")
 
-    try:
-        import uvicorn
-    except ImportError:
-        print(
-            "uvicorn is required for the proxy server.\n"
-            "Install with: pip install -e '.[proxy]'",
-            file=sys.stderr,
-        )
-        sys.exit(1)
+    from forge.proxy import ProxyServer
 
-    from forge.context.manager import ContextManager
-    from forge.context.strategies import TieredCompact
-    from forge.proxy.server import create_app
-
-    # Resolve context budget
-    context_manager = None
-
-    if not args.no_compact:
-        if args.budget is not None:
-            budget = args.budget
-            log.info("Using manual context budget: %d tokens", budget)
-        else:
-            budget = asyncio.run(_detect_budget(args.backend_url, args.timeout))
-            log.info("Auto-detected context budget: %d tokens", budget)
-
-        context_manager = ContextManager(
-            strategy=TieredCompact(keep_recent=args.keep_recent),
-            budget_tokens=budget,
-        )
-
-    app = create_app(
+    proxy = ProxyServer(
         backend_url=args.backend_url,
-        context_manager=context_manager,
+        backend=args.backend,
+        gguf=args.gguf,
+        port=args.port,
+        host=args.host,
+        backend_port=args.backend_port,
+        budget=args.budget,
+        keep_recent=args.keep_recent,
         max_retries=args.max_retries,
         rescue_enabled=not args.no_rescue,
+        compact_enabled=not args.no_compact,
         timeout=args.timeout,
     )
 
-    log.info(
-        "Starting forge proxy on %s:%d -> %s",
-        args.host,
-        args.port,
-        args.backend_url,
-    )
+    proxy.start()
+    print(f"Forge proxy running on {proxy.url}")
+    print("Press Ctrl+C to stop.")
 
-    uvicorn.run(app, host=args.host, port=args.port, log_level="info")
+    try:
+        signal.pause()
+    except AttributeError:
+        # Windows doesn't have signal.pause — block on input
+        try:
+            input()
+        except (KeyboardInterrupt, EOFError):
+            pass
+
+    proxy.stop()
+    print("Proxy stopped.")
 
 
 if __name__ == "__main__":

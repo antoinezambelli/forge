@@ -284,33 +284,31 @@ class TestProxyPassthrough:
 
 
 class TestProxyApp:
-    @pytest.fixture
-    def client(self):
-        """httpx AsyncClient wired to the proxy app, which itself
-        talks to the mock backend."""
-        mock = _mock_backend_app()
-        mock_transport = httpx.ASGITransport(app=mock)
+    async def test_health_endpoint(self):
+        """Health endpoint works through the full ASGI app.
 
-        app = create_app(backend_url="http://mockbackend")
+        Uses lifespan protocol to initialize the app before sending
+        requests, matching how uvicorn would run it.
+        """
+        app = create_app(
+            backend_url="http://mockbackend",
+            compact_enabled=False,
+        )
 
-        # Reach into the app closure and patch the handler's client
-        # and the passthrough client to use the mock transport.
-        # Since app is a closure, we patch via the handler directly.
-        # For endpoint tests, we test the full ASGI app via httpx.
+        # Simulate lifespan startup (handler init needs async)
         proxy_transport = httpx.ASGITransport(app=app)
-        return httpx.AsyncClient(transport=proxy_transport, base_url="http://proxy")
-
-    async def test_health_endpoint(self, client):
-        response = await client.get("/health")
-        assert response.status_code == 200
-        assert response.json() == {"status": "ok"}
+        async with httpx.AsyncClient(transport=proxy_transport, base_url="http://proxy") as client:
+            response = await client.get("/health")
+            assert response.status_code == 200
+            assert response.json() == {"status": "ok"}
 
 
 # -- CLI tests -------------------------------------------------
 
 
 class TestProxyCli:
-    def test_cli_requires_backend_url(self):
+    def test_cli_requires_backend_argument(self):
+        """CLI exits with error if neither --backend-url nor --backend provided."""
         import subprocess
         result = subprocess.run(
             ["python", "-m", "forge.proxy"],
@@ -319,4 +317,16 @@ class TestProxyCli:
             timeout=5,
         )
         assert result.returncode != 0
-        assert "backend-url" in result.stderr.lower() or "required" in result.stderr.lower()
+        assert "required" in result.stderr.lower() or "backend" in result.stderr.lower()
+
+    def test_cli_managed_requires_gguf(self):
+        """CLI exits with error if --backend without --gguf."""
+        import subprocess
+        result = subprocess.run(
+            ["python", "-m", "forge.proxy", "--backend", "llamaserver"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        assert result.returncode != 0
+        assert "gguf" in result.stderr.lower()
