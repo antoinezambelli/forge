@@ -1,41 +1,55 @@
-"""Smoke test: forge proxy with openai SDK + real llama-server.
+"""Smoke test: forge proxy end-to-end.
 
-Exercises the full chain: openai SDK -> forge proxy -> llama-server.
-Tests streaming, tool calling, and (implicitly) guardrail intervention.
+Starts llama-server + proxy via ProxyServer (managed mode), runs tests
+via the openai SDK, then stops everything. No manual setup needed.
 
-Prerequisites:
-  - llama-server running on port 8080
-  - forge proxy running on port 8081:
-      python -m forge.proxy --backend-url http://localhost:8080 --port 8081 --verbose
+Usage:
+  python scripts/smoke_test_proxy.py --gguf path/to/model.gguf
 """
 
 from __future__ import annotations
 
+import argparse
 import json
 import sys
 
 from openai import OpenAI
 
-PROXY_URL = "http://localhost:8081/v1"
-MODEL = "Ministral-3-8B-Reasoning-2512-Q4_K_M.gguf"
-
-client = OpenAI(base_url=PROXY_URL, api_key="dummy")
+from forge.proxy import ProxyServer
 
 
-def test_model_list():
-    """Verify model discovery through the proxy."""
-    print("1. Model list...", end=" ")
+def run_tests(proxy_url: str, model: str) -> tuple[int, int]:
+    client = OpenAI(base_url=f"{proxy_url}/v1", api_key="dummy")
+    tests = [
+        ("Model list", lambda: test_model_list(client, model)),
+        ("Simple chat (batch, no tools)", lambda: test_simple_chat(client, model)),
+        ("Streaming chat (no tools)", lambda: test_streaming_chat(client, model)),
+        ("Tool call (streaming)", lambda: test_tool_call(client, model)),
+        ("Tool call (batch)", lambda: test_tool_call_batch(client, model)),
+    ]
+
+    passed = 0
+    for i, (name, test) in enumerate(tests, 1):
+        print(f"{i}. {name}...", end=" ")
+        try:
+            test()
+            passed += 1
+        except Exception as e:
+            print(f"FAIL: {e}")
+
+    return passed, len(tests)
+
+
+def test_model_list(client: OpenAI, model: str):
     models = client.models.list()
     names = [m.id for m in models.data]
-    assert MODEL in names, f"Expected {MODEL} in {names}"
+    assert model in names, f"Expected {model} in {names}"
     print(f"OK ({len(names)} models)")
 
 
-def test_simple_chat():
-    """Non-streaming chat completion, no tools."""
-    print("2. Simple chat (batch, no tools)...", end=" ")
+def test_simple_chat(client: OpenAI, model: str):
     resp = client.chat.completions.create(
-        model=MODEL,
+        model=model,
         messages=[{"role": "user", "content": "Say 'hello' and nothing else."}],
         max_tokens=20,
         stream=False,
@@ -45,11 +59,9 @@ def test_simple_chat():
     print(f"OK -> {text[:50]!r}")
 
 
-def test_streaming_chat():
-    """Streaming chat completion, no tools."""
-    print("3. Streaming chat (no tools)...", end=" ")
+def test_streaming_chat(client: OpenAI, model: str):
     stream = client.chat.completions.create(
-        model=MODEL,
+        model=model,
         messages=[{"role": "user", "content": "Count from 1 to 3."}],
         max_tokens=50,
         stream=True,
@@ -64,35 +76,28 @@ def test_streaming_chat():
     print(f"OK -> {text[:50]!r}")
 
 
-def test_tool_call():
-    """Streaming chat with tools -- the core proxy use case."""
-    print("4. Tool call (streaming)...", end=" ")
-    tools = [
-        {
-            "type": "function",
-            "function": {
-                "name": "get_weather",
-                "description": "Get the current weather for a city",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "city": {"type": "string", "description": "City name"},
-                    },
-                    "required": ["city"],
-                },
+def test_tool_call(client: OpenAI, model: str):
+    tools = [{
+        "type": "function",
+        "function": {
+            "name": "get_weather",
+            "description": "Get the current weather for a city",
+            "parameters": {
+                "type": "object",
+                "properties": {"city": {"type": "string", "description": "City name"}},
+                "required": ["city"],
             },
-        }
-    ]
+        },
+    }]
 
     stream = client.chat.completions.create(
-        model=MODEL,
+        model=model,
         messages=[{"role": "user", "content": "What's the weather in Paris?"}],
         tools=tools,
         max_tokens=200,
         stream=True,
     )
 
-    # Collect the streamed response
     tool_calls = {}
     text_parts = []
     for chunk in stream:
@@ -120,33 +125,26 @@ def test_tool_call():
     elif text_parts:
         text = "".join(text_parts)
         print(f"GOT TEXT (no tool call) -> {text[:80]!r}")
-        print("   (Model didn't produce a tool call -- check proxy logs for rescue/retry)")
     else:
         print("EMPTY RESPONSE")
 
 
-def test_tool_call_batch():
-    """Batch (non-streaming) chat with tools."""
-    print("5. Tool call (batch)...", end=" ")
-    tools = [
-        {
-            "type": "function",
-            "function": {
-                "name": "search",
-                "description": "Search for information",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "query": {"type": "string", "description": "Search query"},
-                    },
-                    "required": ["query"],
-                },
+def test_tool_call_batch(client: OpenAI, model: str):
+    tools = [{
+        "type": "function",
+        "function": {
+            "name": "search",
+            "description": "Search for information",
+            "parameters": {
+                "type": "object",
+                "properties": {"query": {"type": "string", "description": "Search query"}},
+                "required": ["query"],
             },
-        }
-    ]
+        },
+    }]
 
     resp = client.chat.completions.create(
-        model=MODEL,
+        model=model,
         messages=[{"role": "user", "content": "Search for 'forge framework'"}],
         tools=tools,
         max_tokens=200,
@@ -165,25 +163,52 @@ def test_tool_call_batch():
 
 
 if __name__ == "__main__":
-    print(f"\nForge Proxy Smoke Test")
-    print(f"Proxy: {PROXY_URL}")
-    print(f"Model: {MODEL}\n")
+    parser = argparse.ArgumentParser(description="Forge proxy end-to-end smoke test")
+    parser.add_argument(
+        "--gguf",
+        required=True,
+        help="Path to GGUF model file",
+    )
+    parser.add_argument(
+        "--port",
+        type=int,
+        default=8081,
+        help="Proxy port (default: 8081)",
+    )
+    parser.add_argument(
+        "--backend-port",
+        type=int,
+        default=8080,
+        help="Backend port (default: 8080)",
+    )
+    args = parser.parse_args()
 
-    tests = [
-        test_model_list,
-        test_simple_chat,
-        test_streaming_chat,
-        test_tool_call,
-        test_tool_call_batch,
-    ]
+    print(f"\nForge Proxy Smoke Test (end-to-end)")
+    print(f"GGUF: {args.gguf}\n")
 
-    passed = 0
-    for test in tests:
-        try:
-            test()
-            passed += 1
-        except Exception as e:
-            print(f"FAIL: {e}")
+    # Start everything: llama-server + proxy
+    print("Starting proxy (managed mode)...")
+    proxy = ProxyServer(
+        backend="llamaserver",
+        gguf=args.gguf,
+        port=args.port,
+        backend_port=args.backend_port,
+    )
+    proxy.start()
+    print(f"Proxy ready at {proxy.url}")
 
-    print(f"\n{passed}/{len(tests)} passed")
-    sys.exit(0 if passed == len(tests) else 1)
+    # Discover model name
+    client = OpenAI(base_url=f"{proxy.url}/v1", api_key="dummy")
+    models = client.models.list()
+    model = models.data[0].id
+    print(f"Model: {model}\n")
+
+    try:
+        passed, total = run_tests(proxy.url, model)
+        print(f"\n{passed}/{total} passed")
+    finally:
+        print("Stopping proxy + backend...")
+        proxy.stop()
+        print("Done.")
+
+    sys.exit(0 if passed == total else 1)
