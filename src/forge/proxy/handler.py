@@ -8,8 +8,9 @@ from typing import Any
 
 from forge.clients.base import LLMClient
 from forge.context.manager import ContextManager
-from forge.core.inference import run_inference
+from forge.core.inference import fold_and_serialize, run_inference
 from forge.core.workflow import ToolCall, ToolSpec, TextResponse
+from forge.errors import ToolCallError
 from forge.guardrails import ErrorTracker, ResponseValidator
 from forge.proxy.convert import (
     openai_to_messages,
@@ -80,26 +81,47 @@ async def handle_chat_completions(
     tool_specs = _extract_tool_specs(request_tools)
     tool_names = _extract_tool_names(tool_specs)
 
+    # No tools → plain chat completion, no guardrails needed.
+    # Forward to backend and return the response directly.
+    if not tool_specs:
+        logger.info("No tools in request, passing through to backend")
+        api_format = getattr(client, "api_format", "ollama")
+        api_messages = fold_and_serialize(messages, api_format)
+        response = await client.send(api_messages, tools=None)
+        text = response.content if isinstance(response, TextResponse) else ""
+        if is_stream:
+            return text_to_sse_events(text, model=model_name)
+        return text_response_to_openai(text, model=model_name)
+
     # Set up guardrails
     validator = ResponseValidator(tool_names, rescue_enabled=rescue_enabled)
     error_tracker = ErrorTracker(max_retries=max_retries)
 
     # Run inference (compact → fold → serialize → send → validate → retry)
-    result = await run_inference(
-        messages=messages,
-        client=client,
-        context_manager=context_manager,
-        validator=validator,
-        error_tracker=error_tracker,
-        tool_specs=tool_specs,
-    )
+    try:
+        result = await run_inference(
+            messages=messages,
+            client=client,
+            context_manager=context_manager,
+            validator=validator,
+            error_tracker=error_tracker,
+            tool_specs=tool_specs,
+        )
+    except ToolCallError as exc:
+        # Retries exhausted — the model kept returning text instead of tool
+        # calls. Return the last text response to the client rather than an
+        # error. The client's own agentic loop can decide what to do.
+        raw = exc.raw_response or ""
+        logger.warning("Retries exhausted, passing through text: %.120s", raw)
+        if is_stream:
+            return text_to_sse_events(raw, model=model_name)
+        return text_response_to_openai(raw, model=model_name)
 
-    # run_inference returns None when max_attempts exhausted (shouldn't happen
-    # without max_attempts set, but handle defensively)
+    # run_inference returns None when max_attempts exhausted
     if result is None:
         if is_stream:
-            return text_to_sse_events("Error: inference failed", model=model_name)
-        return text_response_to_openai("Error: inference failed", model=model_name)
+            return text_to_sse_events("", model=model_name)
+        return text_response_to_openai("", model=model_name)
 
     tool_calls = result.response
 

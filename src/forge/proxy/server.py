@@ -79,6 +79,7 @@ class HTTPServer:
                 return
 
             method, path = parts[0], parts[1]
+            logger.info(">> %s %s", method, path)
 
             # Read headers
             headers = await self._read_headers(reader)
@@ -160,6 +161,12 @@ class HTTPServer:
             return
 
         is_stream = body.get("stream", False)
+        msg_count = len(body.get("messages", []))
+        tool_count = len(body.get("tools", []))
+        logger.info(
+            "   stream=%s messages=%d tools=%d model=%s",
+            is_stream, msg_count, tool_count, body.get("model", "?"),
+        )
 
         # Serialize requests for single-GPU backends
         if self._lock is not None:
@@ -170,6 +177,7 @@ class HTTPServer:
 
         if isinstance(result, Exception):
             error_msg = str(result)
+            logger.info("<< ERROR: %s", error_msg[:120])
             if is_stream:
                 events = [{"error": error_msg}]
                 await self._send_sse(writer, events)
@@ -178,8 +186,10 @@ class HTTPServer:
             return
 
         if is_stream:
+            logger.info("<< SSE %d events", len(result))
             await self._send_sse(writer, result)
         else:
+            logger.info("<< JSON 200")
             await self._send_json(writer, 200, json.dumps(result))
 
     async def _run_handler(
@@ -217,13 +227,14 @@ class HTTPServer:
     async def _send_sse(
         self, writer: asyncio.StreamWriter, events: list[dict[str, Any]],
     ) -> None:
-        """Send an SSE streaming response."""
+        """Send an SSE streaming response with chunked transfer encoding."""
         header = (
             "HTTP/1.1 200 OK\r\n"
             "Content-Type: text/event-stream\r\n"
             "Cache-Control: no-cache\r\n"
-            "Connection: close\r\n"
+            "Transfer-Encoding: chunked\r\n"
             "Access-Control-Allow-Origin: *\r\n"
+            "Connection: keep-alive\r\n"
             "\r\n"
         )
         writer.write(header.encode())
@@ -232,12 +243,16 @@ class HTTPServer:
         for event in events:
             if writer.is_closing():
                 return
-            line = f"data: {json.dumps(event)}\n\n"
-            writer.write(line.encode())
+            data = f"data: {json.dumps(event)}\n\n".encode()
+            writer.write(f"{len(data):x}\r\n".encode() + data + b"\r\n")
             await writer.drain()
 
-        writer.write(b"data: [DONE]\n\n")
+        done = b"data: [DONE]\n\n"
+        writer.write(f"{len(done):x}\r\n".encode() + done + b"\r\n")
+        # Terminating zero-length chunk
+        writer.write(b"0\r\n\r\n")
         await writer.drain()
+        logger.info("<< SSE complete, [DONE] sent")
 
     async def _send_error(
         self, writer: asyncio.StreamWriter, status: int, message: str,

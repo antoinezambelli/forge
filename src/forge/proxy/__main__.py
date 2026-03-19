@@ -97,10 +97,13 @@ def main() -> None:
     print(f"  Point your client at {proxy.url}/v1/chat/completions")
     print("  Ctrl+C to stop")
 
-    # Block until signal (signal.pause() not available on Windows)
+    # Block main thread. Use a timed loop so Python can deliver
+    # signals between iterations (Event.wait() without timeout
+    # blocks signal handling on Windows).
     try:
-        import threading
-        threading.Event().wait()
+        while True:
+            import time
+            time.sleep(0.1)
     except KeyboardInterrupt:
         _shutdown(0, None)
 
