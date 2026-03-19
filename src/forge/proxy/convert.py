@@ -1,8 +1,8 @@
 """Conversion between OpenAI wire format and forge types.
 
-Parses OpenAI chat completion responses (both streaming and batch)
-into forge ToolCall/TextResponse objects, and synthesizes OpenAI SSE
-chunks from forge ToolCall objects (for rescued responses).
+Inbound:  OpenAI message dicts -> forge Message objects
+Outbound: forge ToolCall objects -> OpenAI SSE chunks (for rescued responses)
+Parsing:  OpenAI response (batch or streamed) -> forge ToolCall/TextResponse
 """
 
 from __future__ import annotations
@@ -10,7 +10,104 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from forge.core.messages import Message, MessageMeta, MessageRole, MessageType, ToolCallInfo
 from forge.core.workflow import LLMResponse, TextResponse, ToolCall
+
+
+# -- Inbound: OpenAI dicts -> forge Messages -------------------
+
+
+def openai_messages_to_forge(messages: list[dict[str, Any]]) -> list[Message]:
+    """Convert an OpenAI messages array to forge Message objects.
+
+    Infers MessageType from role and structure:
+      - system                         -> SYSTEM_PROMPT
+      - user (first)                   -> USER_INPUT
+      - user (subsequent)              -> USER_INPUT
+      - assistant with tool_calls      -> TOOL_CALL
+      - assistant with text content    -> TEXT_RESPONSE
+      - tool                           -> TOOL_RESULT
+
+    Args:
+        messages: OpenAI-format message dicts.
+
+    Returns:
+        List of forge Message objects with inferred metadata.
+    """
+    result: list[Message] = []
+    seen_user = False
+
+    for msg in messages:
+        role_str = msg.get("role", "user")
+        content = msg.get("content") or ""
+
+        if role_str == "system":
+            result.append(Message(
+                MessageRole.SYSTEM,
+                content,
+                MessageMeta(MessageType.SYSTEM_PROMPT),
+            ))
+
+        elif role_str == "user":
+            msg_type = MessageType.USER_INPUT
+            seen_user = True
+            result.append(Message(
+                MessageRole.USER,
+                content,
+                MessageMeta(msg_type),
+            ))
+
+        elif role_str == "assistant":
+            if msg.get("tool_calls"):
+                # Assistant message with tool calls
+                tc_infos = []
+                for tc in msg["tool_calls"]:
+                    fn = tc.get("function", {})
+                    args_raw = fn.get("arguments", "{}")
+                    try:
+                        args = json.loads(args_raw) if isinstance(args_raw, str) else args_raw
+                    except json.JSONDecodeError:
+                        args = {}
+                    tc_infos.append(ToolCallInfo(
+                        name=fn.get("name", ""),
+                        args=args,
+                        call_id=tc.get("id", ""),
+                    ))
+                result.append(Message(
+                    MessageRole.ASSISTANT,
+                    content,
+                    MessageMeta(MessageType.TOOL_CALL),
+                    tool_calls=tc_infos,
+                ))
+            else:
+                # Plain text assistant message
+                result.append(Message(
+                    MessageRole.ASSISTANT,
+                    content,
+                    MessageMeta(MessageType.TEXT_RESPONSE),
+                ))
+
+        elif role_str == "tool":
+            result.append(Message(
+                MessageRole.TOOL,
+                content,
+                MessageMeta(MessageType.TOOL_RESULT),
+                tool_name=msg.get("name"),
+                tool_call_id=msg.get("tool_call_id"),
+            ))
+
+    return result
+
+
+def forge_messages_to_openai(messages: list[Message]) -> list[dict[str, Any]]:
+    """Convert forge Messages back to OpenAI wire format.
+
+    Uses Message.to_api_dict(format="openai").
+    """
+    return [m.to_api_dict(format="openai") for m in messages]
+
+
+# -- Response parsing: backend response -> forge types ---------
 
 
 def parse_batch_response(data: dict[str, Any]) -> LLMResponse:
@@ -53,7 +150,6 @@ def parse_streamed_response(chunks: list[str]) -> tuple[LLMResponse, dict[str, A
     text_parts: list[str] = []
     tool_calls: dict[int, dict[str, Any]] = {}  # index -> {id, name, arguments}
     usage: dict[str, Any] | None = None
-    finish_reason: str | None = None
 
     for chunk_line in chunks:
         if chunk_line == "data: [DONE]":
@@ -77,9 +173,6 @@ def parse_streamed_response(chunks: list[str]) -> tuple[LLMResponse, dict[str, A
 
         choice = choices[0]
         delta = choice.get("delta", {})
-
-        if choice.get("finish_reason"):
-            finish_reason = choice["finish_reason"]
 
         # Text content
         if "content" in delta and delta["content"]:
@@ -114,6 +207,9 @@ def parse_streamed_response(chunks: list[str]) -> tuple[LLMResponse, dict[str, A
         return result, usage
 
     return TextResponse(content="".join(text_parts)), usage
+
+
+# -- Outbound: forge ToolCall -> OpenAI SSE chunks -------------
 
 
 def synthesize_sse_tool_calls(
@@ -166,6 +262,37 @@ def synthesize_sse_tool_calls(
     chunks.append(b"data: [DONE]\n\n")
 
     return chunks
+
+
+def synthesize_batch_tool_calls(
+    tool_calls: list[ToolCall],
+    model: str = "forge-proxy",
+) -> bytes:
+    """Synthesize an OpenAI batch response from forge ToolCall objects."""
+    return json.dumps({
+        "id": "chatcmpl-forge-rescued",
+        "object": "chat.completion",
+        "model": model,
+        "choices": [{
+            "index": 0,
+            "message": {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [
+                    {
+                        "id": f"call_rescued_{i}",
+                        "type": "function",
+                        "function": {
+                            "name": tc.tool,
+                            "arguments": json.dumps(tc.args),
+                        },
+                    }
+                    for i, tc in enumerate(tool_calls)
+                ],
+            },
+            "finish_reason": "tool_calls",
+        }],
+    }).encode()
 
 
 def _sse_chunk(resp_id: str, model: str, delta: dict[str, Any]) -> bytes:

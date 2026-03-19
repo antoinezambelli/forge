@@ -4,12 +4,140 @@ import json
 
 import pytest
 
+from forge.core.messages import MessageRole, MessageType
 from forge.core.workflow import TextResponse, ToolCall
 from forge.proxy.convert import (
+    forge_messages_to_openai,
+    openai_messages_to_forge,
     parse_batch_response,
     parse_streamed_response,
+    synthesize_batch_tool_calls,
     synthesize_sse_tool_calls,
 )
+
+
+# -- openai_messages_to_forge ----------------------------------
+
+
+class TestOpenaiToForge:
+    def test_system_message(self):
+        msgs = openai_messages_to_forge([
+            {"role": "system", "content": "You are helpful."},
+        ])
+        assert len(msgs) == 1
+        assert msgs[0].role == MessageRole.SYSTEM
+        assert msgs[0].metadata.type == MessageType.SYSTEM_PROMPT
+        assert msgs[0].content == "You are helpful."
+
+    def test_user_message(self):
+        msgs = openai_messages_to_forge([
+            {"role": "user", "content": "Hello"},
+        ])
+        assert msgs[0].role == MessageRole.USER
+        assert msgs[0].metadata.type == MessageType.USER_INPUT
+
+    def test_assistant_text(self):
+        msgs = openai_messages_to_forge([
+            {"role": "assistant", "content": "Hi there"},
+        ])
+        assert msgs[0].role == MessageRole.ASSISTANT
+        assert msgs[0].metadata.type == MessageType.TEXT_RESPONSE
+        assert msgs[0].content == "Hi there"
+
+    def test_assistant_tool_calls(self):
+        msgs = openai_messages_to_forge([
+            {"role": "assistant", "content": None, "tool_calls": [
+                {"id": "call_0", "type": "function",
+                 "function": {"name": "search", "arguments": '{"q": "test"}'}},
+            ]},
+        ])
+        assert msgs[0].role == MessageRole.ASSISTANT
+        assert msgs[0].metadata.type == MessageType.TOOL_CALL
+        assert len(msgs[0].tool_calls) == 1
+        assert msgs[0].tool_calls[0].name == "search"
+        assert msgs[0].tool_calls[0].args == {"q": "test"}
+
+    def test_tool_result(self):
+        msgs = openai_messages_to_forge([
+            {"role": "tool", "content": "result data",
+             "name": "search", "tool_call_id": "call_0"},
+        ])
+        assert msgs[0].role == MessageRole.TOOL
+        assert msgs[0].metadata.type == MessageType.TOOL_RESULT
+        assert msgs[0].tool_name == "search"
+        assert msgs[0].tool_call_id == "call_0"
+
+    def test_full_conversation(self):
+        msgs = openai_messages_to_forge([
+            {"role": "system", "content": "Be helpful"},
+            {"role": "user", "content": "Weather?"},
+            {"role": "assistant", "tool_calls": [
+                {"id": "c1", "function": {"name": "get_weather", "arguments": '{"city":"Paris"}'}}
+            ]},
+            {"role": "tool", "content": "72F", "name": "get_weather", "tool_call_id": "c1"},
+            {"role": "assistant", "content": "It's 72F in Paris."},
+        ])
+        types = [m.metadata.type for m in msgs]
+        assert types == [
+            MessageType.SYSTEM_PROMPT,
+            MessageType.USER_INPUT,
+            MessageType.TOOL_CALL,
+            MessageType.TOOL_RESULT,
+            MessageType.TEXT_RESPONSE,
+        ]
+
+    def test_null_content_handled(self):
+        msgs = openai_messages_to_forge([
+            {"role": "assistant", "content": None},
+        ])
+        assert msgs[0].content == ""
+
+
+class TestForgeToOpenai:
+    def test_round_trips_system(self):
+        original = [{"role": "system", "content": "Be helpful"}]
+        msgs = openai_messages_to_forge(original)
+        result = forge_messages_to_openai(msgs)
+        assert result[0]["role"] == "system"
+        assert result[0]["content"] == "Be helpful"
+
+    def test_round_trips_tool_call(self):
+        original = [
+            {"role": "assistant", "content": None, "tool_calls": [
+                {"id": "c1", "type": "function",
+                 "function": {"name": "search", "arguments": '{"q": "a"}'}},
+            ]},
+        ]
+        msgs = openai_messages_to_forge(original)
+        result = forge_messages_to_openai(msgs)
+        tc = result[0]["tool_calls"][0]
+        assert tc["function"]["name"] == "search"
+        assert tc["type"] == "function"
+        assert tc["id"] == "c1"
+
+    def test_round_trips_tool_result(self):
+        original = [
+            {"role": "tool", "content": "data", "name": "search", "tool_call_id": "c1"},
+        ]
+        msgs = openai_messages_to_forge(original)
+        result = forge_messages_to_openai(msgs)
+        assert result[0]["role"] == "tool"
+        assert result[0]["content"] == "data"
+        assert result[0]["name"] == "search"
+        assert result[0]["tool_call_id"] == "c1"
+
+
+# -- synthesize_batch_tool_calls --------------------------------
+
+
+class TestSynthesizeBatch:
+    def test_synthesizes_batch_response(self):
+        tool_calls = [ToolCall(tool="get_weather", args={"city": "Paris"})]
+        raw = synthesize_batch_tool_calls(tool_calls, model="test")
+        data = json.loads(raw)
+        tc = data["choices"][0]["message"]["tool_calls"][0]
+        assert tc["function"]["name"] == "get_weather"
+        assert data["choices"][0]["finish_reason"] == "tool_calls"
 
 
 # -- parse_batch_response --------------------------------------
