@@ -103,6 +103,7 @@ async def run_inference(
     step_index: int = 0,
     step_hint: str = "",
     max_attempts: int | None = None,
+    trust_text_intent: bool = False,
     stream: bool = False,
     on_chunk: Callable[[StreamChunk], Awaitable[None]] | None = None,
 ) -> InferenceResult | None:
@@ -131,6 +132,9 @@ async def run_inference(
             retries). When None, bounded only by max_retries. The runner
             passes remaining iteration budget here so retries don't exceed
             max_iterations.
+        trust_text_intent: If True, trust the backend's intentional flag
+            on TextResponse and skip retry. Proxy sets this to True;
+            WorkflowRunner leaves it False (default).
         stream: If True, use send_stream() instead of send().
         on_chunk: Async callback for streaming chunks.
 
@@ -174,7 +178,7 @@ async def run_inference(
             response = await client.send(api_messages, tools=tool_specs)
 
         # Validate
-        validation = validator.validate(response)
+        validation = validator.validate(response, trust_text_intent=trust_text_intent)
 
         if not validation.needs_retry:
             error_tracker.reset_retries()

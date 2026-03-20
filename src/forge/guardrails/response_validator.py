@@ -41,18 +41,23 @@ class ResponseValidator:
         self.tool_names = tool_names
         self.rescue_enabled = rescue_enabled
 
-    def validate(self, response: LLMResponse) -> ValidationResult:
+    def validate(
+        self, response: LLMResponse, trust_text_intent: bool = False,
+    ) -> ValidationResult:
         """Validate an LLM response.
 
         Args:
             response: Either a TextResponse or a list of ToolCall objects.
+            trust_text_intent: If True, trust the backend's ``intentional``
+                flag on TextResponse and skip retry. If False (default),
+                ignore the flag and retry as usual.
 
         Returns:
             ValidationResult with tool_calls on success, or a Nudge on failure.
         """
-        # TextResponse: intentional pass-through, then rescue, then retry nudge
+        # TextResponse: intentional pass-through (if trusted), then rescue, then retry nudge
         if isinstance(response, TextResponse):
-            if response.intentional:
+            if trust_text_intent and response.intentional:
                 return ValidationResult(
                     tool_calls=None, nudge=None, needs_retry=False,
                     text_response=response,

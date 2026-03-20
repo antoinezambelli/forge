@@ -91,7 +91,9 @@ class Guardrails:
             max_tool_errors=max_tool_errors,
         )
 
-    def check(self, response: LLMResponse) -> CheckResult:
+    def check(
+        self, response: LLMResponse, trust_text_intent: bool = False,
+    ) -> CheckResult:
         """Check an LLM response against all guardrails.
 
         Call this after each LLM response, before executing any tools.
@@ -99,12 +101,16 @@ class Guardrails:
         Args:
             response: The LLM response -- either a TextResponse or a
                 list of ToolCall objects.
+            trust_text_intent: If True, trust the backend's intentional
+                flag on TextResponse. Default False.
 
         Returns:
             CheckResult indicating what the caller should do next.
         """
         # Checkpoint 1: Is this response usable?
-        validation = self._validator.validate(response)
+        validation = self._validator.validate(
+            response, trust_text_intent=trust_text_intent,
+        )
 
         if validation.needs_retry:
             self._errors.record_retry()

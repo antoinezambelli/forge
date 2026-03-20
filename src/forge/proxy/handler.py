@@ -106,6 +106,7 @@ async def handle_chat_completions(
             validator=validator,
             error_tracker=error_tracker,
             tool_specs=tool_specs,
+            trust_text_intent=True,
         )
     except ToolCallError as exc:
         # Retries exhausted — the model kept returning text instead of tool

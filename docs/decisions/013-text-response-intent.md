@@ -59,14 +59,27 @@ If `tool_choice: "auto"` (default), text responses are valid. If `"required"`, r
 
 ## Decision
 
-**Approach A implemented.** The `intentional` flag on TextResponse is a structural signal from the backend's inference engine (EOS token / stop sequence), not a model judgment call. It's safe to trust because the model can't hallucinate a finish reason.
+**Approach A implemented with caller-controlled trust.** The `intentional` flag on TextResponse is a structural signal from the backend's inference engine (EOS token / stop sequence), not a model judgment call. All three clients now read finish reason and set the flag. However, whether the flag is *respected* is controlled by `trust_text_intent` — a parameter on `ResponseValidator.validate()`, `run_inference()`, and `Guardrails.check()`.
+
+### Why caller-controlled trust?
+
+Eval testing (N=25, Ministral 8B reasoning Q4_K_M on llama-server) showed that unconditionally trusting the flag **destroyed workflow reliability** — completion rates dropped from 100% to as low as 4% on reasoning-heavy scenarios. Small models frequently emit `finish_reason: "stop"` when they should call tools. The retry nudge was saving them: the model would produce text, forge would nudge, and the model would self-correct on the next attempt.
+
+With `trust_text_intent=True` (unconditional trust): sequential_reasoning dropped from 100% to 4%, relevance_detection from 100% to 16%, data_gap_recovery from 100% to 32%. With `trust_text_intent=False` (default): all scenarios returned to 100% completion.
+
+### How it works
+
+- **`trust_text_intent=False` (default):** validator ignores the `intentional` flag and retries text responses as before. WorkflowRunner behavior unchanged — full guardrail protection.
+- **`trust_text_intent=True`:** validator respects `intentional=True` and passes text through without retry. The proxy sets this for conversational UX.
 
 ### Resolved questions
 
-1. **Guardrails facade:** `CheckResult` has a new `action="text"` with a `text` field for intentional content. Callers can distinguish it from `"execute"` (tool calls) and `"retry"` (failure).
-2. **WorkflowRunner:** emits intentional text as a `TEXT_RESPONSE` message and continues the loop, consuming an iteration. The runner doesn't return text as a terminal result — workflows always terminate via the terminal tool.
-3. **Proxy:** passes intentional text through immediately (no retries). This is the primary UX motivation — eliminates 3 wasted retries on conversational turns in tool-equipped sessions.
+1. **Guardrails facade:** `CheckResult` has a new `action="text"` with a `text` field for intentional content (only when `trust_text_intent=True`). Callers can distinguish it from `"execute"` (tool calls) and `"retry"` (failure).
+2. **WorkflowRunner:** does not set `trust_text_intent` — defaults to False. If intentional text somehow reaches the runner (e.g. a future consumer sets it), the runner emits it as a `TEXT_RESPONSE` message and continues the loop, consuming an iteration.
+3. **Proxy:** sets `trust_text_intent=True`. Passes intentional text through immediately (no retries). This eliminates wasted retries on conversational turns but accepts the reliability tradeoff.
 
 ### Trust implications
 
-The `intentional` flag distinguishes *structural* failures (model forgot the format → retry) from *intentional* choices (model chose text → pass through). It does **not** catch *semantic* errors (model chose text when it should have called a tool). In WorkflowRunner, step enforcement catches semantic errors. In the proxy, the client's own agentic loop is responsible — the proxy trusts the model's structural signal. This is an explicit tradeoff: proxy mode trades some guardrail coverage for zero-code integration.
+The `intentional` flag is structurally correct — the model can't hallucinate a finish reason. But small models (~8B) frequently *choose wrong*: they produce text with `finish_reason: "stop"` when they should call tools. In WorkflowRunner and middleware, the retry nudge catches this. In proxy mode, the tradeoff is accepted for UX reasons — the client's own agentic loop is responsible for re-prompting.
+
+**Future direction:** A synthetic `respond` tool (Approach B) may be a better long-term solution for proxy/chat modes. Instead of trusting the model's text choice, make "respond with text" an explicit tool call. The model stays in tool-calling mode and forge's full guardrail stack applies. See GitHub issue for design discussion.
