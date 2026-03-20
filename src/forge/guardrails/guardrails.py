@@ -27,17 +27,20 @@ class CheckResult:
     Attributes:
         action: What the caller should do next.
             "execute"      -- tool_calls are safe to run.
+            "text"         -- model intentionally responded with text; no tools.
             "retry"        -- model produced an unusable response; inject nudge.
             "step_blocked" -- model tried to skip required steps; inject nudge.
             "fatal"        -- error budget exhausted; stop the workflow.
         tool_calls: Validated tool calls (only set when action == "execute").
+        text: Intentional text content (only set when action == "text").
         nudge: Corrective message to inject (set when action is "retry"
             or "step_blocked").
         reason: Human-readable explanation (only set when action == "fatal").
     """
 
-    action: Literal["execute", "retry", "step_blocked", "fatal"]
+    action: Literal["execute", "text", "retry", "step_blocked", "fatal"]
     tool_calls: list[ToolCall] | None = None
+    text: str | None = None
     nudge: Nudge | None = None
     reason: str | None = None
 
@@ -113,6 +116,10 @@ class Guardrails:
             return CheckResult(action="retry", nudge=validation.nudge)
 
         self._errors.reset_retries()
+
+        # Intentional text — model chose text over tools
+        if validation.text_response is not None:
+            return CheckResult(action="text", text=validation.text_response.content)
 
         # Checkpoint 2: Is the model skipping required steps?
         step_check = self._enforcer.check(validation.tool_calls)

@@ -110,6 +110,8 @@ python -m forge.proxy --backend llamaserver --gguf path/to/model.gguf --port 808
 
 Then configure your client to use `http://localhost:8081/v1` as the API base URL.
 
+**Note:** The proxy fixes *structural* failures (malformed tool calls, forgot the format) but trusts the model's choice when it intentionally responds with text instead of calling tools. In WorkflowRunner and middleware modes, step enforcement catches this — in proxy mode, the client's own agentic loop is responsible. This is an explicit tradeoff for zero-code integration. See [ADR-013](docs/decisions/013-text-response-intent.md).
+
 ## Backends
 
 | Backend | Best for | Native FC? |

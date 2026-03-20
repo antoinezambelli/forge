@@ -161,6 +161,17 @@ class WorkflowRunner:
                 if self.on_message is not None:
                     self.on_message(msg)
             tool_call_counter = result.tool_call_counter
+
+            # Intentional text response — emit and continue the loop.
+            # The model chose text over tools; consume an iteration.
+            if isinstance(result.response, TextResponse):
+                _emit(Message(
+                    MessageRole.ASSISTANT,
+                    result.response.content,
+                    MessageMeta(MessageType.TEXT_RESPONSE, step_index=iteration),
+                ))
+                continue
+
             tool_calls = result.response
 
             # 3b — Check for premature terminal

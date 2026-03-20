@@ -281,9 +281,11 @@ class LlamafileClient:
                             type=ChunkType.TEXT_DELTA, content=content
                         )
 
-                    stream_done = choice.get("finish_reason") is not None
+                    stream_finish_reason = choice.get("finish_reason")
+                    stream_done = stream_finish_reason is not None
 
                 if stream_done:
+                    stream_intentional = stream_finish_reason == "stop"
                     if tool_call_parts:
                         reasoning = self._resolve_reasoning(
                             accumulated_reasoning, accumulated_content
@@ -307,7 +309,7 @@ class LlamafileClient:
                             # surface as TextResponse so the runner sends
                             # a retry nudge instead of crashing.
                             final: LLMResponse = TextResponse(
-                                content=accumulated_content or part["args"]
+                                content=accumulated_content or part["args"],
                             )
                         else:
                             final = result_calls
@@ -323,9 +325,9 @@ class LlamafileClient:
                             )
                             final = extracted
                         else:
-                            final = TextResponse(content=cleaned)
+                            final = TextResponse(content=cleaned, intentional=stream_intentional)
                     else:
-                        final = TextResponse(content=accumulated_content)
+                        final = TextResponse(content=accumulated_content, intentional=stream_intentional)
                     yield StreamChunk(type=ChunkType.FINAL, response=final)
                     break
 
@@ -400,7 +402,9 @@ class LlamafileClient:
             raise BackendError(resp.status_code, resp.text)
         data = resp.json()
 
-        choice = data["choices"][0]["message"]
+        top_choice = data["choices"][0]
+        choice = top_choice["message"]
+        finish_reason = top_choice.get("finish_reason")
         raw_tool_calls = choice.get("tool_calls")
         if raw_tool_calls:
             reasoning = self._resolve_reasoning(
@@ -428,7 +432,7 @@ class LlamafileClient:
         # useful on ToolCall, TextResponse just gets clean content
         if content:
             _, content = _extract_think_tags(content)
-        return TextResponse(content=content)
+        return TextResponse(content=content, intentional=finish_reason == "stop")
 
     async def _send_prompt(
         self,
@@ -457,8 +461,10 @@ class LlamafileClient:
         resp.raise_for_status()
         data = resp.json()
 
-        content = data["choices"][0]["message"].get("content", "")
-        reasoning_content = data["choices"][0]["message"].get("reasoning_content", "")
+        top_choice = data["choices"][0]
+        content = top_choice["message"].get("content", "")
+        reasoning_content = top_choice["message"].get("reasoning_content", "")
+        finish_reason = top_choice.get("finish_reason")
         if tools:
             think_text, cleaned = _extract_think_tags(content)
             tool_names = [t.name for t in tools]
@@ -472,4 +478,4 @@ class LlamafileClient:
         # Strip think tags from TextResponse — clean content only
         if content:
             _, content = _extract_think_tags(content)
-        return TextResponse(content=content)
+        return TextResponse(content=content, intentional=finish_reason == "stop")

@@ -137,7 +137,9 @@ class OllamaClient:
                 for i, tc in enumerate(tool_calls)
             ]
 
-        return TextResponse(content=msg.get("content", ""))
+        # No tool_calls and done=true → model intentionally chose text
+        done = data.get("done", False)
+        return TextResponse(content=msg.get("content", ""), intentional=done)
 
     async def send_stream(
         self,
@@ -235,7 +237,7 @@ class OllamaClient:
                         content = msg.get("content", "")
                         if content:
                             accumulated_content += content
-                        final = TextResponse(content=accumulated_content)
+                        final = TextResponse(content=accumulated_content, intentional=True)
                     yield StreamChunk(type=ChunkType.FINAL, response=final)
                 else:
                     tool_calls = msg.get("tool_calls")

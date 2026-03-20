@@ -1,6 +1,6 @@
 # ADR-013: Text Response Intent -- When the Model Chooses Not to Call Tools
 
-**Status:** Draft (March 2026)
+**Status:** Accepted (March 2026) — Approach A implemented
 
 ## Problem
 
@@ -57,12 +57,16 @@ If `tool_choice: "auto"` (default), text responses are valid. If `"required"`, r
 **Pros:** Uses existing API semantics.
 **Cons:** Doesn't distinguish "model failed" from "model chose text" when auto.
 
-## Recommendation
+## Decision
 
-Approach A is the correct long-term fix. The information exists at the backend, gets discarded by clients, and is needed by the validator. Approach B is a viable proxy-specific interim fix.
+**Approach A implemented.** The `intentional` flag on TextResponse is a structural signal from the backend's inference engine (EOS token / stop sequence), not a model judgment call. It's safe to trust because the model can't hallucinate a finish reason.
 
-## Open Questions
+### Resolved questions
 
-1. Should `intentional=True` text responses get a new `CheckResult.action` in the Guardrails facade?
-2. For WorkflowRunner: when the model returns `intentional=True` text, should the runner emit it and continue the loop, or have a way to return text as a valid result?
-3. Should the proxy support both approaches (intentional as default, tool injection as opt-in)?
+1. **Guardrails facade:** `CheckResult` has a new `action="text"` with a `text` field for intentional content. Callers can distinguish it from `"execute"` (tool calls) and `"retry"` (failure).
+2. **WorkflowRunner:** emits intentional text as a `TEXT_RESPONSE` message and continues the loop, consuming an iteration. The runner doesn't return text as a terminal result — workflows always terminate via the terminal tool.
+3. **Proxy:** passes intentional text through immediately (no retries). This is the primary UX motivation — eliminates 3 wasted retries on conversational turns in tool-equipped sessions.
+
+### Trust implications
+
+The `intentional` flag distinguishes *structural* failures (model forgot the format → retry) from *intentional* choices (model chose text → pass through). It does **not** catch *semantic* errors (model chose text when it should have called a tool). In WorkflowRunner, step enforcement catches semantic errors. In the proxy, the client's own agentic loop is responsible — the proxy trusts the model's structural signal. This is an explicit tradeoff: proxy mode trades some guardrail coverage for zero-code integration.

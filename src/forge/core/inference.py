@@ -40,7 +40,7 @@ class InferenceResult:
         tool_call_counter: Updated counter for generating unique call IDs.
     """
 
-    response: list[ToolCall]
+    response: list[ToolCall] | TextResponse
     new_messages: list[Message] = field(default_factory=list)
     tool_call_counter: int = 0
     attempts: int = 1
@@ -178,8 +178,10 @@ async def run_inference(
 
         if not validation.needs_retry:
             error_tracker.reset_retries()
+            # Intentional text response or validated tool calls
+            validated = validation.text_response or validation.tool_calls
             return InferenceResult(
-                response=validation.tool_calls,
+                response=validated,
                 new_messages=new_messages,
                 tool_call_counter=tool_call_counter,
                 attempts=attempts,

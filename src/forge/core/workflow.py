@@ -164,9 +164,15 @@ class ToolCall(BaseModel):
 
 
 class TextResponse(BaseModel):
-    """Non-tool-call response from the model (reasoning trace, refusal, etc.)."""
+    """Non-tool-call response from the model (reasoning trace, refusal, etc.).
+
+    When ``intentional`` is True, the backend signalled that the model chose
+    to produce text (finish_reason="stop") rather than failing to produce a
+    tool call.  ResponseValidator trusts this signal and skips retry.
+    """
 
     content: str
+    intentional: bool = False
 
 
 type LLMResponse = list[ToolCall] | TextResponse
