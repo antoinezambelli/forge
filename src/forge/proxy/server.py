@@ -1,8 +1,8 @@
 """Raw asyncio HTTP server for the proxy.
 
 No framework dependencies — uses asyncio.start_server directly.
-Handles routing, request serialization (single-GPU lock), health
-checks, and SSE streaming.
+Handles routing, request queuing (single-GPU serialization), health
+checks, SSE streaming, and client disconnect detection.
 """
 
 from __future__ import annotations
@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+from dataclasses import dataclass, field
 from typing import Any
 
 from forge.clients.base import LLMClient
@@ -20,6 +21,15 @@ logger = logging.getLogger("forge.proxy")
 
 # Maximum request body size (16 MB)
 _MAX_BODY = 16 * 1024 * 1024
+
+
+@dataclass
+class _QueueItem:
+    """A request waiting to be processed by the inference worker."""
+
+    body: dict[str, Any]
+    future: asyncio.Future = field(default_factory=lambda: asyncio.get_event_loop().create_future())
+    cancelled: bool = False
 
 
 class HTTPServer:
@@ -42,10 +52,14 @@ class HTTPServer:
         self._max_retries = max_retries
         self._rescue_enabled = rescue_enabled
         self._server: asyncio.Server | None = None
-        self._lock: asyncio.Lock | None = asyncio.Lock() if serialize_requests else None
+        self._serialize = serialize_requests
+        self._queue: asyncio.Queue[_QueueItem] = asyncio.Queue()
+        self._worker_task: asyncio.Task | None = None
 
     async def start(self) -> None:
         """Start listening for connections."""
+        if self._serialize:
+            self._worker_task = asyncio.create_task(self._inference_worker())
         self._server = await asyncio.start_server(
             self._handle_connection, self._host, self._port,
         )
@@ -53,10 +67,39 @@ class HTTPServer:
 
     async def stop(self) -> None:
         """Stop the server."""
+        if self._worker_task is not None:
+            self._worker_task.cancel()
+            try:
+                await self._worker_task
+            except asyncio.CancelledError:
+                pass
+            self._worker_task = None
         if self._server is not None:
             self._server.close()
             await self._server.wait_closed()
             self._server = None
+
+    async def _inference_worker(self) -> None:
+        """Single worker that pulls requests off the queue and processes them.
+
+        Ensures only one inference runs at a time (single-GPU constraint).
+        """
+        while True:
+            item = await self._queue.get()
+            try:
+                if item.cancelled or item.future.cancelled():
+                    logger.info("   Skipping cancelled request")
+                    continue
+                result = await self._run_handler(item.body)
+                if not item.future.done():
+                    item.future.set_result(result)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                if not item.future.done():
+                    item.future.set_result(exc)
+            finally:
+                self._queue.task_done()
 
     async def _handle_connection(
         self,
@@ -168,29 +211,69 @@ class HTTPServer:
             is_stream, msg_count, tool_count, body.get("model", "?"),
         )
 
-        # Serialize requests for single-GPU backends
-        if self._lock is not None:
-            async with self._lock:
-                result = await self._run_handler(body)
+        if self._serialize:
+            # Queue the request and wait for the worker to process it
+            item = _QueueItem(body=body)
+            queue_depth = self._queue.qsize()
+            if queue_depth > 0:
+                logger.info("   Queued (depth=%d)", queue_depth + 1)
+
+            # For streaming requests, send SSE headers immediately so the
+            # client knows we're alive while waiting in the queue
+            if is_stream:
+                await self._send_sse_header(writer)
+
+            self._queue.put_nowait(item)
+
+            # Wait for result, monitoring for client disconnect
+            result = await self._await_with_disconnect(item, writer)
         else:
+            if is_stream:
+                await self._send_sse_header(writer)
             result = await self._run_handler(body)
+
+        if result is None:
+            # Client disconnected
+            logger.info("<< Client disconnected, discarding result")
+            return
 
         if isinstance(result, Exception):
             error_msg = str(result)
             logger.info("<< ERROR: %s", error_msg[:120])
             if is_stream:
-                events = [{"error": error_msg}]
-                await self._send_sse(writer, events)
+                await self._send_sse_body(writer, [{"error": error_msg}])
             else:
                 await self._send_error(writer, 502, error_msg)
             return
 
         if is_stream:
             logger.info("<< SSE %d events", len(result))
-            await self._send_sse(writer, result)
+            await self._send_sse_body(writer, result)
         else:
             logger.info("<< JSON 200")
             await self._send_json(writer, 200, json.dumps(result))
+
+    async def _await_with_disconnect(
+        self,
+        item: _QueueItem,
+        writer: asyncio.StreamWriter,
+    ) -> dict[str, Any] | list[dict[str, Any]] | Exception | None:
+        """Wait for a queued item's result, checking for client disconnect.
+
+        Returns None if the client disconnected.
+        """
+        while not item.future.done():
+            if writer.is_closing():
+                item.cancelled = True
+                logger.info("   Client disconnected, cancelling queued request")
+                return None
+            try:
+                await asyncio.wait_for(
+                    asyncio.shield(item.future), timeout=1.0,
+                )
+            except asyncio.TimeoutError:
+                continue
+        return item.future.result()
 
     async def _run_handler(
         self, body: dict[str, Any],
@@ -224,10 +307,8 @@ class HTTPServer:
         writer.write(response.encode())
         await writer.drain()
 
-    async def _send_sse(
-        self, writer: asyncio.StreamWriter, events: list[dict[str, Any]],
-    ) -> None:
-        """Send an SSE streaming response with chunked transfer encoding."""
+    async def _send_sse_header(self, writer: asyncio.StreamWriter) -> None:
+        """Send SSE response headers immediately (before body is ready)."""
         header = (
             "HTTP/1.1 200 OK\r\n"
             "Content-Type: text/event-stream\r\n"
@@ -240,6 +321,10 @@ class HTTPServer:
         writer.write(header.encode())
         await writer.drain()
 
+    async def _send_sse_body(
+        self, writer: asyncio.StreamWriter, events: list[dict[str, Any]],
+    ) -> None:
+        """Send SSE event data and terminator. Headers must already be sent."""
         for event in events:
             if writer.is_closing():
                 return
