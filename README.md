@@ -110,6 +110,8 @@ python -m forge.proxy --backend llamaserver --gguf path/to/model.gguf --port 808
 
 Then configure your client to use `http://localhost:8081/v1` as the API base URL.
 
+**Note:** The proxy trusts the model's intent when it responds with text instead of calling tools (`trust_text_intent=True`). This eliminates retry latency on conversational turns but means forge won't nudge the model if it *should* have called a tool. In our eval testing, unconditionally trusting intent dropped an 8B model from 100% to as low as 4% on reasoning-heavy workflows — which is why WorkflowRunner and middleware default to `trust_text_intent=False` (full guardrail protection). The proxy accepts this tradeoff for zero-code integration; the client's own agentic loop handles re-prompting. See [ADR-013](docs/decisions/013-text-response-intent.md).
+
 ## Backends
 
 | Backend | Best for | Native FC? |

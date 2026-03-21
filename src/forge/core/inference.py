@@ -40,7 +40,7 @@ class InferenceResult:
         tool_call_counter: Updated counter for generating unique call IDs.
     """
 
-    response: list[ToolCall]
+    response: list[ToolCall] | TextResponse
     new_messages: list[Message] = field(default_factory=list)
     tool_call_counter: int = 0
     attempts: int = 1
@@ -103,6 +103,7 @@ async def run_inference(
     step_index: int = 0,
     step_hint: str = "",
     max_attempts: int | None = None,
+    trust_text_intent: bool = False,
     stream: bool = False,
     on_chunk: Callable[[StreamChunk], Awaitable[None]] | None = None,
 ) -> InferenceResult | None:
@@ -131,6 +132,9 @@ async def run_inference(
             retries). When None, bounded only by max_retries. The runner
             passes remaining iteration budget here so retries don't exceed
             max_iterations.
+        trust_text_intent: If True, trust the backend's intentional flag
+            on TextResponse and skip retry. Proxy sets this to True;
+            WorkflowRunner leaves it False (default).
         stream: If True, use send_stream() instead of send().
         on_chunk: Async callback for streaming chunks.
 
@@ -174,12 +178,14 @@ async def run_inference(
             response = await client.send(api_messages, tools=tool_specs)
 
         # Validate
-        validation = validator.validate(response)
+        validation = validator.validate(response, trust_text_intent=trust_text_intent)
 
         if not validation.needs_retry:
             error_tracker.reset_retries()
+            # Intentional text response or validated tool calls
+            validated = validation.text_response or validation.tool_calls
             return InferenceResult(
-                response=validation.tool_calls,
+                response=validated,
                 new_messages=new_messages,
                 tool_call_counter=tool_call_counter,
                 attempts=attempts,

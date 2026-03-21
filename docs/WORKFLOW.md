@@ -9,7 +9,8 @@ Visual guide to the forge agentic tool-calling loop.
 **Entry Point:** `WorkflowRunner.run()` in `src/forge/core/runner.py`
 
 **Critical Files:**
-- `src/forge/core/runner.py` - Agentic loop (composes guardrail middleware internally)
+- `src/forge/core/inference.py` - run_inference() — shared "front half" (compact, fold, validate, retry)
+- `src/forge/core/runner.py` - Agentic loop "back half" (step enforcement, tool execution, terminal check)
 - `src/forge/core/workflow.py` - Workflow, ToolSpec, ToolCall, TextResponse
 - `src/forge/core/messages.py` - Message, MessageRole, MessageType, MessageMeta
 - `src/forge/core/steps.py` - StepTracker (used internally by StepEnforcer)
@@ -25,7 +26,7 @@ Visual guide to the forge agentic tool-calling loop.
 
 ## Agentic Loop
 
-The core of forge. The runner sends messages to the LLM, inspects the response, executes tools, manages context, and enforces required steps.
+The core of forge. The runner delegates inference to `run_inference()` (the shared "front half" — compaction, reasoning folding, serialization, sending, validation, and retry), then handles step enforcement, tool execution, and terminal checks (the "back half"). The proxy also consumes `run_inference()` directly, sharing the same validation logic.
 
 ```mermaid
 flowchart TD

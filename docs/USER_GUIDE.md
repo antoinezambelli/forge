@@ -25,12 +25,14 @@ result = await runner.run(workflow, "What's the weather in Paris?")
 
 ### Mode 2: Proxy Server (drop-in, zero code changes)
 
-> **Status: not yet implemented.** See [GitHub issue](https://github.com/antoinezambelli/forge/issues) for tracking.
-
 Forge sits between any OpenAI-compatible client and your model server, intercepting requests and applying guardrails transparently. The client doesn't know forge is there.
 
 ```bash
-forge serve --port 8081 --backend llama-server --backend-port 8080
+# External mode — you manage the backend
+python -m forge.proxy --backend-url http://localhost:8080 --port 8081
+
+# Managed mode — forge starts llama-server and the proxy together
+python -m forge.proxy --backend llamaserver --gguf path/to/model.gguf --port 8081
 ```
 
 Then point any client at forge instead of the model server:
@@ -41,6 +43,8 @@ client = OpenAI(base_url="http://localhost:8081/v1")
 ```
 
 **Best for:** Adding guardrails to existing tools without modifying them. Works with any tool that speaks the OpenAI-compatible API — no per-client wrappers needed.
+
+**Reliability note:** The proxy sets `trust_text_intent=True`, meaning it trusts the backend's finish reason when the model responds with text instead of calling tools. This eliminates retry latency on conversational turns (e.g. the user says "hi" in a tool-equipped session) but means the proxy won't nudge the model if it should have called a tool. In eval testing with an 8B model (Ministral 3 8B Reasoning Q4_K_M), unconditionally trusting intent dropped workflow completion from 100% to as low as 4% on reasoning-heavy scenarios. WorkflowRunner and middleware default to `trust_text_intent=False` and are not affected. See [ADR-013](../decisions/013-text-response-intent.md) for the full analysis.
 
 ### Mode 3: Middleware (composable guardrails)
 

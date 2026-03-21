@@ -106,6 +106,7 @@ async def handle_chat_completions(
             validator=validator,
             error_tracker=error_tracker,
             tool_specs=tool_specs,
+            trust_text_intent=True,
         )
     except ToolCallError as exc:
         # Retries exhausted — the model kept returning text instead of tool
@@ -122,6 +123,13 @@ async def handle_chat_completions(
         if is_stream:
             return text_to_sse_events("", model=model_name)
         return text_response_to_openai("", model=model_name)
+
+    # Intentional text response — pass through to client
+    if isinstance(result.response, TextResponse):
+        logger.info("Intentional text response, passing through")
+        if is_stream:
+            return text_to_sse_events(result.response.content, model=model_name)
+        return text_response_to_openai(result.response.content, model=model_name)
 
     tool_calls = result.response
 

@@ -247,6 +247,7 @@ class ToolCall(BaseModel):
 class TextResponse(BaseModel):
     """Non-tool-call response from the model (reasoning trace, refusal, etc.)."""
     content: str
+    intentional: bool = False  # True = backend signalled finish_reason="stop"
 
 
 # Type alias for what the client returns
@@ -550,11 +551,12 @@ class ResponseValidator:
 
     def __init__(self, tool_names: list[str], rescue_enabled: bool = True) -> None: ...
 
-    def validate(self, response: LLMResponse) -> ValidationResult:
+    def validate(self, response: LLMResponse, trust_text_intent: bool = False) -> ValidationResult:
         """Validate an LLM response.
 
         Returns ValidationResult with tool_calls on success, or a Nudge on failure.
-        TextResponse path: try rescue_tool_call(), then retry nudge.
+        TextResponse path: if trust_text_intent and intentional, pass through.
+        Otherwise try rescue_tool_call(), then retry nudge.
         list[ToolCall] path: check for unknown tool names → unknown_tool_nudge.
         """
         ...
@@ -684,12 +686,13 @@ class WorkflowRunner:
     This is the core agentic loop. It:
     1. Builds the initial message list (system prompt + user input)
     2. Initializes guardrail middleware (ResponseValidator, StepEnforcer, ErrorTracker)
-    3. Sends messages to the LLM via the client (streaming or batch)
-    4. Delegates response validation to ResponseValidator (rescue, retry, unknown tool)
-    5. Delegates step enforcement to StepEnforcer (premature terminal escalation)
-    6. Delegates error budgets to ErrorTracker (consecutive retries and tool errors)
-    7. Manages context budget via ContextManager
-    8. Terminates on terminal tool or max iterations
+    3. Delegates inference to run_inference() — the shared "front half" that
+       handles compaction, reasoning folding, serialization, sending, validation,
+       and retry. Both the runner and the proxy consume this function.
+    4. Delegates step enforcement to StepEnforcer (premature terminal escalation)
+    5. Delegates error budgets to ErrorTracker (consecutive retries and tool errors)
+    6. Executes tool calls and manages conversation history
+    7. Terminates on terminal tool or max iterations
 
     The runner composes middleware internally — it instantiates
     ResponseValidator, StepEnforcer, and ErrorTracker per run(). These same
@@ -697,9 +700,10 @@ class WorkflowRunner:
     examples/foreign_loop.py and ADR-011).
 
     Every LLM call — whether it returns a list[ToolCall] or TextResponse —
-    consumes one iteration. When a model returns multiple tool calls in one
-    response, the runner executes all of them in the same iteration, emitting
-    one TOOL_CALL message (with N ToolCallInfo entries) and N TOOL_RESULT
+    consumes one iteration (retries within run_inference also consume
+    iterations). When a model returns multiple tool calls in one response,
+    the runner executes all of them in the same iteration, emitting one
+    TOOL_CALL message (with N ToolCallInfo entries) and N TOOL_RESULT
     messages.
     """
 
@@ -1196,7 +1200,8 @@ forge/
 │   ├── __init__.py                # Public API exports
 │   │
 │   ├── core/
-│   │   ├── runner.py              # WorkflowRunner — the agentic loop
+│   │   ├── inference.py           # run_inference() — shared front half (compact, fold, validate, retry)
+│   │   ├── runner.py              # WorkflowRunner — the agentic loop (back half)
 │   │   ├── workflow.py            # Workflow, ToolSpec, ToolParam, ToolCall, TextResponse
 │   │   ├── steps.py               # StepTracker
 │   │   └── messages.py            # Message, MessageMeta, MessageRole, MessageType
@@ -1222,6 +1227,12 @@ forge/
 │   ├── prompts/
 │   │   ├── templates.py           # build_tool_prompt(), extract_tool_call(), rescue_tool_call()
 │   │   └── nudges.py              # retry_nudge(), unknown_tool_nudge(), step_nudge() (3 tiers)
+│   │
+│   ├── proxy/
+│   │   ├── proxy.py               # ProxyServer — programmatic start/stop API
+│   │   ├── server.py              # Raw asyncio HTTP server, queue serialization, SSE streaming
+│   │   ├── handler.py             # Request handler — bridge between HTTP and run_inference
+│   │   └── convert.py             # OpenAI messages ↔ forge Messages conversion
 │   │
 │   ├── server.py                  # ServerManager, BudgetMode, setup_backend()
 │   └── errors.py                  # ForgeError hierarchy
