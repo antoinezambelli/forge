@@ -133,6 +133,7 @@ class LlamafileClient:
         timeout: float = 300.0,
         think: bool | None = None,
         cache_prompt: bool = True,
+        slot_id: int | None = None,
     ) -> None:
         self.base_url = base_url
         self.model = model
@@ -141,11 +142,17 @@ class LlamafileClient:
         self._http = httpx.AsyncClient(timeout=timeout)
         self._think: bool = think if think is not None else True  # auto = capture
         self._cache_prompt = cache_prompt
+        self._slot_id = slot_id
 
         if mode in ("native", "prompt"):
             self.resolved_mode: str | None = mode
         else:
             self.resolved_mode = None
+
+    def _apply_slot_id(self, body: dict[str, Any]) -> None:
+        """Inject slot_id into a request body if configured."""
+        if self._slot_id is not None:
+            body["slot_id"] = self._slot_id
 
     def _resolve_reasoning(
         self, accumulated_reasoning: str, accumulated_content: str
@@ -203,6 +210,7 @@ class LlamafileClient:
             "stream": True,
             "cache_prompt": self._cache_prompt,
         }
+        self._apply_slot_id(body)
 
         if mode == "native":
             prepared = _merge_consecutive(messages)
@@ -390,6 +398,7 @@ class LlamafileClient:
             "temperature": self.temperature,
             "cache_prompt": self._cache_prompt,
         }
+        self._apply_slot_id(body)
         if tools:
             body["tools"] = [format_tool(t) for t in tools]
 
@@ -454,6 +463,7 @@ class LlamafileClient:
             "temperature": self.temperature,
             "cache_prompt": self._cache_prompt,
         }
+        self._apply_slot_id(body)
 
         resp = await self._http.post(
             f"{self.base_url}/chat/completions", json=body
