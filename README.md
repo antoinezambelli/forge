@@ -110,7 +110,7 @@ python -m forge.proxy --backend llamaserver --gguf path/to/model.gguf --port 808
 
 Then configure your client to use `http://localhost:8081/v1` as the API base URL.
 
-**Note:** The proxy trusts the model's intent when it responds with text instead of calling tools (`trust_text_intent=True`). This eliminates retry latency on conversational turns but means forge won't nudge the model if it *should* have called a tool. In our eval testing, unconditionally trusting intent dropped an 8B model from 100% to as low as 4% on reasoning-heavy workflows — which is why WorkflowRunner and middleware default to `trust_text_intent=False` (full guardrail protection). The proxy accepts this tradeoff for zero-code integration; the client's own agentic loop handles re-prompting. See [ADR-013](docs/decisions/013-text-response-intent.md).
+**Note:** The proxy automatically injects a synthetic `respond` tool when tools are present in the request. The model calls `respond(message="...")` instead of producing bare text, keeping it in tool-calling mode where forge's full guardrail stack applies. The `respond` call is stripped from the outbound response — the client sees a normal text response (`finish_reason: "stop"`) and never knows the tool exists. This eliminates the `trust_text_intent` tradeoff described in [ADR-013](docs/decisions/013-text-response-intent.md) — no retries wasted on conversational turns, no accuracy loss on tool-calling turns.
 
 ## Backends
 
@@ -182,13 +182,15 @@ src/forge/
   prompts/
     templates.py       # Tool prompt builders (prompt-injected path)
     nudges.py          # Retry and step-enforcement nudge templates
+  tools/
+    respond.py         # Synthetic respond tool (respond_tool(), respond_spec())
   proxy/
     proxy.py           # ProxyServer — programmatic start/stop API
     server.py          # Raw asyncio HTTP server, SSE streaming
     handler.py         # Request handler — bridge between HTTP and run_inference
     convert.py         # OpenAI messages ↔ forge Messages conversion
 tests/
-  unit/                # 562 deterministic tests — no LLM backend required
+  unit/                # 655 deterministic tests — no LLM backend required
   eval/                # Eval harness — model qualification against real backends
 ```
 

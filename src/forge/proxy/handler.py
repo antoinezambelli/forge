@@ -19,6 +19,7 @@ from forge.proxy.convert import (
     text_response_to_openai,
     text_to_sse_events,
 )
+from forge.tools.respond import RESPOND_TOOL_NAME, respond_spec
 
 logger = logging.getLogger("forge.proxy")
 
@@ -79,6 +80,14 @@ async def handle_chat_completions(
     # Convert inbound
     messages = openai_to_messages(openai_messages)
     tool_specs = _extract_tool_specs(request_tools)
+
+    # Inject respond tool when tools are present.  The model calls
+    # respond(message="...") instead of producing bare text, keeping it
+    # in tool-calling mode where guardrails apply.  The respond call is
+    # stripped from the outbound response — the client never sees it.
+    if tool_specs and not any(s.name == RESPOND_TOOL_NAME for s in tool_specs):
+        tool_specs.append(respond_spec())
+
     tool_names = _extract_tool_names(tool_specs)
 
     # No tools → plain chat completion, no guardrails needed.
@@ -133,7 +142,28 @@ async def handle_chat_completions(
 
     tool_calls = result.response
 
-    # Convert outbound
+    # Strip respond() calls — convert to plain text for the client.
+    # If the model called respond(message="..."), the client sees a
+    # normal text response (finish_reason="stop"), not a tool call.
+    respond_calls = [tc for tc in tool_calls if tc.tool == RESPOND_TOOL_NAME]
+    other_calls = [tc for tc in tool_calls if tc.tool != RESPOND_TOOL_NAME]
+
+    if respond_calls and not other_calls:
+        # Pure respond — convert to text
+        text = respond_calls[0].args.get("message", "")
+        logger.info("Stripping respond() call, returning as text")
+        if is_stream:
+            return text_to_sse_events(text, model=model_name)
+        return text_response_to_openai(text, model=model_name)
+
+    if other_calls:
+        # Real tool calls (possibly mixed with respond) — return the
+        # real tool calls only, drop respond.
+        if is_stream:
+            return tool_calls_to_sse_events(other_calls, model=model_name)
+        return tool_calls_to_openai(other_calls, model=model_name)
+
+    # Shouldn't happen, but handle empty tool_calls gracefully
     if is_stream:
-        return tool_calls_to_sse_events(tool_calls, model=model_name)
-    return tool_calls_to_openai(tool_calls, model=model_name)
+        return text_to_sse_events("", model=model_name)
+    return text_response_to_openai("", model=model_name)

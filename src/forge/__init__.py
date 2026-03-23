@@ -26,6 +26,7 @@ from forge.context import (
     detect_hardware,
 )
 from forge.server import BudgetMode, ServerManager, setup_backend
+from forge.tools import RESPOND_TOOL_NAME, respond_spec, respond_tool
 from forge.prompts import build_tool_prompt, extract_tool_call, rescue_tool_call, retry_nudge, step_nudge
 from forge.guardrails import (
     CheckResult,
@@ -100,6 +101,10 @@ __all__ = [
     "BudgetMode",
     "ServerManager",
     "setup_backend",
+    # Built-in tools
+    "RESPOND_TOOL_NAME",
+    "respond_spec",
+    "respond_tool",
     # Guardrails
     "CheckResult",
     "Guardrails",
