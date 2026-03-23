@@ -57,16 +57,16 @@ class ContextManager:
         self,
         strategy: CompactStrategy,
         budget_tokens: int,
-        compact_threshold: float = 0.75,
         on_compact: Callable[[CompactEvent], None] | None = None,
         context_thresholds: list[float] | None = None,
         on_context_threshold: Callable[[int, int, float], str | None] | None = None,
     ) -> None:
         """
         Args:
-            strategy: Compaction strategy to use when threshold is exceeded.
+            strategy: Compaction strategy to use. The strategy owns its own
+                compaction thresholds (e.g. ``TieredCompact(compact_threshold=0.75)``
+                or ``TieredCompact(phase_thresholds=(0.6, 0.75, 0.9))``).
             budget_tokens: Maximum context budget in tokens.
-            compact_threshold: Fraction of budget that triggers compaction.
             on_compact: Callback invoked when compaction fires. Receives a
                 CompactEvent with before/after token counts, phase reached,
                 and which messages were affected. Use for logging, debugging,
@@ -84,7 +84,6 @@ class ContextManager:
         """
         self.strategy = strategy
         self.budget_tokens = budget_tokens
-        self.compact_threshold = compact_threshold
         self.on_compact = on_compact
         self._context_thresholds = sorted(context_thresholds) if context_thresholds else []
         self._on_context_threshold = on_context_threshold
@@ -134,16 +133,15 @@ class ContextManager:
         step_index: int = 0,
         step_hint: str = "",
     ) -> list[Message]:
-        """Compact if estimated tokens exceed budget * compact_threshold."""
+        """Delegate to the strategy, which owns threshold logic."""
         tokens_before = self.estimate_tokens(messages)
-        trigger_tokens = int(self.budget_tokens * self.compact_threshold)
-
-        if tokens_before < trigger_tokens:
-            return messages
 
         result, phase = self.strategy.compact(
-            messages, trigger_tokens, step_hint=step_hint
+            messages, self.budget_tokens, step_hint=step_hint
         )
+
+        if phase == 0:
+            return messages
 
         if self.on_compact is not None:
             event = CompactEvent(

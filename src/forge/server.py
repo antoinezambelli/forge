@@ -406,8 +406,9 @@ async def setup_backend(
     mode: str = "native",
     port: int = 8080,
     extra_flags: list[str] | None = None,
-    compact_threshold: float = 0.75,
     on_compact: Callable[[CompactEvent], None] | None = None,
+    compact_threshold: float = 0.75,
+    phase_thresholds: tuple[float, float, float] | None = None,
     cache_type_k: str | None = None,
     cache_type_v: str | None = None,
     n_slots: int | None = None,
@@ -460,9 +461,11 @@ async def setup_backend(
         client.set_num_ctx(budget)
 
     ctx_manager = ContextManager(
-        strategy=TieredCompact(),
+        strategy=TieredCompact(
+            compact_threshold=compact_threshold,
+            phase_thresholds=phase_thresholds,
+        ),
         budget_tokens=budget,
-        compact_threshold=compact_threshold,
         on_compact=on_compact,
     )
     return server, ctx_manager

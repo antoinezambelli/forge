@@ -26,7 +26,7 @@ class CompactStrategy(ABC):
     def compact(
         self,
         messages: list[Message],
-        trigger_tokens: int,
+        budget_tokens: int,
         *,
         step_hint: str = "",
     ) -> tuple[list[Message], int]:
@@ -37,11 +37,9 @@ class CompactStrategy(ABC):
         compaction was applied, 1+ is implementation-defined. Strategies
         without internal phases should return 1.
 
-        trigger_tokens is the threshold that triggered compaction. For tiered
-        strategies, each phase applies its structural changes, then checks
-        whether the result is under trigger_tokens before escalating to the
-        next phase. This is NOT a target to compact down to — phases remove
-        what they remove structurally.
+        The strategy owns its own threshold logic. It receives the full
+        budget_tokens and decides whether to compact and how aggressively.
+        Return phase 0 if no compaction was needed.
 
         Must preserve (never cut):
         - The system prompt (messages[0])
@@ -59,7 +57,7 @@ class NoCompact(CompactStrategy):
     def compact(
         self,
         messages: list[Message],
-        trigger_tokens: int,
+        budget_tokens: int,
         *,
         step_hint: str = "",
     ) -> tuple[list[Message], int]:
@@ -73,16 +71,20 @@ class SlidingWindowCompact(CompactStrategy):
     identify iteration boundaries (handles variable-size parallel tool batches).
     """
 
-    def __init__(self, keep_recent: int) -> None:
+    def __init__(self, keep_recent: int, compact_threshold: float = 0.75) -> None:
         self.keep_recent = keep_recent
+        self.compact_threshold = compact_threshold
 
     def compact(
         self,
         messages: list[Message],
-        trigger_tokens: int,
+        budget_tokens: int,
         *,
         step_hint: str = "",
     ) -> tuple[list[Message], int]:
+        trigger = int(budget_tokens * self.compact_threshold)
+        if _estimate_tokens(messages) < trigger:
+            return list(messages), 0
         eligible_end = TieredCompact._find_eligible_end(messages, self.keep_recent)
         if eligible_end <= 2:
             return list(messages), 1
@@ -105,14 +107,30 @@ class TieredCompact(CompactStrategy):
 
     TRUNCATE_CHARS = 200
 
-    def __init__(self, keep_recent: int = 2) -> None:
+    def __init__(
+        self,
+        keep_recent: int = 2,
+        compact_threshold: float = 0.75,
+        phase_thresholds: tuple[float, float, float] | None = None,
+    ) -> None:
         """
         Args:
             keep_recent: Number of recent loop iterations to keep fully intact.
                 Tune based on workflow depth — shallow workflows (3-5 steps)
                 can use 2-3, deep workflows (8-10+) may need 4-6.
+            compact_threshold: Fraction of budget that triggers compaction.
+                Used as the threshold for all three phases when
+                phase_thresholds is not set.
+            phase_thresholds: Per-phase compaction thresholds as fractions
+                of the context budget. A tuple of (phase1, phase2, phase3).
+                Example: ``(0.60, 0.75, 0.90)`` means Phase 1 fires at 60%,
+                Phase 2 at 75%, Phase 3 at 90%. Overrides compact_threshold.
         """
         self.keep_recent = keep_recent
+        if phase_thresholds is not None:
+            self._phase_triggers = phase_thresholds
+        else:
+            self._phase_triggers = (compact_threshold, compact_threshold, compact_threshold)
 
     @staticmethod
     def _find_eligible_end(messages: list[Message], keep_recent: int) -> int:
@@ -147,23 +165,36 @@ class TieredCompact(CompactStrategy):
     def compact(
         self,
         messages: list[Message],
-        trigger_tokens: int,
+        budget_tokens: int,
         *,
         step_hint: str = "",
     ) -> tuple[list[Message], int]:
-        """Apply tiered compaction: Phase 1 -> Phase 2 -> Phase 3."""
+        """Apply tiered compaction: Phase 1 -> Phase 2 -> Phase 3.
+
+        Each phase has its own threshold (fraction of budget_tokens).
+        A phase only runs if estimated tokens exceed its threshold.
+        """
+        tokens = _estimate_tokens(messages)
+        t1 = int(budget_tokens * self._phase_triggers[0])
+        t2 = int(budget_tokens * self._phase_triggers[1])
+        t3 = int(budget_tokens * self._phase_triggers[2])
+
+        # Nothing to do if below the lowest threshold
+        if tokens < t1:
+            return list(messages), 0
+
         # Determine the boundary: everything before this index is eligible
         # messages[0] and messages[1] are always protected
         eligible_end = self._find_eligible_end(messages, self.keep_recent)
 
         # Phase 1: Drop nudges/retries, truncate tool_results to first line
         result = self._phase1(messages, eligible_end)
-        if _estimate_tokens(result) < trigger_tokens:
+        if _estimate_tokens(result) < t2:
             return result, 1
 
         # Phase 2: Phase 1 + drop tool_results entirely
         result = self._phase2(messages, eligible_end)
-        if _estimate_tokens(result) < trigger_tokens:
+        if _estimate_tokens(result) < t3:
             return result, 2
 
         # Phase 3: Phase 2 + drop reasoning and text_response (tool_call skeleton only)
