@@ -168,8 +168,15 @@ async def run_inference(
             messages.clear()
             messages.extend(compacted)
 
+        # Check context thresholds — inject warning if crossed
+        context_warning = context_manager.check_thresholds(messages)
+
         # Fold and serialize
         api_messages = fold_and_serialize(messages, api_format)
+
+        # Inject context warning as transient system message (not persisted)
+        if context_warning:
+            api_messages.append({"role": "system", "content": context_warning})
 
         # Send
         if stream:
