@@ -62,6 +62,8 @@ class ServerManager:
         self._current_mode: str | None = None
         self._current_ctx: int | None = None
         self._current_flags: tuple[str, ...] = ()
+        self._current_cache_type_k: str | None = None
+        self._current_cache_type_v: str | None = None
 
     # ── start / stop ────────────────────────────────────────────
 
@@ -72,10 +74,13 @@ class ServerManager:
         mode: str = "native",
         extra_flags: list[str] | None = None,
         ctx_override: int | None = None,
+        cache_type_k: str | None = None,
+        cache_type_v: str | None = None,
     ) -> None:
         """Start a llama-server/llamafile process.
 
-        No-op if the same model + mode + ctx + extra_flags is already running.
+        No-op if the same model + mode + ctx + extra_flags + cache types
+        is already running.
         For ``backend="ollama"`` this is always a no-op.
 
         For ``backend="llamafile"``, the llamafile runtime binary is
@@ -88,6 +93,10 @@ class ServerManager:
             mode: ``"native"`` or ``"prompt"``.
             extra_flags: Additional CLI flags (e.g. ``["--reasoning-format", "auto"]``).
             ctx_override: If set, pass ``-c <value>`` to the server.
+            cache_type_k: KV cache quantization type for keys
+                          (e.g. ``"q8_0"``, ``"q4_0"``).
+            cache_type_v: KV cache quantization type for values
+                          (e.g. ``"q8_0"``, ``"q4_0"``).
         """
         if self._backend == "ollama":
             return
@@ -99,6 +108,8 @@ class ServerManager:
             and self._current_mode == mode
             and self._current_ctx == ctx_override
             and self._current_flags == flags
+            and self._current_cache_type_k == cache_type_k
+            and self._current_cache_type_v == cache_type_v
         ):
             return
 
@@ -133,6 +144,10 @@ class ServerManager:
             cmd.extend(extra_flags)
         if ctx_override is not None:
             cmd.extend(["-c", str(ctx_override)])
+        if cache_type_k is not None:
+            cmd.extend(["--cache-type-k", cache_type_k])
+        if cache_type_v is not None:
+            cmd.extend(["--cache-type-v", cache_type_v])
 
         self._proc = subprocess.Popen(
             cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
@@ -143,6 +158,8 @@ class ServerManager:
         self._current_mode = mode
         self._current_ctx = ctx_override
         self._current_flags = flags
+        self._current_cache_type_k = cache_type_k
+        self._current_cache_type_v = cache_type_v
 
     async def stop(self) -> None:
         """Stop the current server / unload the Ollama model."""
@@ -164,6 +181,8 @@ class ServerManager:
             self._current_mode = None
             self._current_ctx = None
             self._current_flags = ()
+            self._current_cache_type_k = None
+            self._current_cache_type_v = None
             await asyncio.sleep(3)  # let VRAM clear
 
     # ── /props + context ────────────────────────────────────────
@@ -249,6 +268,8 @@ class ServerManager:
         budget_mode: BudgetMode = BudgetMode.BACKEND,
         manual_tokens: int | None = None,
         extra_flags: list[str] | None = None,
+        cache_type_k: str | None = None,
+        cache_type_v: str | None = None,
     ) -> int:
         """Start server with the specified budget mode and return the resolved budget.
 
@@ -268,6 +289,10 @@ class ServerManager:
             budget_mode: How to determine context budget.
             manual_tokens: Required for MANUAL mode.
             extra_flags: Additional server CLI flags.
+            cache_type_k: KV cache quantization type for keys
+                          (e.g. ``"q8_0"``, ``"q4_0"``).
+            cache_type_v: KV cache quantization type for values
+                          (e.g. ``"q8_0"``, ``"q4_0"``).
 
         Returns:
             Resolved budget in tokens (ready for ContextManager).
@@ -285,17 +310,26 @@ class ServerManager:
 
         if budget_mode == BudgetMode.FORGE_FAST:
             # Phase 1: start with auto-tune to discover max
-            await self.start(model, gguf_path, mode, extra_flags, ctx_override=None)
+            await self.start(
+                model, gguf_path, mode, extra_flags, ctx_override=None,
+                cache_type_k=cache_type_k, cache_type_v=cache_type_v,
+            )
             full_ctx = await self.get_server_context()
             half_ctx = full_ctx // 2
 
             # Phase 2: restart with half context
-            await self.start(model, gguf_path, mode, extra_flags, ctx_override=half_ctx)
+            await self.start(
+                model, gguf_path, mode, extra_flags, ctx_override=half_ctx,
+                cache_type_k=cache_type_k, cache_type_v=cache_type_v,
+            )
             return await self.resolve_budget(budget_mode)
 
         # BACKEND / FORGE_FULL / MANUAL
         ctx_override = manual_tokens if budget_mode == BudgetMode.MANUAL else None
-        await self.start(model, gguf_path, mode, extra_flags, ctx_override=ctx_override)
+        await self.start(
+            model, gguf_path, mode, extra_flags, ctx_override=ctx_override,
+            cache_type_k=cache_type_k, cache_type_v=cache_type_v,
+        )
         return await self.resolve_budget(budget_mode, manual_tokens)
 
     def _ollama_vram_tier_budget(self) -> int:
@@ -360,6 +394,8 @@ async def setup_backend(
     extra_flags: list[str] | None = None,
     compact_threshold: float = 0.75,
     on_compact: Callable[[CompactEvent], None] | None = None,
+    cache_type_k: str | None = None,
+    cache_type_v: str | None = None,
 ) -> tuple[ServerManager, ContextManager]:
     """One-call setup: start backend, resolve budget, create ContextManager.
 
@@ -368,6 +404,11 @@ async def setup_backend(
     in sync with the resolved budget.  For llama-server / llamafile the
     context size is baked into the server process via ``-c``, so the
     client parameter is ignored.
+
+    KV cache quantization (``cache_type_k`` / ``cache_type_v``) reduces
+    VRAM usage per token, effectively increasing usable context for the
+    same GPU memory.  Common values: ``"q8_0"`` (~50% savings vs F16),
+    ``"q4_0"`` (~75% savings).  Only applies to llama-server / llamafile.
 
     Example usage::
 
@@ -394,6 +435,8 @@ async def setup_backend(
         budget_mode=budget_mode,
         manual_tokens=manual_tokens,
         extra_flags=extra_flags,
+        cache_type_k=cache_type_k,
+        cache_type_v=cache_type_v,
     )
 
     # Ollama: wire num_ctx so every request uses the resolved budget

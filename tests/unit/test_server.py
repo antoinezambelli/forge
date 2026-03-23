@@ -286,6 +286,62 @@ class TestServerManagerStart:
         args = mock_popen.call_args[0][0]
         assert str(tmp_path / "llamafile-0.9.2.exe") in args
 
+    @pytest.mark.asyncio
+    async def test_start_with_cache_type_k_v(self) -> None:
+        sm = ServerManager(backend="llamaserver", port=8080)
+        mock_proc = MagicMock()
+        with (
+            patch("forge.server.subprocess.Popen", return_value=mock_proc) as mock_popen,
+            patch.object(sm, "_wait_healthy", new_callable=AsyncMock),
+        ):
+            await sm.start(
+                "llama3", "/models/llama3.gguf",
+                cache_type_k="q8_0", cache_type_v="q8_0",
+            )
+
+        cmd = mock_popen.call_args[0][0]
+        assert "--cache-type-k" in cmd
+        assert "q8_0" in cmd
+        assert "--cache-type-v" in cmd
+        # Flags appear in order
+        k_idx = cmd.index("--cache-type-k")
+        v_idx = cmd.index("--cache-type-v")
+        assert cmd[k_idx + 1] == "q8_0"
+        assert cmd[v_idx + 1] == "q8_0"
+
+    @pytest.mark.asyncio
+    async def test_start_without_cache_type_omits_flags(self) -> None:
+        sm = ServerManager(backend="llamaserver", port=8080)
+        mock_proc = MagicMock()
+        with (
+            patch("forge.server.subprocess.Popen", return_value=mock_proc) as mock_popen,
+            patch.object(sm, "_wait_healthy", new_callable=AsyncMock),
+        ):
+            await sm.start("llama3", "/models/llama3.gguf")
+
+        cmd = mock_popen.call_args[0][0]
+        assert "--cache-type-k" not in cmd
+        assert "--cache-type-v" not in cmd
+
+    @pytest.mark.asyncio
+    async def test_start_restarts_on_cache_type_change(self) -> None:
+        sm = ServerManager(backend="llamaserver", port=8080)
+        mock_proc = MagicMock()
+        with (
+            patch("forge.server.subprocess.Popen", return_value=mock_proc),
+            patch.object(sm, "_wait_healthy", new_callable=AsyncMock),
+            patch("forge.server.asyncio.sleep", new_callable=AsyncMock),
+        ):
+            await sm.start("llama3", "/models/llama3.gguf", cache_type_k="q8_0")
+            assert sm._current_cache_type_k == "q8_0"
+
+            # Same config — should reuse (no restart)
+            await sm.start("llama3", "/models/llama3.gguf", cache_type_k="q8_0")
+
+            # Different cache type — should restart
+            await sm.start("llama3", "/models/llama3.gguf", cache_type_k="q4_0")
+            assert sm._current_cache_type_k == "q4_0"
+
 
 # ── ServerManager.stop() ────────────────────────────────────────
 
@@ -355,6 +411,8 @@ class TestServerManagerStop:
         assert sm._current_mode is None
         assert sm._current_ctx is None
         assert sm._current_flags == ()
+        assert sm._current_cache_type_k is None
+        assert sm._current_cache_type_v is None
 
 
 # ── ServerManager.get_server_context() ──────────────────────────
@@ -530,6 +588,7 @@ class TestStartWithBudget:
 
         mock_start.assert_called_once_with(
             "llama3", "/models/llama3.gguf", "native", None, ctx_override=None,
+            cache_type_k=None, cache_type_v=None,
         )
         assert result == 13568
 
@@ -548,6 +607,7 @@ class TestStartWithBudget:
 
         mock_start.assert_called_once_with(
             "llama3", "/models/llama3.gguf", "native", None, ctx_override=8000,
+            cache_type_k=None, cache_type_v=None,
         )
         assert result == 8000
 
@@ -574,6 +634,7 @@ class TestStartWithBudget:
 
         mock_start.assert_called_once_with(
             "llama3", "/models/llama3.gguf", "native", None, ctx_override=None,
+            cache_type_k=None, cache_type_v=None,
         )
         assert result == 13568
 
@@ -599,10 +660,12 @@ class TestStartWithBudget:
         # Phase 1: start without -c
         mock_start.assert_any_call(
             "llama3", "/models/llama3.gguf", "native", None, ctx_override=None,
+            cache_type_k=None, cache_type_v=None,
         )
         # Phase 2: restart with half (13568 // 2 = 6784)
         mock_start.assert_any_call(
             "llama3", "/models/llama3.gguf", "native", None, ctx_override=6784,
+            cache_type_k=None, cache_type_v=None,
         )
         assert result == 6784
 
