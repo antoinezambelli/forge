@@ -64,6 +64,7 @@ class ServerManager:
         self._current_flags: tuple[str, ...] = ()
         self._current_cache_type_k: str | None = None
         self._current_cache_type_v: str | None = None
+        self._current_n_slots: int | None = None
 
     # ── start / stop ────────────────────────────────────────────
 
@@ -76,11 +77,12 @@ class ServerManager:
         ctx_override: int | None = None,
         cache_type_k: str | None = None,
         cache_type_v: str | None = None,
+        n_slots: int | None = None,
     ) -> None:
         """Start a llama-server/llamafile process.
 
         No-op if the same model + mode + ctx + extra_flags + cache types
-        is already running.
+        + slots is already running.
         For ``backend="ollama"`` this is always a no-op.
 
         For ``backend="llamafile"``, the llamafile runtime binary is
@@ -97,6 +99,8 @@ class ServerManager:
                           (e.g. ``"q8_0"``, ``"q4_0"``).
             cache_type_v: KV cache quantization type for values
                           (e.g. ``"q8_0"``, ``"q4_0"``).
+            n_slots: Number of concurrent slots (each with its own KV
+                     cache). Used for multi-agent architectures.
         """
         if self._backend == "ollama":
             return
@@ -110,6 +114,7 @@ class ServerManager:
             and self._current_flags == flags
             and self._current_cache_type_k == cache_type_k
             and self._current_cache_type_v == cache_type_v
+            and self._current_n_slots == n_slots
         ):
             return
 
@@ -148,6 +153,8 @@ class ServerManager:
             cmd.extend(["--cache-type-k", cache_type_k])
         if cache_type_v is not None:
             cmd.extend(["--cache-type-v", cache_type_v])
+        if n_slots is not None:
+            cmd.extend(["--parallel", str(n_slots)])
 
         self._proc = subprocess.Popen(
             cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
@@ -160,6 +167,7 @@ class ServerManager:
         self._current_flags = flags
         self._current_cache_type_k = cache_type_k
         self._current_cache_type_v = cache_type_v
+        self._current_n_slots = n_slots
 
     async def stop(self) -> None:
         """Stop the current server / unload the Ollama model."""
@@ -183,6 +191,7 @@ class ServerManager:
             self._current_flags = ()
             self._current_cache_type_k = None
             self._current_cache_type_v = None
+            self._current_n_slots = None
             await asyncio.sleep(3)  # let VRAM clear
 
     # ── /props + context ────────────────────────────────────────
@@ -270,6 +279,7 @@ class ServerManager:
         extra_flags: list[str] | None = None,
         cache_type_k: str | None = None,
         cache_type_v: str | None = None,
+        n_slots: int | None = None,
     ) -> int:
         """Start server with the specified budget mode and return the resolved budget.
 
@@ -293,6 +303,7 @@ class ServerManager:
                           (e.g. ``"q8_0"``, ``"q4_0"``).
             cache_type_v: KV cache quantization type for values
                           (e.g. ``"q8_0"``, ``"q4_0"``).
+            n_slots: Number of concurrent slots.
 
         Returns:
             Resolved budget in tokens (ready for ContextManager).
@@ -313,6 +324,7 @@ class ServerManager:
             await self.start(
                 model, gguf_path, mode, extra_flags, ctx_override=None,
                 cache_type_k=cache_type_k, cache_type_v=cache_type_v,
+                n_slots=n_slots,
             )
             full_ctx = await self.get_server_context()
             half_ctx = full_ctx // 2
@@ -321,6 +333,7 @@ class ServerManager:
             await self.start(
                 model, gguf_path, mode, extra_flags, ctx_override=half_ctx,
                 cache_type_k=cache_type_k, cache_type_v=cache_type_v,
+                n_slots=n_slots,
             )
             return await self.resolve_budget(budget_mode)
 
@@ -329,6 +342,7 @@ class ServerManager:
         await self.start(
             model, gguf_path, mode, extra_flags, ctx_override=ctx_override,
             cache_type_k=cache_type_k, cache_type_v=cache_type_v,
+            n_slots=n_slots,
         )
         return await self.resolve_budget(budget_mode, manual_tokens)
 
@@ -396,6 +410,7 @@ async def setup_backend(
     on_compact: Callable[[CompactEvent], None] | None = None,
     cache_type_k: str | None = None,
     cache_type_v: str | None = None,
+    n_slots: int | None = None,
 ) -> tuple[ServerManager, ContextManager]:
     """One-call setup: start backend, resolve budget, create ContextManager.
 
@@ -437,6 +452,7 @@ async def setup_backend(
         extra_flags=extra_flags,
         cache_type_k=cache_type_k,
         cache_type_v=cache_type_v,
+        n_slots=n_slots,
     )
 
     # Ollama: wire num_ctx so every request uses the resolved budget

@@ -342,6 +342,35 @@ class TestServerManagerStart:
             await sm.start("llama3", "/models/llama3.gguf", cache_type_k="q4_0")
             assert sm._current_cache_type_k == "q4_0"
 
+    @pytest.mark.asyncio
+    async def test_start_with_n_slots(self) -> None:
+        sm = ServerManager(backend="llamaserver", port=8080)
+        mock_proc = MagicMock()
+        with (
+            patch("forge.server.subprocess.Popen", return_value=mock_proc) as mock_popen,
+            patch.object(sm, "_wait_healthy", new_callable=AsyncMock),
+        ):
+            await sm.start("llama3", "/models/llama3.gguf", n_slots=2)
+
+        cmd = mock_popen.call_args[0][0]
+        assert "--parallel" in cmd
+        idx = cmd.index("--parallel")
+        assert cmd[idx + 1] == "2"
+        assert sm._current_n_slots == 2
+
+    @pytest.mark.asyncio
+    async def test_start_without_n_slots_omits_flag(self) -> None:
+        sm = ServerManager(backend="llamaserver", port=8080)
+        mock_proc = MagicMock()
+        with (
+            patch("forge.server.subprocess.Popen", return_value=mock_proc) as mock_popen,
+            patch.object(sm, "_wait_healthy", new_callable=AsyncMock),
+        ):
+            await sm.start("llama3", "/models/llama3.gguf")
+
+        cmd = mock_popen.call_args[0][0]
+        assert "--parallel" not in cmd
+
 
 # ── ServerManager.stop() ────────────────────────────────────────
 
@@ -413,6 +442,7 @@ class TestServerManagerStop:
         assert sm._current_flags == ()
         assert sm._current_cache_type_k is None
         assert sm._current_cache_type_v is None
+        assert sm._current_n_slots is None
 
 
 # ── ServerManager.get_server_context() ──────────────────────────
@@ -588,7 +618,7 @@ class TestStartWithBudget:
 
         mock_start.assert_called_once_with(
             "llama3", "/models/llama3.gguf", "native", None, ctx_override=None,
-            cache_type_k=None, cache_type_v=None,
+            cache_type_k=None, cache_type_v=None, n_slots=None,
         )
         assert result == 13568
 
@@ -607,7 +637,7 @@ class TestStartWithBudget:
 
         mock_start.assert_called_once_with(
             "llama3", "/models/llama3.gguf", "native", None, ctx_override=8000,
-            cache_type_k=None, cache_type_v=None,
+            cache_type_k=None, cache_type_v=None, n_slots=None,
         )
         assert result == 8000
 
@@ -634,7 +664,7 @@ class TestStartWithBudget:
 
         mock_start.assert_called_once_with(
             "llama3", "/models/llama3.gguf", "native", None, ctx_override=None,
-            cache_type_k=None, cache_type_v=None,
+            cache_type_k=None, cache_type_v=None, n_slots=None,
         )
         assert result == 13568
 
@@ -660,12 +690,12 @@ class TestStartWithBudget:
         # Phase 1: start without -c
         mock_start.assert_any_call(
             "llama3", "/models/llama3.gguf", "native", None, ctx_override=None,
-            cache_type_k=None, cache_type_v=None,
+            cache_type_k=None, cache_type_v=None, n_slots=None,
         )
         # Phase 2: restart with half (13568 // 2 = 6784)
         mock_start.assert_any_call(
             "llama3", "/models/llama3.gguf", "native", None, ctx_override=6784,
-            cache_type_k=None, cache_type_v=None,
+            cache_type_k=None, cache_type_v=None, n_slots=None,
         )
         assert result == 6784
 

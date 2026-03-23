@@ -1124,3 +1124,65 @@ class TestThinkFlagStream:
         final = [c for c in chunks if c.type == ChunkType.FINAL][0]
         assert isinstance(final.response, list)
         assert final.response[0].reasoning == "Server reasoning"
+
+
+# ── slot_id ────────────────────────────────────────────────────
+
+
+class TestSlotId:
+    """slot_id injection into request bodies."""
+
+    def test_slot_id_stored(self) -> None:
+        client = LlamafileClient(
+            base_url="http://test:8080/v1", model="test", mode="native", slot_id=1
+        )
+        assert client._slot_id == 1
+
+    def test_slot_id_default_none(self) -> None:
+        client = LlamafileClient(
+            base_url="http://test:8080/v1", model="test", mode="native"
+        )
+        assert client._slot_id is None
+
+    def test_apply_slot_id_injects(self) -> None:
+        client = LlamafileClient(
+            base_url="http://test:8080/v1", model="test", mode="native", slot_id=1
+        )
+        body: dict = {"model": "test"}
+        client._apply_slot_id(body)
+        assert body["slot_id"] == 1
+
+    def test_apply_slot_id_noop_when_none(self) -> None:
+        client = LlamafileClient(
+            base_url="http://test:8080/v1", model="test", mode="native"
+        )
+        body: dict = {"model": "test"}
+        client._apply_slot_id(body)
+        assert "slot_id" not in body
+
+    @pytest.mark.asyncio
+    async def test_native_send_includes_slot_id(self) -> None:
+        client = LlamafileClient(
+            base_url="http://test:8080/v1", model="test", mode="native", slot_id=1
+        )
+        mock_http = AsyncMock()
+        client._http = mock_http
+
+        tool_call_data = {
+            "choices": [{
+                "message": {
+                    "content": "hello",
+                    "tool_calls": None,
+                },
+                "finish_reason": "stop",
+            }],
+        }
+        mock_http.post.return_value = _mock_response(tool_call_data)
+
+        await client.send(
+            [{"role": "user", "content": "test"}], tools=None
+        )
+
+        call_kwargs = mock_http.post.call_args
+        body = call_kwargs.kwargs.get("json") or call_kwargs[1].get("json")
+        assert body["slot_id"] == 1
