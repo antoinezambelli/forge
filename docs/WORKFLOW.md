@@ -19,6 +19,7 @@ Visual guide to the forge agentic tool-calling loop.
 - `src/forge/context/strategies.py` - TieredCompact (3-phase compaction)
 - `src/forge/clients/base.py` - LLMClient protocol
 - `src/forge/server.py` - ServerManager, BudgetMode, setup_backend()
+- `src/forge/tools/respond.py` - Synthetic respond tool (respond_tool(), respond_spec())
 - `src/forge/prompts/nudges.py` - Retry, unknown-tool, and step nudges
 - `src/forge/prompts/templates.py` - Prompt-injected tool prompt, extract/rescue
 

@@ -1234,6 +1234,10 @@ forge/
 │   │   ├── handler.py             # Request handler — bridge between HTTP and run_inference
 │   │   └── convert.py             # OpenAI messages ↔ forge Messages conversion
 │   │
+│   ├── tools/
+│   │   ├── __init__.py            # Built-in tool exports
+│   │   └── respond.py             # Synthetic respond tool (respond_tool(), respond_spec())
+│   │
 │   ├── server.py                  # ServerManager, BudgetMode, setup_backend()
 │   └── errors.py                  # ForgeError hierarchy
 │
@@ -1540,9 +1544,13 @@ class ServerManager:
         """
         ...
 
-    async def start(self, model, gguf_path, mode="native", extra_flags=None, ctx_override=None) -> None:
+    async def start(self, model, gguf_path, mode="native", extra_flags=None,
+                    ctx_override=None, cache_type_k=None, cache_type_v=None,
+                    n_slots=None) -> None:
         """Start a llama-server/llamafile process. No-op for Ollama.
-        Reuses existing process if same model+mode+ctx+flags."""
+        Reuses existing process if same model+mode+ctx+flags+cache+slots.
+        cache_type_k/v: KV cache quantization (e.g. "q8_0") — halves cache VRAM.
+        n_slots: number of concurrent slots (--parallel N)."""
         ...
 
     async def stop(self) -> None:
@@ -1554,7 +1562,9 @@ class ServerManager:
         ...
 
     async def start_with_budget(self, model, gguf_path, mode="native",
-                                budget_mode=BudgetMode.BACKEND, ...) -> int:
+                                budget_mode=BudgetMode.BACKEND, ...,
+                                cache_type_k=None, cache_type_v=None,
+                                n_slots=None) -> int:
         """Start server + resolve budget in one call. Returns budget in tokens."""
         ...
 ```
@@ -1587,3 +1597,41 @@ runner = WorkflowRunner(client=client, context_manager=ctx)
 # ... run workflows ...
 await server.stop()
 ```
+
+---
+
+## Synthetic Respond Tool
+
+When tools are present but the user sends a conversational message, small models must choose between calling a tool and responding with text. They frequently choose wrong — producing text when they should call tools, or vice versa. The `trust_text_intent` flag (ADR-013) addressed this for the proxy by trusting the model's finish reason, but this dropped 8B models from 100% to as low as 4% on reasoning-heavy workflows.
+
+The respond tool eliminates this ambiguity. The model calls `respond(message="...")` instead of producing bare text. From forge's perspective, every response is a valid tool call — no retries wasted on conversational turns, no accuracy loss on tool-calling turns.
+
+### Three paths
+
+**WorkflowRunner:** Use `respond_tool()` from `forge.tools` to get a ready-made `ToolDef`. Set it as the terminal tool. The callable returns the message string.
+
+```python
+from forge import respond_tool
+
+tools = {
+    "search": search_tool,
+    "respond": respond_tool(),
+}
+workflow = Workflow(..., tools=tools, terminal_tool="respond")
+```
+
+**Proxy:** The respond tool is injected automatically when tools are present in the request. The client never sees it — respond calls are converted to plain text responses (`finish_reason: "stop"`) before returning. This makes `trust_text_intent` irrelevant for the proxy path.
+
+**Middleware:** Include `"respond"` in `tool_names` when creating a `ResponseValidator` or `Guardrails` instance. The respond call passes validation like any other tool call. See `examples/foreign_loop.py` Part 3 for a complete example.
+
+### Why this works for small models
+
+Small models struggle with open-ended decisions ("should I use tools or chat?") but are good at structured choices ("which tool should I call?"). The respond tool converts an open-ended decision into a structured one. The model stays in tool-calling grammar/template at all times, which is where it performs best.
+
+### KV Cache Quantization
+
+`ServerManager.start()` and `setup_backend()` accept `cache_type_k` and `cache_type_v` parameters for KV cache quantization. Using Q8 (`cache_type_k="q8_0"`, `cache_type_v="q8_0"`) roughly halves KV cache VRAM, effectively doubling usable context for the same GPU memory. Measured: 36,864 → 68,608 tokens (1.86x) on Ministral 8B Q4 with no eval regression.
+
+### Multi-Slot Support
+
+`LlamafileClient` accepts a `slot_id` parameter to route requests to specific llama-server slots. `ServerManager.start()` accepts `n_slots` to start the server with `--parallel N`. This enables multi-agent architectures where each agent targets a dedicated KV cache slot.
