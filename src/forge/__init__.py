@@ -23,6 +23,7 @@ from forge.context import (
     NoCompact,
     SlidingWindowCompact,
     TieredCompact,
+    default_context_warning,
     detect_hardware,
 )
 from forge.server import BudgetMode, ServerManager, setup_backend
@@ -86,6 +87,7 @@ __all__ = [
     "CompactEvent",
     "CompactStrategy",
     "ContextManager",
+    "default_context_warning",
     "HardwareProfile",
     "NoCompact",
     "SlidingWindowCompact",

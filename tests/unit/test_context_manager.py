@@ -93,7 +93,10 @@ class TestMaybeCompactOverThreshold:
         # Budget=100, threshold=0.75 -> trigger at 75 tokens = 300 chars
         # Build messages with ~400 chars total
         msgs = _build_messages(total_chars=400, count=6)
-        mgr = ContextManager(SlidingWindowCompact(keep_recent=1), budget_tokens=100, compact_threshold=0.75)
+        mgr = ContextManager(
+            SlidingWindowCompact(keep_recent=1, compact_threshold=0.75),
+            budget_tokens=100,
+        )
         result = mgr.maybe_compact(msgs)
         assert len(result) < len(msgs)
 
@@ -101,9 +104,8 @@ class TestMaybeCompactOverThreshold:
         events: list[CompactEvent] = []
         msgs = _build_messages(total_chars=400, count=6)
         mgr = ContextManager(
-            SlidingWindowCompact(keep_recent=1),
+            SlidingWindowCompact(keep_recent=1, compact_threshold=0.75),
             budget_tokens=100,
-            compact_threshold=0.75,
             on_compact=events.append,
         )
         mgr.maybe_compact(msgs, step_index=3, step_hint="hint")
@@ -118,9 +120,8 @@ class TestMaybeCompactOverThreshold:
     def test_on_compact_none_no_error(self) -> None:
         msgs = _build_messages(total_chars=400, count=6)
         mgr = ContextManager(
-            SlidingWindowCompact(keep_recent=1),
+            SlidingWindowCompact(keep_recent=1, compact_threshold=0.75),
             budget_tokens=100,
-            compact_threshold=0.75,
             on_compact=None,
         )
         # Should not raise
@@ -136,9 +137,8 @@ class TestCompactEvent:
         events: list[CompactEvent] = []
         msgs = _build_messages(total_chars=400, count=6)
         mgr = ContextManager(
-            SlidingWindowCompact(keep_recent=1),
+            SlidingWindowCompact(keep_recent=1, compact_threshold=0.75),
             budget_tokens=100,
-            compact_threshold=0.75,
             on_compact=events.append,
         )
         mgr.maybe_compact(msgs, step_index=5)
@@ -152,14 +152,57 @@ class TestCompactEvent:
         # Build enough content to trigger compaction
         msgs = _build_messages(total_chars=800, count=8)
         mgr = ContextManager(
-            TieredCompact(keep_recent=2),
+            TieredCompact(keep_recent=2, compact_threshold=0.75),
             budget_tokens=100,
-            compact_threshold=0.75,
             on_compact=events.append,
         )
         mgr.maybe_compact(msgs, step_index=1, step_hint="[Steps completed: a]")
         assert len(events) == 1
         assert events[0].phase_reached >= 1
+
+    def test_no_compact_when_under_threshold(self) -> None:
+        events: list[CompactEvent] = []
+        # Small content, high threshold — should not compact
+        msgs = _build_messages(total_chars=100, count=4)
+        mgr = ContextManager(
+            TieredCompact(keep_recent=2, compact_threshold=0.99),
+            budget_tokens=10000,
+            on_compact=events.append,
+        )
+        result = mgr.maybe_compact(msgs)
+        assert result is msgs  # Same object — not compacted
+        assert len(events) == 0
+
+    def test_per_phase_thresholds_through_manager(self) -> None:
+        """Per-phase thresholds on TieredCompact flow through ContextManager."""
+        events: list[CompactEvent] = []
+        msgs = _build_messages(total_chars=800, count=8)
+        tokens = sum(len(m.content) for m in msgs) // 4  # ~200
+        # Set Phase 2 trigger above the token count so Phase 1 result
+        # is always "under threshold" and escalation stops.
+        # Phase 1 trigger: 0.0 * budget = 0 (fires)
+        # Phase 2 trigger: very high (never escalates)
+        budget = tokens * 10  # budget much larger than content
+        mgr = ContextManager(
+            TieredCompact(keep_recent=2, phase_thresholds=(0.0, 1.0, 1.0)),
+            budget_tokens=budget,
+            on_compact=events.append,
+        )
+        mgr.maybe_compact(msgs)
+        assert len(events) == 1
+        assert events[0].phase_reached == 1
+
+    def test_all_phases_through_manager(self) -> None:
+        events: list[CompactEvent] = []
+        msgs = _build_messages(total_chars=800, count=8)
+        mgr = ContextManager(
+            TieredCompact(keep_recent=2, compact_threshold=0.0),
+            budget_tokens=100,
+            on_compact=events.append,
+        )
+        mgr.maybe_compact(msgs)
+        assert len(events) == 1
+        assert events[0].phase_reached == 3
 
     def test_frozen(self) -> None:
         event = CompactEvent(
@@ -176,5 +219,3 @@ class TestCompactEvent:
             assert False, "Should have raised"
         except AttributeError:
             pass
-
-

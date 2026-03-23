@@ -792,7 +792,8 @@ class TestSetupBackend:
                 compact_threshold=0.5,
             )
 
-        assert ctx.compact_threshold == 0.5
+        # compact_threshold now lives on the strategy, not ContextManager
+        assert ctx.strategy._phase_triggers == (0.5, 0.5, 0.5)
 
     @pytest.mark.asyncio
     async def test_setup_backend_passes_on_compact(self) -> None:
