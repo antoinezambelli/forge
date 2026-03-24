@@ -226,10 +226,11 @@ class TestInferenceInjection:
             trust_text_intent=True,
         )
 
-        # The injected system message should be the last in api_messages
-        system_msgs = [m for m in captured_messages if m["role"] == "system"]
-        assert any("Context usage" in m["content"] for m in system_msgs), \
+        # The injected warning should be the last message (user role)
+        warning_msgs = [m for m in captured_messages if "Context usage" in m.get("content", "")]
+        assert len(warning_msgs) > 0, \
             f"Expected context warning in api_messages, got: {[m['content'][:50] for m in captured_messages]}"
+        assert warning_msgs[0]["role"] == "user"
 
     @pytest.mark.asyncio
     async def test_no_injection_without_threshold_config(self) -> None:
