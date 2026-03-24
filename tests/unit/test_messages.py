@@ -30,6 +30,7 @@ class TestMessageType:
             "text_response",
             "step_nudge",
             "retry_nudge",
+            "context_warning",
             "summary",
         }
         actual = {mt.value for mt in MessageType}

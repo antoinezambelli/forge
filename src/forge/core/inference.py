@@ -174,9 +174,18 @@ async def run_inference(
         # Fold and serialize
         api_messages = fold_and_serialize(messages, api_format)
 
-        # Inject context warning as transient system message (not persisted)
+        # Inject context warning as transient user message (not persisted
+        # in conversation history). Uses "user" role because mid-conversation
+        # "system" messages break Jinja chat templates on llama-server.
+        # Also emit as a CONTEXT_WARNING message so on_message consumers
+        # (TUI, CLI) can display it to the user.
         if context_warning:
-            api_messages.append({"role": "system", "content": context_warning})
+            api_messages.append({"role": "user", "content": context_warning})
+            new_messages.append(Message(
+                MessageRole.USER,
+                context_warning,
+                MessageMeta(MessageType.CONTEXT_WARNING, step_index=step_index),
+            ))
 
         # Send
         if stream:

@@ -28,6 +28,7 @@ class MessageType(str, Enum):
     TEXT_RESPONSE = "text_response"
     STEP_NUDGE = "step_nudge"
     RETRY_NUDGE = "retry_nudge"
+    CONTEXT_WARNING = "context_warning"
     SUMMARY = "summary"
 
 
