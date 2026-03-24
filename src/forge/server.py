@@ -412,6 +412,8 @@ async def setup_backend(
     cache_type_k: str | None = None,
     cache_type_v: str | None = None,
     n_slots: int | None = None,
+    context_thresholds: list[float] | None = None,
+    on_context_threshold: Callable[[int, int, float], str | None] | None = None,
 ) -> tuple[ServerManager, ContextManager]:
     """One-call setup: start backend, resolve budget, create ContextManager.
 
@@ -467,5 +469,7 @@ async def setup_backend(
         ),
         budget_tokens=budget,
         on_compact=on_compact,
+        context_thresholds=context_thresholds,
+        on_context_threshold=on_context_threshold,
     )
     return server, ctx_manager
