@@ -141,7 +141,8 @@ A forge workflow has four main pieces:
 A two-step weather workflow: look up weather, then report it.
 
 ```python
-from forge.core.workflow import Workflow, ToolDef, ToolSpec, ToolParam
+from pydantic import BaseModel, Field
+from forge.core.workflow import Workflow, ToolDef, ToolSpec
 from forge.core.runner import WorkflowRunner
 from forge.clients.llamafile import LlamafileClient
 from forge.server import setup_backend, BudgetMode
@@ -153,6 +154,13 @@ def get_weather(city: str) -> str:
 def report_weather(city: str, weather: str) -> str:
     return f"Weather report: {weather}"
 
+class GetWeatherParams(BaseModel):
+    city: str = Field(description="City name")
+
+class ReportWeatherParams(BaseModel):
+    city: str = Field(description="City name")
+    weather: str = Field(description="Weather description")
+
 workflow = Workflow(
     name="weather",
     description="Look up weather and report it.",
@@ -161,7 +169,7 @@ workflow = Workflow(
             spec=ToolSpec(
                 name="get_weather",
                 description="Get current weather for a city",
-                parameters=[ToolParam("city", "string", "City name", required=True)],
+                parameters=GetWeatherParams,
             ),
             callable=get_weather,
         ),
@@ -169,10 +177,7 @@ workflow = Workflow(
             spec=ToolSpec(
                 name="report_weather",
                 description="Report the weather",
-                parameters=[
-                    ToolParam("city", "string", "City name", required=True),
-                    ToolParam("weather", "string", "Weather description", required=True),
-                ],
+                parameters=ReportWeatherParams,
             ),
             callable=report_weather,
         ),

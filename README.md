@@ -60,14 +60,18 @@ See [Backend Setup](docs/BACKEND_SETUP.md) for full instructions and [Model Guid
 
 ```python
 import asyncio
+from pydantic import BaseModel, Field
 from forge import (
-    Workflow, ToolDef, ToolSpec, ToolParam,
+    Workflow, ToolDef, ToolSpec,
     WorkflowRunner, OllamaClient,
     ContextManager, TieredCompact,
 )
 
 def get_weather(city: str) -> str:
     return f"72°F and sunny in {city}"
+
+class GetWeatherParams(BaseModel):
+    city: str = Field(description="City name")
 
 workflow = Workflow(
     name="weather",
@@ -77,12 +81,14 @@ workflow = Workflow(
             spec=ToolSpec(
                 name="get_weather",
                 description="Get current weather",
-                parameters=[ToolParam("city", "string", "City name", required=True)],
+                parameters=GetWeatherParams,
             ),
             callable=get_weather,
         ),
     },
+    required_steps=[],
     terminal_tool="get_weather",
+    system_prompt_template="You are a helpful assistant. Use the available tools to answer the user.",
 )
 
 async def main():
@@ -161,7 +167,7 @@ src/forge/
   server.py            # setup_backend(), ServerManager, BudgetMode
   core/
     messages.py        # Message, MessageRole, MessageType, MessageMeta
-    workflow.py        # ToolParam, ToolSpec, ToolDef, ToolCall, TextResponse, Workflow
+    workflow.py        # ToolSpec, ToolDef, ToolCall, TextResponse, Workflow
     inference.py       # run_inference() — shared front half (compact, fold, validate, retry)
     runner.py          # WorkflowRunner — the agentic loop
     steps.py           # StepTracker
