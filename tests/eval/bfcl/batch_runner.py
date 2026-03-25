@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -52,7 +53,7 @@ from tests.eval.bfcl.schema_adapter import (
 
 # ── GGUF paths ──────────────────────────────────────────────────
 
-MODELS_DIR = Path(r"C:\Users\antoi\tools\models")
+MODELS_DIR = Path(os.environ.get("FORGE_MODELS_DIR", "models"))
 
 GGUF_MAP: dict[str, str] = {
     "llama3.1:8b-instruct-q4_K_M": "Meta-Llama-3.1-8B-Instruct-Q4_K_M.gguf",
