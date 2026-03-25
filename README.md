@@ -86,7 +86,9 @@ workflow = Workflow(
             callable=get_weather,
         ),
     },
+    required_steps=[],
     terminal_tool="get_weather",
+    system_prompt_template="You are a helpful assistant. Use the available tools to answer the user.",
 )
 
 async def main():
