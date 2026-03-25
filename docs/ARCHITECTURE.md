@@ -1202,7 +1202,7 @@ forge/
 │   ├── core/
 │   │   ├── inference.py           # run_inference() — shared front half (compact, fold, validate, retry)
 │   │   ├── runner.py              # WorkflowRunner — the agentic loop (back half)
-│   │   ├── workflow.py            # Workflow, ToolSpec, ToolParam, ToolCall, TextResponse
+│   │   ├── workflow.py            # Workflow, ToolSpec, ToolCall, TextResponse
 │   │   ├── steps.py               # StepTracker
 │   │   └── messages.py            # Message, MessageMeta, MessageRole, MessageType
 │   │
