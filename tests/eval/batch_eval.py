@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import os
 import sys
 import time
 from dataclasses import dataclass
@@ -28,7 +27,7 @@ from tests.eval.scenarios import ALL_SCENARIOS, EvalScenario
 
 # ── GGUF paths ──────────────────────────────────────────────────
 
-MODELS_DIR = Path(os.environ.get("FORGE_MODELS_DIR", "models"))
+MODELS_DIR_DEFAULT = Path("models")
 
 # Map Ollama model names → GGUF filenames for llama-server / llamafile
 GGUF_MAP: dict[str, str] = {
@@ -338,6 +337,7 @@ async def run_batch(
     configs: list[BatchConfig],
     runs_per_scenario: int,
     output_path: Path,
+    models_dir: Path = MODELS_DIR_DEFAULT,
     dry_run: bool = False,
     verbose: bool = False,
     budget_mode: BudgetMode = BudgetMode.FORGE_FULL,
@@ -377,7 +377,7 @@ async def run_batch(
     total_ran = 0
     total_failed_connect = 0
     batch_start = time.monotonic()
-    server = ServerManager(backend="ollama", port=8080, models_dir=MODELS_DIR)
+    server = ServerManager(backend="ollama", port=8080, models_dir=models_dir)
     prev_backend: str | None = None
     prev_server: ServerManager | None = None
 
@@ -485,7 +485,7 @@ async def run_batch(
                 if prev_server is not None and prev_backend != "ollama":
                     await prev_server.stop()
                 server = ServerManager(
-                    backend=config.backend, port=8080, models_dir=MODELS_DIR
+                    backend=config.backend, port=8080, models_dir=models_dir
                 )
 
             # Resolve GGUF path for non-Ollama backends
@@ -495,7 +495,7 @@ async def run_batch(
                 gguf_filename = file_map.get(config.model)
                 if not gguf_filename:
                     raise ValueError(f"No GGUF mapping for model: {config.model}")
-                gguf_path = str(MODELS_DIR / gguf_filename)
+                gguf_path = str(models_dir / gguf_filename)
 
             # Start server and get extra flags
             extra_flags = _get_server_flags(config.model, config.mode)
@@ -644,6 +644,12 @@ async def main() -> None:
         default=None,
         help="Filter configs to models containing this substring (e.g. --model 8b-reasoning)",
     )
+    parser.add_argument(
+        "--models-dir",
+        type=str,
+        default="models",
+        help="Directory containing GGUF and llamafile model files (default: models)",
+    )
     parser.add_argument("--dry-run", action="store_true", help="Show what would run")
     parser.add_argument("--verbose", "-v", action="store_true")
     args = parser.parse_args()
@@ -678,12 +684,16 @@ async def main() -> None:
     print(f"  Scenarios:     {scenario_count}")
     print(f"  Runs/scenario: {args.runs}")
     print(f"  Output:        {output_path}")
+    print(f"  Models dir:    {args.models_dir}")
     print(f"  Total max runs: {len(configs) * scenario_count * args.runs}")
+
+    models_dir = Path(args.models_dir)
 
     await run_batch(
         configs=configs,
         runs_per_scenario=args.runs,
         output_path=output_path,
+        models_dir=models_dir,
         dry_run=args.dry_run,
         verbose=args.verbose,
         budget_mode=budget_mode,
