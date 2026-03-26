@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import sys
 import time
 from dataclasses import dataclass
@@ -27,7 +28,7 @@ from tests.eval.scenarios import ALL_SCENARIOS, EvalScenario
 
 # ── GGUF paths ──────────────────────────────────────────────────
 
-MODELS_DIR = Path(r"C:\Users\antoi\tools\models")
+MODELS_DIR = Path(os.environ.get("FORGE_MODELS_DIR", "models"))
 
 # Map Ollama model names → GGUF filenames for llama-server / llamafile
 GGUF_MAP: dict[str, str] = {
