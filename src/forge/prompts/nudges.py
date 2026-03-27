@@ -58,3 +58,18 @@ def step_nudge(terminal_tool: str, pending_steps: list[str], tier: int = 1) -> s
         f"Do NOT call {terminal_tool}. "
         f"Your next response MUST be a tool call to one of: {steps}."
     )
+
+
+def prerequisite_nudge(tool_name: str, missing_prereqs: list[str]) -> str:
+    """Nudge for when a tool is called without its prerequisites.
+
+    Args:
+        tool_name: The tool the model tried to call.
+        missing_prereqs: The prerequisite tool names that haven't been called.
+    """
+    prereqs = ", ".join(missing_prereqs)
+    return (
+        f"You cannot call {tool_name} yet. "
+        f"You must first call: {prereqs}. "
+        "Call the prerequisite tool now."
+    )

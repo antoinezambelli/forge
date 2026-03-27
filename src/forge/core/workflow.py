@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field, create_model
@@ -145,10 +145,17 @@ class ToolDef:
     Downstream projects define tools as ToolDefs. The Workflow holds these
     in a dict keyed by name, deriving the spec list (for the LLM) and
     callable lookup (for execution) internally.
+
+    Prerequisites express conditional dependencies: "if you call this tool,
+    you must have called tool X first." Entries can be:
+    - str: name-only ("read_file" — any prior call to read_file satisfies it)
+    - dict: arg-matched ({"tool": "read_file", "match_arg": "path"} — a prior
+      call to read_file with the same ``path`` value satisfies it)
     """
 
     spec: ToolSpec
     callable: Callable[..., Any]
+    prerequisites: list[str | dict[str, str]] = field(default_factory=list)
 
     @property
     def name(self) -> str:
