@@ -1,13 +1,15 @@
-"""Step enforcement — required step tracking and premature terminal nudges."""
+"""Step enforcement — required step tracking, premature terminal nudges,
+and prerequisite enforcement."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Any
 
 from forge.core.steps import StepTracker
-from forge.core.workflow import ToolCall
+from forge.core.workflow import ToolCall, ToolDef
 from forge.guardrails.nudge import Nudge
-from forge.prompts.nudges import step_nudge
+from forge.prompts.nudges import prerequisite_nudge, step_nudge
 
 
 @dataclass
@@ -24,25 +26,35 @@ class StepCheck:
 class StepEnforcer:
     """Tracks required steps and enforces them with escalating nudges.
 
+    Also enforces tool prerequisites — conditional dependencies between tools.
+
     Stateful — instantiate per session/task.
 
     Args:
         required_steps: Tool names that must be called before the terminal tool.
         terminal_tool: The tool that ends the workflow.
+        tool_prerequisites: Map of tool name to its ToolDef.prerequisites list.
         max_premature_attempts: How many premature terminal attempts before
             the enforcer signals exhaustion (via StepCheck or raising).
+        max_prereq_violations: How many consecutive prerequisite violations
+            before the enforcer signals exhaustion.
     """
 
     def __init__(
         self,
         required_steps: list[str],
         terminal_tool: str,
+        tool_prerequisites: dict[str, list[str | dict[str, str]]] | None = None,
         max_premature_attempts: int = 3,
+        max_prereq_violations: int = 2,
     ) -> None:
         self._tracker = StepTracker(required_steps=required_steps)
         self.terminal_tool = terminal_tool
+        self._tool_prerequisites = tool_prerequisites or {}
         self.max_premature_attempts = max_premature_attempts
+        self.max_prereq_violations = max_prereq_violations
         self._premature_attempts = 0
+        self._consecutive_prereq_violations = 0
 
     def check(self, tool_calls: list[ToolCall]) -> StepCheck:
         """Check whether tool calls include a premature terminal call.
@@ -79,9 +91,41 @@ class StepEnforcer:
 
         return StepCheck(nudge=None, needs_nudge=False)
 
-    def record(self, tool_name: str) -> None:
+    def check_prerequisites(self, tool_calls: list[ToolCall]) -> StepCheck:
+        """Check whether any tool call has unsatisfied prerequisites.
+
+        Evaluates against pre-batch state. Any violation in the batch blocks
+        the entire batch (whole-batch blocking).
+
+        Args:
+            tool_calls: The tool calls the model wants to execute.
+
+        Returns:
+            StepCheck with nudge if any prereq is unsatisfied.
+        """
+        for tc in tool_calls:
+            prereqs = self._tool_prerequisites.get(tc.tool)
+            if not prereqs:
+                continue
+            result = self._tracker.check_prerequisites(tc.tool, tc.args, prereqs)
+            if not result.satisfied:
+                self._consecutive_prereq_violations += 1
+                return StepCheck(
+                    nudge=Nudge(
+                        role="user",
+                        content=prerequisite_nudge(
+                            tc.tool, result.missing,
+                        ),
+                        kind="prerequisite",
+                    ),
+                    needs_nudge=True,
+                )
+
+        return StepCheck(nudge=None, needs_nudge=False)
+
+    def record(self, tool_name: str, args: dict[str, Any] | None = None) -> None:
         """Record a successful tool execution."""
-        self._tracker.record(tool_name)
+        self._tracker.record(tool_name, args)
 
     def is_satisfied(self) -> bool:
         """True if all required steps have been completed."""
@@ -106,9 +150,23 @@ class StepEnforcer:
         """True if premature attempts exceed the limit."""
         return self._premature_attempts > self.max_premature_attempts
 
+    @property
+    def prereq_violations(self) -> int:
+        """Number of consecutive prerequisite violations."""
+        return self._consecutive_prereq_violations
+
+    @property
+    def prereq_exhausted(self) -> bool:
+        """True if consecutive prereq violations exceed the limit."""
+        return self._consecutive_prereq_violations > self.max_prereq_violations
+
     def reset_premature(self) -> None:
         """Reset premature attempt counter (call after a clean batch)."""
         self._premature_attempts = 0
+
+    def reset_prereq_violations(self) -> None:
+        """Reset consecutive prereq violation counter (call after a clean batch)."""
+        self._consecutive_prereq_violations = 0
 
     @property
     def completed_steps(self) -> dict[str, None]:

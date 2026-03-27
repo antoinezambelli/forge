@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field, create_model
@@ -145,10 +145,17 @@ class ToolDef:
     Downstream projects define tools as ToolDefs. The Workflow holds these
     in a dict keyed by name, deriving the spec list (for the LLM) and
     callable lookup (for execution) internally.
+
+    Prerequisites express conditional dependencies: "if you call this tool,
+    you must have called tool X first." Entries can be:
+    - str: name-only ("read_file" — any prior call to read_file satisfies it)
+    - dict: arg-matched ({"tool": "read_file", "match_arg": "path"} — a prior
+      call to read_file with the same ``path`` value satisfies it)
     """
 
     spec: ToolSpec
     callable: Callable[..., Any]
+    prerequisites: list[str | dict[str, str]] = field(default_factory=list)
 
     @property
     def name(self) -> str:
@@ -214,6 +221,14 @@ class Workflow:
             raise ValueError(
                 f"Terminal tool '{self.terminal_tool}' cannot also be a required step"
             )
+        for key, tool_def in self.tools.items():
+            for prereq in tool_def.prerequisites:
+                prereq_name = prereq if isinstance(prereq, str) else prereq["tool"]
+                if prereq_name not in tool_names:
+                    raise ValueError(
+                        f"Prerequisite '{prereq_name}' for tool '{key}' "
+                        f"not in tools: {tool_names}"
+                    )
 
     def build_system_prompt(self, **kwargs: str) -> str:
         """Render the system prompt with user-provided values."""

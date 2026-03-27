@@ -21,7 +21,7 @@ from forge.core.workflow import (
     ToolSpec,
     Workflow,
 )
-from forge.errors import MaxIterationsError, StepEnforcementError, StreamError, ToolCallError, ToolExecutionError, ToolResolutionError
+from forge.errors import MaxIterationsError, PrerequisiteError, StepEnforcementError, StreamError, ToolCallError, ToolExecutionError, ToolResolutionError
 
 
 class EmptyParams(BaseModel):
@@ -1747,3 +1747,132 @@ class TestToolResolutionError:
         err = ToolResolutionError("test")
         assert isinstance(err, Exception)
         assert not isinstance(err, ForgeError)
+
+
+# ── Prerequisite enforcement ─────────────────────────────────────
+
+
+class TestPrerequisiteEnforcement:
+    """Runner-level prerequisite enforcement."""
+
+    @pytest.mark.asyncio
+    async def test_prereq_nudge_then_success(self):
+        """Model calls edit without read, gets nudged, reads, then edits."""
+        tools = {
+            "read_file": _make_tool("read_file"),
+            "edit_file": ToolDef(
+                spec=ToolSpec(name="edit_file", description="Edit", parameters=EmptyParams),
+                callable=lambda **kwargs: "edited",
+                prerequisites=[{"tool": "read_file", "match_arg": "path"}],
+            ),
+            "submit": _make_tool("submit"),
+        }
+        client = MockClient([
+            # 1: model tries edit_file first → blocked
+            ToolCall(tool="edit_file", args={"path": "foo.py"}),
+            # 2: model corrects, calls read_file
+            ToolCall(tool="read_file", args={"path": "foo.py"}),
+            # 3: model calls edit_file again → now allowed
+            ToolCall(tool="edit_file", args={"path": "foo.py"}),
+            # 4: terminal
+            ToolCall(tool="submit", args={}),
+        ])
+        wf = _make_workflow(tools=tools, required_steps=[], terminal_tool="submit")
+        runner = _make_runner(client)
+        result = await runner.run(wf, "fix foo.py", prompt_vars={"role": "dev"})
+        assert result == "submit_result"
+
+    @pytest.mark.asyncio
+    async def test_prereq_nudge_emits_correct_message_type(self):
+        """PREREQUISITE_NUDGE message type is emitted on violation."""
+        collected = []
+        tools = {
+            "read_file": _make_tool("read_file"),
+            "edit_file": ToolDef(
+                spec=ToolSpec(name="edit_file", description="Edit", parameters=EmptyParams),
+                callable=lambda **kwargs: "edited",
+                prerequisites=["read_file"],
+            ),
+            "submit": _make_tool("submit"),
+        }
+        client = MockClient([
+            ToolCall(tool="edit_file", args={}),
+            ToolCall(tool="read_file", args={}),
+            ToolCall(tool="edit_file", args={}),
+            ToolCall(tool="submit", args={}),
+        ])
+        wf = _make_workflow(tools=tools, required_steps=[], terminal_tool="submit")
+        runner = _make_runner(client)
+        runner.on_message = collected.append
+        await runner.run(wf, "go", prompt_vars={"role": "dev"})
+
+        prereq_nudges = [m for m in collected if m.metadata.type == MessageType.PREREQUISITE_NUDGE]
+        assert len(prereq_nudges) == 1
+        assert "read_file" in prereq_nudges[0].content
+
+    @pytest.mark.asyncio
+    async def test_prereq_exhaustion_raises(self):
+        """PrerequisiteError raised after max consecutive violations."""
+        tools = {
+            "read_file": _make_tool("read_file"),
+            "edit_file": ToolDef(
+                spec=ToolSpec(name="edit_file", description="Edit", parameters=EmptyParams),
+                callable=lambda **kwargs: "edited",
+                prerequisites=["read_file"],
+            ),
+            "submit": _make_tool("submit"),
+        }
+        client = MockClient([
+            ToolCall(tool="edit_file", args={}),
+            ToolCall(tool="edit_file", args={}),
+            ToolCall(tool="edit_file", args={}),
+            ToolCall(tool="edit_file", args={}),
+        ])
+        wf = _make_workflow(tools=tools, required_steps=[], terminal_tool="submit")
+        ctx = ContextManager(strategy=NoCompact(), budget_tokens=100_000)
+        runner = WorkflowRunner(client=client, context_manager=ctx, max_iterations=10)
+        with pytest.raises(PrerequisiteError, match="read_file"):
+            await runner.run(wf, "go", prompt_vars={"role": "dev"})
+
+    @pytest.mark.asyncio
+    async def test_no_prereqs_no_interference(self):
+        """Workflows without prerequisites behave identically to before."""
+        client = MockClient([
+            ToolCall(tool="fetch", args={}),
+            ToolCall(tool="submit", args={}),
+        ])
+        wf = _make_workflow()
+        runner = _make_runner(client)
+        result = await runner.run(wf, "go", prompt_vars={"role": "dev"})
+        assert result == "submit_result"
+
+    @pytest.mark.asyncio
+    async def test_args_recorded_for_prereq_tracking(self):
+        """Tool args are passed through to record() for prereq matching."""
+        collected = []
+        tools = {
+            "read_file": _make_tool("read_file"),
+            "edit_file": ToolDef(
+                spec=ToolSpec(name="edit_file", description="Edit", parameters=EmptyParams),
+                callable=lambda **kwargs: "edited",
+                prerequisites=[{"tool": "read_file", "match_arg": "path"}],
+            ),
+            "submit": _make_tool("submit"),
+        }
+        client = MockClient([
+            # Read a.py, then try to edit b.py → blocked (arg mismatch)
+            ToolCall(tool="read_file", args={"path": "a.py"}),
+            ToolCall(tool="edit_file", args={"path": "b.py"}),
+            # Read b.py, then edit b.py → allowed
+            ToolCall(tool="read_file", args={"path": "b.py"}),
+            ToolCall(tool="edit_file", args={"path": "b.py"}),
+            ToolCall(tool="submit", args={}),
+        ])
+        wf = _make_workflow(tools=tools, required_steps=[], terminal_tool="submit")
+        runner = _make_runner(client)
+        runner.on_message = collected.append
+        result = await runner.run(wf, "go", prompt_vars={"role": "dev"})
+        assert result == "submit_result"
+
+        prereq_nudges = [m for m in collected if m.metadata.type == MessageType.PREREQUISITE_NUDGE]
+        assert len(prereq_nudges) == 1  # only the b.py mismatch

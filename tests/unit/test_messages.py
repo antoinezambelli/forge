@@ -29,6 +29,7 @@ class TestMessageType:
             "reasoning",
             "text_response",
             "step_nudge",
+            "prerequisite_nudge",
             "retry_nudge",
             "context_warning",
             "summary",

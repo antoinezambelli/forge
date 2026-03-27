@@ -25,6 +25,7 @@ _NUDGE_KIND_TO_TYPE: dict[str, MessageType] = {
     "retry": MessageType.RETRY_NUDGE,
     "unknown_tool": MessageType.RETRY_NUDGE,
     "step": MessageType.STEP_NUDGE,
+    "prerequisite": MessageType.PREREQUISITE_NUDGE,
 }
 
 

@@ -27,6 +27,7 @@ class MessageType(str, Enum):
     REASONING = "reasoning"
     TEXT_RESPONSE = "text_response"
     STEP_NUDGE = "step_nudge"
+    PREREQUISITE_NUDGE = "prerequisite_nudge"
     RETRY_NUDGE = "retry_nudge"
     CONTEXT_WARNING = "context_warning"
     SUMMARY = "summary"
