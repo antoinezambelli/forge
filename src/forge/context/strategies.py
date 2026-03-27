@@ -210,6 +210,7 @@ class TieredCompact(CompactStrategy):
             if 2 <= i < eligible_end:
                 if msg.metadata.type in (
                     MessageType.STEP_NUDGE,
+                    MessageType.PREREQUISITE_NUDGE,
                     MessageType.RETRY_NUDGE,
                 ):
                     continue
@@ -237,6 +238,7 @@ class TieredCompact(CompactStrategy):
             if 2 <= i < eligible_end:
                 if msg.metadata.type in (
                     MessageType.STEP_NUDGE,
+                    MessageType.PREREQUISITE_NUDGE,
                     MessageType.RETRY_NUDGE,
                     MessageType.TOOL_RESULT,
                 ):
@@ -253,6 +255,7 @@ class TieredCompact(CompactStrategy):
             if 2 <= i < eligible_end:
                 if msg.metadata.type in (
                     MessageType.STEP_NUDGE,
+                    MessageType.PREREQUISITE_NUDGE,
                     MessageType.RETRY_NUDGE,
                     MessageType.TOOL_RESULT,
                     MessageType.REASONING,

@@ -221,6 +221,14 @@ class Workflow:
             raise ValueError(
                 f"Terminal tool '{self.terminal_tool}' cannot also be a required step"
             )
+        for key, tool_def in self.tools.items():
+            for prereq in tool_def.prerequisites:
+                prereq_name = prereq if isinstance(prereq, str) else prereq["tool"]
+                if prereq_name not in tool_names:
+                    raise ValueError(
+                        f"Prerequisite '{prereq_name}' for tool '{key}' "
+                        f"not in tools: {tool_names}"
+                    )
 
     def build_system_prompt(self, **kwargs: str) -> str:
         """Render the system prompt with user-provided values."""
