@@ -79,6 +79,30 @@ class TestWorkflowValidation:
         assert wf.name == "test_workflow"
         assert len(wf.tools) == 2
 
+    def test_raises_on_unknown_prerequisite_name_only(self):
+        tools = _make_tools("fetch_data", "submit_result")
+        tools["submit_result"].prerequisites = ["nonexistent"]
+        with pytest.raises(ValueError, match="Prerequisite 'nonexistent'"):
+            _make_workflow(tools=tools)
+
+    def test_raises_on_unknown_prerequisite_arg_matched(self):
+        tools = _make_tools("fetch_data", "submit_result")
+        tools["submit_result"].prerequisites = [{"tool": "nonexistent", "match_arg": "path"}]
+        with pytest.raises(ValueError, match="Prerequisite 'nonexistent'"):
+            _make_workflow(tools=tools)
+
+    def test_valid_prerequisite_succeeds(self):
+        tools = _make_tools("fetch_data", "submit_result")
+        tools["submit_result"].prerequisites = ["fetch_data"]
+        wf = _make_workflow(tools=tools)
+        assert wf.tools["submit_result"].prerequisites == ["fetch_data"]
+
+    def test_valid_arg_matched_prerequisite_succeeds(self):
+        tools = _make_tools("fetch_data", "submit_result")
+        tools["submit_result"].prerequisites = [{"tool": "fetch_data", "match_arg": "id"}]
+        wf = _make_workflow(tools=tools)
+        assert len(wf.tools["submit_result"].prerequisites) == 1
+
 
 class TestWorkflowMethods:
     def test_build_system_prompt_renders_template(self):

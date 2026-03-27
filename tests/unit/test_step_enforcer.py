@@ -221,3 +221,180 @@ class TestStepEnforcerNoRequiredSteps:
         calls = [ToolCall(tool="answer", args={})]
         result = enforcer.check(calls)
         assert result.needs_nudge is False
+
+
+class TestPrerequisiteCheckNameOnly:
+    """Name-only prerequisite enforcement."""
+
+    def setup_method(self):
+        self.enforcer = StepEnforcer(
+            required_steps=[],
+            terminal_tool="respond",
+            tool_prerequisites={"edit_file": ["read_file"]},
+        )
+
+    def test_blocks_without_prereq(self):
+        calls = [ToolCall(tool="edit_file", args={"path": "foo.py"})]
+        result = self.enforcer.check_prerequisites(calls)
+        assert result.needs_nudge is True
+        assert result.nudge.kind == "prerequisite"
+        assert "read_file" in result.nudge.content
+
+    def test_passes_after_prereq_satisfied(self):
+        self.enforcer.record("read_file", {"path": "bar.py"})
+        calls = [ToolCall(tool="edit_file", args={"path": "foo.py"})]
+        result = self.enforcer.check_prerequisites(calls)
+        assert result.needs_nudge is False
+
+    def test_tool_without_prereqs_always_passes(self):
+        calls = [ToolCall(tool="read_file", args={"path": "foo.py"})]
+        result = self.enforcer.check_prerequisites(calls)
+        assert result.needs_nudge is False
+
+
+class TestPrerequisiteCheckArgMatched:
+    """Arg-matched prerequisite enforcement."""
+
+    def setup_method(self):
+        self.enforcer = StepEnforcer(
+            required_steps=[],
+            terminal_tool="respond",
+            tool_prerequisites={
+                "edit_file": [{"tool": "read_file", "match_arg": "path"}],
+            },
+        )
+
+    def test_blocks_without_matching_arg(self):
+        self.enforcer.record("read_file", {"path": "other.py"})
+        calls = [ToolCall(tool="edit_file", args={"path": "foo.py"})]
+        result = self.enforcer.check_prerequisites(calls)
+        assert result.needs_nudge is True
+
+    def test_passes_with_matching_arg(self):
+        self.enforcer.record("read_file", {"path": "foo.py"})
+        calls = [ToolCall(tool="edit_file", args={"path": "foo.py"})]
+        result = self.enforcer.check_prerequisites(calls)
+        assert result.needs_nudge is False
+
+    def test_blocks_when_prereq_never_called(self):
+        calls = [ToolCall(tool="edit_file", args={"path": "foo.py"})]
+        result = self.enforcer.check_prerequisites(calls)
+        assert result.needs_nudge is True
+
+    def test_multiple_files_tracked_independently(self):
+        self.enforcer.record("read_file", {"path": "a.py"})
+        self.enforcer.record("read_file", {"path": "b.py"})
+        # a.py satisfied
+        calls_a = [ToolCall(tool="edit_file", args={"path": "a.py"})]
+        assert self.enforcer.check_prerequisites(calls_a).needs_nudge is False
+        # b.py satisfied
+        calls_b = [ToolCall(tool="edit_file", args={"path": "b.py"})]
+        assert self.enforcer.check_prerequisites(calls_b).needs_nudge is False
+        # c.py not satisfied
+        calls_c = [ToolCall(tool="edit_file", args={"path": "c.py"})]
+        assert self.enforcer.check_prerequisites(calls_c).needs_nudge is True
+
+
+class TestPrerequisiteCheckMixed:
+    """Mixed name-only and arg-matched prerequisites."""
+
+    def test_both_must_be_satisfied(self):
+        enforcer = StepEnforcer(
+            required_steps=[],
+            terminal_tool="respond",
+            tool_prerequisites={
+                "edit_file": [
+                    "authenticate",
+                    {"tool": "read_file", "match_arg": "path"},
+                ],
+            },
+        )
+        # Neither satisfied
+        calls = [ToolCall(tool="edit_file", args={"path": "foo.py"})]
+        result = enforcer.check_prerequisites(calls)
+        assert result.needs_nudge is True
+        assert "authenticate" in result.nudge.content
+
+        # Only auth satisfied
+        enforcer.record("authenticate", {})
+        result = enforcer.check_prerequisites(calls)
+        assert result.needs_nudge is True
+        assert "read_file" in result.nudge.content
+
+        # Both satisfied
+        enforcer.record("read_file", {"path": "foo.py"})
+        result = enforcer.check_prerequisites(calls)
+        assert result.needs_nudge is False
+
+
+class TestPrerequisiteBatchBlocking:
+    """Whole-batch blocking on prerequisite violation."""
+
+    def test_any_violation_blocks_entire_batch(self):
+        enforcer = StepEnforcer(
+            required_steps=[],
+            terminal_tool="respond",
+            tool_prerequisites={"edit_file": ["read_file"]},
+        )
+        calls = [
+            ToolCall(tool="read_file", args={"path": "foo.py"}),
+            ToolCall(tool="edit_file", args={"path": "foo.py"}),
+        ]
+        # edit_file prereq not yet satisfied (read_file hasn't been recorded)
+        result = enforcer.check_prerequisites(calls)
+        assert result.needs_nudge is True
+
+
+class TestPrerequisiteExhaustion:
+    """Consecutive prerequisite violation exhaustion."""
+
+    def test_exhausted_after_max_violations(self):
+        enforcer = StepEnforcer(
+            required_steps=[],
+            terminal_tool="respond",
+            tool_prerequisites={"edit_file": ["read_file"]},
+            max_prereq_violations=2,
+        )
+        calls = [ToolCall(tool="edit_file", args={"path": "foo.py"})]
+        enforcer.check_prerequisites(calls)
+        enforcer.check_prerequisites(calls)
+        assert enforcer.prereq_exhausted is False
+        enforcer.check_prerequisites(calls)
+        assert enforcer.prereq_exhausted is True
+
+    def test_violation_count_tracks(self):
+        enforcer = StepEnforcer(
+            required_steps=[],
+            terminal_tool="respond",
+            tool_prerequisites={"edit_file": ["read_file"]},
+        )
+        assert enforcer.prereq_violations == 0
+        enforcer.check_prerequisites([ToolCall(tool="edit_file", args={})])
+        assert enforcer.prereq_violations == 1
+
+    def test_reset_clears_violations(self):
+        enforcer = StepEnforcer(
+            required_steps=[],
+            terminal_tool="respond",
+            tool_prerequisites={"edit_file": ["read_file"]},
+            max_prereq_violations=1,
+        )
+        enforcer.check_prerequisites([ToolCall(tool="edit_file", args={})])
+        enforcer.check_prerequisites([ToolCall(tool="edit_file", args={})])
+        assert enforcer.prereq_exhausted is True
+        enforcer.reset_prereq_violations()
+        assert enforcer.prereq_violations == 0
+        assert enforcer.prereq_exhausted is False
+
+
+class TestPrerequisiteNoPrereqs:
+    """Edge case: no prerequisites configured."""
+
+    def test_always_passes(self):
+        enforcer = StepEnforcer(
+            required_steps=[],
+            terminal_tool="respond",
+        )
+        calls = [ToolCall(tool="edit_file", args={"path": "foo.py"})]
+        result = enforcer.check_prerequisites(calls)
+        assert result.needs_nudge is False

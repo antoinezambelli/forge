@@ -1,6 +1,6 @@
-"""Tests for forge.prompts.nudges — retry and step nudge templates."""
+"""Tests for forge.prompts.nudges — retry, step, and prerequisite nudge templates."""
 
-from forge.prompts.nudges import retry_nudge, step_nudge
+from forge.prompts.nudges import prerequisite_nudge, retry_nudge, step_nudge
 
 
 class TestRetryNudge:
@@ -63,3 +63,23 @@ class TestStepNudge:
         result_t5 = step_nudge("submit", ["fetch"], tier=5)
         result_t3 = step_nudge("submit", ["fetch"], tier=3)
         assert result_t5 == result_t3
+
+
+class TestPrerequisiteNudge:
+    def test_returns_non_empty_string(self) -> None:
+        result = prerequisite_nudge("edit_file", ["read_file"])
+        assert isinstance(result, str)
+        assert len(result) > 0
+
+    def test_contains_tool_name(self) -> None:
+        result = prerequisite_nudge("edit_file", ["read_file"])
+        assert "edit_file" in result
+
+    def test_contains_missing_prereqs(self) -> None:
+        result = prerequisite_nudge("edit_file", ["read_file", "authenticate"])
+        assert "read_file" in result
+        assert "authenticate" in result
+
+    def test_single_missing_prereq(self) -> None:
+        result = prerequisite_nudge("edit_file", ["read_file"])
+        assert "read_file" in result
