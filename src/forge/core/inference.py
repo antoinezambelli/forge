@@ -13,7 +13,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import Any
 
-from forge.clients.base import ChunkType, LLMClient, StreamChunk
+from forge.clients.base import ChunkType, LLMClient, StreamChunk, TokenUsage
 from forge.context.manager import ContextManager
 from forge.core.messages import Message, MessageMeta, MessageRole, MessageType, ToolCallInfo
 from forge.core.workflow import LLMResponse, TextResponse, ToolCall, ToolSpec
@@ -26,6 +26,17 @@ _NUDGE_KIND_TO_TYPE: dict[str, MessageType] = {
     "unknown_tool": MessageType.RETRY_NUDGE,
     "step": MessageType.STEP_NUDGE,
 }
+
+
+def _sync_token_count(client: LLMClient, context_manager: ContextManager) -> None:
+    """Feed actual token count from the client into the context manager."""
+    last_usage = getattr(client, "last_usage", None)
+    if not isinstance(last_usage, dict):
+        return
+    slot_id = getattr(client, "_slot_id", None) or 0
+    usage: TokenUsage | None = last_usage.get(slot_id)
+    if usage is not None:
+        context_manager.update_token_count(usage.total_tokens)
 
 
 @dataclass
@@ -192,6 +203,9 @@ async def run_inference(
             response = await _send_streaming(client, api_messages, tool_specs, on_chunk)
         else:
             response = await client.send(api_messages, tools=tool_specs)
+
+        # Update context manager with real token count if available.
+        _sync_token_count(client, context_manager)
 
         # Validate
         validation = validator.validate(response, trust_text_intent=trust_text_intent)

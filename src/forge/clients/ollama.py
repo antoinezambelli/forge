@@ -8,7 +8,7 @@ from typing import Any
 
 import httpx
 
-from forge.clients.base import ChunkType, StreamChunk, format_tool
+from forge.clients.base import ChunkType, StreamChunk, TokenUsage, format_tool
 from forge.core.workflow import LLMResponse, TextResponse, ToolCall, ToolSpec
 from forge.errors import BackendError, ThinkingNotSupportedError
 
@@ -61,6 +61,7 @@ class OllamaClient:
             model_lower = model.lower()
             self._think = any(kw in model_lower for kw in _THINK_HEURISTIC_KEYWORDS)
         self._think_resolved: bool = think is not None
+        self.last_usage: dict[int, TokenUsage] = {}
 
     def _build_options(self) -> dict[str, Any]:
         opts: dict[str, Any] = {"temperature": self.temperature}
@@ -81,6 +82,20 @@ class OllamaClient:
         if not self._think:
             return None
         return thinking or content or None
+
+    def _record_usage(self, data: dict[str, Any]) -> None:
+        """Extract token usage from an Ollama response."""
+        prompt = data.get("prompt_eval_count")
+        completion = data.get("eval_count")
+        if prompt is None and completion is None:
+            return
+        prompt = prompt or 0
+        completion = completion or 0
+        self.last_usage[0] = TokenUsage(
+            prompt_tokens=prompt,
+            completion_tokens=completion,
+            total_tokens=prompt + completion,
+        )
 
     async def send(
         self,
@@ -118,6 +133,7 @@ class OllamaClient:
         if resp.status_code != 200:
             raise BackendError(resp.status_code, resp.text)
         data = resp.json()
+        self._record_usage(data)
 
         if not self._think_resolved:
             self._think_resolved = True
@@ -219,6 +235,7 @@ class OllamaClient:
                 msg = data.get("message", {})
 
                 if data.get("done"):
+                    self._record_usage(data)
                     tool_calls = msg.get("tool_calls") or pending_tool_calls
                     if tool_calls:
                         reasoning = self._resolve_reasoning(

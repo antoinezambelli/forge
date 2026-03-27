@@ -9,7 +9,7 @@ from typing import Any
 
 import httpx
 
-from forge.clients.base import ChunkType, StreamChunk, format_tool
+from forge.clients.base import ChunkType, StreamChunk, TokenUsage, format_tool
 from forge.core.workflow import LLMResponse, TextResponse, ToolCall, ToolSpec
 from forge.errors import BackendError, ContextDiscoveryError
 from forge.prompts.templates import build_tool_prompt, extract_tool_call
@@ -144,6 +144,8 @@ class LlamafileClient:
         self._cache_prompt = cache_prompt
         self._slot_id = slot_id
 
+        self.last_usage: dict[int, TokenUsage] = {}
+
         if mode in ("native", "prompt"):
             self.resolved_mode: str | None = mode
         else:
@@ -153,6 +155,18 @@ class LlamafileClient:
         """Inject slot_id into a request body if configured."""
         if self._slot_id is not None:
             body["slot_id"] = self._slot_id
+
+    def _record_usage(self, data: dict[str, Any]) -> None:
+        """Extract usage from a response and store it keyed by slot ID."""
+        usage = data.get("usage")
+        if not usage:
+            return
+        slot = self._slot_id if self._slot_id is not None else 0
+        self.last_usage[slot] = TokenUsage(
+            prompt_tokens=usage.get("prompt_tokens", 0),
+            completion_tokens=usage.get("completion_tokens", 0),
+            total_tokens=usage.get("total_tokens", 0),
+        )
 
     def _resolve_reasoning(
         self, accumulated_reasoning: str, accumulated_content: str
@@ -208,6 +222,7 @@ class LlamafileClient:
             "model": self.model,
             "temperature": self.temperature,
             "stream": True,
+            "stream_options": {"include_usage": True},
             "cache_prompt": self._cache_prompt,
         }
         self._apply_slot_id(body)
@@ -231,6 +246,7 @@ class LlamafileClient:
 
         accumulated_content = ""
         accumulated_reasoning = ""
+        stream_intentional = False
         # Track multiple tool calls by index — OpenAI streaming sends
         # tool_calls[N] deltas with an index field.
         tool_call_parts: dict[int, dict[str, str]] = {}  # idx -> {name, args}
@@ -252,92 +268,87 @@ class LlamafileClient:
                 if not line or not line.startswith("data: "):
                     continue
                 data_str = line[6:]
-                # llama-server sends "data: [DONE]" after the final chunk;
-                # llamafile 0.9.x does not — it only sends finish_reason.
                 if data_str == "[DONE]":
-                    stream_done = True
-                else:
-                    chunk = json.loads(data_str)
-                    if "choices" not in chunk or not chunk["choices"]:
-                        continue  # usage-only or error chunk
-                    choice = chunk["choices"][0]
-                    delta = choice.get("delta", {})
-
-                    if "tool_calls" in delta:
-                        for tc_delta in delta["tool_calls"]:
-                            idx = tc_delta.get("index", 0)
-                            if idx not in tool_call_parts:
-                                tool_call_parts[idx] = {"name": "", "args": ""}
-                            func = tc_delta.get("function", {})
-                            if "name" in func:
-                                tool_call_parts[idx]["name"] = func["name"]
-                            if "arguments" in func:
-                                tool_call_parts[idx]["args"] += func["arguments"]
-                                yield StreamChunk(
-                                    type=ChunkType.TOOL_CALL_DELTA,
-                                    content=func["arguments"],
-                                )
-
-                    reasoning_content = delta.get("reasoning_content") or ""
-                    if reasoning_content:
-                        accumulated_reasoning += reasoning_content
-
-                    content = delta.get("content") or ""
-                    if content:
-                        accumulated_content += content
-                        yield StreamChunk(
-                            type=ChunkType.TEXT_DELTA, content=content
-                        )
-
-                    stream_finish_reason = choice.get("finish_reason")
-                    stream_done = stream_finish_reason is not None
-
-                if stream_done:
-                    stream_intentional = stream_finish_reason == "stop"
-                    if tool_call_parts:
-                        reasoning = self._resolve_reasoning(
-                            accumulated_reasoning, accumulated_content
-                        )
-                        result_calls: list[ToolCall] = []
-                        bad_args = False
-                        for idx in sorted(tool_call_parts):
-                            part = tool_call_parts[idx]
-                            try:
-                                args = json.loads(part["args"]) if part["args"] else {}
-                            except json.JSONDecodeError:
-                                bad_args = True
-                                break
-                            result_calls.append(ToolCall(
-                                tool=part["name"],
-                                args=args,
-                                reasoning=reasoning if idx == 0 else None,
-                            ))
-                        if bad_args:
-                            # Model emitted invalid JSON in tool args —
-                            # surface as TextResponse so the runner sends
-                            # a retry nudge instead of crashing.
-                            final: LLMResponse = TextResponse(
-                                content=accumulated_content or part["args"],
-                            )
-                        else:
-                            final = result_calls
-                    elif mode == "prompt" and tools:
-                        think_text, cleaned = _extract_think_tags(
-                            accumulated_content
-                        )
-                        tool_names = [t.name for t in tools]
-                        extracted = extract_tool_call(cleaned, tool_names)
-                        if extracted:
-                            extracted[0].reasoning = self._resolve_reasoning(
-                                accumulated_reasoning, think_text
-                            )
-                            final = extracted
-                        else:
-                            final = TextResponse(content=cleaned, intentional=stream_intentional)
-                    else:
-                        final = TextResponse(content=accumulated_content, intentional=stream_intentional)
-                    yield StreamChunk(type=ChunkType.FINAL, response=final)
                     break
+
+                chunk = json.loads(data_str)
+                if "choices" not in chunk or not chunk["choices"]:
+                    self._record_usage(chunk)
+                    continue
+                choice = chunk["choices"][0]
+                delta = choice.get("delta", {})
+
+                if "tool_calls" in delta:
+                    for tc_delta in delta["tool_calls"]:
+                        idx = tc_delta.get("index", 0)
+                        if idx not in tool_call_parts:
+                            tool_call_parts[idx] = {"name": "", "args": ""}
+                        func = tc_delta.get("function", {})
+                        if "name" in func:
+                            tool_call_parts[idx]["name"] = func["name"]
+                        if "arguments" in func:
+                            tool_call_parts[idx]["args"] += func["arguments"]
+                            yield StreamChunk(
+                                type=ChunkType.TOOL_CALL_DELTA,
+                                content=func["arguments"],
+                            )
+
+                reasoning_content = delta.get("reasoning_content") or ""
+                if reasoning_content:
+                    accumulated_reasoning += reasoning_content
+
+                content = delta.get("content") or ""
+                if content:
+                    accumulated_content += content
+                    yield StreamChunk(
+                        type=ChunkType.TEXT_DELTA, content=content
+                    )
+
+                finish_reason = choice.get("finish_reason")
+                if finish_reason is not None:
+                    stream_intentional = finish_reason == "stop"
+
+            # Stream ended — build and yield FINAL response.
+            if tool_call_parts:
+                reasoning = self._resolve_reasoning(
+                    accumulated_reasoning, accumulated_content
+                )
+                result_calls: list[ToolCall] = []
+                bad_args = False
+                for idx in sorted(tool_call_parts):
+                    part = tool_call_parts[idx]
+                    try:
+                        args = json.loads(part["args"]) if part["args"] else {}
+                    except json.JSONDecodeError:
+                        bad_args = True
+                        break
+                    result_calls.append(ToolCall(
+                        tool=part["name"],
+                        args=args,
+                        reasoning=reasoning if idx == 0 else None,
+                    ))
+                if bad_args:
+                    final: LLMResponse = TextResponse(
+                        content=accumulated_content or part["args"],
+                    )
+                else:
+                    final = result_calls
+            elif mode == "prompt" and tools:
+                think_text, cleaned = _extract_think_tags(
+                    accumulated_content
+                )
+                tool_names = [t.name for t in tools]
+                extracted = extract_tool_call(cleaned, tool_names)
+                if extracted:
+                    extracted[0].reasoning = self._resolve_reasoning(
+                        accumulated_reasoning, think_text
+                    )
+                    final = extracted
+                else:
+                    final = TextResponse(content=cleaned, intentional=stream_intentional)
+            else:
+                final = TextResponse(content=accumulated_content, intentional=stream_intentional)
+            yield StreamChunk(type=ChunkType.FINAL, response=final)
 
     async def get_context_length(self) -> int | None:
         """Query the Llamafile /props endpoint for configured context length.
@@ -410,6 +421,7 @@ class LlamafileClient:
         if resp.status_code != 200:
             raise BackendError(resp.status_code, resp.text)
         data = resp.json()
+        self._record_usage(data)
 
         top_choice = data["choices"][0]
         choice = top_choice["message"]
@@ -470,6 +482,7 @@ class LlamafileClient:
         )
         resp.raise_for_status()
         data = resp.json()
+        self._record_usage(data)
 
         top_choice = data["choices"][0]
         content = top_choice["message"].get("content", "")

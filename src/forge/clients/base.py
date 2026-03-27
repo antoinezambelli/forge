@@ -10,6 +10,21 @@ from typing import Any, Protocol, runtime_checkable
 from forge.core.workflow import LLMResponse, ToolCall, TextResponse, ToolSpec
 
 
+@dataclass(frozen=True)
+class TokenUsage:
+    """Token counts from a single LLM response.
+
+    Populated from the server's ``usage`` field when available (e.g.
+    llama-server).  Backends that don't report usage leave the client's
+    ``last_usage`` empty and the context manager falls back to heuristic
+    estimation.
+    """
+
+    prompt_tokens: int
+    completion_tokens: int
+    total_tokens: int
+
+
 # Both Ollama and llama-server use the OpenAI tool schema format today.
 # If a backend diverges, move this back into the relevant client module.
 def format_tool(spec: ToolSpec) -> dict[str, Any]:
