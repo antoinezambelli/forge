@@ -12,7 +12,7 @@ from forge.core.workflow import (
 from forge.core.steps import StepTracker
 from forge.core.inference import InferenceResult, fold_and_serialize, run_inference
 from forge.core.runner import WorkflowRunner
-from forge.clients.base import ChunkType, LLMClient, StreamChunk
+from forge.clients.base import ChunkType, LLMClient, StreamChunk, TokenUsage
 from forge.clients.llamafile import LlamafileClient
 from forge.clients.ollama import OllamaClient
 from forge.context import (
@@ -82,6 +82,7 @@ __all__ = [
     "LlamafileClient",
     "OllamaClient",
     "StreamChunk",
+    "TokenUsage",
     # Context
     "CompactEvent",
     "CompactStrategy",

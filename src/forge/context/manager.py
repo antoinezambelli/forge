@@ -88,9 +88,21 @@ class ContextManager:
         self._context_thresholds = sorted(context_thresholds) if context_thresholds else []
         self._on_context_threshold = on_context_threshold
         self._fired_thresholds: set[float] = set()
+        self._last_known_tokens: int | None = None
+
+    def update_token_count(self, total_tokens: int) -> None:
+        """Record actual token count from the backend.
+
+        Called after each LLM response when the backend reports usage.
+        Subsequent calls to ``estimate_tokens`` will return this value
+        until the next update.
+        """
+        self._last_known_tokens = total_tokens
 
     def estimate_tokens(self, messages: list[Message]) -> int:
-        """Estimate token count via char/4 heuristic."""
+        """Return actual token count if available, else char/4 heuristic."""
+        if self._last_known_tokens is not None:
+            return self._last_known_tokens
         return sum(len(m.content) for m in messages) // 4
 
     def check_thresholds(self, messages: list[Message]) -> str | None:
