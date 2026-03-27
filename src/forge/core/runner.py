@@ -12,7 +12,7 @@ from forge.context.manager import ContextManager
 from forge.core.inference import _NUDGE_KIND_TO_TYPE, _build_tool_call_infos, run_inference
 from forge.core.messages import Message, MessageMeta, MessageRole, MessageType, ToolCallInfo
 from forge.core.workflow import ToolCall, TextResponse, Workflow, ToolSpec
-from forge.errors import MaxIterationsError, StepEnforcementError, ToolCallError, ToolExecutionError, ToolResolutionError
+from forge.errors import MaxIterationsError, PrerequisiteError, StepEnforcementError, ToolCallError, ToolExecutionError, ToolResolutionError
 from forge.guardrails import ErrorTracker, ResponseValidator, StepEnforcer
 
 
@@ -121,9 +121,15 @@ class WorkflowRunner:
         # Step 2 — Initialize guardrail middleware
         tool_names = list(workflow.tools.keys())
         validator = ResponseValidator(tool_names, rescue_enabled=self.rescue_enabled)
+        tool_prerequisites = {
+            name: td.prerequisites
+            for name, td in workflow.tools.items()
+            if td.prerequisites
+        }
         step_enforcer = StepEnforcer(
             required_steps=workflow.required_steps,
             terminal_tool=workflow.terminal_tool,
+            tool_prerequisites=tool_prerequisites,
         )
         error_tracker = ErrorTracker(
             max_retries=self.max_retries_per_step,
@@ -206,6 +212,46 @@ class WorkflowRunner:
                 ))
                 continue
 
+            # 3b.2 — Check prerequisites
+            prereq_check = step_enforcer.check_prerequisites(tool_calls)
+
+            if prereq_check.needs_nudge:
+                if step_enforcer.prereq_exhausted:
+                    # Find the first violating tool for the error
+                    for tc in tool_calls:
+                        prereqs = tool_prerequisites.get(tc.tool)
+                        if prereqs:
+                            result = step_enforcer._tracker.check_prerequisites(
+                                tc.tool, tc.args, prereqs,
+                            )
+                            if not result.satisfied:
+                                raise PrerequisiteError(
+                                    tool_name=tc.tool,
+                                    violations=step_enforcer.prereq_violations,
+                                    missing_prereqs=result.missing,
+                                )
+                if tool_calls[0].reasoning:
+                    _emit(Message(
+                        MessageRole.ASSISTANT,
+                        tool_calls[0].reasoning,
+                        MessageMeta(MessageType.REASONING, step_index=iteration),
+                    ))
+                tc_infos, tool_call_counter = _build_tool_call_infos(tool_calls, tool_call_counter)
+                _emit(Message(
+                    MessageRole.ASSISTANT,
+                    "",
+                    MessageMeta(MessageType.TOOL_CALL, step_index=iteration),
+                    tool_calls=tc_infos,
+                ))
+                nudge = prereq_check.nudge
+                nudge_type = _NUDGE_KIND_TO_TYPE[nudge.kind]
+                _emit(Message(
+                    MessageRole.USER,
+                    nudge.content,
+                    MessageMeta(nudge_type, step_index=iteration),
+                ))
+                continue
+
             # 3c — Execute all tool calls in the batch
             tc_infos, tool_call_counter = _build_tool_call_infos(tool_calls, tool_call_counter)
             call_ids = [tc.call_id for tc in tc_infos]
@@ -262,7 +308,7 @@ class WorkflowRunner:
                     continue
 
                 # Success
-                step_enforcer.record(tc.tool)
+                step_enforcer.record(tc.tool, tc.args)
                 result_str = result_val if isinstance(result_val, str) else json.dumps(result_val)
                 _emit(Message(
                     MessageRole.TOOL,
@@ -287,6 +333,7 @@ class WorkflowRunner:
             else:
                 error_tracker.reset_errors()
                 step_enforcer.reset_premature()
+                step_enforcer.reset_prereq_violations()
 
             # 3e — If terminal tool was in the batch and succeeded, return
             if terminal_result is not None and not isinstance(terminal_result, Exception):

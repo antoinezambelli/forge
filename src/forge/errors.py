@@ -88,6 +88,24 @@ class StepEnforcementError(ForgeError):
         self.pending_steps = pending_steps
 
 
+class PrerequisiteError(ForgeError):
+    """Model repeatedly called a tool without satisfying its prerequisites."""
+
+    def __init__(
+        self,
+        tool_name: str,
+        violations: int,
+        missing_prereqs: list[str],
+    ):
+        super().__init__(
+            f"Tool '{tool_name}' called {violations} times "
+            f"without satisfying prerequisites: {missing_prereqs}"
+        )
+        self.tool_name = tool_name
+        self.violations = violations
+        self.missing_prereqs = missing_prereqs
+
+
 class ContextBudgetExceeded(ForgeError):
     """Context exceeded budget even after compaction. Unrecoverable."""
 
