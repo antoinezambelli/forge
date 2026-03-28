@@ -1876,3 +1876,76 @@ class TestPrerequisiteEnforcement:
 
         prereq_nudges = [m for m in collected if m.metadata.type == MessageType.PREREQUISITE_NUDGE]
         assert len(prereq_nudges) == 1  # only the b.py mismatch
+
+
+# ── Multiple terminal tools ──────────────────────────────────────
+
+
+class TestMultipleTerminalTools:
+    """Runner-level multiple terminal tool support."""
+
+    @pytest.mark.asyncio
+    async def test_first_terminal_exits(self):
+        """Workflow exits on the first terminal tool called."""
+        tools = {
+            "gather": _make_tool("gather"),
+            "set_ac": _make_tool("set_ac", fn=lambda **kw: "ac_on"),
+            "no_action": _make_tool("no_action", fn=lambda **kw: "skipped"),
+        }
+        client = MockClient([
+            ToolCall(tool="gather", args={}),
+            ToolCall(tool="set_ac", args={}),
+        ])
+        wf = _make_workflow(
+            tools=tools, required_steps=["gather"],
+            terminal_tool=["set_ac", "no_action"],
+        )
+        runner = _make_runner(client)
+        result = await runner.run(wf, "manage ac", prompt_vars={"role": "agent"})
+        assert result == "ac_on"
+
+    @pytest.mark.asyncio
+    async def test_second_terminal_exits(self):
+        """Workflow also exits on the other terminal tool."""
+        tools = {
+            "gather": _make_tool("gather"),
+            "set_ac": _make_tool("set_ac", fn=lambda **kw: "ac_on"),
+            "no_action": _make_tool("no_action", fn=lambda **kw: "skipped"),
+        }
+        client = MockClient([
+            ToolCall(tool="gather", args={}),
+            ToolCall(tool="no_action", args={}),
+        ])
+        wf = _make_workflow(
+            tools=tools, required_steps=["gather"],
+            terminal_tool=["set_ac", "no_action"],
+        )
+        runner = _make_runner(client)
+        result = await runner.run(wf, "manage ac", prompt_vars={"role": "agent"})
+        assert result == "skipped"
+
+    @pytest.mark.asyncio
+    async def test_premature_terminal_blocked_for_all(self):
+        """Both terminal tools are blocked before required steps."""
+        collected = []
+        tools = {
+            "gather": _make_tool("gather"),
+            "set_ac": _make_tool("set_ac"),
+            "no_action": _make_tool("no_action"),
+        }
+        client = MockClient([
+            ToolCall(tool="set_ac", args={}),       # premature
+            ToolCall(tool="no_action", args={}),     # also premature
+            ToolCall(tool="gather", args={}),         # required step
+            ToolCall(tool="set_ac", args={}),         # now allowed
+        ])
+        wf = _make_workflow(
+            tools=tools, required_steps=["gather"],
+            terminal_tool=["set_ac", "no_action"],
+        )
+        runner = _make_runner(client)
+        runner.on_message = collected.append
+        await runner.run(wf, "go", prompt_vars={"role": "agent"})
+
+        step_nudges = [m for m in collected if m.metadata.type == MessageType.STEP_NUDGE]
+        assert len(step_nudges) == 2  # both premature attempts nudged

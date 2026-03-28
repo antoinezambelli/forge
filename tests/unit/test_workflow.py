@@ -79,6 +79,35 @@ class TestWorkflowValidation:
         assert wf.name == "test_workflow"
         assert len(wf.tools) == 2
 
+    def test_multiple_terminal_tools_accepted(self):
+        tools = _make_tools("fetch_data", "approve", "reject")
+        wf = _make_workflow(
+            tools=tools,
+            required_steps=["fetch_data"],
+            terminal_tool=["approve", "reject"],
+        )
+        assert wf.terminal_tools == frozenset(["approve", "reject"])
+
+    def test_single_terminal_tool_normalized_to_frozenset(self):
+        wf = _make_workflow()
+        assert isinstance(wf.terminal_tools, frozenset)
+        assert wf.terminal_tools == frozenset(["submit_result"])
+
+    def test_raises_on_unknown_terminal_tool_in_list(self):
+        with pytest.raises(ValueError, match="Terminal tool 'nonexistent'"):
+            _make_workflow(
+                tools=_make_tools("fetch_data", "submit_result"),
+                terminal_tool=["submit_result", "nonexistent"],
+            )
+
+    def test_raises_when_any_terminal_tool_in_required_steps(self):
+        with pytest.raises(ValueError, match="cannot also be a required step"):
+            _make_workflow(
+                tools=_make_tools("fetch_data", "approve", "reject"),
+                required_steps=["fetch_data", "approve"],
+                terminal_tool=["approve", "reject"],
+            )
+
     def test_raises_on_unknown_prerequisite_name_only(self):
         tools = _make_tools("fetch_data", "submit_result")
         tools["submit_result"].prerequisites = ["nonexistent"]

@@ -128,7 +128,7 @@ class WorkflowRunner:
         }
         step_enforcer = StepEnforcer(
             required_steps=workflow.required_steps,
-            terminal_tool=workflow.terminal_tool,
+            terminal_tools=workflow.terminal_tools,
             tool_prerequisites=tool_prerequisites,
         )
         error_tracker = ErrorTracker(
@@ -185,8 +185,12 @@ class WorkflowRunner:
 
             if step_check.needs_nudge:
                 if step_enforcer.premature_exhausted:
+                    attempted = next(
+                        tc.tool for tc in tool_calls
+                        if tc.tool in workflow.terminal_tools
+                    )
                     raise StepEnforcementError(
-                        terminal_tool=workflow.terminal_tool,
+                        terminal_tool=attempted,
                         attempts=step_enforcer.premature_attempts,
                         pending_steps=step_enforcer.pending(),
                     )
@@ -290,7 +294,7 @@ class WorkflowRunner:
                         tool_name=tc.tool,
                         tool_call_id=tc_id,
                     ))
-                    if tc.tool == workflow.terminal_tool:
+                    if tc.tool in workflow.terminal_tools:
                         terminal_result = exc
                     continue
                 except Exception as exc:
@@ -303,7 +307,7 @@ class WorkflowRunner:
                         tool_name=tc.tool,
                         tool_call_id=tc_id,
                     ))
-                    if tc.tool == workflow.terminal_tool:
+                    if tc.tool in workflow.terminal_tools:
                         terminal_result = exc
                     continue
 
@@ -318,7 +322,7 @@ class WorkflowRunner:
                     tool_call_id=tc_id,
                 ))
 
-                if tc.tool == workflow.terminal_tool:
+                if tc.tool in workflow.terminal_tools:
                     terminal_result = result_val
 
             # 3d — Post-batch bookkeeping
