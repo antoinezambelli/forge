@@ -32,7 +32,7 @@ class StepEnforcer:
 
     Args:
         required_steps: Tool names that must be called before the terminal tool.
-        terminal_tool: The tool that ends the workflow.
+        terminal_tools: The tools that can end the workflow.
         tool_prerequisites: Map of tool name to its ToolDef.prerequisites list.
         max_premature_attempts: How many premature terminal attempts before
             the enforcer signals exhaustion (via StepCheck or raising).
@@ -43,13 +43,13 @@ class StepEnforcer:
     def __init__(
         self,
         required_steps: list[str],
-        terminal_tool: str,
+        terminal_tools: frozenset[str],
         tool_prerequisites: dict[str, list[str | dict[str, str]]] | None = None,
         max_premature_attempts: int = 3,
         max_prereq_violations: int = 2,
     ) -> None:
         self._tracker = StepTracker(required_steps=required_steps)
-        self.terminal_tool = terminal_tool
+        self.terminal_tools = terminal_tools
         self._tool_prerequisites = tool_prerequisites or {}
         self.max_premature_attempts = max_premature_attempts
         self.max_prereq_violations = max_prereq_violations
@@ -59,7 +59,7 @@ class StepEnforcer:
     def check(self, tool_calls: list[ToolCall]) -> StepCheck:
         """Check whether tool calls include a premature terminal call.
 
-        If the terminal tool is in the batch and required steps aren't
+        If a terminal tool is in the batch and required steps aren't
         satisfied, returns a StepCheck with an escalating nudge. The
         escalation tier increments on each premature attempt (1=polite,
         2=direct, 3=aggressive).
@@ -70,16 +70,20 @@ class StepEnforcer:
         Returns:
             StepCheck with nudge if premature, or no nudge if clear to proceed.
         """
-        has_terminal = any(tc.tool == self.terminal_tool for tc in tool_calls)
+        has_terminal = any(tc.tool in self.terminal_tools for tc in tool_calls)
 
         if has_terminal and not self._tracker.is_satisfied():
             self._premature_attempts += 1
             tier = min(self._premature_attempts, 3)
+            # Find which terminal tool was attempted for the nudge message
+            attempted = next(
+                tc.tool for tc in tool_calls if tc.tool in self.terminal_tools
+            )
             return StepCheck(
                 nudge=Nudge(
                     role="user",
                     content=step_nudge(
-                        self.terminal_tool,
+                        attempted,
                         self._tracker.pending(),
                         tier=tier,
                     ),
@@ -136,8 +140,8 @@ class StepEnforcer:
         return self._tracker.pending()
 
     def terminal_reached(self, tool_calls: list[ToolCall]) -> bool:
-        """True if the terminal tool is in the batch and steps are satisfied."""
-        has_terminal = any(tc.tool == self.terminal_tool for tc in tool_calls)
+        """True if a terminal tool is in the batch and steps are satisfied."""
+        has_terminal = any(tc.tool in self.terminal_tools for tc in tool_calls)
         return has_terminal and self._tracker.is_satisfied()
 
     @property

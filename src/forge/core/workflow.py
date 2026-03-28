@@ -198,10 +198,17 @@ class Workflow:
     description: str
     tools: dict[str, ToolDef]
     required_steps: list[str]
-    terminal_tool: str
+    terminal_tool: str | list[str]
     system_prompt_template: str
+    terminal_tools: frozenset[str] = field(default_factory=frozenset, init=False)
 
     def __post_init__(self) -> None:
+        # Normalize terminal_tool to frozenset for O(1) membership checks.
+        if isinstance(self.terminal_tool, str):
+            self.terminal_tools = frozenset([self.terminal_tool])
+        else:
+            self.terminal_tools = frozenset(self.terminal_tool)
+
         for key, tool_def in self.tools.items():
             if key != tool_def.name:
                 raise ValueError(
@@ -213,14 +220,15 @@ class Workflow:
                 raise ValueError(
                     f"Required step '{step}' not in tools: {tool_names}"
                 )
-        if self.terminal_tool not in tool_names:
-            raise ValueError(
-                f"Terminal tool '{self.terminal_tool}' not in tools: {tool_names}"
-            )
-        if self.terminal_tool in self.required_steps:
-            raise ValueError(
-                f"Terminal tool '{self.terminal_tool}' cannot also be a required step"
-            )
+        for tt in self.terminal_tools:
+            if tt not in tool_names:
+                raise ValueError(
+                    f"Terminal tool '{tt}' not in tools: {tool_names}"
+                )
+            if tt in self.required_steps:
+                raise ValueError(
+                    f"Terminal tool '{tt}' cannot also be a required step"
+                )
         for key, tool_def in self.tools.items():
             for prereq in tool_def.prerequisites:
                 prereq_name = prereq if isinstance(prereq, str) else prereq["tool"]

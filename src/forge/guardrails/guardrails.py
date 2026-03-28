@@ -56,7 +56,8 @@ class Guardrails:
         tool_names: Valid tool names for this workflow.
         required_steps: Tools that must be called before the terminal tool.
             Defaults to no required steps.
-        terminal_tool: The tool that ends the workflow.
+        terminal_tool: The tool(s) that can end the workflow. Accepts a
+            single name or a frozenset of names.
         max_retries: Consecutive bad responses before ``check()`` returns
             ``"fatal"``. Default 3.
         max_tool_errors: Consecutive tool execution failures before
@@ -70,7 +71,7 @@ class Guardrails:
     def __init__(
         self,
         tool_names: list[str],
-        terminal_tool: str,
+        terminal_tool: str | frozenset[str],
         required_steps: list[str] | None = None,
         max_retries: int = 3,
         max_tool_errors: int = 2,
@@ -81,9 +82,13 @@ class Guardrails:
             tool_names=tool_names,
             rescue_enabled=rescue_enabled,
         )
+        if isinstance(terminal_tool, str):
+            terminal_tools = frozenset([terminal_tool])
+        else:
+            terminal_tools = terminal_tool
         self._enforcer = StepEnforcer(
             required_steps=required_steps or [],
-            terminal_tool=terminal_tool,
+            terminal_tools=terminal_tools,
             max_premature_attempts=max_premature_attempts,
         )
         self._errors = ErrorTracker(
@@ -157,5 +162,5 @@ class Guardrails:
         self._errors.reset_errors()
         self._enforcer.reset_premature()
         return self._enforcer.is_satisfied() and any(
-            name == self._enforcer.terminal_tool for name in executed
+            name in self._enforcer.terminal_tools for name in executed
         )

@@ -12,7 +12,7 @@ class TestStepEnforcerCheck:
     def setup_method(self):
         self.enforcer = StepEnforcer(
             required_steps=["search", "lookup"],
-            terminal_tool="answer",
+            terminal_tools=frozenset(["answer"]),
         )
 
     def test_no_terminal_no_nudge(self):
@@ -78,7 +78,7 @@ class TestStepEnforcerRecord:
     def setup_method(self):
         self.enforcer = StepEnforcer(
             required_steps=["search", "lookup"],
-            terminal_tool="answer",
+            terminal_tools=frozenset(["answer"]),
         )
 
     def test_initially_not_satisfied(self):
@@ -111,7 +111,7 @@ class TestStepEnforcerTerminalReached:
     def setup_method(self):
         self.enforcer = StepEnforcer(
             required_steps=["search"],
-            terminal_tool="answer",
+            terminal_tools=frozenset(["answer"]),
         )
 
     def test_terminal_reached_when_satisfied(self):
@@ -135,7 +135,7 @@ class TestStepEnforcerExhaustion:
     def test_premature_exhausted(self):
         enforcer = StepEnforcer(
             required_steps=["search"],
-            terminal_tool="answer",
+            terminal_tools=frozenset(["answer"]),
             max_premature_attempts=2,
         )
         calls = [ToolCall(tool="answer", args={})]
@@ -148,7 +148,7 @@ class TestStepEnforcerExhaustion:
     def test_premature_attempts_count(self):
         enforcer = StepEnforcer(
             required_steps=["search"],
-            terminal_tool="answer",
+            terminal_tools=frozenset(["answer"]),
         )
         assert enforcer.premature_attempts == 0
         enforcer.check([ToolCall(tool="answer", args={})])
@@ -161,7 +161,7 @@ class TestStepEnforcerResetPremature:
     def test_reset_clears_counter(self):
         enforcer = StepEnforcer(
             required_steps=["search"],
-            terminal_tool="answer",
+            terminal_tools=frozenset(["answer"]),
             max_premature_attempts=2,
         )
         calls = [ToolCall(tool="answer", args={})]
@@ -175,7 +175,7 @@ class TestStepEnforcerResetPremature:
     def test_reset_allows_fresh_attempts(self):
         enforcer = StepEnforcer(
             required_steps=["search"],
-            terminal_tool="answer",
+            terminal_tools=frozenset(["answer"]),
             max_premature_attempts=2,
         )
         calls = [ToolCall(tool="answer", args={})]
@@ -192,13 +192,13 @@ class TestStepEnforcerCompletedSteps:
 
     def test_initially_empty(self):
         enforcer = StepEnforcer(
-            required_steps=["search"], terminal_tool="answer"
+            required_steps=["search"], terminal_tools=frozenset(["answer"])
         )
         assert enforcer.completed_steps == {}
 
     def test_reflects_recordings(self):
         enforcer = StepEnforcer(
-            required_steps=["search", "lookup"], terminal_tool="answer"
+            required_steps=["search", "lookup"], terminal_tools=frozenset(["answer"])
         )
         enforcer.record("search")
         assert "search" in enforcer.completed_steps
@@ -210,13 +210,13 @@ class TestStepEnforcerNoRequiredSteps:
 
     def test_always_satisfied(self):
         enforcer = StepEnforcer(
-            required_steps=[], terminal_tool="answer"
+            required_steps=[], terminal_tools=frozenset(["answer"])
         )
         assert enforcer.is_satisfied() is True
 
     def test_terminal_never_premature(self):
         enforcer = StepEnforcer(
-            required_steps=[], terminal_tool="answer"
+            required_steps=[], terminal_tools=frozenset(["answer"])
         )
         calls = [ToolCall(tool="answer", args={})]
         result = enforcer.check(calls)
@@ -229,7 +229,7 @@ class TestPrerequisiteCheckNameOnly:
     def setup_method(self):
         self.enforcer = StepEnforcer(
             required_steps=[],
-            terminal_tool="respond",
+            terminal_tools=frozenset(["respond"]),
             tool_prerequisites={"edit_file": ["read_file"]},
         )
 
@@ -258,7 +258,7 @@ class TestPrerequisiteCheckArgMatched:
     def setup_method(self):
         self.enforcer = StepEnforcer(
             required_steps=[],
-            terminal_tool="respond",
+            terminal_tools=frozenset(["respond"]),
             tool_prerequisites={
                 "edit_file": [{"tool": "read_file", "match_arg": "path"}],
             },
@@ -301,7 +301,7 @@ class TestPrerequisiteCheckMixed:
     def test_both_must_be_satisfied(self):
         enforcer = StepEnforcer(
             required_steps=[],
-            terminal_tool="respond",
+            terminal_tools=frozenset(["respond"]),
             tool_prerequisites={
                 "edit_file": [
                     "authenticate",
@@ -333,7 +333,7 @@ class TestPrerequisiteBatchBlocking:
     def test_any_violation_blocks_entire_batch(self):
         enforcer = StepEnforcer(
             required_steps=[],
-            terminal_tool="respond",
+            terminal_tools=frozenset(["respond"]),
             tool_prerequisites={"edit_file": ["read_file"]},
         )
         calls = [
@@ -351,7 +351,7 @@ class TestPrerequisiteExhaustion:
     def test_exhausted_after_max_violations(self):
         enforcer = StepEnforcer(
             required_steps=[],
-            terminal_tool="respond",
+            terminal_tools=frozenset(["respond"]),
             tool_prerequisites={"edit_file": ["read_file"]},
             max_prereq_violations=2,
         )
@@ -365,7 +365,7 @@ class TestPrerequisiteExhaustion:
     def test_violation_count_tracks(self):
         enforcer = StepEnforcer(
             required_steps=[],
-            terminal_tool="respond",
+            terminal_tools=frozenset(["respond"]),
             tool_prerequisites={"edit_file": ["read_file"]},
         )
         assert enforcer.prereq_violations == 0
@@ -375,7 +375,7 @@ class TestPrerequisiteExhaustion:
     def test_reset_clears_violations(self):
         enforcer = StepEnforcer(
             required_steps=[],
-            terminal_tool="respond",
+            terminal_tools=frozenset(["respond"]),
             tool_prerequisites={"edit_file": ["read_file"]},
             max_prereq_violations=1,
         )
@@ -393,8 +393,47 @@ class TestPrerequisiteNoPrereqs:
     def test_always_passes(self):
         enforcer = StepEnforcer(
             required_steps=[],
-            terminal_tool="respond",
+            terminal_tools=frozenset(["respond"]),
         )
         calls = [ToolCall(tool="edit_file", args={"path": "foo.py"})]
         result = enforcer.check_prerequisites(calls)
         assert result.needs_nudge is False
+
+
+class TestMultipleTerminalTools:
+    """Multiple terminal tools support."""
+
+    def setup_method(self):
+        self.enforcer = StepEnforcer(
+            required_steps=["gather_data"],
+            terminal_tools=frozenset(["set_ac", "no_action"]),
+        )
+
+    def test_either_terminal_triggers_premature_check(self):
+        calls_a = [ToolCall(tool="set_ac", args={})]
+        result = self.enforcer.check(calls_a)
+        assert result.needs_nudge is True
+        assert "set_ac" in result.nudge.content
+
+    def test_second_terminal_also_triggers(self):
+        calls_b = [ToolCall(tool="no_action", args={})]
+        result = self.enforcer.check(calls_b)
+        assert result.needs_nudge is True
+        assert "no_action" in result.nudge.content
+
+    def test_either_terminal_succeeds_after_steps(self):
+        self.enforcer.record("gather_data")
+        calls_a = [ToolCall(tool="set_ac", args={})]
+        assert self.enforcer.terminal_reached(calls_a) is True
+        calls_b = [ToolCall(tool="no_action", args={})]
+        assert self.enforcer.terminal_reached(calls_b) is True
+
+    def test_non_terminal_does_not_trigger(self):
+        calls = [ToolCall(tool="gather_data", args={})]
+        result = self.enforcer.check(calls)
+        assert result.needs_nudge is False
+
+    def test_non_terminal_does_not_reach(self):
+        self.enforcer.record("gather_data")
+        calls = [ToolCall(tool="gather_data", args={})]
+        assert self.enforcer.terminal_reached(calls) is False

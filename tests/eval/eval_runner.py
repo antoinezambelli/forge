@@ -147,18 +147,19 @@ def _build_workflow_with_capture(
         base_workflow = scenario.workflow
         validate_state_fn = scenario.validate_state
 
-    original_fn = base_workflow.get_callable(base_workflow.terminal_tool)
-    terminal_spec = base_workflow.tools[base_workflow.terminal_tool].spec
-
-    def capturing_terminal(**kwargs: Any) -> Any:
-        capture["args"] = kwargs
-        return original_fn(**kwargs)
-
     tools = dict(base_workflow.tools)
-    tools[base_workflow.terminal_tool] = ToolDef(
-        spec=terminal_spec,
-        callable=capturing_terminal,
-    )
+    for tt_name in base_workflow.terminal_tools:
+        original_fn = base_workflow.get_callable(tt_name)
+        terminal_spec = base_workflow.tools[tt_name].spec
+
+        def capturing_terminal(_fn=original_fn, **kwargs: Any) -> Any:
+            capture["args"] = kwargs
+            return _fn(**kwargs)
+
+        tools[tt_name] = ToolDef(
+            spec=terminal_spec,
+            callable=capturing_terminal,
+        )
 
     # Ablation: disable step enforcement by clearing required_steps
     required_steps = base_workflow.required_steps
