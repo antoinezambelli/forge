@@ -12,7 +12,7 @@ from forge.context.manager import ContextManager
 from forge.core.inference import _NUDGE_KIND_TO_TYPE, _build_tool_call_infos, run_inference
 from forge.core.messages import Message, MessageMeta, MessageRole, MessageType, ToolCallInfo
 from forge.core.workflow import ToolCall, TextResponse, Workflow, ToolSpec
-from forge.errors import MaxIterationsError, PrerequisiteError, StepEnforcementError, ToolCallError, ToolExecutionError, ToolResolutionError
+from forge.errors import MaxIterationsError, PrerequisiteError, StepEnforcementError, ToolCallError, ToolExecutionError, ToolResolutionError, WorkflowCancelledError
 from forge.guardrails import ErrorTracker, ResponseValidator, StepEnforcer
 
 
@@ -78,6 +78,7 @@ class WorkflowRunner:
         user_message: str,
         prompt_vars: dict[str, str] | None = None,
         initial_messages: list[Message] | None = None,
+        cancel_event: asyncio.Event | None = None,
     ) -> Any:
         """Execute the workflow and return the terminal tool's result.
 
@@ -91,12 +92,16 @@ class WorkflowRunner:
                 created during this run, not the replayed history. The caller
                 must include the system prompt and new user message in the
                 seed.
+            cancel_event: If provided and set, the runner will raise
+                WorkflowCancelledError at the start of the next iteration.
+                Checked once per loop, before the inference call.
 
         Raises:
             MaxIterationsError: If max_iterations exceeded without terminal tool.
             ToolCallError: If max_retries_per_step exhausted on a single step.
             ToolExecutionError: If a tool callable raised and the model failed
                 to self-correct after max_tool_errors consecutive attempts.
+            WorkflowCancelledError: If cancel_event was set during execution.
         """
         # Step 1 — Build initial messages
         if initial_messages is not None:
@@ -142,6 +147,14 @@ class WorkflowRunner:
         iteration = 0
 
         while iteration < self.max_iterations:
+            # 3.0 — Check for cancellation
+            if cancel_event is not None and cancel_event.is_set():
+                raise WorkflowCancelledError(
+                    messages=messages,
+                    completed_steps=step_enforcer.completed_steps,
+                    iteration=iteration,
+                )
+
             # 3a — Inference: compact, fold, serialize, send, validate, retry
             result = await run_inference(
                 messages=messages,

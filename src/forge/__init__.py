@@ -53,6 +53,7 @@ from forge.errors import (
     ToolCallError,
     ToolExecutionError,
     ToolResolutionError,
+    WorkflowCancelledError,
 )
 
 __all__ = [
@@ -132,4 +133,5 @@ __all__ = [
     "ToolCallError",
     "ToolExecutionError",
     "ToolResolutionError",
+    "WorkflowCancelledError",
 ]

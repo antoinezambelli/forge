@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import AsyncIterator
 from unittest.mock import MagicMock
 
@@ -21,7 +22,7 @@ from forge.core.workflow import (
     ToolSpec,
     Workflow,
 )
-from forge.errors import MaxIterationsError, PrerequisiteError, StepEnforcementError, StreamError, ToolCallError, ToolExecutionError, ToolResolutionError
+from forge.errors import MaxIterationsError, PrerequisiteError, StepEnforcementError, StreamError, ToolCallError, ToolExecutionError, ToolResolutionError, WorkflowCancelledError
 
 
 class EmptyParams(BaseModel):
@@ -1949,3 +1950,110 @@ class TestMultipleTerminalTools:
 
         step_nudges = [m for m in collected if m.metadata.type == MessageType.STEP_NUDGE]
         assert len(step_nudges) == 2  # both premature attempts nudged
+
+
+# ── Cancellation ─────────────────────────────────────────────────
+
+
+class TestCancellation:
+    """WorkflowRunner cancellation via cancel_event."""
+
+    @pytest.mark.asyncio
+    async def test_cancel_before_start(self):
+        """Cancel event set before run() starts raises immediately."""
+        client = MockClient([
+            ToolCall(tool="fetch", args={}),
+            ToolCall(tool="submit", args={}),
+        ])
+        wf = _make_workflow()
+        runner = _make_runner(client)
+        cancel = asyncio.Event()
+        cancel.set()
+
+        with pytest.raises(WorkflowCancelledError) as exc_info:
+            await runner.run(wf, "go", prompt_vars={"role": "dev"}, cancel_event=cancel)
+
+        assert exc_info.value.iteration == 0
+        assert exc_info.value.completed_steps == {}
+
+    @pytest.mark.asyncio
+    async def test_cancel_mid_workflow(self):
+        """Cancel event set after first tool fires on next iteration."""
+        cancel = asyncio.Event()
+
+        def cancel_after_fetch(**kwargs):
+            cancel.set()
+            return "fetch_result"
+
+        tools = {
+            "fetch": _make_tool("fetch", fn=cancel_after_fetch),
+            "submit": _make_tool("submit"),
+        }
+        client = MockClient([
+            ToolCall(tool="fetch", args={}),
+            ToolCall(tool="submit", args={}),
+        ])
+        wf = _make_workflow(tools=tools, required_steps=["fetch"])
+        runner = _make_runner(client)
+
+        with pytest.raises(WorkflowCancelledError) as exc_info:
+            await runner.run(wf, "go", prompt_vars={"role": "dev"}, cancel_event=cancel)
+
+        assert "fetch" in exc_info.value.completed_steps
+        assert exc_info.value.iteration == 1
+
+    @pytest.mark.asyncio
+    async def test_cancel_preserves_messages(self):
+        """Cancelled error includes conversation history."""
+        cancel = asyncio.Event()
+
+        def cancel_after_fetch(**kwargs):
+            cancel.set()
+            return "fetch_result"
+
+        tools = {
+            "fetch": _make_tool("fetch", fn=cancel_after_fetch),
+            "submit": _make_tool("submit"),
+        }
+        client = MockClient([
+            ToolCall(tool="fetch", args={}),
+            ToolCall(tool="submit", args={}),
+        ])
+        wf = _make_workflow(tools=tools, required_steps=["fetch"])
+        runner = _make_runner(client)
+
+        with pytest.raises(WorkflowCancelledError) as exc_info:
+            await runner.run(wf, "go", prompt_vars={"role": "dev"}, cancel_event=cancel)
+
+        messages = exc_info.value.messages
+        assert len(messages) > 0
+        # Should have system prompt, user input, tool call, tool result
+        types = [m.metadata.type for m in messages]
+        assert MessageType.SYSTEM_PROMPT in types
+        assert MessageType.USER_INPUT in types
+        assert MessageType.TOOL_RESULT in types
+
+    @pytest.mark.asyncio
+    async def test_no_cancel_event_runs_normally(self):
+        """None cancel_event has no effect."""
+        client = MockClient([
+            ToolCall(tool="fetch", args={}),
+            ToolCall(tool="submit", args={}),
+        ])
+        wf = _make_workflow()
+        runner = _make_runner(client)
+        result = await runner.run(wf, "go", prompt_vars={"role": "dev"}, cancel_event=None)
+        assert result == "submit_result"
+
+    @pytest.mark.asyncio
+    async def test_unset_cancel_event_runs_normally(self):
+        """Cancel event that is never set doesn't interfere."""
+        cancel = asyncio.Event()  # never set
+        client = MockClient([
+            ToolCall(tool="fetch", args={}),
+            ToolCall(tool="submit", args={}),
+        ])
+        wf = _make_workflow()
+        runner = _make_runner(client)
+        result = await runner.run(wf, "go", prompt_vars={"role": "dev"}, cancel_event=cancel)
+        assert result == "submit_result"

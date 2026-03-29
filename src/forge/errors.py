@@ -52,6 +52,24 @@ class ToolResolutionError(Exception):
         self.tool_name = tool_name
 
 
+class WorkflowCancelledError(ForgeError):
+    """Workflow was cancelled via cancel_event before completion."""
+
+    def __init__(
+        self,
+        messages: list,
+        completed_steps: dict[str, None],
+        iteration: int,
+    ):
+        super().__init__(
+            f"Workflow cancelled at iteration {iteration}. "
+            f"Completed steps: {completed_steps}"
+        )
+        self.messages = messages
+        self.completed_steps = completed_steps
+        self.iteration = iteration
+
+
 class MaxIterationsError(ForgeError):
     """Workflow exceeded max_iterations without calling the terminal tool."""
 
