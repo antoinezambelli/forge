@@ -82,7 +82,7 @@ done = guardrails.record([tc.tool for tc in result.tool_calls])
 from forge.guardrails import ResponseValidator, StepEnforcer, ErrorTracker
 
 validator = ResponseValidator(tool_names=["search", "lookup", "answer"])
-enforcer = StepEnforcer(required_steps=["search", "lookup"], terminal_tool="answer")
+enforcer = StepEnforcer(required_steps=["search", "lookup"], terminal_tools=frozenset(["answer"]))
 errors = ErrorTracker(max_retries=3, max_tool_errors=2)
 
 # Inside your loop:
@@ -130,7 +130,7 @@ The middleware layer is the foundation. Both the proxy server and the standalone
 A forge workflow has four main pieces:
 
 - **Tools** — Python functions the LLM can call, each described by a `ToolSpec` with typed parameters.
-- **Workflow** — A named bundle of tools, with optional `required_steps` (tools the LLM *must* call) and a `terminal_tool` (the tool that ends the workflow).
+- **Workflow** — A named bundle of tools, with optional `required_steps` (tools the LLM *must* call) and a `terminal_tool` (the tool or tools that end the workflow — accepts `str` or `list[str]`).
 - **Client** — An LLM backend adapter (`OllamaClient`, `LlamafileClient`, `AnthropicClient`).
 - **Runner** — `WorkflowRunner` drives the agentic loop: send messages, parse tool calls, execute tools, enforce guardrails, manage compaction.
 
@@ -305,10 +305,76 @@ Forge's guardrail stack runs automatically. Each layer can be independently disa
 | Guardrail | What it does |
 |-----------|-------------|
 | **Step enforcement** | Verifies required tools were called before the terminal tool fires |
+| **Prerequisites** | Enforces conditional tool dependencies (e.g. must read before edit) |
 | **Retry nudges** | Prompts the LLM to try again when a tool call fails validation |
 | **Rescue loops** | Recovers malformed tool calls from the LLM's text output |
 | **Error recovery** | Re-prompts after tool execution errors instead of crashing |
 | **Compaction** | Prevents context overflow in long conversations |
 
 The eval harness measures each guardrail's contribution — see [EVAL_GUIDE.md](EVAL_GUIDE.md) for ablation results.
+
+---
+
+## Tool Prerequisites
+
+Tools can declare conditional dependencies — "if you call this tool, you must have called tool X first." This is enforced at runtime via nudge-and-retry, the same pattern as step enforcement.
+
+```python
+ToolDef(
+    spec=edit_spec,
+    callable=edit_file,
+    # Name-only: any prior call to read_file satisfies it
+    prerequisites=["read_file"],
+)
+
+ToolDef(
+    spec=edit_spec,
+    callable=edit_file,
+    # Arg-matched: must have called read_file with the same path
+    prerequisites=[{"tool": "read_file", "match_arg": "path"}],
+)
+```
+
+If the model calls a tool without satisfying its prerequisites, the runner blocks the batch, emits a `PREREQUISITE_NUDGE`, and the model retries. After `max_prereq_violations` (default 2) consecutive violations, `PrerequisiteError` is raised.
+
+Prerequisites are not included in the tool schema — the model discovers constraints via nudge, same as step enforcement.
+
+---
+
+## Multiple Terminal Tools
+
+Workflows can have multiple valid exit points. Pass a list to `terminal_tool`:
+
+```python
+workflow = Workflow(
+    ...
+    terminal_tool=["set_ac", "no_action"],  # either can end the workflow
+)
+```
+
+Internally normalized to a `frozenset` for O(1) membership checks. A single string is still accepted and works as before.
+
+---
+
+## Cancellation
+
+`WorkflowRunner.run()` accepts an optional `cancel_event` parameter for cooperative cancellation:
+
+```python
+import asyncio
+
+cancel = asyncio.Event()
+
+# In another coroutine or callback:
+cancel.set()
+
+try:
+    result = await runner.run(workflow, "task", cancel_event=cancel)
+except WorkflowCancelledError as e:
+    print(f"Cancelled at iteration {e.iteration}")
+    print(f"Completed steps: {e.completed_steps}")
+    print(f"Messages so far: {len(e.messages)}")
+```
+
+The runner checks the event once per iteration, before the inference call. This is cooperative — if the model is mid-inference, the runner waits for it to finish before checking. The `WorkflowCancelledError` includes the full conversation state for the caller to resume, discard, or log.
 

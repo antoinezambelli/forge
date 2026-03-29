@@ -39,6 +39,8 @@ flowchart TD
 
     subgraph Loop["Main Loop (up to max_iterations)"]
         direction TB
+        CANCEL{"cancel_event<br/>set?"}
+        CANCELLED["Raise WorkflowCancelledError<br/>(messages, completed_steps, iteration)"]
         COMPACT["3a. ContextManager.maybe_compact()"]
         SEND["3b. Fold REASONING into next TOOL_CALL content,<br/>serialize & send to LLM (stream or batch)"]
         CHECK{"list[ToolCall] or<br/>TextResponse?"}
@@ -57,6 +59,9 @@ flowchart TD
             TERMINAL{"StepEnforcer.check():<br/>premature terminal?"}
             STEP_NUDGE["Emit TOOL_CALL + escalating step_nudge<br/>(tier 1/2/3)"]
             STEP_FAIL["Raise StepEnforcementError<br/>(premature_exhausted)"]
+            PREREQ{"StepEnforcer.<br/>check_prerequisites()?"}
+            PREREQ_NUDGE["Emit TOOL_CALL + prerequisite_nudge<br/>→ next iteration"]
+            PREREQ_FAIL["Raise PrerequisiteError<br/>(prereq_exhausted)"]
             EMIT["Emit REASONING (if present)<br/>+ TOOL_CALL message"]
             EXEC_BATCH["Execute ALL tools in batch"]
             TOOL_ERROR{"Exception type?"}
@@ -68,6 +73,8 @@ flowchart TD
             RECORD["StepEnforcer.record() per success<br/>reset_premature(), reset_errors()<br/>→ next iteration"]
         end
 
+        CANCEL -- "yes" --> CANCELLED
+        CANCEL -- "no" --> COMPACT
         COMPACT --> SEND --> CHECK
         CHECK -- "any response" --> VALIDATE
         VALIDATE --> RESCUED
@@ -78,8 +85,11 @@ flowchart TD
         RETRY_COUNT -- "yes" --> FAIL_RETRY
 
         TERMINAL -- "needs_nudge" --> STEP_NUDGE
-        TERMINAL -- "no premature" --> EMIT
+        TERMINAL -- "no premature" --> PREREQ
         STEP_NUDGE -- "premature_exhausted" --> STEP_FAIL
+        PREREQ -- "needs_nudge" --> PREREQ_NUDGE
+        PREREQ -- "satisfied" --> EMIT
+        PREREQ_NUDGE -- "prereq_exhausted" --> PREREQ_FAIL
 
         EMIT --> EXEC_BATCH
         EXEC_BATCH --> TOOL_ERROR
@@ -91,7 +101,7 @@ flowchart TD
         BATCH_DONE -- "no" --> RECORD
     end
 
-    Init --> Loop
+    Init --> CANCEL
 ```
 
 ---
@@ -148,6 +158,7 @@ Messages are tagged with `MessageType` metadata that determines their compaction
 | `reasoning` | assistant | Thinking models | Preserved through P2, dropped P3 |
 | `text_response` | assistant | Failed tool call attempt | Preserved through P2, dropped P3 |
 | `step_nudge` | user | Runner step enforcement | Dropped P1 |
+| `prerequisite_nudge` | user | Runner prereq enforcement | Dropped P1 |
 | `retry_nudge` | user | Runner retry logic | Dropped P1 |
 | `summary` | system | Compaction output | Never cut |
 
@@ -162,20 +173,20 @@ flowchart TD
     TRIGGER["Token estimate > budget × 0.75"]
 
     subgraph P1["Phase 1: Light"]
-        P1A["Drop all step_nudge, retry_nudge"]
+        P1A["Drop all step_nudge, prerequisite_nudge, retry_nudge"]
         P1B["Truncate old tool_results<br/>to ~200 chars"]
         P1A --> P1B
     end
 
     subgraph P2["Phase 2: Moderate"]
-        P2A["Drop step_nudge, retry_nudge"]
+        P2A["Drop step_nudge, prerequisite_nudge, retry_nudge"]
         P2B["Drop old tool_results entirely"]
         P2C["Reasoning + text_response PRESERVED"]
         P2A --> P2B --> P2C
     end
 
     subgraph P3["Phase 3: Emergency"]
-        P3A["Drop step_nudge, retry_nudge"]
+        P3A["Drop step_nudge, prerequisite_nudge, retry_nudge"]
         P3B["Drop old tool_results"]
         P3C["Drop reasoning"]
         P3D["Drop text_response"]
@@ -417,12 +428,14 @@ Workflow
 ├── description: str
 ├── tools: dict[str, ToolDef]          # keyed by tool name
 ├── required_steps: list[str]          # must be called before terminal
-├── terminal_tool: str                 # ends the workflow
+├── terminal_tool: str | list[str]     # tool(s) that end the workflow
+├── terminal_tools: frozenset[str]     # normalized (init=False)
 └── system_prompt_template: str        # may contain {placeholders}
 
 ToolDef
 ├── spec: ToolSpec
-└── callable: Callable[..., Any]
+├── callable: Callable[..., Any]
+└── prerequisites: list[str | dict]   # conditional dependencies (default [])
 
 ToolSpec
 ├── name: str

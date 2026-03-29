@@ -228,9 +228,14 @@ class ToolDef:
     Downstream projects define tools as ToolDefs. The Workflow holds these
     in a dict keyed by name and derives the spec list (for the LLM) and
     callable lookup (for execution) internally.
+
+    Prerequisites express conditional dependencies: "if you call this tool,
+    you must have called tool X first." Enforced via nudge-and-retry at
+    the runner level.
     """
     spec: ToolSpec
     callable: Callable[..., Any]       # sync or async
+    prerequisites: list[str | dict[str, str]]  # name-only or arg-matched
 
     @property
     def name(self) -> str:
@@ -570,19 +575,25 @@ class StepCheck:
 
 
 class StepEnforcer:
-    """Tracks required steps and enforces them with escalating nudges.
+    """Tracks required steps, enforces them with escalating nudges,
+    and enforces tool prerequisites.
 
     Wraps StepTracker internally. Stateful — instantiate per session/task.
 
     Args:
         required_steps: Tool names that must be called before the terminal tool.
-        terminal_tool: The tool that ends the workflow.
+        terminal_tools: The tools that can end the workflow (frozenset).
+        tool_prerequisites: Map of tool name to its ToolDef.prerequisites list.
         max_premature_attempts: How many premature terminal attempts before
             the enforcer signals exhaustion.
+        max_prereq_violations: How many consecutive prerequisite violations
+            before the enforcer signals exhaustion.
     """
 
-    def __init__(self, required_steps: list[str], terminal_tool: str,
-                 max_premature_attempts: int = 3) -> None: ...
+    def __init__(self, required_steps: list[str], terminal_tools: frozenset[str],
+                 tool_prerequisites: dict | None = None,
+                 max_premature_attempts: int = 3,
+                 max_prereq_violations: int = 2) -> None: ...
 
     def check(self, tool_calls: list[ToolCall]) -> StepCheck:
         """Check whether tool calls include a premature terminal call.
@@ -591,16 +602,28 @@ class StepEnforcer:
         """
         ...
 
-    def record(self, tool_name: str) -> None: ...
+    def check_prerequisites(self, tool_calls: list[ToolCall]) -> StepCheck:
+        """Check whether any tool call has unsatisfied prerequisites.
+
+        Evaluates against pre-batch state. Any violation blocks the entire batch.
+        """
+        ...
+
+    def record(self, tool_name: str, args: dict | None = None) -> None: ...
     def is_satisfied(self) -> bool: ...
     def pending(self) -> list[str]: ...
     def reset_premature(self) -> None: ...
+    def reset_prereq_violations(self) -> None: ...
     def summary_hint(self) -> str: ...
 
     @property
     def premature_attempts(self) -> int: ...
     @property
     def premature_exhausted(self) -> bool: ...
+    @property
+    def prereq_violations(self) -> int: ...
+    @property
+    def prereq_exhausted(self) -> bool: ...
     @property
     def completed_steps(self) -> dict[str, None]: ...
 
@@ -643,26 +666,36 @@ class Workflow:
     description: str
     tools: dict[str, ToolDef]            # Keyed by tool name, validated for consistency
     required_steps: list[str]            # Tools that must be called before terminal
-    terminal_tool: str                   # Tool that ends the workflow
+    terminal_tool: str | list[str]       # Tool(s) that can end the workflow
     system_prompt_template: str          # May contain {placeholders}
+    terminal_tools: frozenset[str]       # Normalized from terminal_tool (init=False)
 
     def __post_init__(self) -> None:
-        """Validate tool key/name consistency, required_steps, and terminal_tool."""
+        """Normalize terminal_tool to frozenset. Validate tool key/name
+        consistency, required_steps, terminal_tools, and prerequisites."""
+        # Normalize terminal_tool → terminal_tools (frozenset)
+        if isinstance(self.terminal_tool, str):
+            self.terminal_tools = frozenset([self.terminal_tool])
+        else:
+            self.terminal_tools = frozenset(self.terminal_tool)
+
         for key, tool_def in self.tools.items():
             if key != tool_def.name:
-                raise ValueError(
-                    f"Tool key '{key}' does not match ToolDef name '{tool_def.name}'"
-                )
+                raise ValueError(...)
         tool_names = set(self.tools.keys())
         for step in self.required_steps:
             if step not in tool_names:
-                raise ValueError(f"Required step '{step}' not in tools: {tool_names}")
-        if self.terminal_tool not in tool_names:
-            raise ValueError(f"Terminal tool '{self.terminal_tool}' not in tools: {tool_names}")
-        if self.terminal_tool in self.required_steps:
-            raise ValueError(
-                f"Terminal tool '{self.terminal_tool}' cannot also be a required step"
-            )
+                raise ValueError(...)
+        for tt in self.terminal_tools:
+            if tt not in tool_names:
+                raise ValueError(...)
+            if tt in self.required_steps:
+                raise ValueError(...)
+        for key, tool_def in self.tools.items():
+            for prereq in tool_def.prerequisites:
+                prereq_name = prereq if isinstance(prereq, str) else prereq["tool"]
+                if prereq_name not in tool_names:
+                    raise ValueError(...)
 
     def build_system_prompt(self, **kwargs: str) -> str:
         """Render the system prompt with user-provided values."""
@@ -818,6 +851,16 @@ class StepEnforcementError(ForgeError):
     def __init__(self, terminal_tool: str, attempts: int, pending_steps: list[str]):
         ...
 
+class PrerequisiteError(ForgeError):
+    """Model repeatedly called a tool without satisfying its prerequisites."""
+    def __init__(self, tool_name: str, violations: int, missing_prereqs: list[str]):
+        ...
+
+class WorkflowCancelledError(ForgeError):
+    """Workflow was cancelled via cancel_event before completion."""
+    def __init__(self, messages: list, completed_steps: dict[str, None], iteration: int):
+        ...
+
 class ContextBudgetExceeded(ForgeError):
     """Context exceeded budget even after compaction. Unrecoverable."""
     def __init__(self, estimated_tokens: int, budget_tokens: int):
@@ -863,9 +906,9 @@ class StreamError(ForgeError):
 ```
 Downstream Project
 │
-│  workflow = Workflow(tools=..., required_steps=..., terminal_tool=...)
+│  workflow = Workflow(tools=..., required_steps=..., terminal_tool=...)  # str or list[str]
 │  runner = WorkflowRunner(client=ollama_client, context_manager=ctx_mgr)
-│  result = await runner.run(workflow, "Generate a quote for part X")
+│  result = await runner.run(workflow, "Generate a quote for part X", cancel_event=event)
 │
 ▼
 WorkflowRunner.run()
@@ -876,10 +919,12 @@ WorkflowRunner.run()
 │
 ├─ 2. Initialize guardrail middleware
 │     validator = ResponseValidator(tool_names, rescue_enabled)
-│     step_enforcer = StepEnforcer(required_steps, terminal_tool)
+│     step_enforcer = StepEnforcer(required_steps, terminal_tools, tool_prerequisites)
 │     error_tracker = ErrorTracker(max_retries, max_tool_errors)
 │
 └─ 3. Loop (up to max_iterations):
+      │
+      ├─ 3.0. Cancel check: if cancel_event is set → raise WorkflowCancelledError
       │
       ├─ 3a. ContextManager.maybe_compact(messages)
       │       │
@@ -917,7 +962,14 @@ WorkflowRunner.run()
       │       ├─ Terminal present + steps NOT satisfied → StepCheck(nudge=step_nudge, needs_nudge=True)
       │       │    ├─ step_enforcer.premature_exhausted → raise StepEnforcementError
       │       │    └─ Emit tool call + escalating step nudge (tier 1/2/3), continue
-      │       └─ No premature terminal → StepCheck(needs_nudge=False), continue to 3f
+      │       └─ No premature terminal → StepCheck(needs_nudge=False), continue to 3e.2
+      │
+      ├─ 3e.2. StepEnforcer.check_prerequisites(tool_calls)
+      │       │
+      │       ├─ Any prereq unsatisfied → StepCheck(nudge=prerequisite_nudge, needs_nudge=True)
+      │       │    ├─ step_enforcer.prereq_exhausted → raise PrerequisiteError
+      │       │    └─ Emit tool call + prerequisite nudge, continue
+      │       └─ All prereqs satisfied → continue to 3f
       │
       ├─ 3f. Execute ALL tool calls in the batch sequentially
       │       │
@@ -928,14 +980,15 @@ WorkflowRunner.run()
       │       │    don't record step
       │       ├─ Other exception → feed back as [ToolError], track last_error
       │       │    batch_had_error flag set, continue to next tool in batch
-      │       ├─ Success → step_enforcer.record(), append result as TOOL_RESULT
+      │       ├─ Success → step_enforcer.record(tool, args), append result as TOOL_RESULT
       │       └─ Terminal tool in batch + succeeded → stash result for return
       │
       ├─ 3g. Post-batch bookkeeping:
       │       │
       │       ├─ batch_had_error → error_tracker.record_result(success=False)
       │       │    error_tracker.tool_errors_exhausted → raise ToolExecutionError
-      │       ├─ No errors → error_tracker.reset_errors(), step_enforcer.reset_premature()
+      │       ├─ No errors → error_tracker.reset_errors(), step_enforcer.reset_premature(),
+      │       │    step_enforcer.reset_prereq_violations()
       │       └─ Terminal tool succeeded → return terminal result
       │       │
       │       Messages appended per iteration:
