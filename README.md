@@ -100,7 +100,7 @@ async def main():
 asyncio.run(main())
 ```
 
-For multi-step workflows, multi-turn conversations, and backend auto-management, see the [User Guide](docs/USER_GUIDE.md).
+For multi-step workflows, multi-turn conversations, and backend auto-management, see the [User Guide](docs/USER_GUIDE.md). If you're building a long-running session (CLI, chat server, voice assistant), see the [long-running session advisory](docs/USER_GUIDE.md#long-running-sessions-filtering-transient-messages) for important guidance on filtering transient messages.
 
 ## Proxy Server
 
@@ -210,7 +210,7 @@ tests/
 
 ## Documentation
 
-- [User Guide](docs/USER_GUIDE.md) — Usage patterns, multi-turn, context management, guardrails
+- [User Guide](docs/USER_GUIDE.md) — Usage patterns, multi-turn, context management, guardrails, long-running session advisory
 - [Model Guide](docs/MODEL_GUIDE.md) — Which model and backend for your hardware
 - [Backend Setup](docs/BACKEND_SETUP.md) — Backend installation and server setup
 - [Eval Guide](docs/EVAL_GUIDE.md) — Eval harness CLI reference, batch eval, BFCL benchmark

@@ -259,6 +259,37 @@ await server.stop()
 
 The system prompt lives in `conversation` from turn 0 — it is not rebuilt or duplicated on subsequent turns. `StepEnforcer` and `tool_call_counter` reset each `run()` call since they are per-turn state.
 
+### Long-Running Sessions: Filtering Transient Messages
+
+`on_message` emits everything the runner creates during a turn, including transient retry artifacts — failed bare text responses, retry nudges, step nudges, and prerequisite nudges. This is by design: consumers get full visibility for logging and debugging.
+
+For long-running sessions where conversation history persists across turns, these transient messages accumulate. The model sees its own past failures and corrective nudges on every subsequent turn, polluting effective context and degrading coherence — especially on smaller models (8-14B).
+
+**Who's affected:** Any consumer that appends all `on_message` outputs to a persistent message list and reuses it via `initial_messages` on subsequent turns.
+
+**Not affected:** Single-shot workflows, eval scenarios, or consumers that rebuild the message list from scratch each turn.
+
+**Fix:** Filter transient message types before persisting. The metadata already tags these:
+
+```python
+from forge.core.messages import MessageType
+
+TRANSIENT_TYPES = {
+    MessageType.RETRY_NUDGE,
+    MessageType.STEP_NUDGE,
+    MessageType.PREREQUISITE_NUDGE,
+    MessageType.TEXT_RESPONSE,
+}
+
+def on_message(self, msg: Message) -> None:
+    if msg.metadata.type not in TRANSIENT_TYPES:
+        self.messages.append(msg)
+```
+
+`TEXT_RESPONSE` is included because in tool-calling workflows, bare text is always a failed attempt that triggered a retry — the successful response comes as a `TOOL_CALL`. Consumers where intentional text responses are valid (e.g., `trust_text_intent=True`) should keep `TEXT_RESPONSE` in their persist list.
+
+**Why not fix this in forge?** The runner's job is to emit everything — within a turn, retry nudges are useful (the model needs to see the nudge to self-correct). The distinction between "within a turn" and "across turns" is a consumer concern. Compaction handles context overflow but doesn't proactively clean up transient messages — it fires based on token budget pressure, not session hygiene.
+
 ---
 
 ## Choosing a Backend
