@@ -141,7 +141,7 @@ python -m pytest tests/ --cov=forge --cov-report=term-missing
 
 ## Eval Harness
 
-29 scenarios measuring how reliably a model + backend combo navigates multi-step tool-calling workflows. See [Eval Guide](docs/EVAL_GUIDE.md) for full CLI reference.
+31 scenarios (18 in batch eval results) measuring how reliably a model + backend combo navigates multi-step tool-calling workflows. See [Eval Guide](docs/EVAL_GUIDE.md) for full CLI reference.
 
 ```bash
 # Ollama
