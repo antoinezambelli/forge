@@ -41,6 +41,7 @@ class WorkflowRunner:
         on_chunk: Callable[[StreamChunk], Awaitable[None]] | None = None,
         on_message: Callable[[Message], None] | None = None,
         rescue_enabled: bool = True,
+        retry_nudge: Callable[[str], str] | str | None = None,
     ):
         """
         Args:
@@ -61,6 +62,9 @@ class WorkflowRunner:
                 Does not affect runner behavior.
             rescue_enabled: If False, skip rescue_tool_call() — TextResponse
                 goes straight to retry nudge (or failure if retries=0).
+            retry_nudge: Custom nudge for bare text responses. Pass a string
+                for a static message, or a callable ``(raw_response) -> str``
+                for dynamic nudges. If None, uses the default.
         """
         self.client = client
         self.context_manager = context_manager
@@ -71,6 +75,10 @@ class WorkflowRunner:
         self.on_chunk = on_chunk
         self.on_message = on_message
         self.rescue_enabled = rescue_enabled
+        if isinstance(retry_nudge, str):
+            self._retry_nudge_fn: Callable[[str], str] | None = lambda _raw, _msg=retry_nudge: _msg
+        else:
+            self._retry_nudge_fn = retry_nudge
 
     async def run(
         self,
@@ -125,7 +133,10 @@ class WorkflowRunner:
 
         # Step 2 — Initialize guardrail middleware
         tool_names = list(workflow.tools.keys())
-        validator = ResponseValidator(tool_names, rescue_enabled=self.rescue_enabled)
+        validator = ResponseValidator(
+            tool_names, rescue_enabled=self.rescue_enabled,
+            retry_nudge_fn=self._retry_nudge_fn,
+        )
         tool_prerequisites = {
             name: td.prerequisites
             for name, td in workflow.tools.items()
