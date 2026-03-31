@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 
 from forge.core.workflow import LLMResponse, TextResponse, ToolCall
@@ -35,11 +36,20 @@ class ResponseValidator:
         tool_names: Valid tool names for this workflow.
         rescue_enabled: If True, attempt to parse tool calls from TextResponse
             before generating a retry nudge.
+        retry_nudge_fn: Custom nudge function for bare text responses. Takes
+            the raw response text and returns the nudge message. If None,
+            uses the default retry nudge from ``forge.prompts.nudges``.
     """
 
-    def __init__(self, tool_names: list[str], rescue_enabled: bool = True) -> None:
+    def __init__(
+        self,
+        tool_names: list[str],
+        rescue_enabled: bool = True,
+        retry_nudge_fn: Callable[[str], str] | None = None,
+    ) -> None:
         self.tool_names = tool_names
         self.rescue_enabled = rescue_enabled
+        self._retry_nudge_fn = retry_nudge_fn or retry_nudge
 
     def validate(
         self, response: LLMResponse, trust_text_intent: bool = False,
@@ -72,7 +82,7 @@ class ResponseValidator:
                 tool_calls=None,
                 nudge=Nudge(
                     role="user",
-                    content=retry_nudge(response.content),
+                    content=self._retry_nudge_fn(response.content),
                     kind="retry",
                 ),
                 needs_retry=True,

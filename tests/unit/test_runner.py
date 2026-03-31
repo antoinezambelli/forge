@@ -2057,3 +2057,81 @@ class TestCancellation:
         runner = _make_runner(client)
         result = await runner.run(wf, "go", prompt_vars={"role": "dev"}, cancel_event=cancel)
         assert result == "submit_result"
+
+
+# ── Custom retry nudge ───────────────────────────────────────────
+
+
+class TestCustomRetryNudge:
+    """WorkflowRunner custom retry nudge support."""
+
+    @pytest.mark.asyncio
+    async def test_custom_nudge_string(self):
+        """String retry_nudge is used as static message."""
+        collected = []
+        client = MockClient([
+            TextResponse(content="bare text"),
+            ToolCall(tool="fetch", args={}),
+            ToolCall(tool="submit", args={}),
+        ])
+        wf = _make_workflow()
+        runner = _make_runner(client)
+        runner.on_message = collected.append
+        runner._retry_nudge_fn = lambda _raw: "Wrap in respond tool."
+        result = await runner.run(wf, "go", prompt_vars={"role": "dev"})
+
+        nudges = [m for m in collected if m.metadata.type == MessageType.RETRY_NUDGE]
+        assert len(nudges) == 1
+        assert nudges[0].content == "Wrap in respond tool."
+
+    @pytest.mark.asyncio
+    async def test_custom_nudge_callable(self):
+        """Callable retry_nudge receives raw response."""
+        collected = []
+        client = MockClient([
+            TextResponse(content="my response"),
+            ToolCall(tool="fetch", args={}),
+            ToolCall(tool="submit", args={}),
+        ])
+        wf = _make_workflow()
+        ctx = ContextManager(strategy=NoCompact(), budget_tokens=100_000)
+        runner = WorkflowRunner(
+            client=client, context_manager=ctx,
+            retry_nudge=lambda raw: f"Please use a tool. You said: {raw[:10]}",
+        )
+        runner.on_message = collected.append
+        result = await runner.run(wf, "go", prompt_vars={"role": "dev"})
+
+        nudges = [m for m in collected if m.metadata.type == MessageType.RETRY_NUDGE]
+        assert len(nudges) == 1
+        assert "Please use a tool. You said: my respons" in nudges[0].content
+
+    @pytest.mark.asyncio
+    async def test_string_retry_nudge_constructor(self):
+        """String passed to constructor is wrapped into callable."""
+        ctx = ContextManager(strategy=NoCompact(), budget_tokens=100_000)
+        runner = WorkflowRunner(
+            client=MockClient([]),
+            context_manager=ctx,
+            retry_nudge="Use the respond tool.",
+        )
+        assert runner._retry_nudge_fn is not None
+        assert runner._retry_nudge_fn("anything") == "Use the respond tool."
+
+    @pytest.mark.asyncio
+    async def test_none_retry_nudge_uses_default(self):
+        """None retry_nudge falls back to default."""
+        collected = []
+        client = MockClient([
+            TextResponse(content="bare text"),
+            ToolCall(tool="fetch", args={}),
+            ToolCall(tool="submit", args={}),
+        ])
+        wf = _make_workflow()
+        runner = _make_runner(client)
+        runner.on_message = collected.append
+        await runner.run(wf, "go", prompt_vars={"role": "dev"})
+
+        nudges = [m for m in collected if m.metadata.type == MessageType.RETRY_NUDGE]
+        assert len(nudges) == 1
+        assert "tool call" in nudges[0].content.lower()

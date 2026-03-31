@@ -10,6 +10,7 @@ For granular control, use the individual components directly.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Literal
 
@@ -66,6 +67,9 @@ class Guardrails:
             responses. Default True.
         max_premature_attempts: Premature terminal attempts before
             ``check()`` returns ``"fatal"``. Default 3.
+        retry_nudge: Custom nudge for bare text responses. Pass a callable
+            ``(raw_response) -> str`` for dynamic nudges. If None, uses
+            the default.
     """
 
     def __init__(
@@ -77,10 +81,12 @@ class Guardrails:
         max_tool_errors: int = 2,
         rescue_enabled: bool = True,
         max_premature_attempts: int = 3,
+        retry_nudge: Callable[[str], str] | None = None,
     ) -> None:
         self._validator = ResponseValidator(
             tool_names=tool_names,
             rescue_enabled=rescue_enabled,
+            retry_nudge_fn=retry_nudge,
         )
         if isinstance(terminal_tool, str):
             terminal_tools = frozenset([terminal_tool])

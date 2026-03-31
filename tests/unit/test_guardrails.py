@@ -182,3 +182,30 @@ class TestImports:
         from forge import CheckResult, Guardrails
         assert CheckResult is not None
         assert Guardrails is not None
+
+
+# ── Custom retry nudge ───────────────────────────────────────
+
+
+class TestCustomRetryNudge:
+    def test_default_nudge_used_when_none(self):
+        g = make_guardrails()
+        result = g.check(TextResponse(content="bare text"))
+        assert result.action == "retry"
+        assert "tool call" in result.nudge.content.lower()
+
+    def test_custom_nudge_callable(self):
+        custom = lambda raw: f"Wrap this in respond: {raw}"
+        g = make_guardrails(retry_nudge=custom, rescue_enabled=False)
+        result = g.check(TextResponse(content="hello world"))
+        assert result.action == "retry"
+        assert "Wrap this in respond: hello world" == result.nudge.content
+
+    def test_custom_nudge_receives_raw_response(self):
+        captured = []
+        def nudge_fn(raw):
+            captured.append(raw)
+            return "try again"
+        g = make_guardrails(retry_nudge=nudge_fn, rescue_enabled=False)
+        g.check(TextResponse(content="my bare text"))
+        assert captured == ["my bare text"]
