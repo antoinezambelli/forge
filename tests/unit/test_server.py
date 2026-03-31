@@ -618,7 +618,7 @@ class TestStartWithBudget:
 
         mock_start.assert_called_once_with(
             "llama3", "/models/llama3.gguf", "native", None, ctx_override=None,
-            cache_type_k=None, cache_type_v=None, n_slots=None,
+            cache_type_k=None, cache_type_v=None, n_slots=None, kv_unified=False,
         )
         assert result == 13568
 
@@ -637,7 +637,7 @@ class TestStartWithBudget:
 
         mock_start.assert_called_once_with(
             "llama3", "/models/llama3.gguf", "native", None, ctx_override=8000,
-            cache_type_k=None, cache_type_v=None, n_slots=None,
+            cache_type_k=None, cache_type_v=None, n_slots=None, kv_unified=False,
         )
         assert result == 8000
 
@@ -664,7 +664,7 @@ class TestStartWithBudget:
 
         mock_start.assert_called_once_with(
             "llama3", "/models/llama3.gguf", "native", None, ctx_override=None,
-            cache_type_k=None, cache_type_v=None, n_slots=None,
+            cache_type_k=None, cache_type_v=None, n_slots=None, kv_unified=False,
         )
         assert result == 13568
 
@@ -690,12 +690,12 @@ class TestStartWithBudget:
         # Phase 1: start without -c
         mock_start.assert_any_call(
             "llama3", "/models/llama3.gguf", "native", None, ctx_override=None,
-            cache_type_k=None, cache_type_v=None, n_slots=None,
+            cache_type_k=None, cache_type_v=None, n_slots=None, kv_unified=False,
         )
         # Phase 2: restart with half (13568 // 2 = 6784)
         mock_start.assert_any_call(
             "llama3", "/models/llama3.gguf", "native", None, ctx_override=6784,
-            cache_type_k=None, cache_type_v=None, n_slots=None,
+            cache_type_k=None, cache_type_v=None, n_slots=None, kv_unified=False,
         )
         assert result == 6784
 
@@ -735,6 +735,185 @@ class TestStartWithBudget:
                 budget_mode=BudgetMode.FORGE_FAST,
             )
         assert result == 2048  # half of 4096 tier for <24 GB
+
+    @pytest.mark.asyncio
+    async def test_forge_fast_multi_slot_no_double_divide(self) -> None:
+        """FORGE_FAST with 2 slots: recovers total before halving."""
+        sm = ServerManager(backend="llamaserver")
+        # /props reports 35K per-slot (from 70K total / 2 slots)
+        # After restart with -c 35K (half of 70K), /props reports 17.5K per-slot
+        with (
+            patch.object(sm, "start", new_callable=AsyncMock) as mock_start,
+            patch.object(
+                sm, "get_server_context", new_callable=AsyncMock,
+                side_effect=[35000, 17500],
+            ),
+        ):
+            result = await sm.start_with_budget(
+                "llama3", "/models/llama3.gguf",
+                budget_mode=BudgetMode.FORGE_FAST,
+                n_slots=2,
+            )
+
+        assert mock_start.call_count == 2
+        # Phase 2: -c should be 35000 (half of 70K total), NOT 17500 (half of per-slot)
+        mock_start.assert_any_call(
+            "llama3", "/models/llama3.gguf", "native", None, ctx_override=35000,
+            cache_type_k=None, cache_type_v=None, n_slots=2, kv_unified=False,
+        )
+        # Budget returned is per-slot (non-unified): 17500
+        assert result == 17500
+
+    @pytest.mark.asyncio
+    async def test_forge_fast_single_slot_unchanged(self) -> None:
+        """FORGE_FAST with 1 slot: same behavior as before."""
+        sm = ServerManager(backend="llamaserver")
+        with (
+            patch.object(sm, "start", new_callable=AsyncMock) as mock_start,
+            patch.object(
+                sm, "get_server_context", new_callable=AsyncMock,
+                side_effect=[13568, 6784],
+            ),
+        ):
+            result = await sm.start_with_budget(
+                "llama3", "/models/llama3.gguf",
+                budget_mode=BudgetMode.FORGE_FAST,
+                n_slots=1,
+            )
+
+        mock_start.assert_any_call(
+            "llama3", "/models/llama3.gguf", "native", None, ctx_override=6784,
+            cache_type_k=None, cache_type_v=None, n_slots=1, kv_unified=False,
+        )
+        assert result == 6784
+
+    @pytest.mark.asyncio
+    async def test_kv_unified_returns_full_budget(self) -> None:
+        """kv_unified=True with 2 slots: /props reports full context, budget matches."""
+        sm = ServerManager(backend="llamaserver")
+
+        async def fake_start(*args, **kwargs):
+            sm._current_kv_unified = kwargs.get("kv_unified", False)
+            sm._current_n_slots = kwargs.get("n_slots")
+
+        # With kv_unified, /props reports full context (not divided by slots)
+        with (
+            patch.object(sm, "start", side_effect=fake_start),
+            patch.object(sm, "get_server_context", new_callable=AsyncMock, return_value=70000),
+        ):
+            result = await sm.start_with_budget(
+                "llama3", "/models/llama3.gguf",
+                budget_mode=BudgetMode.FORGE_FULL,
+                n_slots=2,
+                kv_unified=True,
+            )
+
+        # Budget is what /props reports — no multiplication needed
+        assert result == 70000
+
+    @pytest.mark.asyncio
+    async def test_kv_unified_single_slot_no_change(self) -> None:
+        """kv_unified with 1 slot: same as without — /props reports full context."""
+        sm = ServerManager(backend="llamaserver")
+
+        with (
+            patch.object(sm, "start", new_callable=AsyncMock),
+            patch.object(sm, "get_server_context", new_callable=AsyncMock, return_value=70000),
+        ):
+            result = await sm.start_with_budget(
+                "llama3", "/models/llama3.gguf",
+                budget_mode=BudgetMode.FORGE_FULL,
+                n_slots=1,
+                kv_unified=True,
+            )
+
+        assert result == 70000
+
+    @pytest.mark.asyncio
+    async def test_non_unified_returns_per_slot_budget(self) -> None:
+        """Without kv_unified, 2 slots: budget is per-slot context."""
+        sm = ServerManager(backend="llamaserver")
+        with (
+            patch.object(sm, "start", new_callable=AsyncMock),
+            patch.object(sm, "get_server_context", new_callable=AsyncMock, return_value=35000),
+        ):
+            result = await sm.start_with_budget(
+                "llama3", "/models/llama3.gguf",
+                budget_mode=BudgetMode.FORGE_FULL,
+                n_slots=2,
+                kv_unified=False,
+            )
+
+        # Non-unified: per-slot is the correct budget
+        assert result == 35000
+
+    @pytest.mark.asyncio
+    async def test_kv_unified_injects_flag(self) -> None:
+        """kv_unified=True passes --kv-unified to start()."""
+        sm = ServerManager(backend="llamaserver")
+        with (
+            patch.object(sm, "start", new_callable=AsyncMock) as mock_start,
+            patch.object(sm, "get_server_context", new_callable=AsyncMock, return_value=35000),
+        ):
+            await sm.start_with_budget(
+                "llama3", "/models/llama3.gguf",
+                budget_mode=BudgetMode.FORGE_FULL,
+                n_slots=2,
+                kv_unified=True,
+            )
+
+        mock_start.assert_called_once_with(
+            "llama3", "/models/llama3.gguf", "native", None, ctx_override=None,
+            cache_type_k=None, cache_type_v=None, n_slots=2, kv_unified=True,
+        )
+
+    @pytest.mark.asyncio
+    async def test_forge_fast_kv_unified_multi_slot(self) -> None:
+        """FORGE_FAST + kv_unified + 2 slots: /props reports full context."""
+        sm = ServerManager(backend="llamaserver")
+
+        # With unified, /props reports full context (not per-slot).
+        # Phase 1: /props reports 70K (full). FORGE_FAST halves: -c 35K.
+        # Phase 2: /props reports 35K (full at new size). Budget = 35K.
+        with (
+            patch.object(sm, "start", new_callable=AsyncMock),
+            patch.object(
+                sm, "get_server_context", new_callable=AsyncMock,
+                side_effect=[70000, 35000],
+            ),
+        ):
+            result = await sm.start_with_budget(
+                "llama3", "/models/llama3.gguf",
+                budget_mode=BudgetMode.FORGE_FAST,
+                n_slots=2,
+                kv_unified=True,
+            )
+
+        assert result == 35000
+
+    @pytest.mark.asyncio
+    async def test_forge_fast_kv_unified_single_slot(self) -> None:
+        """FORGE_FAST + kv_unified + 1 slot: straightforward halving."""
+        sm = ServerManager(backend="llamaserver")
+        with (
+            patch.object(sm, "start", new_callable=AsyncMock) as mock_start,
+            patch.object(
+                sm, "get_server_context", new_callable=AsyncMock,
+                side_effect=[70000, 35000],
+            ),
+        ):
+            result = await sm.start_with_budget(
+                "llama3", "/models/llama3.gguf",
+                budget_mode=BudgetMode.FORGE_FAST,
+                n_slots=1,
+                kv_unified=True,
+            )
+
+        mock_start.assert_any_call(
+            "llama3", "/models/llama3.gguf", "native", None, ctx_override=35000,
+            cache_type_k=None, cache_type_v=None, n_slots=1, kv_unified=True,
+        )
+        assert result == 35000
 
 
 # ── setup_backend() ──────────────────────────────────────────────

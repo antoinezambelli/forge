@@ -65,6 +65,7 @@ class ServerManager:
         self._current_cache_type_k: str | None = None
         self._current_cache_type_v: str | None = None
         self._current_n_slots: int | None = None
+        self._current_kv_unified: bool = False
 
     # ── start / stop ────────────────────────────────────────────
 
@@ -78,11 +79,12 @@ class ServerManager:
         cache_type_k: str | None = None,
         cache_type_v: str | None = None,
         n_slots: int | None = None,
+        kv_unified: bool = False,
     ) -> None:
         """Start a llama-server/llamafile process.
 
         No-op if the same model + mode + ctx + extra_flags + cache types
-        + slots is already running.
+        + slots + kv_unified is already running.
         For ``backend="ollama"`` this is always a no-op.
 
         For ``backend="llamafile"``, the llamafile runtime binary is
@@ -101,6 +103,10 @@ class ServerManager:
                           (e.g. ``"q8_0"``, ``"q4_0"``).
             n_slots: Number of concurrent slots (each with its own KV
                      cache). Used for multi-agent architectures.
+            kv_unified: If True, use a single unified KV cache shared
+                        across all slots. Each slot can use up to the
+                        full context. Without this, context is hard-
+                        partitioned per slot.
         """
         if self._backend == "ollama":
             return
@@ -115,6 +121,7 @@ class ServerManager:
             and self._current_cache_type_k == cache_type_k
             and self._current_cache_type_v == cache_type_v
             and self._current_n_slots == n_slots
+            and self._current_kv_unified == kv_unified
         ):
             return
 
@@ -155,6 +162,8 @@ class ServerManager:
             cmd.extend(["--cache-type-v", cache_type_v])
         if n_slots is not None:
             cmd.extend(["--parallel", str(n_slots)])
+        if kv_unified:
+            cmd.append("--kv-unified")
 
         self._proc = subprocess.Popen(
             cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
@@ -168,6 +177,7 @@ class ServerManager:
         self._current_cache_type_k = cache_type_k
         self._current_cache_type_v = cache_type_v
         self._current_n_slots = n_slots
+        self._current_kv_unified = kv_unified
 
     async def stop(self) -> None:
         """Stop the current server / unload the Ollama model."""
@@ -192,6 +202,7 @@ class ServerManager:
             self._current_cache_type_k = None
             self._current_cache_type_v = None
             self._current_n_slots = None
+            self._current_kv_unified = False
             await asyncio.sleep(3)  # let VRAM clear
 
     # ── /props + context ────────────────────────────────────────
@@ -215,8 +226,13 @@ class ServerManager:
     async def get_server_context(self) -> int:
         """Read the actual n_ctx from the running server.
 
+        Note: Without ``--kv-unified``, llama-server's ``/props`` endpoint
+        reports **per-slot** context (``total_ctx / n_parallel``). With
+        ``--kv-unified``, it reports the full available context (each slot
+        can use the whole pool).
+
         Returns:
-            The context length.
+            The context length as reported by ``/props``.
 
         Raises:
             BudgetResolutionError: Server unreachable, returned an error,
@@ -266,7 +282,10 @@ class ServerManager:
                 return full // 2
             return full
 
-        # llamaserver / llamafile — all non-manual modes read /props
+        # llamaserver / llamafile — all non-manual modes read /props.
+        # With kv_unified, /props already reports the full available context
+        # (each slot can use the whole pool). Without it, /props reports the
+        # per-slot partition — which is the correct budget for compaction.
         return await self.get_server_context()
 
     async def start_with_budget(
@@ -280,6 +299,7 @@ class ServerManager:
         cache_type_k: str | None = None,
         cache_type_v: str | None = None,
         n_slots: int | None = None,
+        kv_unified: bool = False,
     ) -> int:
         """Start server with the specified budget mode and return the resolved budget.
 
@@ -291,6 +311,12 @@ class ServerManager:
 
         For Ollama: ignores gguf_path, doesn't start a process.
         Returns VRAM tier budget.
+
+        The returned budget accounts for slot configuration:
+        - Non-unified (default): per-slot context (what ContextManager
+          should use for compaction — the slot can only use this much).
+        - Unified (``kv_unified=True``): total context across all slots
+          (each slot can use up to the full amount).
 
         Args:
             model: Model name (Ollama-style canonical name).
@@ -304,6 +330,8 @@ class ServerManager:
             cache_type_v: KV cache quantization type for values
                           (e.g. ``"q8_0"``, ``"q4_0"``).
             n_slots: Number of concurrent slots.
+            kv_unified: If True, use a single unified KV cache shared
+                        across all slots.
 
         Returns:
             Resolved budget in tokens (ready for ContextManager).
@@ -324,16 +352,22 @@ class ServerManager:
             await self.start(
                 model, gguf_path, mode, extra_flags, ctx_override=None,
                 cache_type_k=cache_type_k, cache_type_v=cache_type_v,
-                n_slots=n_slots,
+                n_slots=n_slots, kv_unified=kv_unified,
             )
-            full_ctx = await self.get_server_context()
-            half_ctx = full_ctx // 2
+            # /props reports per-slot context (non-unified) or full context
+            # (unified). Either way, recover the total for -c math.
+            reported_ctx = await self.get_server_context()
+            if kv_unified or not n_slots or n_slots <= 1:
+                total_ctx = reported_ctx
+            else:
+                total_ctx = reported_ctx * n_slots
+            half_total = total_ctx // 2
 
-            # Phase 2: restart with half context
+            # Phase 2: restart with half total context
             await self.start(
-                model, gguf_path, mode, extra_flags, ctx_override=half_ctx,
+                model, gguf_path, mode, extra_flags, ctx_override=half_total,
                 cache_type_k=cache_type_k, cache_type_v=cache_type_v,
-                n_slots=n_slots,
+                n_slots=n_slots, kv_unified=kv_unified,
             )
             return await self.resolve_budget(budget_mode)
 
@@ -342,7 +376,7 @@ class ServerManager:
         await self.start(
             model, gguf_path, mode, extra_flags, ctx_override=ctx_override,
             cache_type_k=cache_type_k, cache_type_v=cache_type_v,
-            n_slots=n_slots,
+            n_slots=n_slots, kv_unified=kv_unified,
         )
         return await self.resolve_budget(budget_mode, manual_tokens)
 
@@ -412,6 +446,7 @@ async def setup_backend(
     cache_type_k: str | None = None,
     cache_type_v: str | None = None,
     n_slots: int | None = None,
+    kv_unified: bool = False,
     context_thresholds: list[float] | None = None,
     on_context_threshold: Callable[[int, int, float], str | None] | None = None,
 ) -> tuple[ServerManager, ContextManager]:
@@ -427,6 +462,11 @@ async def setup_backend(
     VRAM usage per token, effectively increasing usable context for the
     same GPU memory.  Common values: ``"q8_0"`` (~50% savings vs F16),
     ``"q4_0"`` (~75% savings).  Only applies to llama-server / llamafile.
+
+    When ``kv_unified=True``, all slots share a single KV cache pool.
+    Each slot can use up to the full context. The returned budget reflects
+    the total available context (not per-slot). Without it, context is
+    hard-partitioned per slot and the budget reflects the per-slot amount.
 
     Example usage::
 
@@ -456,6 +496,7 @@ async def setup_backend(
         cache_type_k=cache_type_k,
         cache_type_v=cache_type_v,
         n_slots=n_slots,
+        kv_unified=kv_unified,
     )
 
     # Ollama: wire num_ctx so every request uses the resolved budget
