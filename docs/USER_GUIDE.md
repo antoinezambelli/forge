@@ -409,3 +409,78 @@ except WorkflowCancelledError as e:
 
 The runner checks the event once per iteration, before the inference call. This is cooperative — if the model is mid-inference, the runner waits for it to finish before checking. The `WorkflowCancelledError` includes the full conversation state for the caller to resume, discard, or log.
 
+---
+
+## SlotWorker — Shared Slot Access
+
+`SlotWorker` serializes workflow execution on a single inference slot with priority-based queuing and auto-preemption. Use it when multiple callers need to share a slot — for example, a home assistant's specialist workflows (calendar, AC management, escalation) all sharing slot 1 while the main conversation runs on slot 0.
+
+### Basic usage (FIFO)
+
+```python
+from forge import SlotWorker, WorkflowRunner
+
+# One runner pinned to a slot, one worker wrapping it
+runner = WorkflowRunner(client=client, context_manager=ctx)
+worker = SlotWorker(runner)
+await worker.start()
+
+# From anywhere — multiple concurrent callers are serialized
+result = await worker.submit(workflow, "do the thing")
+```
+
+### Priority
+
+Priority is an `int` — lower values run first. Forge imposes no semantics; the consumer defines what the levels mean:
+
+```python
+# Consumer defines their own levels
+USER = 0
+ESCALATED = 1
+ROUTINE = 2
+
+# User-initiated request — highest priority
+result = await worker.submit(calendar_wf, "what's on my schedule?", priority=USER)
+
+# Background cron — lowest priority, can be preempted
+result = await worker.submit(ac_wf, "check temperature", priority=ROUTINE)
+```
+
+Without an explicit priority, all tasks default to 0 (pure FIFO).
+
+### Auto-preemption
+
+If a higher-priority task is submitted while a lower-priority task is running, the running task is automatically cancelled and the higher-priority task takes over. The cancelled task's `submit()` raises `WorkflowCancelledError`.
+
+```python
+# Routine AC check is running (priority=2)...
+# User asks about calendar (priority=0) — AC check is auto-cancelled
+result = await worker.submit(calendar_wf, "what's next?", priority=0)
+```
+
+You can also cancel manually:
+
+```python
+worker.cancel_current()  # cancels whatever is running
+```
+
+### Multi-slot architecture
+
+For multi-slot setups (e.g., with `--kv-unified`), create one `SlotWorker` per shared slot. The main conversation slot typically doesn't need a worker — it's dedicated to one persistent session.
+
+```python
+# Slot 0: main conversation (no worker needed — dedicated)
+main_client = LlamafileClient(model="...", slot_id=0)
+main_runner = WorkflowRunner(client=main_client, context_manager=ctx)
+
+# Slot 1: shared specialist slot (needs a worker)
+service_client = LlamafileClient(model="...", slot_id=1)
+service_runner = WorkflowRunner(client=service_client, context_manager=ctx)
+service_worker = SlotWorker(service_runner)
+await service_worker.start()
+
+# Tools route through the worker
+async def query_calendar(**kwargs):
+    return await service_worker.submit(calendar_wf, kwargs["query"], priority=0)
+```
+

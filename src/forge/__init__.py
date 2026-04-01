@@ -12,6 +12,7 @@ from forge.core.workflow import (
 from forge.core.steps import StepTracker
 from forge.core.inference import InferenceResult, fold_and_serialize, run_inference
 from forge.core.runner import WorkflowRunner
+from forge.core.slot_worker import SlotWorker
 from forge.clients.base import ChunkType, LLMClient, StreamChunk, TokenUsage
 from forge.clients.llamafile import LlamafileClient
 from forge.clients.ollama import OllamaClient
@@ -78,6 +79,8 @@ __all__ = [
     "run_inference",
     # Runner
     "WorkflowRunner",
+    # Slot worker
+    "SlotWorker",
     # Client
     "ChunkType",
     "LLMClient",
