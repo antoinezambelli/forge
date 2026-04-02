@@ -8,7 +8,7 @@ A reliability layer for self-hosted LLM tool-calling. Forge takes an 8B model fr
 
 Three ways to use it:
 
-- **WorkflowRunner** — Define tools, pick a backend, run structured agent loops. Forge manages the full lifecycle: system prompts, tool execution, context compaction, and guardrails. Best when you're building on forge directly.
+- **WorkflowRunner** — Define tools, pick a backend, run structured agent loops. Forge manages the full lifecycle: system prompts, tool execution, context compaction, and guardrails. **SlotWorker** adds priority-queued access to a shared inference slot with auto-preemption — for multi-agent architectures where specialist workflows share a GPU slot. Best when you're building on forge directly.
 
 - **Guardrails middleware** — Use forge's reliability stack ([composable middleware](examples/foreign_loop.py)) inside your own orchestration loop. You control the loop; forge validates responses, rescues malformed tool calls, and enforces required steps.
 
@@ -170,6 +170,7 @@ src/forge/
     workflow.py        # ToolSpec, ToolDef, ToolCall, TextResponse, Workflow
     inference.py       # run_inference() — shared front half (compact, fold, validate, retry)
     runner.py          # WorkflowRunner — the agentic loop
+    slot_worker.py     # SlotWorker — priority-queued slot access
     steps.py           # StepTracker
   guardrails/
     nudge.py           # Nudge dataclass
@@ -210,7 +211,7 @@ tests/
 
 ## Documentation
 
-- [User Guide](docs/USER_GUIDE.md) — Usage patterns, multi-turn, context management, guardrails, long-running session advisory
+- [User Guide](docs/USER_GUIDE.md) — Usage patterns, multi-turn, context management, guardrails, slot worker, long-running session advisory
 - [Model Guide](docs/MODEL_GUIDE.md) — Which model and backend for your hardware
 - [Backend Setup](docs/BACKEND_SETUP.md) — Backend installation and server setup
 - [Eval Guide](docs/EVAL_GUIDE.md) — Eval harness CLI reference, batch eval, BFCL benchmark
