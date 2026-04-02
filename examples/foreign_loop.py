@@ -12,6 +12,11 @@ This file has three parts:
   Part 2 -- The granular API (individual middleware components)
   Part 3 -- Using the respond tool for chat in tool-equipped sessions
 
+The middleware covers validation, rescue parsing, retry nudges, and step
+enforcement. Your loop is responsible for: iteration caps, cancellation,
+context management (compaction, threshold callbacks), and streaming. For
+the batteries-included version, see WorkflowRunner.
+
 No LLM backend required -- uses scripted responses to show each guardrail.
 """
 
