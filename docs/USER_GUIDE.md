@@ -10,6 +10,27 @@ For model and backend selection, see [MODEL_GUIDE.md](MODEL_GUIDE.md). For backe
 
 Forge's guardrail stack (retry nudges, step enforcement, error recovery, context compaction, VRAM budgeting) can be consumed in three ways. All three share the same underlying guardrail logic.
 
+### At a glance
+
+Each mode trades control for convenience. WorkflowRunner handles everything; the proxy applies guardrails transparently but drops workflow-level features; the middleware gives you building blocks and nothing else.
+
+| Feature | WorkflowRunner | Proxy | Middleware |
+|---------|:-:|:-:|:-:|
+| Validation + rescue parsing | Yes | Yes | Yes |
+| Retry nudges | Yes | Yes | Yes |
+| Respond tool | Caller adds | Auto-injected | Caller adds |
+| Step enforcement | Yes | No | Yes (caller wires) |
+| Prerequisites | Yes | No | Yes (caller wires) |
+| Max iterations | Yes | Bounded by max_retries | Caller's responsibility |
+| Context compaction | Yes | Yes | Caller wires ContextManager |
+| Context threshold warnings | Yes | No | Caller wires ContextManager |
+| Cancellation | Between iterations | Between retries | Caller's responsibility |
+| Streaming (token-by-token) | Yes | Post-hoc SSE | Caller's responsibility |
+| Tool execution | Yes | No (client executes) | No (caller executes) |
+| Callbacks (on_message, on_compact) | Yes | No | No |
+
+The proxy is intentionally bare-bones — it applies response-quality guardrails (validation, rescue, retry, respond tool) without requiring workflow knowledge. Features like step enforcement and prerequisites require workflow structure that doesn't exist in the OpenAI chat completions API. See [Proxy design boundaries](#proxy-design-boundaries) for details.
+
 ### Mode 1: Standalone Runner (batteries included)
 
 Forge owns the full agentic loop — LLM communication, guardrail policy, tool execution, and orchestration. You provide tools and a task, forge handles everything.
@@ -45,6 +66,20 @@ client = OpenAI(base_url="http://localhost:8081/v1")
 **Best for:** Adding guardrails to existing tools without modifying them. Works with any tool that speaks the OpenAI-compatible API — no per-client wrappers needed.
 
 **Reliability note:** The proxy automatically injects a synthetic `respond` tool when tools are present in the request. The model calls `respond(message="...")` instead of producing bare text, keeping it in tool-calling mode where forge's full guardrail stack applies. The `respond` call is stripped from the outbound response — the client sees a normal text response and never knows the tool exists. This is essential for small local models (~8B), which cannot be trusted to choose correctly between text and tool calls — eval testing showed that trusting the model's text intent dropped workflow completion from 100% to as low as 4%. Guiding the model to a tool is a must. See [ADR-013](decisions/013-text-response-intent.md) for the full analysis.
+
+#### Proxy design boundaries
+
+The proxy is intentionally bare-bones: it applies response-quality guardrails without requiring workflow knowledge. The following features are available in WorkflowRunner but not in the proxy, by design:
+
+- **Step enforcement and prerequisites.** These require workflow structure (required steps, terminal tool, tool dependencies) that doesn't exist in the OpenAI chat completions API. The proxy receives tool definitions per request but has no concept of workflow progression. If you need step enforcement, use WorkflowRunner or the middleware directly.
+
+- **Max iterations.** The proxy calls `run_inference` once per request. Each call is bounded at `max_retries + 1` LLM attempts (default 4). There is no outer loop — a runaway model cannot loop indefinitely. This is sufficient for the proxy's single-request model.
+
+- **Real streaming.** The proxy accepts `stream=true` and returns SSE events, but the full inference completes before SSE conversion. Token-by-token streaming during inference would require validating partial responses, which is incompatible with guardrails that need complete responses (rescue parsing, retry nudges). The guardrail-first design is the proxy's value proposition.
+
+- **Context threshold warnings.** The proxy is stateless — the client sends the full conversation history in every request and decides what to include. Context pressure is the client's concern. Compaction still fires when the budget is exceeded.
+
+- **Cancellation on disconnect.** Client disconnects are detected but do not cancel in-flight inference. This is the same granularity as WorkflowRunner, which checks `cancel_event` between loop iterations but does not interrupt a running LLM call. The worst case is `max_retries + 1` wasted calls (default 4) for a disconnected client.
 
 ### Mode 3: Middleware (composable guardrails)
 
