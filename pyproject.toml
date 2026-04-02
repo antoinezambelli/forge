@@ -33,6 +33,9 @@ Repository = "https://github.com/antoinezambelli/forge"
 Documentation = "https://github.com/antoinezambelli/forge/tree/main/docs"
 Changelog = "https://github.com/antoinezambelli/forge/blob/main/CHANGELOG.md"
 
+[project.scripts]
+forge-proxy = "forge.proxy.__main__:main"
+
 [project.optional-dependencies]
 anthropic = ["anthropic>=0.40"]
 dev = [

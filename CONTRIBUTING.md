@@ -16,7 +16,7 @@ pip install -e ".[dev]"
 Unit tests are fully deterministic — no LLM backend required.
 
 ```bash
-# Full suite (800 tests)
+# Full suite (638 tests)
 python -m pytest tests/unit/ -v --tb=short
 
 # With coverage

@@ -156,10 +156,6 @@ python -m tests.eval.batch_eval --config all --runs 50
 python -m tests.eval.report eval_results.jsonl
 ```
 
-### BFCL Benchmark
-
-Run forge against [Berkeley Function Calling Leaderboard](https://github.com/ShishirPatil/gorilla/tree/main/berkeley-function-call-leaderboard) v4 tasks (11 categories, ~2,183 entries). See [Eval Guide](docs/EVAL_GUIDE.md) for details.
-
 ## Project Structure
 
 ```
@@ -199,7 +195,7 @@ src/forge/
     handler.py         # Request handler — bridge between HTTP and run_inference
     convert.py         # OpenAI messages ↔ forge Messages conversion
 tests/
-  unit/                # 800 deterministic tests — no LLM backend required
+  unit/                # 638 deterministic tests — no LLM backend required
   eval/                # Eval harness — model qualification against real backends
 ```
 
@@ -208,7 +204,7 @@ tests/
 - [User Guide](docs/USER_GUIDE.md) — Usage patterns, multi-turn, context management, guardrails, slot worker, long-running session advisory
 - [Model Guide](docs/MODEL_GUIDE.md) — Which model and backend for your hardware
 - [Backend Setup](docs/BACKEND_SETUP.md) — Backend installation and server setup
-- [Eval Guide](docs/EVAL_GUIDE.md) — Eval harness CLI reference, batch eval, BFCL benchmark
+- [Eval Guide](docs/EVAL_GUIDE.md) — Eval harness CLI reference, batch eval
 - [Architecture](docs/ARCHITECTURE.md) — Full design document
 - [Workflow Internals](docs/WORKFLOW.md) — Workflow design and runner internals
 - [Contributing](CONTRIBUTING.md) — How to set up, test, and add new backends or scenarios
