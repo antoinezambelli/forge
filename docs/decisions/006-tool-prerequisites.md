@@ -1,6 +1,6 @@
 # ADR-006: Tool Prerequisites
 
-**Status:** Planned (README roadmap item 19)
+**Status:** Accepted and implemented (March 2026)
 
 ## Problem
 

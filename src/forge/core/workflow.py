@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Any, Literal, Optional
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, create_model
 
@@ -88,19 +88,19 @@ def _build_model(
             if default is not None:
                 if description is not None:
                     fields[fname] = (
-                        Optional[python_type],
+                        python_type | None,
                         Field(default=default, description=description),
                     )
                 else:
-                    fields[fname] = (Optional[python_type], Field(default=default))
+                    fields[fname] = (python_type | None, Field(default=default))
             else:
                 if description is not None:
                     fields[fname] = (
-                        Optional[python_type],
+                        python_type | None,
                         Field(default=None, description=description),
                     )
                 else:
-                    fields[fname] = (Optional[python_type], None)
+                    fields[fname] = (python_type | None, None)
 
     return create_model(model_name, **fields)  # type: ignore[call-overload]
 

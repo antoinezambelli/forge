@@ -1,6 +1,7 @@
 # forge
 
 [![Tests](https://github.com/antoinezambelli/forge/actions/workflows/tests.yml/badge.svg)](https://github.com/antoinezambelli/forge/actions/workflows/tests.yml)
+[![codecov](https://codecov.io/gh/antoinezambelli/forge/branch/main/graph/badge.svg)](https://codecov.io/gh/antoinezambelli/forge)
 [![Python 3.12+](https://img.shields.io/badge/python-3.12%2B-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
@@ -24,14 +25,16 @@ Supports Ollama, llama-server (llama.cpp), Llamafile, and Anthropic as backends.
 ## Install
 
 ```bash
+pip install forge-llm                # core only
+pip install "forge-llm[anthropic]"   # + Anthropic client
+```
+
+For development:
+
+```bash
 git clone https://github.com/antoinezambelli/forge.git
 cd forge
-python -m venv .venv
-.venv\Scripts\activate          # Windows
-# source .venv/bin/activate     # macOS/Linux
-pip install -e .                # core only
-pip install -e ".[anthropic]"   # + Anthropic client
-pip install -e ".[dev]"         # + test/eval dependencies
+pip install -e ".[dev]"
 ```
 
 ### Backend setup (pick one)
@@ -141,7 +144,7 @@ python -m pytest tests/ --cov=forge --cov-report=term-missing
 
 ## Eval Harness
 
-31 scenarios (18 in batch eval results) measuring how reliably a model + backend combo navigates multi-step tool-calling workflows. See [Eval Guide](docs/EVAL_GUIDE.md) for full CLI reference.
+22 scenarios measuring how reliably a model + backend combo navigates multi-step tool-calling workflows. See [Eval Guide](docs/EVAL_GUIDE.md) for full CLI reference.
 
 ```bash
 # Ollama
@@ -153,10 +156,6 @@ python -m tests.eval.batch_eval --config all --runs 50
 # Reports (ASCII table, HTML dashboard, markdown views)
 python -m tests.eval.report eval_results.jsonl
 ```
-
-### BFCL Benchmark
-
-Run forge against [Berkeley Function Calling Leaderboard](https://github.com/ShishirPatil/gorilla/tree/main/berkeley-function-call-leaderboard) v4 tasks (11 categories, ~2,183 entries). See [Eval Guide](docs/EVAL_GUIDE.md) for details.
 
 ## Project Structure
 
@@ -197,24 +196,16 @@ src/forge/
     handler.py         # Request handler — bridge between HTTP and run_inference
     convert.py         # OpenAI messages ↔ forge Messages conversion
 tests/
-  unit/                # 655 deterministic tests — no LLM backend required
+  unit/                # 638 deterministic tests — no LLM backend required
   eval/                # Eval harness — model qualification against real backends
 ```
-
-## Roadmap
-
-1. **Multi-model routing** — Model pool for managing N backends simultaneously. See [`docs/decisions/MULTI_MODEL_ROUTING.md`](docs/decisions/MULTI_MODEL_ROUTING.md).
-2. **Tool prerequisites** — Conditional tool dependencies. See [`docs/decisions/006-tool-prerequisites.md`](docs/decisions/006-tool-prerequisites.md).
-3. **Context window self-awareness** — Inject remaining context budget so the model knows compaction is approaching.
-4. **Compaction tiers** — Consumer-configurable per-phase compaction thresholds.
-5. **Proxy server enhancements** — Request queuing for concurrent clients, client disconnect cancellation, text response intent (ADR-013).
 
 ## Documentation
 
 - [User Guide](docs/USER_GUIDE.md) — Usage patterns, multi-turn, context management, guardrails, slot worker, long-running session advisory
 - [Model Guide](docs/MODEL_GUIDE.md) — Which model and backend for your hardware
 - [Backend Setup](docs/BACKEND_SETUP.md) — Backend installation and server setup
-- [Eval Guide](docs/EVAL_GUIDE.md) — Eval harness CLI reference, batch eval, BFCL benchmark
+- [Eval Guide](docs/EVAL_GUIDE.md) — Eval harness CLI reference, batch eval
 - [Architecture](docs/ARCHITECTURE.md) — Full design document
 - [Workflow Internals](docs/WORKFLOW.md) — Workflow design and runner internals
 - [Contributing](CONTRIBUTING.md) — How to set up, test, and add new backends or scenarios

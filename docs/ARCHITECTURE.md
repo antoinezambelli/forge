@@ -1310,39 +1310,23 @@ forge/
 │   │   ├── test_response_validator.py # ResponseValidator (rescue, retry, unknown tool)
 │   │   ├── test_step_enforcer.py  # StepEnforcer (premature terminal, escalation, reset)
 │   │   ├── test_error_tracker.py  # ErrorTracker (retry/tool error budgets)
-│   │   ├── test_eval_budget.py    # Eval budget override logic
-│   │   ├── test_bfcl_backends.py  # BFCL backend wiring
-│   │   ├── test_bfcl_e2e.py       # BFCL end-to-end
-│   │   ├── test_bfcl_executors.py # BFCL executor dispatch
-│   │   ├── test_bfcl_report.py    # BFCL report generation
-│   │   ├── test_bfcl_runner.py    # BFCL runner logic
-│   │   ├── test_bfcl_schema_adapter.py # BFCL schema conversion
-│   │   └── test_bfcl_scorer.py    # BFCL scoring logic
+│   │   └── test_eval_budget.py    # Eval budget override logic
 │   │
 │   └── eval/                      # Eval harness — model qualification against real backends
-│       ├── scenarios/             # EvalScenario dataclass, 29 scenarios, ALL_SCENARIOS
+│       ├── scenarios/             # EvalScenario dataclass, 22 scenarios, ALL_SCENARIOS
 │       │   ├── _base.py           # EvalScenario dataclass
-│       │   ├── _plumbing.py       # basic_2step, sequential_3step, error_recovery, compaction_stress
+│       │   ├── _plumbing.py       # basic_2step, sequential_3step, error_recovery
 │       │   ├── _model_quality.py  # tool_selection, argument_fidelity, sequential_reasoning, etc.
-│       │   ├── _compaction.py     # phase2_compaction
+│       │   ├── _compaction.py     # relevance_detection
 │       │   ├── _stateful_plumbing.py      # Stateful variants of plumbing scenarios
 │       │   ├── _stateful_model_quality.py  # Stateful variants of model quality scenarios
-│       │   ├── _stateful_compaction.py     # Stateful compaction + inventory/supplier scenarios
-│       │   └── _compaction_chain.py        # 10-step medical investigation chain (4 budget variants)
+│       │   ├── _stateful_relevance.py     # Stateful relevance detection
+│       │   └── _compaction_chain.py       # 10-step medical investigation chain (4 budget variants)
 │       ├── eval_runner.py         # RunResult, EvalConfig, run_scenario, run_eval, CLI
 │       ├── metrics.py             # HistoryStats, ScenarioMetrics, compute_metrics, print_report
 │       ├── batch_eval.py          # BatchConfig, batch runner, JSONL output, resume
 │       ├── report.py              # ASCII table + list + HTML + Markdown report from JSONL
-│       ├── ablation.py            # AblationConfig, ABLATION_PRESETS (reforged/bare/no_*)
-│       └── bfcl/                  # Berkeley Function Calling Leaderboard eval
-│           ├── runner.py          # BFCL runner
-│           ├── batch_runner.py    # BFCL batch runner
-│           ├── scorer.py          # BFCL scoring
-│           ├── schema_adapter.py  # BFCL schema conversion
-│           ├── executors.py       # BFCL executor dispatch
-│           ├── backend_wiring.py  # BFCL backend config
-│           ├── bfcl_report.py     # BFCL report generation
-│           └── data/              # BFCL test data
+│       └── ablation.py            # AblationConfig, ABLATION_PRESETS (reforged/bare/no_*)
 │
 └── scripts/
     └── purge_jsonl.py             # JSONL cleanup utility
@@ -1384,7 +1368,6 @@ Deterministic, no LLM or backend required. 562 tests across 21 test files, all r
 | `ServerManager` | Budget resolution logic | VRAM tier lookup; FORGE_FULL/FORGE_FAST/MANUAL/BACKEND modes |
 | `Templates` | `build_tool_prompt()`, `extract_tool_call()`, `rescue_tool_call()` | Prompt format; JSON extraction from code fences; rehearsal syntax `tool[ARGS]{...}` |
 | `Nudges` | `retry_nudge()`, `unknown_tool_nudge()`, `step_nudge()` tiers | Escalating tier content; available tools listed |
-| `BFCL` (7 files) | Schema adapter, scorer, executors, runner, backends, report, E2E | BFCL schema conversion; nested dict/list scoring; executor dispatch; backend wiring |
 
 ### Eval Harness
 

@@ -1,4 +1,4 @@
-"""Stateful plumbing scenarios — basic_2step, sequential_3step, error_recovery, TRE."""
+"""Stateful plumbing scenarios — basic_2step, sequential_3step, error_recovery."""
 
 from __future__ import annotations
 
@@ -7,7 +7,6 @@ from typing import Any
 from pydantic import BaseModel, Field
 
 from forge.core.workflow import ToolDef, ToolSpec, Workflow
-from forge.errors import ToolResolutionError
 
 from ._base import EvalScenario, _check, _placeholder_workflow
 
@@ -255,80 +254,6 @@ error_recovery_stateful = EvalScenario(
     user_message="Fetch 10 records and summarize them.",
     validate=lambda args: _check(args.get("content", ""), ["10", "record"]),
     build_workflow=_build_error_recovery_stateful,
-    tags=["stateful", "plumbing"],
-    ideal_iterations=3,
-)
-
-
-# ── Backend 4: CountryFactsDB with ToolResolutionError ───────
-
-
-class CountryFactsTRE:
-    """Same data as CountryFactsDB, but raises ToolResolutionError on miss."""
-
-    def __init__(self) -> None:
-        self.data = {
-            "france": "Capital: Paris. Population: 2.1 million (city), 67 million (country).",
-            "japan": "Capital: Tokyo. Population: 14 million (city), 125 million (country).",
-        }
-        self.last_retrieved: str | None = None
-
-    def get_country_info(self, country: str) -> str:
-        key = country.strip().lower()
-        if key in self.data:
-            self.last_retrieved = self.data[key]
-            return self.data[key]
-        raise ToolResolutionError(
-            f"No entry found for '{country}'. Try another country."
-        )
-
-    def summarize(self, content: str) -> str:
-        return content  # echo-back terminal
-
-
-def _build_basic_2step_stateful_tre() -> tuple[Workflow, callable]:
-    db = CountryFactsTRE()
-    tools: dict[str, ToolDef] = {
-        "get_country_info": ToolDef(
-            spec=ToolSpec(
-                name="get_country_info",
-                description="Look up facts about a country.",
-                parameters=CountryParams,
-            ),
-            callable=lambda **kw: db.get_country_info(kw["country"]),
-        ),
-        "summarize": ToolDef(
-            spec=ToolSpec(
-                name="summarize",
-                description="Summarize content and provide the final answer.",
-                parameters=ContentParams,
-            ),
-            callable=lambda **kw: db.summarize(kw.get("content", "")),
-        ),
-    }
-    workflow = Workflow(
-        name="basic_2step_stateful_tre",
-        description="Look up country facts with ToolResolutionError on miss",
-        tools=tools,
-        required_steps=["get_country_info"],
-        terminal_tool="summarize",
-        system_prompt_template=(
-            "You are a helpful assistant. Use the available tools to answer "
-            "the user's question. First use get_country_info to retrieve "
-            "information, then use summarize to provide the final answer."
-        ),
-    )
-    validate_state = lambda: db.last_retrieved is not None
-    return workflow, validate_state
-
-
-basic_2step_stateful_tre = EvalScenario(
-    name="basic_2step_stateful_tre",
-    description="Stateful 2-step with ToolResolutionError — model must retry with a different key.",
-    workflow=_placeholder_workflow("basic_2step_stateful_tre", "summarize", ["get_country_info"]),
-    user_message="What is the capital of France?",
-    validate=lambda args: _check(args.get("content", ""), ["paris", "capital"]),
-    build_workflow=_build_basic_2step_stateful_tre,
     tags=["stateful", "plumbing"],
     ideal_iterations=3,
 )

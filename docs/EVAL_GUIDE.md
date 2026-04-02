@@ -43,19 +43,19 @@ python -m tests.eval.eval_runner --backend anthropic --model claude-haiku-4-5-20
 
 ### Scenarios
 
-29 scenarios across three categories:
+22 scenarios across four categories:
 
 **Plumbing** (does forge's tool-calling loop work?):
-- `basic_2step`, `sequential_3step`, `error_recovery`, `compaction_stress`
+- `basic_2step`, `sequential_3step`, `error_recovery`
 
 **Model quality** (does the model reason correctly?):
-- `tool_selection`, `argument_fidelity`, `sequential_reasoning`, `conditional_routing`, `data_gap_recovery`, `relevance_detection`, `phase2_compaction`
+- `tool_selection`, `argument_fidelity`, `sequential_reasoning`, `conditional_routing`, `data_gap_recovery`, `relevance_detection`
 
 **Compaction chain** (multi-phase compaction retention):
 - `compaction_chain_baseline`, `compaction_chain_p1`, `compaction_chain_p2`, `compaction_chain_p3`
 
 **Stateful variants** (state carries between calls — wrong arguments cascade):
-- `basic_2step_stateful`, `sequential_3step_stateful`, `error_recovery_stateful`, `tool_selection_stateful`, `argument_fidelity_stateful`, `sequential_reasoning_stateful`, `conditional_routing_stateful`, `data_gap_recovery_stateful`, `relevance_detection_stateful`, `compaction_stress_stateful`, `phase2_compaction_stateful`, `inventory_audit`, `supplier_deep_dive`, `basic_2step_stateful_tre`
+- `basic_2step_stateful`, `sequential_3step_stateful`, `error_recovery_stateful`, `tool_selection_stateful`, `argument_fidelity_stateful`, `sequential_reasoning_stateful`, `conditional_routing_stateful`, `data_gap_recovery_stateful`, `relevance_detection_stateful`
 
 **Lambda vs stateful:** Lambda scenarios use hardcoded echo tools — tool arguments don't affect the result. Stateful scenarios use backend classes where arguments matter and state carries between calls. The delta between lambda and stateful scores for the same model isolates model reasoning quality from forge correctness.
 
@@ -191,94 +191,9 @@ python -m tests.eval.report eval_results.jsonl --html docs/results/dashboard.htm
 
 ---
 
-## BFCL Benchmark
+## BFCL Benchmark (removed)
 
-Run forge against [Berkeley Function Calling Leaderboard](https://github.com/ShishirPatil/gorilla/tree/main/berkeley-function-call-leaderboard) v4 tasks.
-
-**Categories:** 7 single-turn (`simple_python`, `simple_java`, `simple_javascript`, `multiple`, `parallel`, `parallel_multiple`, `irrelevance`) and 4 multi-turn (`multi_turn_base`, `multi_turn_miss_func`, `multi_turn_miss_param`, `multi_turn_long_context`).
-
-### Smoke Test
-
-```bash
-# Single-turn
-python -m tests.eval.bfcl.smoke_test --backend ollama --model "ministral-3:8b-instruct-2512-q4_K_M" --entries 5 --category simple_python --stream
-
-# Multi-turn
-python -m tests.eval.bfcl.smoke_test --backend ollama --model "ministral-3:8b-instruct-2512-q4_K_M" --entries 2 --category multi_turn_base --stream
-
-# Specific entries
-python -m tests.eval.bfcl.smoke_test --backend ollama --model "ministral-3:8b-instruct-2512-q4_K_M" --category multi_turn_base --entry-ids multi_turn_base_4 --debug
-```
-
-#### smoke_test Flags
-
-| Flag | Values | Default | Description |
-|------|--------|---------|-------------|
-| `--backend` | `ollama`, `llamafile`, `anthropic` | *(required)* | Backend to target |
-| `--model` | string | none | Model name (required for ollama/anthropic) |
-| `--entries` | int | all | Number of entries to run |
-| `--category` | category name | `simple_python` | BFCL category |
-| `--stream` | flag | off | Use streaming mode |
-| `--verbose` | flag | off | Print per-entry progress |
-| `--debug` | flag | off | Dump per-turn calls for failed entries |
-| `--entry-ids` | ID(s) | all | Run only these entry IDs |
-| `--llamafile-mode` | `native`, `prompt`, `auto` | `auto` | FC mode for llamafile backend |
-
-### BFCL Batch Runner
-
-```bash
-# All configs
-python -m tests.eval.bfcl.batch_runner --config all
-
-# Ollama only
-python -m tests.eval.bfcl.batch_runner --config ollama
-
-# Specific categories
-python -m tests.eval.bfcl.batch_runner --config ollama --categories simple_python multiple parallel
-
-# Dry run
-python -m tests.eval.bfcl.batch_runner --config all --dry-run
-
-# Filter to a specific model
-python -m tests.eval.bfcl.batch_runner --config llamaserver --model ministral-3:8b-instruct
-```
-
-#### batch_runner Flags
-
-| Flag | Values | Default | Description |
-|------|--------|---------|-------------|
-| `--config` | `all`, `ollama`, `llamaserver`, `llamaserver-native`, `llamaserver-prompt`, `llamafile`, `anthropic`, `anthropic-any`, `haiku`, `sonnet`, `opus` | `all` | Config set to run |
-| `--categories` | category name(s) | all 11 | Categories to run |
-| `--output` | path | `bfcl_results.jsonl` | JSONL output path |
-| `--budget-mode` | `backend`, `manual`, `forge-full`, `forge-fast` | `forge-full` | Context budget strategy |
-| `--num-ctx` | int | none | Exact token budget (requires `--budget-mode manual`) |
-| `--ablation` | preset name | `reforged` | Ablation preset |
-| `--model` | substring | none | Filter configs to models containing this substring |
-| `--dry-run` | flag | off | Show what would run |
-| `--verbose`, `-v` | flag | off | Print per-entry details |
-
-Resume is automatic: re-run the same command and it skips completed entries.
-
-### BFCL Report
-
-```bash
-# Full ASCII table
-python -m tests.eval.bfcl.bfcl_report bfcl_results.jsonl
-
-# Progress
-python -m tests.eval.bfcl.bfcl_report bfcl_results.jsonl --progress
-
-# Compact list
-python -m tests.eval.bfcl.bfcl_report bfcl_results.jsonl --list-only
-```
-
-#### bfcl_report Flags
-
-| Flag | Values | Default | Description |
-|------|--------|---------|-------------|
-| `jsonl` | path | *(required)* | Path to bfcl_results.jsonl (positional) |
-| `--progress` | flag | off | Show entries per config |
-| `--list-only` | flag | off | Compact list format (no table) |
+Forge previously included a [Berkeley Function Calling Leaderboard](https://github.com/ShishirPatil/gorilla/tree/main/berkeley-function-call-leaderboard) v4 integration (11 categories, ~2,183 entries). It was removed in favor of forge's own eval harness, which measures multi-step workflow completion rather than single-call argument matching. Last commit with BFCL code: [`a9b0257`](https://github.com/antoinezambelli/forge/commit/a9b0257).
 
 ---
 

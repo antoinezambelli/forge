@@ -6,6 +6,7 @@ import argparse
 import logging
 import signal
 import sys
+import time
 
 from forge.proxy.proxy import ProxyServer
 from forge.server import BudgetMode
@@ -83,7 +84,7 @@ def main() -> None:
         rescue_enabled=not args.no_rescue,
     )
 
-    def _shutdown(sig: int, frame: object) -> None:
+    def _shutdown(sig: int, _frame: object) -> None:
         print("\nShutting down...")
         proxy.stop()
         sys.exit(0)
@@ -102,7 +103,6 @@ def main() -> None:
     # blocks signal handling on Windows).
     try:
         while True:
-            import time
             time.sleep(0.1)
     except KeyboardInterrupt:
         _shutdown(0, None)
