@@ -203,8 +203,7 @@ class AnthropicClient:
                 )
                 for i, tu in enumerate(tool_uses)
             ]
-        intentional = getattr(response, "stop_reason", None) == "end_turn"
-        return TextResponse(content="\n".join(text_parts), intentional=intentional)
+        return TextResponse(content="\n".join(text_parts))
 
     # ── API methods ──────────────────────────────────────────────
 
@@ -260,8 +259,6 @@ class AnthropicClient:
         # Track multiple tool_use blocks by index.
         tool_blocks: list[dict[str, str]] = []  # [{name, args}, ...]
         _current_tool_idx: int = -1
-        stream_stop_reason: str | None = None
-
         try:
             async with self._client.messages.stream(**kwargs) as stream:
                 async for event in stream:
@@ -288,8 +285,6 @@ class AnthropicClient:
                     elif event.type == "content_block_stop":
                         # Reset current tool index when a block finishes
                         _current_tool_idx = -1
-                    elif event.type == "message_delta":
-                        stream_stop_reason = getattr(event.delta, "stop_reason", None)
                     elif event.type == "message_stop":
                         if tool_blocks:
                             reasoning = accumulated_text or None
@@ -302,10 +297,7 @@ class AnthropicClient:
                                 for i, tb in enumerate(tool_blocks)
                             ]
                         else:
-                            final = TextResponse(
-                                content=accumulated_text,
-                                intentional=stream_stop_reason == "end_turn",
-                            )
+                            final = TextResponse(content=accumulated_text)
                         yield StreamChunk(
                             type=ChunkType.FINAL, response=final
                         )

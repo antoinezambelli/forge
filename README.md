@@ -116,7 +116,7 @@ python -m forge.proxy --backend llamaserver --gguf path/to/model.gguf --port 808
 
 Then configure your client to use `http://localhost:8081/v1` as the API base URL.
 
-**Note:** The proxy automatically injects a synthetic `respond` tool when tools are present in the request. The model calls `respond(message="...")` instead of producing bare text, keeping it in tool-calling mode where forge's full guardrail stack applies. The `respond` call is stripped from the outbound response — the client sees a normal text response (`finish_reason: "stop"`) and never knows the tool exists. This eliminates the `trust_text_intent` tradeoff described in [ADR-013](docs/decisions/013-text-response-intent.md) — no retries wasted on conversational turns, no accuracy loss on tool-calling turns.
+**Note:** The proxy automatically injects a synthetic `respond` tool when tools are present in the request. The model calls `respond(message="...")` instead of producing bare text, keeping it in tool-calling mode where forge's full guardrail stack applies. The `respond` call is stripped from the outbound response — the client sees a normal text response (`finish_reason: "stop"`) and never knows the tool exists. This is essential for small local models (~8B), which cannot be trusted to choose correctly between text and tool calls — guiding them to a tool is a must. See [ADR-013](docs/decisions/013-text-response-intent.md) for the full analysis.
 
 ## Backends
 

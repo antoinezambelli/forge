@@ -185,7 +185,7 @@ class TestInferenceInjection:
     async def test_warning_injected_into_api_messages(self) -> None:
         from unittest.mock import AsyncMock
         from forge.core.inference import run_inference
-        from forge.core.workflow import ToolCall, ToolSpec, TextResponse
+        from forge.core.workflow import ToolCall
         from forge.guardrails import ErrorTracker, ResponseValidator
 
         # Tiny budget, threshold at 30% so our messages will cross it
@@ -207,13 +207,13 @@ class TestInferenceInjection:
 
         async def mock_send(api_messages, tools=None):
             captured_messages.extend(api_messages)
-            return TextResponse(content="ok", intentional=True)
+            return [ToolCall(tool="done", args={})]
 
         mock_client = AsyncMock()
         mock_client.send = mock_send
         mock_client.api_format = "ollama"
 
-        validator = ResponseValidator(tool_names=[], rescue_enabled=False)
+        validator = ResponseValidator(tool_names=["done"], rescue_enabled=False)
         error_tracker = ErrorTracker(max_retries=1)
 
         result = await run_inference(
@@ -223,7 +223,6 @@ class TestInferenceInjection:
             validator=validator,
             error_tracker=error_tracker,
             tool_specs=[],
-            trust_text_intent=True,
         )
 
         # The injected warning should be the last message (user role)
@@ -236,7 +235,7 @@ class TestInferenceInjection:
     async def test_no_injection_without_threshold_config(self) -> None:
         from unittest.mock import AsyncMock
         from forge.core.inference import run_inference
-        from forge.core.workflow import TextResponse
+        from forge.core.workflow import ToolCall
         from forge.guardrails import ErrorTracker, ResponseValidator
 
         # No thresholds configured
@@ -251,13 +250,13 @@ class TestInferenceInjection:
 
         async def mock_send(api_messages, tools=None):
             captured_messages.extend(api_messages)
-            return TextResponse(content="ok", intentional=True)
+            return [ToolCall(tool="done", args={})]
 
         mock_client = AsyncMock()
         mock_client.send = mock_send
         mock_client.api_format = "ollama"
 
-        validator = ResponseValidator(tool_names=[], rescue_enabled=False)
+        validator = ResponseValidator(tool_names=["done"], rescue_enabled=False)
         error_tracker = ErrorTracker(max_retries=1)
 
         await run_inference(
@@ -267,7 +266,6 @@ class TestInferenceInjection:
             validator=validator,
             error_tracker=error_tracker,
             tool_specs=[],
-            trust_text_intent=True,
         )
 
         # No context warning should be injected

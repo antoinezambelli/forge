@@ -44,7 +44,7 @@ client = OpenAI(base_url="http://localhost:8081/v1")
 
 **Best for:** Adding guardrails to existing tools without modifying them. Works with any tool that speaks the OpenAI-compatible API — no per-client wrappers needed.
 
-**Reliability note:** The proxy sets `trust_text_intent=True`, meaning it trusts the backend's finish reason when the model responds with text instead of calling tools. This eliminates retry latency on conversational turns (e.g. the user says "hi" in a tool-equipped session) but means the proxy won't nudge the model if it should have called a tool. In eval testing with an 8B model (Ministral 3 8B Reasoning Q4_K_M), unconditionally trusting intent dropped workflow completion from 100% to as low as 4% on reasoning-heavy scenarios. WorkflowRunner and middleware default to `trust_text_intent=False` and are not affected. See [ADR-013](../decisions/013-text-response-intent.md) for the full analysis.
+**Reliability note:** The proxy automatically injects a synthetic `respond` tool when tools are present in the request. The model calls `respond(message="...")` instead of producing bare text, keeping it in tool-calling mode where forge's full guardrail stack applies. The `respond` call is stripped from the outbound response — the client sees a normal text response and never knows the tool exists. This is essential for small local models (~8B), which cannot be trusted to choose correctly between text and tool calls — eval testing showed that trusting the model's text intent dropped workflow completion from 100% to as low as 4%. Guiding the model to a tool is a must. See [ADR-013](decisions/013-text-response-intent.md) for the full analysis.
 
 ### Mode 3: Middleware (composable guardrails)
 
@@ -288,7 +288,7 @@ def on_message(self, msg: Message) -> None:
         self.messages.append(msg)
 ```
 
-`TEXT_RESPONSE` is included because in tool-calling workflows, bare text is always a failed attempt that triggered a retry — the successful response comes as a `TOOL_CALL`. Consumers where intentional text responses are valid (e.g., `trust_text_intent=True`) should keep `TEXT_RESPONSE` in their persist list.
+`TEXT_RESPONSE` is included because in tool-calling workflows, bare text is always a failed attempt that triggered a retry — the successful response comes as a `TOOL_CALL`. Consumers using the respond tool for conversational replies should keep `TEXT_RESPONSE` in their persist list.
 
 **Why not fix this in forge?** The runner's job is to emit everything — within a turn, retry nudges are useful (the model needs to see the nudge to self-correct). The distinction between "within a turn" and "across turns" is a consumer concern. Compaction handles context overflow but doesn't proactively clean up transient messages — it fires based on token budget pressure, not session hygiene.
 

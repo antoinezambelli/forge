@@ -28,20 +28,17 @@ class CheckResult:
     Attributes:
         action: What the caller should do next.
             "execute"      -- tool_calls are safe to run.
-            "text"         -- model intentionally responded with text; no tools.
             "retry"        -- model produced an unusable response; inject nudge.
             "step_blocked" -- model tried to skip required steps; inject nudge.
             "fatal"        -- error budget exhausted; stop the workflow.
         tool_calls: Validated tool calls (only set when action == "execute").
-        text: Intentional text content (only set when action == "text").
         nudge: Corrective message to inject (set when action is "retry"
             or "step_blocked").
         reason: Human-readable explanation (only set when action == "fatal").
     """
 
-    action: Literal["execute", "text", "retry", "step_blocked", "fatal"]
+    action: Literal["execute", "retry", "step_blocked", "fatal"]
     tool_calls: list[ToolCall] | None = None
-    text: str | None = None
     nudge: Nudge | None = None
     reason: str | None = None
 
@@ -103,7 +100,7 @@ class Guardrails:
         )
 
     def check(
-        self, response: LLMResponse, trust_text_intent: bool = False,
+        self, response: LLMResponse,
     ) -> CheckResult:
         """Check an LLM response against all guardrails.
 
@@ -112,16 +109,12 @@ class Guardrails:
         Args:
             response: The LLM response -- either a TextResponse or a
                 list of ToolCall objects.
-            trust_text_intent: If True, trust the backend's intentional
-                flag on TextResponse. Default False.
 
         Returns:
             CheckResult indicating what the caller should do next.
         """
         # Checkpoint 1: Is this response usable?
-        validation = self._validator.validate(
-            response, trust_text_intent=trust_text_intent,
-        )
+        validation = self._validator.validate(response)
 
         if validation.needs_retry:
             self._errors.record_retry()
@@ -133,10 +126,6 @@ class Guardrails:
             return CheckResult(action="retry", nudge=validation.nudge)
 
         self._errors.reset_retries()
-
-        # Intentional text — model chose text over tools
-        if validation.text_response is not None:
-            return CheckResult(action="text", text=validation.text_response.content)
 
         # Checkpoint 2: Is the model skipping required steps?
         step_check = self._enforcer.check(validation.tool_calls)
