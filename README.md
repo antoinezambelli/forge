@@ -25,8 +25,8 @@ Supports Ollama, llama-server (llama.cpp), Llamafile, and Anthropic as backends.
 ## Install
 
 ```bash
-pip install forge-llm                # core only
-pip install "forge-llm[anthropic]"   # + Anthropic client
+pip install forge-guardrails                # core only
+pip install "forge-guardrails[anthropic]"   # + Anthropic client
 ```
 
 For development:
