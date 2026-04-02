@@ -2,7 +2,7 @@
 
 Which model and backend to use with forge, based on your hardware and goals.
 
-All numbers from forge's eval harness: 9 scenarios × 50 runs per config, measured 2026-03-12. Full guardrail stack ("reforged") unless noted. See [EVAL_GUIDE.md](EVAL_GUIDE.md) for methodology and the [paper](https://doi.org/XXXXXXX.XXXXXXX) for full analysis.
+All numbers from forge's eval harness: 18 scenarios (9 lambda + 9 stateful) × 50 runs per config, measured 2026-03-12. Full guardrail stack ("reforged") unless noted. See [EVAL_GUIDE.md](EVAL_GUIDE.md) for full scenario list (22 total including compaction chain) and methodology.
 
 ---
 
