@@ -2,7 +2,8 @@
 
 The model calls respond(message="...") instead of producing bare text.
 This keeps the model in tool-calling mode where forge's full guardrail
-stack applies, eliminating the trust_text_intent tradeoff.
+stack applies. Small local models (~8B) cannot be trusted to choose
+correctly between text and tool calls — guiding them to a tool is a must.
 
 Usage:
 

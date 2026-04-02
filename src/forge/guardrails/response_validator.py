@@ -15,16 +15,14 @@ from forge.prompts.templates import rescue_tool_call
 class ValidationResult:
     """Result of validating an LLM response.
 
-    Exactly one of ``tool_calls``, ``text_response``, or ``nudge`` is set:
-    - If ``needs_retry`` is False and ``tool_calls`` is set: validated tool calls.
-    - If ``needs_retry`` is False and ``text_response`` is set: intentional text.
+    Exactly one of ``tool_calls`` or ``nudge`` is set:
+    - If ``needs_retry`` is False: ``tool_calls`` contains validated tool calls.
     - If ``needs_retry`` is True: ``nudge`` contains the message to inject.
     """
 
     tool_calls: list[ToolCall] | None
     nudge: Nudge | None
     needs_retry: bool
-    text_response: TextResponse | None = None
 
 
 class ResponseValidator:
@@ -52,26 +50,18 @@ class ResponseValidator:
         self._retry_nudge_fn = retry_nudge_fn or retry_nudge
 
     def validate(
-        self, response: LLMResponse, trust_text_intent: bool = False,
+        self, response: LLMResponse,
     ) -> ValidationResult:
         """Validate an LLM response.
 
         Args:
             response: Either a TextResponse or a list of ToolCall objects.
-            trust_text_intent: If True, trust the backend's ``intentional``
-                flag on TextResponse and skip retry. If False (default),
-                ignore the flag and retry as usual.
 
         Returns:
             ValidationResult with tool_calls on success, or a Nudge on failure.
         """
-        # TextResponse: intentional pass-through (if trusted), then rescue, then retry nudge
+        # TextResponse: rescue, then retry nudge
         if isinstance(response, TextResponse):
-            if trust_text_intent and response.intentional:
-                return ValidationResult(
-                    tool_calls=None, nudge=None, needs_retry=False,
-                    text_response=response,
-                )
             if self.rescue_enabled:
                 rescued = rescue_tool_call(response.content, self.tool_names)
                 if rescued:

@@ -38,3 +38,14 @@ markers = [
     "integration: marks tests that require a running LLM backend (deselect with '-m \"not integration\"')",
 ]
 asyncio_mode = "auto"
+
+[tool.coverage.run]
+source = ["forge"]
+
+[tool.coverage.report]
+omit = [
+    # Integration-only: lifecycle orchestration requiring real backends/threads.
+    # Covered by eval harness runs, not unit tests.
+    "src/forge/proxy/proxy.py",
+    "src/forge/proxy/__main__.py",
+]

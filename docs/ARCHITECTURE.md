@@ -252,7 +252,6 @@ class ToolCall(BaseModel):
 class TextResponse(BaseModel):
     """Non-tool-call response from the model (reasoning trace, refusal, etc.)."""
     content: str
-    intentional: bool = False  # True = backend signalled finish_reason="stop"
 
 
 # Type alias for what the client returns
@@ -556,12 +555,11 @@ class ResponseValidator:
 
     def __init__(self, tool_names: list[str], rescue_enabled: bool = True) -> None: ...
 
-    def validate(self, response: LLMResponse, trust_text_intent: bool = False) -> ValidationResult:
+    def validate(self, response: LLMResponse) -> ValidationResult:
         """Validate an LLM response.
 
         Returns ValidationResult with tool_calls on success, or a Nudge on failure.
-        TextResponse path: if trust_text_intent and intentional, pass through.
-        Otherwise try rescue_tool_call(), then retry nudge.
+        TextResponse path: try rescue_tool_call(), then retry nudge.
         list[ToolCall] path: check for unknown tool names → unknown_tool_nudge.
         """
         ...
@@ -1655,7 +1653,7 @@ await server.stop()
 
 ## Synthetic Respond Tool
 
-When tools are present but the user sends a conversational message, small models must choose between calling a tool and responding with text. They frequently choose wrong — producing text when they should call tools, or vice versa. The `trust_text_intent` flag (ADR-013) addressed this for the proxy by trusting the model's finish reason, but this dropped 8B models from 100% to as low as 4% on reasoning-heavy workflows.
+When tools are present but the user sends a conversational message, small models must choose between calling a tool and responding with text. They frequently choose wrong — producing text when they should call tools, or vice versa. Small local models (~8B) cannot be trusted to make this choice correctly — eval testing showed that trusting the model's finish reason dropped workflow completion from 100% to as low as 4%. Guiding the model to a tool is a must.
 
 The respond tool eliminates this ambiguity. The model calls `respond(message="...")` instead of producing bare text. From forge's perspective, every response is a valid tool call — no retries wasted on conversational turns, no accuracy loss on tool-calling turns.
 
@@ -1673,7 +1671,7 @@ tools = {
 workflow = Workflow(..., tools=tools, terminal_tool="respond")
 ```
 
-**Proxy:** The respond tool is injected automatically when tools are present in the request. The client never sees it — respond calls are converted to plain text responses (`finish_reason: "stop"`) before returning. This makes `trust_text_intent` irrelevant for the proxy path.
+**Proxy:** The respond tool is injected automatically when tools are present in the request. The client never sees it — respond calls are converted to plain text responses (`finish_reason: "stop"`) before returning.
 
 **Middleware:** Include `"respond"` in `tool_names` when creating a `ResponseValidator` or `Guardrails` instance. The respond call passes validation like any other tool call. See `examples/foreign_loop.py` Part 3 for a complete example.
 

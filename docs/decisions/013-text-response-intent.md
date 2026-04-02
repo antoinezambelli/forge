@@ -1,6 +1,6 @@
 # ADR-013: Text Response Intent -- When the Model Chooses Not to Call Tools
 
-**Status:** Accepted (March 2026) — Approach A implemented
+**Status:** Superseded (April 2026) — `trust_text_intent` and `TextResponse.intentional` removed. The respond tool (Approach B) replaced them.
 
 ## Problem
 
@@ -82,4 +82,8 @@ With `trust_text_intent=True` (unconditional trust): sequential_reasoning droppe
 
 The `intentional` flag is structurally correct — the model can't hallucinate a finish reason. But small models (~8B) frequently *choose wrong*: they produce text with `finish_reason: "stop"` when they should call tools. In WorkflowRunner and middleware, the retry nudge catches this. In proxy mode, the tradeoff is accepted for UX reasons — the client's own agentic loop is responsible for re-prompting.
 
-**Future direction:** A synthetic `respond` tool (Approach B) may be a better long-term solution for proxy/chat modes. Instead of trusting the model's text choice, make "respond with text" an explicit tool call. The model stays in tool-calling mode and forge's full guardrail stack applies. See GitHub issue for design discussion.
+## Superseded
+
+The synthetic `respond` tool (Approach B) was implemented and fully replaces `trust_text_intent`. The `intentional` flag on TextResponse and the `trust_text_intent` parameter have been removed from all interfaces (ResponseValidator, Guardrails, run_inference, and all clients).
+
+**Why:** Small local models (~8B) cannot be trusted to choose correctly between text and tool calls. Eval testing showed that trusting the model's finish reason dropped workflow completion from 100% to as low as 4%. The respond tool eliminates the ambiguity entirely — the model calls `respond(message="...")` instead of producing bare text, staying in tool-calling mode where forge's full guardrail stack applies. Guiding the model to a tool is a must; trusting its text intent is not a viable option for small models.

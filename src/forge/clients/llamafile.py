@@ -246,7 +246,6 @@ class LlamafileClient:
 
         accumulated_content = ""
         accumulated_reasoning = ""
-        stream_intentional = False
         # Track multiple tool calls by index — OpenAI streaming sends
         # tool_calls[N] deltas with an index field.
         tool_call_parts: dict[int, dict[str, str]] = {}  # idx -> {name, args}
@@ -304,10 +303,6 @@ class LlamafileClient:
                         type=ChunkType.TEXT_DELTA, content=content
                     )
 
-                finish_reason = choice.get("finish_reason")
-                if finish_reason is not None:
-                    stream_intentional = finish_reason == "stop"
-
             # Stream ended — build and yield FINAL response.
             if tool_call_parts:
                 reasoning = self._resolve_reasoning(
@@ -345,9 +340,9 @@ class LlamafileClient:
                     )
                     final = extracted
                 else:
-                    final = TextResponse(content=cleaned, intentional=stream_intentional)
+                    final = TextResponse(content=cleaned)
             else:
-                final = TextResponse(content=accumulated_content, intentional=stream_intentional)
+                final = TextResponse(content=accumulated_content)
             yield StreamChunk(type=ChunkType.FINAL, response=final)
 
     async def get_context_length(self) -> int | None:
@@ -425,7 +420,6 @@ class LlamafileClient:
 
         top_choice = data["choices"][0]
         choice = top_choice["message"]
-        finish_reason = top_choice.get("finish_reason")
         raw_tool_calls = choice.get("tool_calls")
         if raw_tool_calls:
             reasoning = self._resolve_reasoning(
@@ -453,7 +447,7 @@ class LlamafileClient:
         # useful on ToolCall, TextResponse just gets clean content
         if content:
             _, content = _extract_think_tags(content)
-        return TextResponse(content=content, intentional=finish_reason == "stop")
+        return TextResponse(content=content)
 
     async def _send_prompt(
         self,
@@ -487,7 +481,6 @@ class LlamafileClient:
         top_choice = data["choices"][0]
         content = top_choice["message"].get("content", "")
         reasoning_content = top_choice["message"].get("reasoning_content", "")
-        finish_reason = top_choice.get("finish_reason")
         if tools:
             think_text, cleaned = _extract_think_tags(content)
             tool_names = [t.name for t in tools]
@@ -501,4 +494,4 @@ class LlamafileClient:
         # Strip think tags from TextResponse — clean content only
         if content:
             _, content = _extract_think_tags(content)
-        return TextResponse(content=content, intentional=finish_reason == "stop")
+        return TextResponse(content=content)
