@@ -12,7 +12,7 @@ from forge.context.strategies import TieredCompact
 from forge.core.workflow import LLMResponse, ToolCall, ToolSpec, TextResponse
 
 from tests.eval.eval_runner import EvalConfig, RunResult, run_scenario
-from tests.eval.scenarios import compaction_stress, basic_2step
+from tests.eval.scenarios import compaction_chain_p1, basic_2step
 
 
 class _MockClient:
@@ -52,14 +52,21 @@ class TestBudgetOverride:
 
     async def test_override_changes_budget(self) -> None:
         """budget_override should replace scenario.budget_tokens in ContextManager."""
-        # compaction_stress has budget_tokens=2048
-        assert compaction_stress.budget_tokens == 2048
+        # compaction_chain_p1 has budget_tokens=3600
+        assert compaction_chain_p1.budget_tokens == 3600
 
-        # Build a client that completes the scenario
+        # Build a client that completes the 10-step chain
         client = _MockClient([
-            ToolCall(tool="fetch_sales_data", args={"quarter": 4, "year": 2024}),
-            ToolCall(tool="analyze_sales", args={}),
-            ToolCall(tool="report", args={"findings": "test"}),
+            ToolCall(tool="patient_lookup", args={"patient_name": "Margaret Chen"}),
+            ToolCall(tool="pull_records", args={"mrn": "MRN-84201"}),
+            ToolCall(tool="order_labs", args={"encounter_id": "ENC-20250305"}),
+            ToolCall(tool="review_imaging", args={"lab_id": "LAB-7718"}),
+            ToolCall(tool="request_referral", args={"imaging_id": "IMG-3304"}),
+            ToolCall(tool="check_pharmacy", args={"referral_id": "REF-5521"}),
+            ToolCall(tool="verify_insurance", args={"patient_mrn": "MRN-84201"}),
+            ToolCall(tool="request_prior_auth", args={"plan_id": "PLAN-BC-4490", "referral_id": "REF-5521"}),
+            ToolCall(tool="schedule_appointment", args={"auth_id": "AUTH-9917", "referral_id": "REF-5521"}),
+            ToolCall(tool="submit_treatment_plan", args={"summary": "MRN-84201 HbA1c 9.2% cortical thinning Patel metformin"}),
         ])
 
         config = EvalConfig(
@@ -67,7 +74,7 @@ class TestBudgetOverride:
             budget_override=16384,
         )
 
-        result = await run_scenario(client, compaction_stress, config)
+        result = await run_scenario(client, compaction_chain_p1, config)
         assert result.completeness
         # With 16384 budget, no compaction should fire on short mock responses
         assert len(result.compaction_events) == 0
@@ -92,9 +99,16 @@ class TestBudgetOverride:
     async def test_tight_budget_triggers_compaction(self) -> None:
         """A very tight budget with long responses should trigger compaction."""
         client = _MockClient([
-            ToolCall(tool="fetch_sales_data", args={"quarter": 4, "year": 2024}),
-            ToolCall(tool="analyze_sales", args={}),
-            ToolCall(tool="report", args={"findings": "test"}),
+            ToolCall(tool="patient_lookup", args={"patient_name": "Margaret Chen"}),
+            ToolCall(tool="pull_records", args={"mrn": "MRN-84201"}),
+            ToolCall(tool="order_labs", args={"encounter_id": "ENC-20250305"}),
+            ToolCall(tool="review_imaging", args={"lab_id": "LAB-7718"}),
+            ToolCall(tool="request_referral", args={"imaging_id": "IMG-3304"}),
+            ToolCall(tool="check_pharmacy", args={"referral_id": "REF-5521"}),
+            ToolCall(tool="verify_insurance", args={"patient_mrn": "MRN-84201"}),
+            ToolCall(tool="request_prior_auth", args={"plan_id": "PLAN-BC-4490", "referral_id": "REF-5521"}),
+            ToolCall(tool="schedule_appointment", args={"auth_id": "AUTH-9917", "referral_id": "REF-5521"}),
+            ToolCall(tool="submit_treatment_plan", args={"summary": "MRN-84201 HbA1c 9.2% cortical thinning Patel metformin"}),
         ])
 
         config = EvalConfig(
@@ -103,6 +117,6 @@ class TestBudgetOverride:
             strategy_overrides={"compaction": TieredCompact(keep_recent=2)},
         )
 
-        result = await run_scenario(client, compaction_stress, config)
+        result = await run_scenario(client, compaction_chain_p1, config)
         assert result.completeness
         assert len(result.compaction_events) > 0

@@ -43,19 +43,19 @@ python -m tests.eval.eval_runner --backend anthropic --model claude-haiku-4-5-20
 
 ### Scenarios
 
-29 scenarios across three categories:
+22 scenarios across four categories:
 
 **Plumbing** (does forge's tool-calling loop work?):
-- `basic_2step`, `sequential_3step`, `error_recovery`, `compaction_stress`
+- `basic_2step`, `sequential_3step`, `error_recovery`
 
 **Model quality** (does the model reason correctly?):
-- `tool_selection`, `argument_fidelity`, `sequential_reasoning`, `conditional_routing`, `data_gap_recovery`, `relevance_detection`, `phase2_compaction`
+- `tool_selection`, `argument_fidelity`, `sequential_reasoning`, `conditional_routing`, `data_gap_recovery`, `relevance_detection`
 
 **Compaction chain** (multi-phase compaction retention):
 - `compaction_chain_baseline`, `compaction_chain_p1`, `compaction_chain_p2`, `compaction_chain_p3`
 
 **Stateful variants** (state carries between calls — wrong arguments cascade):
-- `basic_2step_stateful`, `sequential_3step_stateful`, `error_recovery_stateful`, `tool_selection_stateful`, `argument_fidelity_stateful`, `sequential_reasoning_stateful`, `conditional_routing_stateful`, `data_gap_recovery_stateful`, `relevance_detection_stateful`, `compaction_stress_stateful`, `phase2_compaction_stateful`, `inventory_audit`, `supplier_deep_dive`, `basic_2step_stateful_tre`
+- `basic_2step_stateful`, `sequential_3step_stateful`, `error_recovery_stateful`, `tool_selection_stateful`, `argument_fidelity_stateful`, `sequential_reasoning_stateful`, `conditional_routing_stateful`, `data_gap_recovery_stateful`, `relevance_detection_stateful`
 
 **Lambda vs stateful:** Lambda scenarios use hardcoded echo tools — tool arguments don't affect the result. Stateful scenarios use backend classes where arguments matter and state carries between calls. The delta between lambda and stateful scores for the same model isolates model reasoning quality from forge correctness.
 
