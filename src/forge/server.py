@@ -407,12 +407,17 @@ class ServerManager:
     # ── health polling ──────────────────────────────────────────
 
     async def _wait_healthy(self, timeout: float = 120.0) -> None:
-        """Poll ``/health`` until the server is ready.
+        """Poll ``/props`` until the server is fully ready.
+
+        Uses ``/props`` rather than ``/health`` because llama-server's
+        middleware gates both endpoints behind ``is_ready``, but polling
+        ``/props`` directly confirms the model is loaded and serving —
+        eliminating any gap between health-ok and props-available.
 
         Raises:
-            RuntimeError: If the server doesn't become healthy within *timeout*.
+            RuntimeError: If the server doesn't become ready within *timeout*.
         """
-        url = f"http://localhost:{self._port}/health"
+        url = f"http://localhost:{self._port}/props"
         deadline = time.monotonic() + timeout
         async with httpx.AsyncClient(timeout=5.0) as client:
             while time.monotonic() < deadline:
@@ -420,13 +425,13 @@ class ServerManager:
                     resp = await client.get(url)
                     if resp.status_code == 200:
                         data = resp.json()
-                        if data.get("status") == "ok":
+                        if "default_generation_settings" in data:
                             return
                 except (httpx.ConnectError, httpx.ReadError, httpx.TimeoutException):
                     pass
                 await asyncio.sleep(2)
         raise RuntimeError(
-            f"Server did not become healthy within {timeout}s"
+            f"Server did not become ready within {timeout}s"
         )
 
 
