@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import subprocess
 import sys
 import time
 from dataclasses import dataclass
@@ -105,7 +106,7 @@ OLLAMA_CONFIGS: list[BatchConfig] = [
         # ── 32GB eval additions ──
         "gemma4:31b-it-q4_K_M",
         "gemma4:26b-a4b-it-q4_K_M",
-        "gemma4:26b-a4b-it-q8_0",
+        # gemma4:26b-a4b-it-q8_0 excluded — spills to CPU on Ollama (28GB weights)
         "gemma4:e4b-it-q4_K_M",
         "gemma4:e4b-it-q8_0",
         "qwen3.5:27b-q4_K_M",
@@ -309,6 +310,41 @@ _SERVER_EXTRA_FLAGS: dict[str, list[str]] = {
 }
 
 
+def _ollama_models() -> set[str]:
+    """Return set of locally available Ollama model names."""
+    try:
+        result = subprocess.run(
+            ["ollama", "list"],
+            capture_output=True, text=True, timeout=10,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return set()
+    models: set[str] = set()
+    for line in result.stdout.strip().splitlines()[1:]:  # skip header
+        name = line.split()[0] if line.strip() else ""
+        if name:
+            models.add(name)
+    return models
+
+
+def _check_model_available(
+    config: "BatchConfig", models_dir: Path,
+) -> str | None:
+    """Return a skip reason if the model isn't available, or None if ready."""
+    if config.backend in ("llamaserver", "llamafile"):
+        file_map = LLAMAFILE_MAP if config.backend == "llamafile" else GGUF_MAP
+        gguf_filename = file_map.get(config.model)
+        if not gguf_filename:
+            return f"no GGUF mapping for {config.model}"
+        if not (models_dir / gguf_filename).exists():
+            return f"GGUF not found: {models_dir / gguf_filename}"
+    elif config.backend == "ollama":
+        available = _ollama_models()
+        if config.model not in available:
+            return f"not in ollama list"
+    return None
+
+
 def _get_server_flags(model: str, mode: str) -> list[str]:
     """Build llama-server CLI flags for a given model and mode."""
     flags: list[str] = []
@@ -438,6 +474,13 @@ async def run_batch(
                     remaining = max(0, runs_per_scenario - existing)
                     status = "SKIP" if remaining == 0 else f"RUN {remaining}"
                     print(f"  {scenario.name}: {existing}/{runs_per_scenario} done -> {status}")
+                continue
+
+            # ── Model availability check ────────────────────
+            skip_reason = _check_model_available(config, models_dir)
+            if skip_reason:
+                print(f"  SKIP ({skip_reason})", flush=True)
+                total_skipped += total_scenarios
                 continue
 
             # ── Anthropic cloud API path ─────────────────────
