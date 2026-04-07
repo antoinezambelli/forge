@@ -647,6 +647,10 @@ async def run_batch(
 
                     # Update in-memory count for resume correctness
                     completed_counts[key] = completed_counts.get(key, 0) + 1
+
+            # Free VRAM after finishing all scenarios for this Ollama config
+            if config.backend == "ollama":
+                await server.stop()
     finally:
         await server.stop()
 
