@@ -46,6 +46,22 @@ GGUF_MAP: dict[str, str] = {
     "ministral-3:8b-reasoning-2512-q4_K_M": "Ministral-3-8B-Reasoning-2512-Q4_K_M.gguf",
     "ministral-3:8b-reasoning-2512-q8_0": "Ministral-3-8B-Reasoning-2512-Q8_0.gguf",
     "ministral-3:14b-reasoning-2512-q4_K_M": "Ministral-3-14B-Reasoning-2512-Q4_K_M.gguf",
+    # ── 32GB eval additions ──
+    # Gemma 4 family
+    "gemma4:31b-it-q4_K_M": "gemma-4-31B-it-Q4_K_M.gguf",
+    "gemma4:26b-a4b-it-q4_K_M": "gemma-4-26B-A4B-it-UD-Q4_K_M.gguf",
+    "gemma4:26b-a4b-it-q8_0": "gemma-4-26B-A4B-it-Q8_0.gguf",
+    "gemma4:e4b-it-q4_K_M": "gemma-4-E4B-it-Q4_K_M.gguf",
+    "gemma4:e4b-it-q8_0": "gemma-4-E4B-it-Q8_0.gguf",
+    # Mistral Small 3.2 (llama-server only)
+    "mistral-small-3.2:24b-instruct-2506-q4_K_M": "Mistral-Small-3.2-24B-Instruct-2506-Q4_K_M.gguf",
+    "mistral-small-3.2:24b-instruct-2506-q8_0": "Mistral-Small-3.2-24B-Instruct-2506-Q8_0.gguf",
+    # Devstral Small 2 (llama-server only)
+    "devstral-small-2:24b-instruct-2512-q4_K_M": "Devstral-Small-2-24B-Instruct-2512-Q4_K_M.gguf",
+    "devstral-small-2:24b-instruct-2512-q8_0": "Devstral-Small-2-24B-Instruct-2512-Q8_0.gguf",
+    # Qwen 3.5 family
+    "qwen3.5:27b-q4_K_M": "Qwen3.5-27B-Q4_K_M.gguf",
+    "qwen3.5:35b-a3b-q4_K_M": "Qwen3.5-35B-A3B-Q4_K_M.gguf",
 }
 
 LLAMAFILE_MAP: dict[str, str] = {
@@ -86,6 +102,14 @@ OLLAMA_CONFIGS: list[BatchConfig] = [
         "ministral-3:8b-instruct-2512-q4_K_M",
         "ministral-3:8b-instruct-2512-q8_0",
         "ministral-3:14b-instruct-2512-q4_K_M",
+        # ── 32GB eval additions ──
+        "gemma4:31b-it-q4_K_M",
+        "gemma4:26b-a4b-it-q4_K_M",
+        "gemma4:26b-a4b-it-q8_0",
+        "gemma4:e4b-it-q4_K_M",
+        "gemma4:e4b-it-q8_0",
+        "qwen3.5:27b-q4_K_M",
+        "qwen3.5:35b-a3b-q4_K_M",
     ]
 ]
 
@@ -280,6 +304,8 @@ _SERVER_EXTRA_FLAGS: dict[str, list[str]] = {
     "qwen3:8b-q4_K_M": ["--reasoning-format", "auto"],
     "qwen3:8b-q8_0": ["--reasoning-format", "auto"],
     "qwen3:14b-q4_K_M": ["--reasoning-format", "auto"],
+    "qwen3.5:27b-q4_K_M": ["--reasoning-format", "auto"],
+    "qwen3.5:35b-a3b-q4_K_M": ["--reasoning-format", "auto"],
 }
 
 
