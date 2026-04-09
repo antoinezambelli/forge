@@ -354,6 +354,65 @@ def _get_server_flags(model: str, mode: str) -> list[str]:
     return flags
 
 
+# ── Server recovery ─────────────────────────────────────────────
+
+_RECOVERY_BACKOFFS = [30, 60, 300]  # seconds: 30s, 60s, 5min
+
+
+_INFRA_ERRORS = ("ConnectError", "RemoteProtocolError", "ReadTimeout", "WriteTimeout", "PoolTimeout")
+
+
+def _is_server_error(result: "RunResult") -> bool:
+    """Check if a run result indicates a server-side infrastructure failure."""
+    if not result.error_message:
+        return False
+    return any(e in result.error_message for e in _INFRA_ERRORS)
+
+
+async def _recover_server(
+    server: "ServerManager",
+    config: BatchConfig,
+    gguf_path: str,
+    extra_flags: list[str] | None,
+    crash_count: int,
+) -> bool:
+    """Attempt to restart the server after a crash.
+
+    Returns True if recovery succeeded, False if circuit breaker tripped.
+    """
+    if crash_count > len(_RECOVERY_BACKOFFS):
+        return False
+
+    backoff = _RECOVERY_BACKOFFS[crash_count - 1]
+    print(
+        f"\n  [!] Server error detected (attempt {crash_count}/{len(_RECOVERY_BACKOFFS)}). "
+        f"Waiting {backoff}s before restart...",
+        flush=True,
+    )
+
+    # Kill any lingering process
+    try:
+        await server.stop()
+    except Exception:
+        pass
+
+    await asyncio.sleep(backoff)
+
+    # Restart
+    try:
+        await server.start(
+            model=config.model,
+            gguf_path=gguf_path,
+            mode=config.mode,
+            extra_flags=extra_flags,
+        )
+        print("  [!] Server restarted successfully.", flush=True)
+        return True
+    except Exception as exc:
+        print(f"  [!] Server restart failed: {exc}", flush=True)
+        return False
+
+
 # ── Client factory ──────────────────────────────────────────────
 
 
@@ -390,6 +449,23 @@ def _build_client(config: BatchConfig) -> Any:
 
     else:
         raise ValueError(f"Unknown backend: {config.backend}")
+
+
+def _format_eta(total_ran: int, total_expected: int, batch_start: float) -> str:
+    """Format a batch ETA string from run counts and start time."""
+    if total_ran == 0 or total_expected <= total_ran:
+        return ""
+    elapsed = time.monotonic() - batch_start
+    rate = total_ran / elapsed
+    remaining = int((total_expected - total_ran) / rate)
+    days, remainder = divmod(remaining, 86400)
+    hours, remainder = divmod(remainder, 3600)
+    minutes, seconds = divmod(remainder, 60)
+    if days > 0:
+        ts = f"{days}d {hours:02d}:{minutes:02d}:{seconds:02d}"
+    else:
+        ts = f"{hours:02d}:{minutes:02d}:{seconds:02d}"
+    return f" (batch ETA: {ts})"
 
 
 # ── Main batch loop ─────────────────────────────────────────────
@@ -432,6 +508,26 @@ async def run_batch(
 
     ablation_name = ablation.name if ablation is not None else "reforged"
     completed_counts = _count_completed_runs(output_path, ablation_name=ablation_name)
+
+    # Precompute total expected runs (excluding skips and unavailable models)
+    total_expected = 0
+    for config in configs:
+        if _check_model_available(config, models_dir) is not None:
+            continue
+        tc_label_pre = config.tool_choice or "auto"
+        for scenario in scenarios:
+            skip_compaction = (
+                config.backend == "anthropic"
+                or (ablation is not None and not ablation.compaction_enabled)
+            )
+            if scenario.name in _COMPACTION_SCENARIOS and skip_compaction:
+                continue
+            key = (
+                f"{config.model}|{config.backend}|{config.mode}"
+                f"|{ablation_name}|{tc_label_pre}|{scenario.name}"
+            )
+            existing = completed_counts.get(key, 0)
+            total_expected += max(0, runs_per_scenario - existing)
 
     total_configs = len(configs)
     total_scenarios = len(scenarios)
@@ -479,6 +575,11 @@ async def run_batch(
             # ── Model availability check ────────────────────
             skip_reason = _check_model_available(config, models_dir)
             if skip_reason:
+                # Stop Ollama before skipping so VRAM is clear for later configs
+                if prev_backend == "ollama" and config.backend != "ollama":
+                    if prev_server is not None:
+                        await prev_server.stop()
+                    prev_backend = None
                 print(f"  SKIP ({skip_reason})", flush=True)
                 total_skipped += total_scenarios
                 continue
@@ -514,9 +615,10 @@ async def run_batch(
                         budget_override=scenario_budget,
                     )
 
+                    eta = _format_eta(total_ran, total_expected, batch_start)
                     print(
                         f"\n  [{sc_idx}/{total_scenarios}] {scenario.name} "
-                        f"- {existing} done, running {remaining} more",
+                        f"- {existing} done, running {remaining} more{eta}",
                         flush=True,
                     )
 
@@ -568,12 +670,25 @@ async def run_batch(
 
             # Start server and get extra flags
             extra_flags = _get_server_flags(config.model, config.mode)
-            await server.start(
-                model=config.model,
-                gguf_path=gguf_path,
-                mode=config.mode,
-                extra_flags=extra_flags if extra_flags else None,
-            )
+            try:
+                await server.start(
+                    model=config.model,
+                    gguf_path=gguf_path,
+                    mode=config.mode,
+                    extra_flags=extra_flags if extra_flags else None,
+                )
+            except RuntimeError:
+                # Startup timeout — attempt recovery
+                recovered = await _recover_server(
+                    server, config, gguf_path,
+                    extra_flags if extra_flags else None,
+                    crash_count=1,
+                )
+                if not recovered:
+                    print(f"  SKIP (server failed to start)", flush=True)
+                    total_skipped += total_scenarios
+                    continue
+
             prev_backend = config.backend
             prev_server = server
 
@@ -585,7 +700,13 @@ async def run_batch(
             if hasattr(client, "set_num_ctx"):
                 client.set_num_ctx(resolved_budget)
 
+            crash_count = 0
+            config_aborted = False
+
             for sc_idx, scenario in enumerate(scenarios, 1):
+                if config_aborted:
+                    break
+
                 # Skip compaction scenarios when ablation disables compaction
                 if scenario.name in _COMPACTION_SCENARIOS and ablation is not None and not ablation.compaction_enabled:
                     total_skipped += 1
@@ -620,15 +741,48 @@ async def run_batch(
                     strategy_overrides={"compaction": TieredCompact(keep_recent=2)},
                 )
 
+                eta = _format_eta(total_ran, total_expected, batch_start)
                 print(
                     f"\n  [{sc_idx}/{total_scenarios}] {scenario.name} "
-                    f"- {existing} done, running {remaining} more",
+                    f"- {existing} done, running {remaining} more{eta}",
                     flush=True,
                 )
 
                 for run_idx in range(existing, existing + remaining):
                     result = await run_scenario(client, scenario, eval_config, ablation=ablation)
                     total_ran += 1
+
+                    # Server crash recovery
+                    if _is_server_error(result):
+                        crash_count += 1
+                        print(
+                            f"    run {run_idx+1}/{runs_per_scenario}: "
+                            f"CRASH ({result.error_message.split(':')[0]})",
+                            flush=True,
+                        )
+                        recovered = await _recover_server(
+                            server, config, gguf_path,
+                            extra_flags if extra_flags else None,
+                            crash_count,
+                        )
+                        if not recovered:
+                            print(
+                                f"\n  [!] Circuit breaker: {crash_count} crashes "
+                                f"for {config_label}. Skipping remaining scenarios.",
+                                flush=True,
+                            )
+                            config_aborted = True
+                            break
+
+                        # Rebuild client and retry the failed run
+                        client = _build_client(config)
+                        resolved_budget = await server.resolve_budget(budget_mode, manual_tokens)
+                        if hasattr(client, "set_num_ctx"):
+                            client.set_num_ctx(scenario_budget)
+
+                        result = await run_scenario(client, scenario, eval_config, ablation=ablation)
+                        total_ran += 1
+
                     status = "OK" if result.completeness else f"FAIL ({result.error_type})"
                     print(
                         f"    run {run_idx+1}/{runs_per_scenario}: {status} "
