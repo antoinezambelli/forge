@@ -145,7 +145,7 @@ ANTHROPIC_ANY_CONFIGS: list[BatchConfig] = [
 ]
 
 ALL_CONFIGS: list[BatchConfig] = (
-    OLLAMA_CONFIGS + LLAMASERVER_CONFIGS + LLAMAFILE_CONFIGS
+    LLAMASERVER_CONFIGS + LLAMAFILE_CONFIGS + OLLAMA_CONFIGS
 )
 
 # Named subsets for quick iteration
@@ -642,6 +642,26 @@ async def run_batch(
                             f.write(json.dumps(row) + "\n")
 
                         completed_counts[key] = completed_counts.get(key, 0) + 1
+                continue
+
+            # ── Check if any scenarios need runs ─────────────
+            has_work = False
+            for scenario in scenarios:
+                skip_compaction = (
+                    ablation is not None and not ablation.compaction_enabled
+                )
+                if scenario.name in _COMPACTION_SCENARIOS and skip_compaction:
+                    continue
+                key_check = (
+                    f"{config.model}|{config.backend}|{config.mode}"
+                    f"|{ablation_name}|{tc_label}|{scenario.name}"
+                )
+                if completed_counts.get(key_check, 0) < runs_per_scenario:
+                    has_work = True
+                    break
+            if not has_work:
+                print(f"  SKIP (all scenarios complete)", flush=True)
+                total_skipped += total_scenarios
                 continue
 
             # ── Local backend path (server-managed) ──────────
