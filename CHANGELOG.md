@@ -2,6 +2,24 @@
 
 All notable changes to forge are documented here.
 
+## [0.4.2] — 2026-04-10
+
+### Added
+- **28-model eval dataset** — 137K rows across Gemma4, Qwen3.5, Devstral, Mistral Small 3.2, Claude Opus/Sonnet 4.6, and more
+- **32GB eval tier** — dual RTX 5070 Ti results; Gemma4 31B and Qwen3.5 27B hit 100% self-hosted
+- **Git LFS tracking** — eval_results.jsonl tracked via LFS for cross-rig sharing
+- **forge-proxy CLI** — `forge-proxy` entry point in `[project.scripts]`
+- **codecov integration** — CI coverage reporting and badge
+
+### Changed
+- MODEL_GUIDE rewritten for 28-model dataset with 12GB and 32GB VRAM tiers
+- Removed BFCL benchmark (historical reference in EVAL_GUIDE, last commit: a9b0257)
+- Eval scenarios trimmed from 22 to 22 (removed 7 redundant, kept 18 copy-paste + 4 chain)
+
+### Fixed
+- Server readiness: `_wait_healthy()` polls `/props` instead of `/health` to eliminate 503 race on startup (v0.4.1)
+- Null byte corruption in eval_results.jsonl from interrupted write
+
 ## [0.4.0] — 2026-04-02
 
 ### Added
