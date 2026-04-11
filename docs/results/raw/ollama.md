@@ -16,7 +16,13 @@ ministral-3:8b-instruct-2512-q4_K_M OL/N [reforged]      91.2%    94.7%    96.3%
 gemma4:e4b-it-q8_0 OL/N [reforged]                       90.1%    90.1%   100.0%    93%   0.2   8.6s    50    100   100   100   100   100    30    94   100    96   100   100   100   100   100    10    98    98    96
 qwen3:8b-q4_K_M OL/N [reforged]                          86.9%    86.9%   100.0%    84%   0.7  12.4s    50    100   100   100   100   100   100   100    22    62   100   100   100   100   100    96    98    16    70
 gemma4:26b-a4b-it-q4_K_M OL/N [reforged]                 85.1%    85.1%   100.0%    91%   0.3   3.2s    50    100   100   100   100   100   100   100    28    42   100   100   100   100   100   100   100    24    38
+gemma4:31b-it-q4_K_M OL/N [bare]                         84.3%    95.0%    88.8%   100%   0.0  14.4s    50    100   100   100   100   100   100   100     0   100    98   100   100   100   100    20   100     0   100
+qwen3.5:27b-q4_K_M OL/N [bare]                           81.1%    95.1%    85.3%   100%   0.0  10.9s    50     82   100    82    96   100   100   100     0   100    84   100    94    98   100    24   100     0   100
+gemma4:e4b-it-q4_K_M OL/N [bare]                         79.3%    91.4%    86.8%    97%   0.1   7.8s    50    100   100    82   100    96    74    94     0    98   100   100    90   100    96     2    96     0   100
+gemma4:e4b-it-q8_0 OL/N [bare]                           74.9%    87.4%    85.7%    97%   0.1   9.6s    50    100   100    72   100   100    30    90     0    88   100   100    78   100   100     6    92     0    92
+gemma4:26b-a4b-it-q4_K_M OL/N [bare]                     68.8%    88.6%    77.7%    96%   0.1   2.7s    50    100   100     0    98   100   100   100     0    38   100   100     0   100   100    86   100     0    16
 qwen3:8b-q8_0 OL/N [bare]                                64.7%    84.2%    76.8%    95%   0.2  17.2s    50     90    94     0    40    88   100   100     0    68    86    94     0    62    88    92   100     0    62
+qwen3.5:35b-a3b-q4_K_M OL/N [bare]                       64.2%    97.8%    65.7%    98%   0.1   5.5s    50     58   100     0    18   100   100   100     0    98    74   100     0    32   100    78   100     0    98
 qwen3:14b-q4_K_M OL/N [bare]                             62.6%    91.1%    68.7%    98%   0.1  19.0s    50     90    90     0     4    86   100   100     8    86    92    94     4    36    88    64   100     0    84
 qwen3:8b-q4_K_M OL/N [bare]                              56.3%    81.5%    69.1%    96%   0.1  10.5s    50     54    96     0     6    98    98    98     0    28    58    96     4    80    96    78    96     0    28
 mistral-nemo:12b-instruct-2407-q4_K_M OL/N [reforged]    44.6%    62.3%    71.6%    46%   3.7   7.9s    50     22     4    64    98    40    22    40    28    66     8    24    50   100    50    40    44    36    66
@@ -39,4 +45,4 @@ Scr=score(correct/total), Acc=accuracy(correct/total, excl validate errors), Cmp
 rel=relevance_detection, arg=argument_fidelity, tsl=tool_selection, b2s=basic_2step, s3s=sequential_3step, crt=conditional_routing, srn=sequential_reasoning, err=error_recovery, dgr=data_gap_recovery, rel_s=relevance_detection_stateful, arg_s=argument_fidelity_stateful, tsl_s=tool_selection_stateful, b2s_s=basic_2step_stateful, s3s_s=sequential_3step_stateful, crt_s=conditional_routing_stateful, srn_s=sequential_reasoning_stateful, err_s=error_recovery_stateful, dgr_s=data_gap_recovery_stateful
 Ablation: full=all guardrails, no_rescue=no rescue loop, no_nudge=no rescue/retry nudge, no_steps=no step enforcement, no_recovery=no error recovery, no_compact=no compaction, bare=all guardrails off
 
-*Generated 2026-04-09 15:06*
+*Generated 2026-04-11 12:42*
