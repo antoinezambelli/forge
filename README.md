@@ -1,5 +1,6 @@
 # forge
 
+[![PyPI](https://img.shields.io/pypi/v/forge-guardrails.svg)](https://pypi.org/project/forge-guardrails/)
 [![Tests](https://github.com/antoinezambelli/forge/actions/workflows/tests.yml/badge.svg)](https://github.com/antoinezambelli/forge/actions/workflows/tests.yml)
 [![codecov](https://codecov.io/gh/antoinezambelli/forge/branch/main/graph/badge.svg)](https://codecov.io/gh/antoinezambelli/forge)
 [![Python 3.12+](https://img.shields.io/badge/python-3.12%2B-blue.svg)](https://www.python.org/downloads/)

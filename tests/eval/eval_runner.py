@@ -333,6 +333,21 @@ async def run_scenario(
                 input_tokens=counting_client.total_input_tokens,
                 output_tokens=counting_client.total_output_tokens,
             )
+        except Exception as exc:
+            elapsed = time.monotonic() - start
+            return RunResult(
+                scenario_name=scenario.name,
+                completeness=False,
+                iterations_used=counting_client.call_count,
+                error_type=type(exc).__name__,
+                error_message=str(exc),
+                compaction_events=compaction_events,
+                messages=collected_messages if config.keep_message_history else None,
+                elapsed_seconds=elapsed,
+                stream_retries=attempt,
+                input_tokens=counting_client.total_input_tokens,
+                output_tokens=counting_client.total_output_tokens,
+            )
 
     # All stream retries exhausted
     elapsed = time.monotonic() - start

@@ -5,3 +5,4 @@
 *.toml text eol=lf
 *.yml text eol=lf
 *.yaml text eol=lf
+eval_results.jsonl filter=lfs diff=lfs merge=lfs -text

@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import subprocess
 import sys
 import time
 from dataclasses import dataclass
@@ -46,6 +47,22 @@ GGUF_MAP: dict[str, str] = {
     "ministral-3:8b-reasoning-2512-q4_K_M": "Ministral-3-8B-Reasoning-2512-Q4_K_M.gguf",
     "ministral-3:8b-reasoning-2512-q8_0": "Ministral-3-8B-Reasoning-2512-Q8_0.gguf",
     "ministral-3:14b-reasoning-2512-q4_K_M": "Ministral-3-14B-Reasoning-2512-Q4_K_M.gguf",
+    # ── 32GB eval additions ──
+    # Gemma 4 family
+    "gemma4:31b-it-q4_K_M": "gemma-4-31B-it-Q4_K_M.gguf",
+    "gemma4:26b-a4b-it-q4_K_M": "gemma-4-26B-A4B-it-UD-Q4_K_M.gguf",
+    "gemma4:26b-a4b-it-q8_0": "gemma-4-26B-A4B-it-Q8_0.gguf",
+    "gemma4:e4b-it-q4_K_M": "gemma-4-E4B-it-Q4_K_M.gguf",
+    "gemma4:e4b-it-q8_0": "gemma-4-E4B-it-Q8_0.gguf",
+    # Mistral Small 3.2 (llama-server only)
+    "mistral-small-3.2:24b-instruct-2506-q4_K_M": "Mistral-Small-3.2-24B-Instruct-2506-Q4_K_M.gguf",
+    "mistral-small-3.2:24b-instruct-2506-q8_0": "Mistral-Small-3.2-24B-Instruct-2506-Q8_0.gguf",
+    # Devstral Small 2 (llama-server only)
+    "devstral-small-2:24b-instruct-2512-q4_K_M": "Devstral-Small-2-24B-Instruct-2512-Q4_K_M.gguf",
+    "devstral-small-2:24b-instruct-2512-q8_0": "Devstral-Small-2-24B-Instruct-2512-Q8_0.gguf",
+    # Qwen 3.5 family
+    "qwen3.5:27b-q4_K_M": "Qwen3.5-27B-Q4_K_M.gguf",
+    "qwen3.5:35b-a3b-q4_K_M": "Qwen3.5-35B-A3B-Q4_K_M.gguf",
 }
 
 LLAMAFILE_MAP: dict[str, str] = {
@@ -86,6 +103,14 @@ OLLAMA_CONFIGS: list[BatchConfig] = [
         "ministral-3:8b-instruct-2512-q4_K_M",
         "ministral-3:8b-instruct-2512-q8_0",
         "ministral-3:14b-instruct-2512-q4_K_M",
+        # ── 32GB eval additions ──
+        "gemma4:31b-it-q4_K_M",
+        "gemma4:26b-a4b-it-q4_K_M",
+        # gemma4:26b-a4b-it-q8_0 excluded — spills to CPU on Ollama (28GB weights)
+        "gemma4:e4b-it-q4_K_M",
+        "gemma4:e4b-it-q8_0",
+        "qwen3.5:27b-q4_K_M",
+        "qwen3.5:35b-a3b-q4_K_M",
     ]
 ]
 
@@ -120,7 +145,7 @@ ANTHROPIC_ANY_CONFIGS: list[BatchConfig] = [
 ]
 
 ALL_CONFIGS: list[BatchConfig] = (
-    OLLAMA_CONFIGS + LLAMASERVER_CONFIGS + LLAMAFILE_CONFIGS
+    LLAMASERVER_CONFIGS + LLAMAFILE_CONFIGS + OLLAMA_CONFIGS
 )
 
 # Named subsets for quick iteration
@@ -280,7 +305,44 @@ _SERVER_EXTRA_FLAGS: dict[str, list[str]] = {
     "qwen3:8b-q4_K_M": ["--reasoning-format", "auto"],
     "qwen3:8b-q8_0": ["--reasoning-format", "auto"],
     "qwen3:14b-q4_K_M": ["--reasoning-format", "auto"],
+    "qwen3.5:27b-q4_K_M": ["--reasoning-format", "auto"],
+    "qwen3.5:35b-a3b-q4_K_M": ["--reasoning-format", "auto"],
 }
+
+
+def _ollama_models() -> set[str]:
+    """Return set of locally available Ollama model names."""
+    try:
+        result = subprocess.run(
+            ["ollama", "list"],
+            capture_output=True, text=True, timeout=10,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return set()
+    models: set[str] = set()
+    for line in result.stdout.strip().splitlines()[1:]:  # skip header
+        name = line.split()[0] if line.strip() else ""
+        if name:
+            models.add(name)
+    return models
+
+
+def _check_model_available(
+    config: "BatchConfig", models_dir: Path,
+) -> str | None:
+    """Return a skip reason if the model isn't available, or None if ready."""
+    if config.backend in ("llamaserver", "llamafile"):
+        file_map = LLAMAFILE_MAP if config.backend == "llamafile" else GGUF_MAP
+        gguf_filename = file_map.get(config.model)
+        if not gguf_filename:
+            return f"no GGUF mapping for {config.model}"
+        if not (models_dir / gguf_filename).exists():
+            return f"GGUF not found: {models_dir / gguf_filename}"
+    elif config.backend == "ollama":
+        available = _ollama_models()
+        if config.model not in available:
+            return f"not in ollama list"
+    return None
 
 
 def _get_server_flags(model: str, mode: str) -> list[str]:
@@ -290,6 +352,65 @@ def _get_server_flags(model: str, mode: str) -> list[str]:
         flags.append("--jinja")
     flags.extend(_SERVER_EXTRA_FLAGS.get(model, []))
     return flags
+
+
+# ── Server recovery ─────────────────────────────────────────────
+
+_RECOVERY_BACKOFFS = [30, 60, 300]  # seconds: 30s, 60s, 5min
+
+
+_INFRA_ERRORS = ("ConnectError", "RemoteProtocolError", "ReadTimeout", "WriteTimeout", "PoolTimeout")
+
+
+def _is_server_error(result: "RunResult") -> bool:
+    """Check if a run result indicates a server-side infrastructure failure."""
+    if not result.error_message:
+        return False
+    return any(e in result.error_message for e in _INFRA_ERRORS)
+
+
+async def _recover_server(
+    server: "ServerManager",
+    config: BatchConfig,
+    gguf_path: str,
+    extra_flags: list[str] | None,
+    crash_count: int,
+) -> bool:
+    """Attempt to restart the server after a crash.
+
+    Returns True if recovery succeeded, False if circuit breaker tripped.
+    """
+    if crash_count > len(_RECOVERY_BACKOFFS):
+        return False
+
+    backoff = _RECOVERY_BACKOFFS[crash_count - 1]
+    print(
+        f"\n  [!] Server error detected (attempt {crash_count}/{len(_RECOVERY_BACKOFFS)}). "
+        f"Waiting {backoff}s before restart...",
+        flush=True,
+    )
+
+    # Kill any lingering process
+    try:
+        await server.stop()
+    except Exception:
+        pass
+
+    await asyncio.sleep(backoff)
+
+    # Restart
+    try:
+        await server.start(
+            model=config.model,
+            gguf_path=gguf_path,
+            mode=config.mode,
+            extra_flags=extra_flags,
+        )
+        print("  [!] Server restarted successfully.", flush=True)
+        return True
+    except Exception as exc:
+        print(f"  [!] Server restart failed: {exc}", flush=True)
+        return False
 
 
 # ── Client factory ──────────────────────────────────────────────
@@ -328,6 +449,23 @@ def _build_client(config: BatchConfig) -> Any:
 
     else:
         raise ValueError(f"Unknown backend: {config.backend}")
+
+
+def _format_eta(total_ran: int, total_expected: int, batch_start: float) -> str:
+    """Format a batch ETA string from run counts and start time."""
+    if total_ran == 0 or total_expected <= total_ran:
+        return ""
+    elapsed = time.monotonic() - batch_start
+    rate = total_ran / elapsed
+    remaining = int((total_expected - total_ran) / rate)
+    days, remainder = divmod(remaining, 86400)
+    hours, remainder = divmod(remainder, 3600)
+    minutes, seconds = divmod(remainder, 60)
+    if days > 0:
+        ts = f"{days}d {hours:02d}:{minutes:02d}:{seconds:02d}"
+    else:
+        ts = f"{hours:02d}:{minutes:02d}:{seconds:02d}"
+    return f" (batch ETA: {ts})"
 
 
 # ── Main batch loop ─────────────────────────────────────────────
@@ -370,6 +508,26 @@ async def run_batch(
 
     ablation_name = ablation.name if ablation is not None else "reforged"
     completed_counts = _count_completed_runs(output_path, ablation_name=ablation_name)
+
+    # Precompute total expected runs (excluding skips and unavailable models)
+    total_expected = 0
+    for config in configs:
+        if _check_model_available(config, models_dir) is not None:
+            continue
+        tc_label_pre = config.tool_choice or "auto"
+        for scenario in scenarios:
+            skip_compaction = (
+                config.backend == "anthropic"
+                or (ablation is not None and not ablation.compaction_enabled)
+            )
+            if scenario.name in _COMPACTION_SCENARIOS and skip_compaction:
+                continue
+            key = (
+                f"{config.model}|{config.backend}|{config.mode}"
+                f"|{ablation_name}|{tc_label_pre}|{scenario.name}"
+            )
+            existing = completed_counts.get(key, 0)
+            total_expected += max(0, runs_per_scenario - existing)
 
     total_configs = len(configs)
     total_scenarios = len(scenarios)
@@ -414,6 +572,18 @@ async def run_batch(
                     print(f"  {scenario.name}: {existing}/{runs_per_scenario} done -> {status}")
                 continue
 
+            # ── Model availability check ────────────────────
+            skip_reason = _check_model_available(config, models_dir)
+            if skip_reason:
+                # Stop Ollama before skipping so VRAM is clear for later configs
+                if prev_backend == "ollama" and config.backend != "ollama":
+                    if prev_server is not None:
+                        await prev_server.stop()
+                    prev_backend = None
+                print(f"  SKIP ({skip_reason})", flush=True)
+                total_skipped += total_scenarios
+                continue
+
             # ── Anthropic cloud API path ─────────────────────
             # No server management, no GGUF, no VRAM budget.
             if config.backend == "anthropic":
@@ -445,9 +615,10 @@ async def run_batch(
                         budget_override=scenario_budget,
                     )
 
+                    eta = _format_eta(total_ran, total_expected, batch_start)
                     print(
                         f"\n  [{sc_idx}/{total_scenarios}] {scenario.name} "
-                        f"- {existing} done, running {remaining} more",
+                        f"- {existing} done, running {remaining} more{eta}",
                         flush=True,
                     )
 
@@ -471,6 +642,26 @@ async def run_batch(
                             f.write(json.dumps(row) + "\n")
 
                         completed_counts[key] = completed_counts.get(key, 0) + 1
+                continue
+
+            # ── Check if any scenarios need runs ─────────────
+            has_work = False
+            for scenario in scenarios:
+                skip_compaction = (
+                    ablation is not None and not ablation.compaction_enabled
+                )
+                if scenario.name in _COMPACTION_SCENARIOS and skip_compaction:
+                    continue
+                key_check = (
+                    f"{config.model}|{config.backend}|{config.mode}"
+                    f"|{ablation_name}|{tc_label}|{scenario.name}"
+                )
+                if completed_counts.get(key_check, 0) < runs_per_scenario:
+                    has_work = True
+                    break
+            if not has_work:
+                print(f"  SKIP (all scenarios complete)", flush=True)
+                total_skipped += total_scenarios
                 continue
 
             # ── Local backend path (server-managed) ──────────
@@ -499,12 +690,25 @@ async def run_batch(
 
             # Start server and get extra flags
             extra_flags = _get_server_flags(config.model, config.mode)
-            await server.start(
-                model=config.model,
-                gguf_path=gguf_path,
-                mode=config.mode,
-                extra_flags=extra_flags if extra_flags else None,
-            )
+            try:
+                await server.start(
+                    model=config.model,
+                    gguf_path=gguf_path,
+                    mode=config.mode,
+                    extra_flags=extra_flags if extra_flags else None,
+                )
+            except RuntimeError:
+                # Startup timeout — attempt recovery
+                recovered = await _recover_server(
+                    server, config, gguf_path,
+                    extra_flags if extra_flags else None,
+                    crash_count=1,
+                )
+                if not recovered:
+                    print(f"  SKIP (server failed to start)", flush=True)
+                    total_skipped += total_scenarios
+                    continue
+
             prev_backend = config.backend
             prev_server = server
 
@@ -516,7 +720,13 @@ async def run_batch(
             if hasattr(client, "set_num_ctx"):
                 client.set_num_ctx(resolved_budget)
 
+            crash_count = 0
+            config_aborted = False
+
             for sc_idx, scenario in enumerate(scenarios, 1):
+                if config_aborted:
+                    break
+
                 # Skip compaction scenarios when ablation disables compaction
                 if scenario.name in _COMPACTION_SCENARIOS and ablation is not None and not ablation.compaction_enabled:
                     total_skipped += 1
@@ -551,15 +761,48 @@ async def run_batch(
                     strategy_overrides={"compaction": TieredCompact(keep_recent=2)},
                 )
 
+                eta = _format_eta(total_ran, total_expected, batch_start)
                 print(
                     f"\n  [{sc_idx}/{total_scenarios}] {scenario.name} "
-                    f"- {existing} done, running {remaining} more",
+                    f"- {existing} done, running {remaining} more{eta}",
                     flush=True,
                 )
 
                 for run_idx in range(existing, existing + remaining):
                     result = await run_scenario(client, scenario, eval_config, ablation=ablation)
                     total_ran += 1
+
+                    # Server crash recovery
+                    if _is_server_error(result):
+                        crash_count += 1
+                        print(
+                            f"    run {run_idx+1}/{runs_per_scenario}: "
+                            f"CRASH ({result.error_message.split(':')[0]})",
+                            flush=True,
+                        )
+                        recovered = await _recover_server(
+                            server, config, gguf_path,
+                            extra_flags if extra_flags else None,
+                            crash_count,
+                        )
+                        if not recovered:
+                            print(
+                                f"\n  [!] Circuit breaker: {crash_count} crashes "
+                                f"for {config_label}. Skipping remaining scenarios.",
+                                flush=True,
+                            )
+                            config_aborted = True
+                            break
+
+                        # Rebuild client and retry the failed run
+                        client = _build_client(config)
+                        resolved_budget = await server.resolve_budget(budget_mode, manual_tokens)
+                        if hasattr(client, "set_num_ctx"):
+                            client.set_num_ctx(scenario_budget)
+
+                        result = await run_scenario(client, scenario, eval_config, ablation=ablation)
+                        total_ran += 1
+
                     status = "OK" if result.completeness else f"FAIL ({result.error_type})"
                     print(
                         f"    run {run_idx+1}/{runs_per_scenario}: {status} "
@@ -578,6 +821,10 @@ async def run_batch(
 
                     # Update in-memory count for resume correctness
                     completed_counts[key] = completed_counts.get(key, 0) + 1
+
+            # Free VRAM after finishing all scenarios for this Ollama config
+            if config.backend == "ollama":
+                await server.stop()
     finally:
         await server.stop()
 

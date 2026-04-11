@@ -15,4 +15,4 @@ For model and backend recommendations, see [Model Guide](../MODEL_GUIDE.md).
 - [bare-vs-reforged.md](raw/bare-vs-reforged.md) — Bare vs reforged ablation comparison (grouped)
 - [by-backend.md](raw/by-backend.md) — Same model compared across backends
 
-*Generated 2026-04-11 12:42*
+*Generated 2026-04-09 15:06*

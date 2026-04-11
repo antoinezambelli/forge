@@ -22,11 +22,9 @@ htmlcov/
 # Claude Code
 .claude/
 
-# Eval results
-eval_results.jsonl
+# Eval results (scratch files only — eval_results.jsonl is tracked via LFS)
 eval_tight*.jsonl
 eval_vram*.jsonl
-bfcl_results.jsonl
 
 # OS
 Thumbs.db
