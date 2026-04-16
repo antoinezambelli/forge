@@ -25,6 +25,7 @@ htmlcov/
 # Eval results (scratch files only — eval_results.jsonl is tracked via LFS)
 eval_tight*.jsonl
 eval_vram*.jsonl
+ablation_progress.log
 
 # OS
 Thumbs.db
