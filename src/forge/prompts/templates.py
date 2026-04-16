@@ -118,6 +118,56 @@ _THINK_TAG_RE = re.compile(
     r"\[THINK\].*?\[/THINK\]|<think>.*?</think>", re.DOTALL
 )
 
+# Qwen Coder XML tool call format.
+# <function=name>
+#   <parameter=key>value</parameter>
+#   <parameter=other>value</parameter>
+# </function>
+# Pattern adapted from Qwen's reference parser:
+# https://huggingface.co/Qwen/Qwen3-Coder-480B-A35B-Instruct/blob/main/qwen3coder_tool_parser.py
+_QWEN_FUNCTION_RE = re.compile(
+    r"<function=([^>\s]+)>(.*?)</function>", re.DOTALL
+)
+_QWEN_PARAMETER_RE = re.compile(
+    r"<parameter=([^>\s]+)>(.*?)(?:</parameter>|(?=<parameter=)|(?=</function>)|$)",
+    re.DOTALL,
+)
+
+
+def _parse_qwen_xml_tool_calls(text: str, available_tools: list[str]) -> list[ToolCall]:
+    """Parse Qwen Coder XML-format tool calls from model output.
+
+    Handles the format emitted by Qwen3-Coder models (and occasionally other
+    models trained on similar data), with or without the outer <tool_call>
+    wrapper. Whitespace behavior matches Qwen's reference parser: one leading
+    and one trailing newline are stripped from each parameter value.
+
+    Type coercion is deferred to Pydantic — all parameter values are passed
+    as strings, and the tool's parameter model coerces at ToolCall construction.
+    """
+    found: list[ToolCall] = []
+    for fn_match in _QWEN_FUNCTION_RE.finditer(text):
+        tool_name = fn_match.group(1).strip()
+        if tool_name not in available_tools:
+            continue
+
+        body = fn_match.group(2)
+        args: dict[str, str] = {}
+        for param_match in _QWEN_PARAMETER_RE.finditer(body):
+            key = param_match.group(1).strip()
+            value = param_match.group(2)
+            # Strip the first newline after the opening tag and the last
+            # newline before the closing tag — matches Qwen's parser.
+            if value.startswith("\n"):
+                value = value[1:]
+            if value.endswith("\n"):
+                value = value[:-1]
+            args[key] = value
+
+        found.append(ToolCall(tool=tool_name, args=args))
+
+    return found
+
 
 def rescue_tool_call(text: str, available_tools: list[str]) -> list[ToolCall]:
     """Try to parse ToolCalls from a TextResponse that failed native FC.
@@ -129,6 +179,7 @@ def rescue_tool_call(text: str, available_tools: list[str]) -> list[ToolCall]:
     Parsing strategies (in order):
     1. Prompt-injected JSON: {"tool": "name", "args": {...}}
     2. Rehearsal syntax: tool_name[ARGS]{...}
+    3. Qwen Coder XML: <function=name><parameter=key>value</parameter></function>
     """
     # Strip think tags — the tool call may be after or outside thinking blocks
     cleaned = _THINK_TAG_RE.sub("", text).strip()
@@ -150,5 +201,9 @@ def rescue_tool_call(text: str, available_tools: list[str]) -> list[ToolCall]:
                         found.append(ToolCall(tool=tool_name, args=args))
                 except json.JSONDecodeError:
                     pass
+
+    # Strategy 3: Qwen Coder XML — <function=name><parameter=key>value</parameter></function>
+    if not found:
+        found = _parse_qwen_xml_tool_calls(cleaned, available_tools)
 
     return found
