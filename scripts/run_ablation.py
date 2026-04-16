@@ -16,7 +16,7 @@ from datetime import datetime
 from pathlib import Path
 
 MAX_RETRIES = 3
-RUNS_PER_SCENARIO = 10
+RUNS_PER_SCENARIO = 50
 TIMEOUT_S = 21600  # 6 hours per batch
 LOG_FILE = Path("ablation_progress.log")
 
@@ -40,7 +40,7 @@ def log(msg: str) -> None:
         f.write(line + "\n")
 
 
-def build_cmd(config: str, model: str | None, preset: str) -> list[str]:
+def build_cmd(config: str, model: str | None, preset: str, models_dir: str | None) -> list[str]:
     cmd = [
         sys.executable, "-m", "tests.eval.batch_eval",
         "--config", config,
@@ -50,11 +50,20 @@ def build_cmd(config: str, model: str | None, preset: str) -> list[str]:
     ]
     if model:
         cmd.extend(["--model", model])
+    if models_dir:
+        cmd.extend(["--models-dir", models_dir])
     return cmd
 
 
 def main() -> None:
-    dry_run = "--dry-run" in sys.argv
+    import argparse
+    parser = argparse.ArgumentParser(description="Unattended ablation study runner")
+    parser.add_argument("--models-dir", default=None, help="Directory containing GGUF model files")
+    parser.add_argument("--dry-run", action="store_true", help="Print commands without executing")
+    args = parser.parse_args()
+
+    dry_run = args.dry_run
+    models_dir = args.models_dir
 
     total = len(CONFIGS) * len(PRESETS)
     log(f"Ablation study: {len(CONFIGS)} models x {len(PRESETS)} presets = {total} batches")
@@ -68,7 +77,7 @@ def main() -> None:
     for config, model, label in CONFIGS:
         for preset in PRESETS:
             batch_label = f"{label} / {preset}"
-            cmd = build_cmd(config, model, preset)
+            cmd = build_cmd(config, model, preset, models_dir)
 
             if dry_run:
                 log(f"  [{completed + 1}/{total}] {batch_label}: {' '.join(cmd)}")
@@ -81,7 +90,7 @@ def main() -> None:
                 try:
                     result = subprocess.run(
                         cmd,
-                        cwd=str(Path(__file__).parent),
+                        cwd=str(Path(__file__).parent.parent),
                         timeout=TIMEOUT_S,
                     )
                     if result.returncode == 0:
