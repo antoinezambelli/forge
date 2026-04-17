@@ -2,6 +2,11 @@
 
 All notable changes to forge are documented here.
 
+## [0.4.3] — 2026-04-17
+
+### Added
+- **Qwen Coder XML rescue parsing** — rescue_tool_call now recognizes `<function=name><parameter=key>value</parameter></function>` format emitted by Qwen3-Coder and similar models (issue #55). Regex patterns adapted from Qwen's reference parser.
+
 ## [0.4.2] — 2026-04-10
 
 ### Added
