@@ -64,8 +64,7 @@ GGUF_MAP: dict[str, str] = {
     "qwen3.5:27b-q4_K_M": "Qwen3.5-27B-Q4_K_M.gguf",
     "qwen3.5:35b-a3b-q4_K_M": "Qwen3.5-35B-A3B-Q4_K_M.gguf",
     # Granite family (IBM)
-    "granite-3.3:8b-instruct-q4_K_M": "granite-3.3-8b-instruct-Q4_K_M.gguf",
-    "granite-3.3:8b-instruct-q8_0": "granite-3.3-8b-instruct-Q8_0.gguf",
+    "granite-4.0:h-micro-q8_0": "granite-4.0-h-micro-Q8_0.gguf",
     "granite-4.0:h-tiny-q4_K_M": "granite-4.0-h-tiny-Q4_K_M.gguf",
     "granite-4.0:h-tiny-q8_0": "granite-4.0-h-tiny-Q8_0.gguf",
 }
