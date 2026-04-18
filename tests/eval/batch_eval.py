@@ -358,6 +358,41 @@ def _get_server_flags(model: str, mode: str) -> list[str]:
     return flags
 
 
+# ── Run-level timeout ───────────────────────────────────────────
+
+# Wall-clock cap per scenario run. p99 in historical data is ~38s and the
+# longest legitimate 12GB-tier run is ~100s, so 300s is a safe hang guard.
+_RUN_TIMEOUT = 300
+
+
+async def _run_with_timeout(
+    client: Any,
+    scenario: EvalScenario,
+    eval_config: EvalConfig,
+    ablation: AblationConfig | None,
+) -> RunResult:
+    """Run a scenario with a wall-clock cap.
+
+    On timeout, synthesizes a failed RunResult with error_type='Timeout' so
+    the batch keeps moving. No retry — one strike and we record the miss.
+    """
+    start = time.monotonic()
+    try:
+        return await asyncio.wait_for(
+            run_scenario(client, scenario, eval_config, ablation=ablation),
+            timeout=_RUN_TIMEOUT,
+        )
+    except asyncio.TimeoutError:
+        return RunResult(
+            scenario_name=scenario.name,
+            completeness=False,
+            iterations_used=0,
+            error_type="Timeout",
+            error_message=f"Exceeded {_RUN_TIMEOUT}s",
+            elapsed_seconds=time.monotonic() - start,
+        )
+
+
 # ── Server recovery ─────────────────────────────────────────────
 
 _RECOVERY_BACKOFFS = [30, 60, 300]  # seconds: 30s, 60s, 5min
@@ -627,7 +662,7 @@ async def run_batch(
                     )
 
                     for run_idx in range(existing, existing + remaining):
-                        result = await run_scenario(client, scenario, eval_config, ablation=ablation)
+                        result = await _run_with_timeout(client, scenario, eval_config, ablation)
                         total_ran += 1
                         status = "OK" if result.completeness else f"FAIL ({result.error_type})"
                         print(
@@ -773,7 +808,7 @@ async def run_batch(
                 )
 
                 for run_idx in range(existing, existing + remaining):
-                    result = await run_scenario(client, scenario, eval_config, ablation=ablation)
+                    result = await _run_with_timeout(client, scenario, eval_config, ablation)
                     total_ran += 1
 
                     # Server crash recovery
@@ -804,7 +839,7 @@ async def run_batch(
                         if hasattr(client, "set_num_ctx"):
                             client.set_num_ctx(scenario_budget)
 
-                        result = await run_scenario(client, scenario, eval_config, ablation=ablation)
+                        result = await _run_with_timeout(client, scenario, eval_config, ablation)
                         total_ran += 1
 
                     status = "OK" if result.completeness else f"FAIL ({result.error_type})"
