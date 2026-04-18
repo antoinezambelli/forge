@@ -22,13 +22,9 @@ LOG_FILE = Path("ablation_progress.log")
 
 CONFIGS = [
     # (config_set, model_filter, label)
-    # Original 5-model paper set
-    ("llamaserver-native", "8b-reasoning-2512-q4", "ministral-8b-reasoning"),
-    ("llamaserver-native", "14b-instruct-2512-q4", "ministral-14b-instruct"),
-    ("ollama", "qwen3:14b-q4", "qwen3-14b"),
-    ("llamafile", "nemo", "nemo-12b"),
-    ("haiku", None, "haiku"),
-    # 12GB-tier extension: (backend, mode) = best reforged per model
+    # 12GB-tier extension: (backend, mode) = best reforged per model.
+    # The original 5-model paper set is already FULL in eval_results.jsonl
+    # and omitted here. Gemma4 e4b pair is omitted (GGUF files not on this rig).
     ("llamaserver-native", "ministral-3:8b-instruct-2512-q4", "ministral-8b-instruct-q4"),
     ("llamaserver-native", "ministral-3:8b-instruct-2512-q8", "ministral-8b-instruct-q8"),
     ("llamaserver-native", "ministral-3:8b-reasoning-2512-q8", "ministral-8b-reasoning-q8"),
@@ -37,8 +33,6 @@ CONFIGS = [
     ("llamaserver-native", "llama3.1:8b-instruct-q8", "llama3.1-8b-q8"),
     ("llamafile", "mistral:7b-instruct-v0.3-q4", "mistral-7b-q4"),
     ("llamafile", "mistral:7b-instruct-v0.3-q8", "mistral-7b-q8"),
-    ("llamaserver-prompt", "gemma4:e4b-it-q4", "gemma4-e4b-q4"),
-    ("llamaserver-prompt", "gemma4:e4b-it-q8", "gemma4-e4b-q8"),
 ]
 
 PRESETS = ["no_rescue", "no_nudge", "no_steps", "no_recovery", "no_compact"]
