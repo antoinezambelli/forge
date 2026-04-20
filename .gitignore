@@ -26,6 +26,8 @@ htmlcov/
 eval_tight*.jsonl
 eval_vram*.jsonl
 ablation_progress.log
+ablation_run.log
+llama.log
 
 # OS
 Thumbs.db
