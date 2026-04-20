@@ -707,140 +707,213 @@ def write_html(
 # ── Markdown views ─────────────────────────────────────────────
 
 
+# Ordering for ablation rows in the Full Ablation screen / markdown.
+# Mirrors ABLATION_ORDER in the dashboard's types.ts.
+_ABLATION_ORDER = (
+    "reforged", "bare",
+    "no_rescue", "no_nudge", "no_steps", "no_recovery", "no_compact",
+)
+
+
+def _ablation_rank(name: str) -> int:
+    """Rank for sorting ablation rows; unknowns land last."""
+    try:
+        return _ABLATION_ORDER.index(name)
+    except ValueError:
+        return len(_ABLATION_ORDER)
+
+
 def write_markdown_views(
     all_metrics: list[ConfigMetrics],
     scenarios: list[str],
     output_dir: Path,
 ) -> None:
-    """Write pre-filtered markdown view files."""
+    """Write pre-filtered markdown view files mirroring the dashboard's three screens.
+
+    Layout:
+        index.md
+        reforged/
+            all.md          — flat leaderboard, reforged rows only
+            by-family.md    — reforged rows grouped by model family
+            by-backend.md   — reforged rows, same model across backends
+        reforged-vs-bare.md — per-(model,backend,mode) reforged+bare pair
+        ablation.md         — deep-ablation configs only, 7-row tower per config
+        native-vs-prompt.md — llama-server paired native vs prompt (reforged)
+        budget.md           — compaction scenarios only (reforged)
+    """
     import datetime
 
     output_dir.mkdir(parents=True, exist_ok=True)
     raw_dir = output_dir / "raw"
     raw_dir.mkdir(parents=True, exist_ok=True)
+    reforged_dir = raw_dir / "reforged"
+    reforged_dir.mkdir(parents=True, exist_ok=True)
     timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
     legend = "\n".join(_legend_lines(scenarios))
 
-    written: list[tuple[str, str]] = []  # (filename, description)
+    written: list[tuple[str, str]] = []  # (relpath-from-raw, description)
 
-    def _write_view(filename: str, title: str, description: str, metrics: list[ConfigMetrics], sc: list[str] | None = None) -> None:
+    complete = [m for m in all_metrics if m.complete]
+    reforged_only = [m for m in complete if m.key.ablation == "reforged"]
+
+    def _flat_view(relpath: str, title: str, description: str, metrics: list[ConfigMetrics], sc: list[str] | None = None) -> None:
         if not metrics:
             return
         sc = sc or scenarios
         table = render_table_string(metrics, sc, include_legend=False)
         content = f"# {title}\n\n```\n{table}```\n\n{legend}\n\n*Generated {timestamp}*\n"
-        (raw_dir / filename).write_text(content, encoding="utf-8")
-        written.append((filename, description))
+        (raw_dir / relpath).write_text(content, encoding="utf-8")
+        written.append((relpath, description))
 
-    # 1. all.md — full leaderboard (complete configs only)
-    complete = [m for m in all_metrics if m.complete]
-    _write_view("all.md", "Forge Eval — Full Leaderboard", "Full leaderboard (complete configs)", complete)
+    def _grouped_view(
+        relpath: str,
+        title: str,
+        description: str,
+        groups_sorted: list[tuple[str, list[ConfigMetrics]]],
+    ) -> None:
+        if not groups_sorted:
+            return
+        parts: list[str] = [f"# {title}\n"]
+        for heading, group in groups_sorted:
+            table = render_table_string(group, scenarios, include_legend=False, presorted=True)
+            parts.append(f"## {heading}\n\n```\n{table}```\n")
+        parts.append(legend)
+        parts.append(f"\n*Generated {timestamp}*\n")
+        (raw_dir / relpath).write_text("\n".join(parts), encoding="utf-8")
+        written.append((relpath, description))
 
-    # 2-5. Per-backend views
-    for backend, desc in [("ollama", "Ollama"), ("llamaserver", "llama-server"), ("llamafile", "Llamafile"), ("anthropic", "Anthropic")]:
-        filtered = [m for m in complete if m.key.backend == backend]
-        _write_view(f"{backend}.md", f"Forge Eval — {desc}", f"{desc} results", filtered)
+    # ── Screen 1: reforged/ ───────────────────────────────────────
+    # reforged/all.md — flat leaderboard of reforged-only rows
+    _flat_view(
+        "reforged/all.md",
+        "Forge Eval — Reforged Leaderboard",
+        "Leaderboard: forge-reforged configs only",
+        reforged_only,
+    )
 
-    # 6. ablation.md — all ablation presets
-    ablation = [m for m in complete if m.key.ablation != "reforged"]
-    if ablation:
-        # Include reforged configs for same models as ablation targets
-        ablation_models = {m.key.model for m in ablation}
-        reforged_baselines = [m for m in complete if m.key.ablation == "reforged" and m.key.model in ablation_models]
-        _write_view("ablation.md", "Forge Eval — Ablation Comparison", "Ablation preset comparison", reforged_baselines + ablation)
-
-    # 7. native-vs-prompt.md — llama-server only, grouped by model
-    ls_configs = [m for m in complete if m.key.backend == "llamaserver"]
-    if ls_configs:
-        # Group by model, show native and prompt side-by-side
-        model_groups: dict[str, list[ConfigMetrics]] = defaultdict(list)
-        for m in ls_configs:
-            model_groups[m.key.model].append(m)
-        # Only include models that have both modes
-        paired: list[ConfigMetrics] = []
-        for model, group in sorted(model_groups.items()):
-            modes = {m.key.mode for m in group}
-            if "native" in modes and "prompt" in modes:
-                paired.extend(sorted(group, key=lambda m: (m.key.model, m.key.mode)))
-        _write_view("native-vs-prompt.md", "Forge Eval — Native vs Prompt (llama-server)", "Native FC vs prompt-injected on llama-server", paired)
-
-    # 8. by-family.md — sub-tables per model family, ordered by best score
+    # reforged/by-family.md — grouped by model family, reforged only
     family_groups: dict[str, list[ConfigMetrics]] = defaultdict(list)
-    for m in complete:
+    for m in reforged_only:
         family_groups[extract_family(m.key.model)].append(m)
-
-    # Sort families by best score in each group (desc)
     sorted_families = sorted(
         family_groups.items(),
         key=lambda kv: max(m.score for m in kv[1]),
         reverse=True,
     )
+    _grouped_view(
+        "reforged/by-family.md",
+        "Forge Eval — Reforged by Model Family",
+        "Reforged results grouped by model family",
+        [(family, sorted(group, key=lambda m: -m.score)) for family, group in sorted_families],
+    )
 
-    if sorted_families:
-        parts: list[str] = ["# Forge Eval — By Model Family\n"]
-        for family, group in sorted_families:
-            table = render_table_string(group, scenarios, include_legend=False)
-            parts.append(f"## {family}\n\n```\n{table}```\n")
-        parts.append(legend)
-        parts.append(f"\n*Generated {timestamp}*\n")
-        (raw_dir / "by-family.md").write_text("\n".join(parts), encoding="utf-8")
-        written.append(("by-family.md", "Results grouped by model family"))
+    # reforged/by-backend.md — reforged only, grouped by model when >1 backend available
+    backend_groups: dict[str, list[ConfigMetrics]] = defaultdict(list)
+    for m in reforged_only:
+        backend_groups[m.key.model].append(m)
+    backend_pairs = {k: v for k, v in backend_groups.items() if len({m.key.backend for m in v}) > 1}
+    sorted_bg = sorted(backend_pairs.items(), key=lambda kv: max(m.score for m in kv[1]), reverse=True)
+    _grouped_view(
+        "reforged/by-backend.md",
+        "Forge Eval — Reforged by Backend",
+        "Same model across backends (reforged only)",
+        [(model, sorted(group, key=lambda m: -m.score)) for model, group in sorted_bg],
+    )
 
-    # 9. bare-vs-reforged.md — group by model/backend/mode, show ablation variants together
-    bare_full_groups: dict[tuple[str, str, str], list[ConfigMetrics]] = defaultdict(list)
+    # ── Screen 2: reforged-vs-bare.md ─────────────────────────────
+    # Per-(model, backend, mode) groups. Always exactly 2 rows (reforged + bare).
+    rb_groups: dict[tuple[str, str, str], list[ConfigMetrics]] = defaultdict(list)
     for m in complete:
-        bare_full_groups[(m.key.model, m.key.backend, m.key.mode)].append(m)
-    # Only keep groups with more than one ablation variant
-    bare_full_pairs = {k: v for k, v in bare_full_groups.items() if len(set(m.key.ablation for m in v)) > 1}
-    if bare_full_pairs:
-        sorted_bf = sorted(bare_full_pairs.items(), key=lambda kv: max(m.score for m in kv[1]), reverse=True)
-        parts_bf: list[str] = ["# Forge Eval — Bare vs Reforged\n"]
-        for (model, backend, mode), group in sorted_bf:
-            group_sorted = sorted(group, key=lambda m: -m.score)
-            table = render_table_string(group_sorted, scenarios, include_legend=False, presorted=True)
-            parts_bf.append(f"## {model} ({backend}/{mode})\n\n```\n{table}```\n")
-        parts_bf.append(legend)
-        parts_bf.append(f"\n*Generated {timestamp}*\n")
-        (raw_dir / "bare-vs-reforged.md").write_text("\n".join(parts_bf), encoding="utf-8")
-        written.append(("bare-vs-reforged.md", "Bare vs reforged ablation comparison (grouped)"))
+        if m.key.ablation in ("reforged", "bare"):
+            rb_groups[(m.key.model, m.key.backend, m.key.mode)].append(m)
+    # Only keep configs with both variants present
+    rb_pairs = {k: v for k, v in rb_groups.items() if len({m.key.ablation for m in v}) == 2}
+    sorted_rb = sorted(rb_pairs.items(), key=lambda kv: max(m.score for m in kv[1]), reverse=True)
+    _grouped_view(
+        "reforged-vs-bare.md",
+        "Forge Eval — Reforged vs Bare",
+        "Forge lift: reforged vs bare for each (model, backend, mode)",
+        [
+            (f"{model} ({backend}/{mode})", sorted(group, key=lambda m: _ablation_rank(m.key.ablation)))
+            for (model, backend, mode), group in sorted_rb
+        ],
+    )
 
-    # 10. by-backend.md — group same model across backends
-    backend_groups: dict[tuple[str, str], list[ConfigMetrics]] = defaultdict(list)
+    # ── Screen 3: ablation.md ─────────────────────────────────────
+    # Deep-ablation configs only — those with at least one no_* variant.
+    # Each config gets a table with all its ablation rows in ABLATION_ORDER.
+    abl_groups: dict[tuple[str, str, str], list[ConfigMetrics]] = defaultdict(list)
     for m in complete:
-        backend_groups[(m.key.model, m.key.ablation)].append(m)
-    # Only keep groups with more than one backend
-    backend_pairs = {k: v for k, v in backend_groups.items() if len(set(m.key.backend for m in v)) > 1}
-    if backend_pairs:
-        sorted_bg = sorted(backend_pairs.items(), key=lambda kv: max(m.score for m in kv[1]), reverse=True)
-        parts_bg: list[str] = ["# Forge Eval — By Backend\n"]
-        for (model, ablation), group in sorted_bg:
-            group_sorted = sorted(group, key=lambda m: -m.score)
-            table = render_table_string(group_sorted, scenarios, include_legend=False, presorted=True)
-            tag = f" [{ablation}]" if ablation != "reforged" else ""
-            parts_bg.append(f"## {model}{tag}\n\n```\n{table}```\n")
-        parts_bg.append(legend)
-        parts_bg.append(f"\n*Generated {timestamp}*\n")
-        (raw_dir / "by-backend.md").write_text("\n".join(parts_bg), encoding="utf-8")
-        written.append(("by-backend.md", "Same model compared across backends"))
+        abl_groups[(m.key.model, m.key.backend, m.key.mode)].append(m)
+    deep_ablation = {
+        k: v for k, v in abl_groups.items()
+        if any(m.key.ablation.startswith("no_") for m in v)
+    }
+    sorted_abl = sorted(deep_ablation.items(), key=lambda kv: max(m.score for m in kv[1]), reverse=True)
+    _grouped_view(
+        "ablation.md",
+        "Forge Eval — Full Ablation",
+        "Per-guardrail ablation: each config shows all ablation variants",
+        [
+            (f"{model} ({backend}/{mode})", sorted(group, key=lambda m: _ablation_rank(m.key.ablation)))
+            for (model, backend, mode), group in sorted_abl
+        ],
+    )
 
-    # 11. budget.md — compaction scenarios only
+    # ── Orthogonal: native-vs-prompt.md ───────────────────────────
+    # llama-server only, reforged only, grouped by model, both modes present.
+    ls_reforged = [m for m in reforged_only if m.key.backend == "llamaserver"]
+    ls_groups: dict[str, list[ConfigMetrics]] = defaultdict(list)
+    for m in ls_reforged:
+        ls_groups[m.key.model].append(m)
+    ls_paired = {k: v for k, v in ls_groups.items() if {"native", "prompt"} <= {m.key.mode for m in v}}
+    _grouped_view(
+        "native-vs-prompt.md",
+        "Forge Eval — Native vs Prompt (llama-server)",
+        "llama-server native FC vs prompt-injected, reforged only",
+        [
+            (model, sorted(group, key=lambda m: m.key.mode))
+            for model, group in sorted(ls_paired.items())
+        ],
+    )
+
+    # ── Orthogonal: budget.md ─────────────────────────────────────
     compaction_scenarios = [sc for sc in scenarios if sc in {
         "compaction_stress", "phase2_compaction",
         "compaction_stress_stateful", "phase2_compaction_stateful",
         "inventory_audit", "supplier_deep_dive",
     }]
     if compaction_scenarios:
-        _write_view("budget.md", "Forge Eval — Compaction / Tight Budget", "Compaction scenario results", complete, sc=compaction_scenarios)
+        _flat_view(
+            "budget.md",
+            "Forge Eval — Compaction / Tight Budget",
+            "Compaction scenario results (reforged only)",
+            reforged_only,
+            sc=compaction_scenarios,
+        )
 
-    # index.md
+    # ── index.md ──────────────────────────────────────────────────
     if written:
         index_lines = [
             "# Forge Eval Reports\n",
             "For model and backend recommendations, see [Model Guide](../MODEL_GUIDE.md).\n",
-            "## Raw Data\n",
+            "## Reforged — which model should I run?\n",
         ]
-        for filename, desc in written:
-            index_lines.append(f"- [{filename}](raw/{filename}) — {desc}")
+        for relpath, desc in written:
+            if relpath.startswith("reforged/"):
+                index_lines.append(f"- [{relpath}](raw/{relpath}) — {desc}")
+        index_lines.append("\n## Reforged vs Bare — how much does forge lift a model?\n")
+        for relpath, desc in written:
+            if relpath == "reforged-vs-bare.md":
+                index_lines.append(f"- [{relpath}](raw/{relpath}) — {desc}")
+        index_lines.append("\n## Full Ablation — which guardrails do the work?\n")
+        for relpath, desc in written:
+            if relpath == "ablation.md":
+                index_lines.append(f"- [{relpath}](raw/{relpath}) — {desc}")
+        index_lines.append("\n## Other cross-cuts\n")
+        for relpath, desc in written:
+            if relpath in ("native-vs-prompt.md", "budget.md"):
+                index_lines.append(f"- [{relpath}](raw/{relpath}) — {desc}")
         index_lines.append(f"\n*Generated {timestamp}*\n")
         (output_dir / "index.md").write_text("\n".join(index_lines), encoding="utf-8")
         print(f"Markdown views written to {output_dir}/raw/ ({len(written)} files + index.md)")

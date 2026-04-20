@@ -61,7 +61,7 @@ export function DataTable({
 
   const totalCols = 2 + METRIC_COLS.length + scenarios.length; // checkbox + label + metrics + scenarios
   return (
-    <div className="overflow-x-auto">
+    <div className="w-full overflow-x-auto">
       <table className="text-xs whitespace-nowrap border-collapse">
         <thead>
           <tr className="border-b border-zinc-800">

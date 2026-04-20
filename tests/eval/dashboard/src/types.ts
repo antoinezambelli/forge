@@ -41,13 +41,38 @@ export const SCENARIO_SCOPES: { id: ScenarioScope; label: string }[] = [
   { id: "stateful", label: "Stateful" },
 ];
 
-export const FILTER_DIMENSIONS = ["backend", "mode", "family", "quant", "ablation"] as const;
+export const FILTER_DIMENSIONS = ["backend", "mode", "family", "quant"] as const;
 export type FilterDimension = (typeof FILTER_DIMENSIONS)[number];
 
 export type Filters = Record<FilterDimension, Set<string>>;
 
-/** Pre-baked view definitions. */
-export type ViewId = "all" | "bare-vs-reforged" | "by-backend" | "by-family";
+/** Screen — top-level mode selector that controls which ablation rows are visible.
+ *
+ *   reforged         — one row per (model, backend, mode): the "pick a model" leaderboard.
+ *   bare-vs-reforged — reforged + bare, grouped: the "how much does forge lift this model?" story.
+ *   ablation         — all ablation variants per config, grouped: the per-guardrail contribution deep dive.
+ */
+export type ScreenId = "reforged" | "bare-vs-reforged" | "ablation";
+
+export const SCREENS: { id: ScreenId; label: string }[] = [
+  { id: "reforged", label: "Reforged" },
+  { id: "bare-vs-reforged", label: "Reforged vs Bare" },
+  { id: "ablation", label: "Full Ablation" },
+];
+
+/** Intra-group ordering for ablation rows. Defines the canonical ablation sequence. */
+export const ABLATION_ORDER: readonly string[] = [
+  "reforged",
+  "bare",
+  "no_rescue",
+  "no_nudge",
+  "no_steps",
+  "no_recovery",
+  "no_compact",
+];
+
+/** Pre-baked view definitions — control grouping within the active screen's row set. */
+export type ViewId = "all" | "by-backend" | "by-family";
 
 export interface ViewDef {
   id: ViewId;
@@ -60,12 +85,6 @@ export interface ViewDef {
 
 export const VIEWS: ViewDef[] = [
   { id: "all", label: "All", groupBy: [] },
-  {
-    id: "bare-vs-reforged",
-    label: "Bare vs Reforged",
-    groupBy: ["model", "backend", "mode", "quant"],
-    intraSort: "ablation", // "bare" < "reforged" alphabetically → bare first, reforged second
-  },
   {
     id: "by-backend",
     label: "By Backend",

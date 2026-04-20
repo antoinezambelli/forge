@@ -1,4 +1,38 @@
-import type { ConfigRow, ScenarioScope, SortState, ViewDef } from "./types";
+import type { ConfigRow, ScenarioScope, ScreenId, SortState, ViewDef } from "./types";
+import { ABLATION_ORDER } from "./types";
+
+/** Filter rows according to the active screen.
+ *
+ *   reforged         — only reforged rows.
+ *   bare-vs-reforged — reforged + bare rows (the universally-collected pair).
+ *   ablation         — only configs that have more than just reforged+bare;
+ *                      i.e. at least one `no_*` ablation exists for that
+ *                      (model, backend, mode). Renders the deep-ablation subset.
+ */
+export function filterByScreen(rows: ConfigRow[], screen: ScreenId): ConfigRow[] {
+  if (screen === "reforged") {
+    return rows.filter((r) => r.ablation === "reforged");
+  }
+  if (screen === "bare-vs-reforged") {
+    return rows.filter((r) => r.ablation === "reforged" || r.ablation === "bare");
+  }
+  // ablation: only include configs with at least one no_* variant
+  const configHasAblation = new Set<string>();
+  for (const r of rows) {
+    if (r.ablation.startsWith("no_")) {
+      configHasAblation.add(`${r.model}\u0000${r.backend}\u0000${r.mode}`);
+    }
+  }
+  return rows.filter((r) =>
+    configHasAblation.has(`${r.model}\u0000${r.backend}\u0000${r.mode}`),
+  );
+}
+
+/** Rank for sorting ablation rows in canonical order; unknowns land last. */
+function ablationRank(name: string): number {
+  const idx = ABLATION_ORDER.indexOf(name);
+  return idx === -1 ? ABLATION_ORDER.length : idx;
+}
 
 /** Heat-map color class based on percentage value. */
 export function heatClass(v: number | null): string {
@@ -119,34 +153,56 @@ export function groupRows(
   view: ViewDef,
   sort: SortState,
   scenarios: string[],
+  screen: ScreenId,
 ): { sorted: ConfigRow[]; groups: RowGroup[] } {
-  // "All" view — no grouping, just normal sort
-  if (view.groupBy.length === 0) {
+  // Screens 2 and 3 define their own canonical grouping (per-config ablation
+  // towers), regardless of the view picker. The user-selected view only
+  // applies on the reforged screen.
+  const effectiveView: ViewDef = screen === "reforged"
+    ? view
+    : {
+        id: view.id,
+        label: view.label,
+        groupBy: ["model", "backend", "mode"],
+      };
+  const byAblationRank = screen !== "reforged";
+
+  // "All" view with no grouping — just sort flat
+  if (effectiveView.groupBy.length === 0) {
     return { sorted: sortRows(rows, sort, scenarios), groups: [] };
   }
 
   // Bucket rows into groups
   const buckets = new Map<string, ConfigRow[]>();
   for (const row of rows) {
-    const k = groupKey(row, view.groupBy);
+    const k = groupKey(row, effectiveView.groupBy);
     if (!buckets.has(k)) buckets.set(k, []);
     buckets.get(k)!.push(row);
   }
 
-  // Sort within each group: by intraSort field (asc) then by score (desc)
+  // Sort within each group.
+  //   On ablation-ordered screens, enforce ABLATION_ORDER first.
+  //   Otherwise fall back to the view's intraSort.
   const groups: RowGroup[] = [];
   for (const [k, bucket] of buckets) {
     bucket.sort((a, b) => {
+      if (byAblationRank) {
+        const diff = ablationRank(a.ablation) - ablationRank(b.ablation);
+        if (diff !== 0) return diff;
+        return b.score - a.score;
+      }
       const scoreDiff = b.score - a.score;
       if (scoreDiff !== 0) return scoreDiff;
-      if (view.intraSort) {
-        return String(a[view.intraSort]).localeCompare(String(b[view.intraSort]));
+      if (effectiveView.intraSort) {
+        return String(a[effectiveView.intraSort]).localeCompare(
+          String(b[effectiveView.intraSort]),
+        );
       }
       return 0;
     });
 
     // Derive a human-readable group label from the groupBy fields
-    const label = view.groupBy.map((f) => bucket[0][f]).join(" / ");
+    const label = effectiveView.groupBy.map((f) => bucket[0][f]).join(" / ");
     groups.push({ key: k, label, rows: bucket });
   }
 

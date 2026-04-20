@@ -1,5 +1,6 @@
-import type { ConfigRow, FilterDimension, Filters, ScenarioScope, ViewId } from "./types";
+import type { ConfigRow, FilterDimension, Filters, ScenarioScope, ScreenId, ViewId } from "./types";
 import { FILTER_DIMENSIONS, SCENARIO_SCOPES } from "./types";
+import { ScreenSelector } from "./ScreenSelector";
 import { ViewSelector } from "./ViewSelector";
 
 const DIMENSION_LABELS: Record<FilterDimension, string> = {
@@ -7,13 +8,14 @@ const DIMENSION_LABELS: Record<FilterDimension, string> = {
   mode: "Mode",
   family: "Family",
   quant: "Quant",
-  ablation: "Ablation",
 };
 
 interface SidebarProps {
   rows: ConfigRow[];
   filters: Filters;
   onFilterChange: (dim: FilterDimension, val: string, on: boolean) => void;
+  activeScreen: ScreenId;
+  onScreenChange: (id: ScreenId) => void;
   activeView: ViewId;
   onViewChange: (id: ViewId) => void;
   scenarioScope: ScenarioScope;
@@ -28,6 +30,8 @@ export function Sidebar({
   rows,
   filters,
   onFilterChange,
+  activeScreen,
+  onScreenChange,
   activeView,
   onViewChange,
   scenarioScope,
@@ -44,6 +48,8 @@ export function Sidebar({
         {filteredCount}/{totalCount} configs &middot;{" "}
         {totalRuns.toLocaleString()} runs
       </p>
+
+      <ScreenSelector active={activeScreen} onChange={onScreenChange} />
 
       <fieldset className="mb-3 border border-zinc-800 rounded p-2">
         <legend className="text-[0.65rem] font-semibold uppercase tracking-wider text-zinc-400 px-1">
@@ -66,7 +72,9 @@ export function Sidebar({
         </div>
       </fieldset>
 
-      <ViewSelector active={activeView} onChange={onViewChange} />
+      {activeScreen === "reforged" && (
+        <ViewSelector active={activeView} onChange={onViewChange} />
+      )}
 
       {FILTER_DIMENSIONS.map((dim) => {
         const vals = [...new Set(rows.map((r) => r[dim]))].sort();
