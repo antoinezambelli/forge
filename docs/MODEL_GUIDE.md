@@ -131,6 +131,12 @@ The same pattern appears across model families:
 
 ---
 
+## Known Issues
+
+**llama.cpp reasoning budget (builds after April 10 2026):** Gemma 4, Qwen 3.5, and Ministral Reasoning models can hang indefinitely on llama-server due to an unbounded reasoning budget sampler. Add `--reasoning-budget 0` to the server command line. See [BACKEND_SETUP.md](BACKEND_SETUP.md#reasoning-budget-llamacpp-builds-after-april-10-2026) for details.
+
+---
+
 ## Setup
 
 See [BACKEND_SETUP.md](BACKEND_SETUP.md) for installation and configuration of each backend.

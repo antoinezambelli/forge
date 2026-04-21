@@ -122,8 +122,8 @@ class TestExtractToolCall:
         result = extract_tool_call(text, ["get_pricing"])
         assert result == []
 
-    def test_json_without_tool_key(self) -> None:
-        text = '{"name": "get_pricing", "params": {}}'
+    def test_json_without_tool_or_name_key(self) -> None:
+        text = '{"function": "get_pricing", "params": {}}'
         result = extract_tool_call(text, ["get_pricing"])
         assert result == []
 
@@ -138,6 +138,22 @@ class TestExtractToolCall:
         result = extract_tool_call(text, ["search"])
         assert len(result) == 1
         assert result[0].args == {"filter": {"type": "active"}}
+
+    def test_openai_style_keys(self) -> None:
+        """Granite 4.0 and OpenAI-format models use name/arguments instead of tool/args."""
+        text = '{"name": "get_pricing", "arguments": {"part": "X123"}}'
+        result = extract_tool_call(text, ["get_pricing"])
+        assert len(result) == 1
+        assert result[0].tool == "get_pricing"
+        assert result[0].args == {"part": "X123"}
+
+    def test_granite_tool_call_tags(self) -> None:
+        """Granite 4.0 wraps OpenAI-style JSON in <tool_call> tags."""
+        text = '<tool_call>{"name": "get_pricing", "arguments": {"part": "X123"}}</tool_call>'
+        result = extract_tool_call(text, ["get_pricing"])
+        assert len(result) == 1
+        assert result[0].tool == "get_pricing"
+        assert result[0].args == {"part": "X123"}
 
     def test_multiple_tool_calls(self) -> None:
         text = '{"tool": "get_pricing", "args": {"part": "A"}} {"tool": "search", "args": {"q": "B"}}'

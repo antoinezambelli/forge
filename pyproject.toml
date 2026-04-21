@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "forge-guardrails"
-version = "0.4.3"
+version = "0.5.0"
 description = "A reliability layer for self-hosted LLM tool-calling. Guardrails, context management, and backend adapters for multi-step agentic workflows."
 requires-python = ">=3.12"
 license = "MIT"

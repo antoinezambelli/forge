@@ -251,6 +251,20 @@ python -m tests.eval.eval_runner --backend llamafile --runs 5 --llamafile-mode n
 python -m tests.eval.eval_runner --backend llamafile --runs 5 --llamafile-mode prompt --tags plumbing
 ```
 
+### Reasoning budget (llama.cpp builds after April 10 2026)
+
+llama.cpp builds after April 10 2026 activate a reasoning budget sampler for models with thinking tags (Gemma 4, Qwen 3.5, Ministral Reasoning). The default budget is unlimited, which causes some runs to hang indefinitely or fill KV cache until the server crashes.
+
+**Add `--reasoning-budget 0` to disable thinking**, or set a specific cap (e.g. `--reasoning-budget 1024`):
+
+```bash
+llama-server.exe -m model.gguf --jinja -ngl 999 --port 8080 --reasoning-budget 0
+```
+
+Affected models: Gemma 4 (all sizes), Qwen 3.5 (all sizes), Ministral Reasoning. Instruct-only models are not affected.
+
+If you're using forge's managed mode (`setup_backend()` or `ServerManager`), pass this via `extra_flags=["--reasoning-budget", "0"]`.
+
 ### Notes
 
 - The `--jinja` flag is critical — without it, the `tools` parameter is ignored and you get no function calling.

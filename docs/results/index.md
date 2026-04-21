@@ -2,17 +2,22 @@
 
 For model and backend recommendations, see [Model Guide](../MODEL_GUIDE.md).
 
-## Raw Data
+## Reforged — which model should I run?
 
-- [all.md](raw/all.md) — Full leaderboard (complete configs)
-- [ollama.md](raw/ollama.md) — Ollama results
-- [llamaserver.md](raw/llamaserver.md) — llama-server results
-- [llamafile.md](raw/llamafile.md) — Llamafile results
-- [anthropic.md](raw/anthropic.md) — Anthropic results
-- [ablation.md](raw/ablation.md) — Ablation preset comparison
-- [native-vs-prompt.md](raw/native-vs-prompt.md) — Native FC vs prompt-injected on llama-server
-- [by-family.md](raw/by-family.md) — Results grouped by model family
-- [bare-vs-reforged.md](raw/bare-vs-reforged.md) — Bare vs reforged ablation comparison (grouped)
-- [by-backend.md](raw/by-backend.md) — Same model compared across backends
+- [reforged/all.md](raw/reforged/all.md) — Leaderboard: forge-reforged configs only
+- [reforged/by-family.md](raw/reforged/by-family.md) — Reforged results grouped by model family
+- [reforged/by-backend.md](raw/reforged/by-backend.md) — Same model across backends (reforged only)
 
-*Generated 2026-04-11 12:42*
+## Reforged vs Bare — how much does forge lift a model?
+
+- [reforged-vs-bare.md](raw/reforged-vs-bare.md) — Forge lift: reforged vs bare for each (model, backend, mode)
+
+## Full Ablation — which guardrails do the work?
+
+- [ablation.md](raw/ablation.md) — Per-guardrail ablation: each config shows all ablation variants
+
+## Other cross-cuts
+
+- [native-vs-prompt.md](raw/native-vs-prompt.md) — llama-server native FC vs prompt-injected, reforged only
+
+*Generated 2026-04-20 09:21*

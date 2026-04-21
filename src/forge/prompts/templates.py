@@ -99,10 +99,19 @@ def _try_parse_tool_call(json_str: str, available_tools: list[str]) -> ToolCall 
 
     if not isinstance(data, dict):
         return None
-    if data.get("tool") not in available_tools:
+
+    # Forge style: {"tool": "...", "args": {...}}
+    # OpenAI style: {"name": "...", "arguments": {...}}
+    # Granite 4.0 emits OpenAI-style inside <tool_call> tags.
+    tool_name = data.get("tool") or data.get("name")
+    if tool_name not in available_tools:
         return None
 
-    return ToolCall(tool=data["tool"], args=data.get("args", {}))
+    args = data.get("args")
+    if args is None:
+        args = data.get("arguments", {})
+
+    return ToolCall(tool=tool_name, args=args)
 
 
 # Pattern for native FC rehearsal syntax: tool_name[ARGS]{...}

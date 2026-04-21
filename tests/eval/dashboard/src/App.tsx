@@ -5,12 +5,13 @@ import type {
   FilterDimension,
   Filters,
   ScenarioScope,
+  ScreenId,
   SortState,
   ViewId,
 } from "./types";
 import { FILTER_DIMENSIONS, VIEWS } from "./types";
 import { loadData } from "./data";
-import { groupRows, scopeRows } from "./utils";
+import { filterByScreen, groupRows, scopeRows } from "./utils";
 import { Sidebar } from "./Sidebar";
 import { DataTable } from "./DataTable";
 import { ComparePanel } from "./ComparePanel";
@@ -28,6 +29,7 @@ function App() {
   const [filters, setFilters] = useState<Filters | null>(null);
   const [sort, setSort] = useState<SortState>({ col: "score", asc: false });
   const [checked, setChecked] = useState<number[]>([]);
+  const [activeScreen, setActiveScreen] = useState<ScreenId>("reforged");
   const [activeView, setActiveView] = useState<ViewId>("all");
   const [scenarioScope, setScenarioScope] = useState<ScenarioScope>("all");
 
@@ -40,12 +42,15 @@ function App() {
 
   const filtered = useMemo(() => {
     if (!data || !filters) return [];
-    return data.rows.filter((row) =>
+    // Screen drives row set first (which ablations are visible), then
+    // the sidebar filter dimensions narrow further.
+    const byScreen = filterByScreen(data.rows, activeScreen);
+    return byScreen.filter((row) =>
       FILTER_DIMENSIONS.every(
         (dim) => !filters[dim] || filters[dim].has(row[dim]),
       ),
     );
-  }, [data, filters]);
+  }, [data, filters, activeScreen]);
 
   // Apply scenario scope — filters scenario columns and recomputes score
   const { rows: scopedRows, scenarios: scopedScenarios } = useMemo(
@@ -70,8 +75,8 @@ function App() {
   );
 
   const { sorted, groups } = useMemo(
-    () => groupRows(scopedRows, viewDef, sort, scopedScenarios),
-    [scopedRows, viewDef, sort, scopedScenarios],
+    () => groupRows(scopedRows, viewDef, sort, scopedScenarios, activeScreen),
+    [scopedRows, viewDef, sort, scopedScenarios, activeScreen],
   );
 
   const totalRuns = useMemo(
@@ -96,6 +101,11 @@ function App() {
     },
     [],
   );
+
+  const handleScreenChange = useCallback((id: ScreenId) => {
+    setActiveScreen(id);
+    setChecked([]);
+  }, []);
 
   const handleViewChange = useCallback((id: ViewId) => {
     setActiveView(id);
@@ -150,17 +160,19 @@ function App() {
         rows={data.rows}
         filters={filters}
         onFilterChange={handleFilterChange}
+        activeScreen={activeScreen}
+        onScreenChange={handleScreenChange}
         activeView={activeView}
         onViewChange={handleViewChange}
         scenarioScope={scenarioScope}
         onScopeChange={handleScopeChange}
         filteredCount={filtered.length}
-        totalCount={data.rows.length}
+        totalCount={filterByScreen(data.rows, activeScreen).length}
         totalRuns={totalRuns}
         timestamp={data.timestamp}
       />
 
-      <main className="flex-1 min-w-0 p-4 overflow-x-auto flex flex-col items-center">
+      <main className="flex-1 min-w-0 p-4 flex flex-col">
         <DataTable
           rows={sorted}
           scenarios={scopedScenarios}

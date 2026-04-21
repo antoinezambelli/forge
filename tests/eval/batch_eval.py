@@ -63,6 +63,10 @@ GGUF_MAP: dict[str, str] = {
     # Qwen 3.5 family
     "qwen3.5:27b-q4_K_M": "Qwen3.5-27B-Q4_K_M.gguf",
     "qwen3.5:35b-a3b-q4_K_M": "Qwen3.5-35B-A3B-Q4_K_M.gguf",
+    # Granite family (IBM)
+    "granite-4.0:h-micro-q8_0": "granite-4.0-h-micro-Q8_0.gguf",
+    "granite-4.0:h-tiny-q4_K_M": "granite-4.0-h-tiny-Q4_K_M.gguf",
+    "granite-4.0:h-tiny-q8_0": "granite-4.0-h-tiny-Q8_0.gguf",
 }
 
 LLAMAFILE_MAP: dict[str, str] = {
@@ -354,6 +358,41 @@ def _get_server_flags(model: str, mode: str) -> list[str]:
     return flags
 
 
+# ── Run-level timeout ───────────────────────────────────────────
+
+# Wall-clock cap per scenario run. p99 in historical data is ~38s and the
+# longest legitimate 12GB-tier run is ~100s, so 300s is a safe hang guard.
+_RUN_TIMEOUT = 300
+
+
+async def _run_with_timeout(
+    client: Any,
+    scenario: EvalScenario,
+    eval_config: EvalConfig,
+    ablation: AblationConfig | None,
+) -> RunResult:
+    """Run a scenario with a wall-clock cap.
+
+    On timeout, synthesizes a failed RunResult with error_type='Timeout' so
+    the batch keeps moving. No retry — one strike and we record the miss.
+    """
+    start = time.monotonic()
+    try:
+        return await asyncio.wait_for(
+            run_scenario(client, scenario, eval_config, ablation=ablation),
+            timeout=_RUN_TIMEOUT,
+        )
+    except asyncio.TimeoutError:
+        return RunResult(
+            scenario_name=scenario.name,
+            completeness=False,
+            iterations_used=0,
+            error_type="Timeout",
+            error_message=f"Exceeded {_RUN_TIMEOUT}s",
+            elapsed_seconds=time.monotonic() - start,
+        )
+
+
 # ── Server recovery ─────────────────────────────────────────────
 
 _RECOVERY_BACKOFFS = [30, 60, 300]  # seconds: 30s, 60s, 5min
@@ -623,7 +662,7 @@ async def run_batch(
                     )
 
                     for run_idx in range(existing, existing + remaining):
-                        result = await run_scenario(client, scenario, eval_config, ablation=ablation)
+                        result = await _run_with_timeout(client, scenario, eval_config, ablation)
                         total_ran += 1
                         status = "OK" if result.completeness else f"FAIL ({result.error_type})"
                         print(
@@ -769,7 +808,7 @@ async def run_batch(
                 )
 
                 for run_idx in range(existing, existing + remaining):
-                    result = await run_scenario(client, scenario, eval_config, ablation=ablation)
+                    result = await _run_with_timeout(client, scenario, eval_config, ablation)
                     total_ran += 1
 
                     # Server crash recovery
@@ -800,7 +839,7 @@ async def run_batch(
                         if hasattr(client, "set_num_ctx"):
                             client.set_num_ctx(scenario_budget)
 
-                        result = await run_scenario(client, scenario, eval_config, ablation=ablation)
+                        result = await _run_with_timeout(client, scenario, eval_config, ablation)
                         total_ran += 1
 
                     status = "OK" if result.completeness else f"FAIL ({result.error_type})"
