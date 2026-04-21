@@ -233,3 +233,85 @@ class TestRescueToolCall:
         assert len(result) >= 1
         assert result[0].tool == "fetch"
         assert result[0].args == {"a": 1}
+
+
+# ── Qwen Coder XML format ───────────────────────────────────────
+
+
+class TestQwenXmlRescue:
+    def test_single_parameter(self) -> None:
+        text = "<function=fetch>\n<parameter=query>hello world</parameter>\n</function>"
+        result = rescue_tool_call(text, ["fetch", "submit"])
+        assert len(result) == 1
+        assert result[0].tool == "fetch"
+        assert result[0].args == {"query": "hello world"}
+
+    def test_multiple_parameters(self) -> None:
+        text = (
+            "<function=fetch>\n"
+            "<parameter=query>hello</parameter>\n"
+            "<parameter=limit>10</parameter>\n"
+            "</function>"
+        )
+        result = rescue_tool_call(text, ["fetch", "submit"])
+        assert len(result) == 1
+        assert result[0].tool == "fetch"
+        assert result[0].args == {"query": "hello", "limit": "10"}
+
+    def test_multiline_parameter_value(self) -> None:
+        """Issue #55 reproducer — bash command spans multiple lines."""
+        text = (
+            "<function=bash>\n"
+            "<parameter=command>\n"
+            'find . -name "*.py" -exec grep -l "percentage" {} \\;\n'
+            "</parameter>\n"
+            "</function>"
+        )
+        result = rescue_tool_call(text, ["bash", "edit"])
+        assert len(result) == 1
+        assert result[0].tool == "bash"
+        # The leading/trailing newlines around the command are stripped
+        assert result[0].args["command"] == 'find . -name "*.py" -exec grep -l "percentage" {} \\;'
+
+    def test_multiple_function_calls(self) -> None:
+        text = (
+            "<function=fetch><parameter=q>one</parameter></function>\n"
+            "<function=submit><parameter=data>two</parameter></function>"
+        )
+        result = rescue_tool_call(text, ["fetch", "submit"])
+        assert len(result) == 2
+        assert result[0].tool == "fetch"
+        assert result[0].args == {"q": "one"}
+        assert result[1].tool == "submit"
+        assert result[1].args == {"data": "two"}
+
+    def test_unknown_tool_ignored(self) -> None:
+        text = "<function=unknown_tool><parameter=x>1</parameter></function>"
+        result = rescue_tool_call(text, ["fetch", "submit"])
+        assert result == []
+
+    def test_mixed_with_thinking(self) -> None:
+        text = (
+            "<think>I should call fetch here</think>\n"
+            "<function=fetch><parameter=query>weather</parameter></function>"
+        )
+        result = rescue_tool_call(text, ["fetch", "submit"])
+        assert len(result) == 1
+        assert result[0].tool == "fetch"
+        assert result[0].args == {"query": "weather"}
+
+    def test_malformed_unclosed_function_falls_through(self) -> None:
+        text = "<function=fetch><parameter=q>never closed"
+        result = rescue_tool_call(text, ["fetch", "submit"])
+        assert result == []
+
+    def test_json_preferred_over_qwen_xml(self) -> None:
+        """JSON extraction runs first; XML is only tried when JSON finds nothing."""
+        text = (
+            '{"tool": "fetch", "args": {"q": "json"}}\n'
+            "<function=submit><parameter=data>xml</parameter></function>"
+        )
+        result = rescue_tool_call(text, ["fetch", "submit"])
+        assert len(result) >= 1
+        assert result[0].tool == "fetch"
+        assert result[0].args == {"q": "json"}
