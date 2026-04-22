@@ -38,3 +38,4 @@ Desktop.ini
 .opencode/
 opencode-panic-*.log
 .opencode.json
+scripts/run_ablation.bat
