@@ -735,6 +735,36 @@ class TestBuildOptions:
         opts = client._build_options()
         assert opts["num_ctx"] == 8000
 
+    def test_sampling_defaults_absent_when_none(self) -> None:
+        """top_p/top_k/min_p/repeat_penalty/presence_penalty absent from options when unset."""
+        client = _make_client()
+        opts = client._build_options()
+        assert "top_p" not in opts
+        assert "top_k" not in opts
+        assert "min_p" not in opts
+        assert "repeat_penalty" not in opts
+        assert "presence_penalty" not in opts
+
+    def test_sampling_params_land_in_options(self) -> None:
+        """All sampling kwargs propagate into the options dict when set."""
+        client = OllamaClient(
+            base_url="http://test:11434",
+            model="test-model",
+            temperature=0.6,
+            top_p=0.95,
+            top_k=20,
+            min_p=0.0,
+            repeat_penalty=1.05,
+            presence_penalty=1.5,
+        )
+        opts = client._build_options()
+        assert opts["temperature"] == 0.6
+        assert opts["top_p"] == 0.95
+        assert opts["top_k"] == 20
+        assert opts["min_p"] == 0.0
+        assert opts["repeat_penalty"] == 1.05
+        assert opts["presence_penalty"] == 1.5
+
 
 # ── format_tool ──────────────────────────────────────────────────
 

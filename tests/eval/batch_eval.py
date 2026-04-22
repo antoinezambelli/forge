@@ -461,24 +461,32 @@ def _build_client(config: BatchConfig) -> Any:
 
     if config.backend == "ollama":
         from forge.clients.ollama import OllamaClient
+        from forge.clients.sampling_defaults import get_sampling_defaults
 
-        return OllamaClient(model=config.model, think=think_val)
+        return OllamaClient(
+            model=config.model, think=think_val,
+            **get_sampling_defaults(config.model),
+        )
 
     elif config.backend == "llamaserver":
         from forge.clients.llamafile import LlamafileClient
+        from forge.clients.sampling_defaults import get_sampling_defaults
 
         return LlamafileClient(
-            model=config.model, mode=config.mode, think=think_val
+            model=config.model, mode=config.mode, think=think_val,
+            **get_sampling_defaults(config.model),
         )
 
     elif config.backend == "llamafile":
         from forge.clients.llamafile import LlamafileClient
+        from forge.clients.sampling_defaults import get_sampling_defaults
 
         return LlamafileClient(
             model=config.model,
             mode=config.mode,
             think=think_val,
             base_url="http://localhost:8080/v1",
+            **get_sampling_defaults(config.model),
         )
 
     elif config.backend == "anthropic":

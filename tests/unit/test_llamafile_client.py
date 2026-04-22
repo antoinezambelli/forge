@@ -685,6 +685,71 @@ class TestResolvedMode:
         assert client.resolved_mode is None
 
 
+# ── _apply_sampling ──────────────────────────────────────────────
+
+
+class TestApplySampling:
+    """Tests that sampling kwargs land in llama-server request bodies."""
+
+    def test_sampling_absent_by_default(self) -> None:
+        """Unset sampling params don't appear in the body."""
+        client = LlamafileClient(model="test", mode="native")
+        body: dict = {}
+        client._apply_sampling(body)
+        assert body == {}
+
+    def test_sampling_params_populate_body(self) -> None:
+        """All sampling kwargs land as top-level body fields when set."""
+        client = LlamafileClient(
+            model="test",
+            mode="native",
+            top_p=0.95,
+            top_k=20,
+            min_p=0.0,
+            repeat_penalty=1.05,
+            presence_penalty=1.5,
+        )
+        body: dict = {}
+        client._apply_sampling(body)
+        assert body == {
+            "top_p": 0.95,
+            "top_k": 20,
+            "min_p": 0.0,
+            "repeat_penalty": 1.05,
+            "presence_penalty": 1.5,
+        }
+
+    @pytest.mark.asyncio
+    async def test_native_send_includes_sampling(self) -> None:
+        """_send_native request body includes sampling params."""
+        client = _make_client(mode="native")
+        client.top_p = 0.95
+        client.top_k = 20
+        client.min_p = 0.0
+        client.repeat_penalty = 1.05
+        client._http.post = AsyncMock(return_value=_mock_response({
+            "choices": [{"message": {"content": "hi"}}],
+        }))
+        await client._send_native([{"role": "user", "content": "hi"}], None)
+        sent_body = client._http.post.call_args.kwargs["json"]
+        assert sent_body["top_p"] == 0.95
+        assert sent_body["top_k"] == 20
+        assert sent_body["min_p"] == 0.0
+        assert sent_body["repeat_penalty"] == 1.05
+
+    @pytest.mark.asyncio
+    async def test_prompt_send_includes_sampling(self) -> None:
+        """_send_prompt request body includes sampling params."""
+        client = _make_client(mode="prompt")
+        client.top_p = 0.95
+        client._http.post = AsyncMock(return_value=_mock_response({
+            "choices": [{"message": {"content": "hi"}}],
+        }))
+        await client._send_prompt([{"role": "user", "content": "hi"}], None)
+        sent_body = client._http.post.call_args.kwargs["json"]
+        assert sent_body["top_p"] == 0.95
+
+
 # ── _merge_consecutive ────────────────────────────────────────────
 
 

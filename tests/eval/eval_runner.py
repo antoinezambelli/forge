@@ -553,20 +553,26 @@ async def main() -> None:
     url_kw: dict = {"base_url": args.base_url} if args.base_url else {}
     if args.backend == "ollama":
         from forge.clients.ollama import OllamaClient
+        from forge.clients.sampling_defaults import get_sampling_defaults
 
         think_val = {"true": True, "false": False, "auto": None}[args.think]
-        client: LLMClient = OllamaClient(model=args.model, think=think_val, **url_kw)
+        client: LLMClient = OllamaClient(
+            model=args.model, think=think_val, **url_kw,
+            **get_sampling_defaults(args.model),
+        )
     elif args.backend == "anthropic":
         from forge.clients.anthropic import AnthropicClient
 
         client = AnthropicClient(model=args.model, tool_choice=args.tool_choice)
     else:
         from forge.clients.llamafile import LlamafileClient
+        from forge.clients.sampling_defaults import get_sampling_defaults
 
         think_val = {"true": True, "false": False, "auto": None}[args.think]
         client = LlamafileClient(
             model=args.model, mode=args.llamafile_mode, think=think_val,
-            cache_prompt=not args.no_cache_prompt, **url_kw
+            cache_prompt=not args.no_cache_prompt, **url_kw,
+            **get_sampling_defaults(args.model),
         )
 
     # Resolve budget — Anthropic has 200K context, no server needed

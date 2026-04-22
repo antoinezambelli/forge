@@ -129,6 +129,11 @@ class LlamafileClient:
         model: str,
         base_url: str = "http://localhost:8080/v1",
         temperature: float = 0.7,
+        top_p: float | None = None,
+        top_k: int | None = None,
+        min_p: float | None = None,
+        repeat_penalty: float | None = None,
+        presence_penalty: float | None = None,
         mode: str = "auto",
         timeout: float = 300.0,
         think: bool | None = None,
@@ -138,6 +143,11 @@ class LlamafileClient:
         self.base_url = base_url
         self.model = model
         self.temperature = temperature
+        self.top_p = top_p
+        self.top_k = top_k
+        self.min_p = min_p
+        self.repeat_penalty = repeat_penalty
+        self.presence_penalty = presence_penalty
         self.mode = mode
         self._http = httpx.AsyncClient(timeout=timeout)
         self._think: bool = think if think is not None else True  # auto = capture
@@ -155,6 +165,24 @@ class LlamafileClient:
         """Inject slot_id into a request body if configured."""
         if self._slot_id is not None:
             body["slot_id"] = self._slot_id
+
+    def _apply_sampling(self, body: dict[str, Any]) -> None:
+        """Inject optional sampling params into a request body.
+
+        llama-server accepts top_p/top_k/min_p/repeat_penalty as top-level
+        OpenAI-compatible body fields. None = don't send, backend default
+        applies.
+        """
+        if self.top_p is not None:
+            body["top_p"] = self.top_p
+        if self.top_k is not None:
+            body["top_k"] = self.top_k
+        if self.min_p is not None:
+            body["min_p"] = self.min_p
+        if self.repeat_penalty is not None:
+            body["repeat_penalty"] = self.repeat_penalty
+        if self.presence_penalty is not None:
+            body["presence_penalty"] = self.presence_penalty
 
     def _record_usage(self, data: dict[str, Any]) -> None:
         """Extract usage from a response and store it keyed by slot ID."""
@@ -226,6 +254,7 @@ class LlamafileClient:
             "cache_prompt": self._cache_prompt,
         }
         self._apply_slot_id(body)
+        self._apply_sampling(body)
 
         if mode == "native":
             prepared = _merge_consecutive(messages)
@@ -405,6 +434,7 @@ class LlamafileClient:
             "cache_prompt": self._cache_prompt,
         }
         self._apply_slot_id(body)
+        self._apply_sampling(body)
         if tools:
             body["tools"] = [format_tool(t) for t in tools]
 
@@ -470,6 +500,7 @@ class LlamafileClient:
             "cache_prompt": self._cache_prompt,
         }
         self._apply_slot_id(body)
+        self._apply_sampling(body)
 
         resp = await self._http.post(
             f"{self.base_url}/chat/completions", json=body
