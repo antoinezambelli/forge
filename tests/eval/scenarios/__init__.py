@@ -6,6 +6,7 @@ from ._model_quality import (
     argument_fidelity,
     conditional_routing,
     data_gap_recovery,
+    data_gap_recovery_extended,
     sequential_reasoning,
     tool_selection,
 )
@@ -20,6 +21,7 @@ from ._stateful_model_quality import (
     argument_fidelity_stateful,
     conditional_routing_stateful,
     data_gap_recovery_stateful,
+    data_gap_recovery_extended_stateful,
     sequential_reasoning_stateful,
     tool_selection_stateful,
 )
@@ -40,6 +42,7 @@ ALL_SCENARIOS: list[EvalScenario] = [
     sequential_reasoning,
     conditional_routing,
     data_gap_recovery,
+    data_gap_recovery_extended,
     relevance_detection,
     # Stateful
     basic_2step_stateful,
@@ -50,6 +53,7 @@ ALL_SCENARIOS: list[EvalScenario] = [
     sequential_reasoning_stateful,
     conditional_routing_stateful,
     data_gap_recovery_stateful,
+    data_gap_recovery_extended_stateful,
     relevance_detection_stateful,
     # Compaction chain
     compaction_chain_baseline,
@@ -70,6 +74,7 @@ __all__ = [
     "sequential_reasoning",
     "conditional_routing",
     "data_gap_recovery",
+    "data_gap_recovery_extended",
     "relevance_detection",
     "basic_2step_stateful",
     "sequential_3step_stateful",
@@ -79,6 +84,7 @@ __all__ = [
     "sequential_reasoning_stateful",
     "conditional_routing_stateful",
     "data_gap_recovery_stateful",
+    "data_gap_recovery_extended_stateful",
     "relevance_detection_stateful",
     "compaction_chain_baseline",
     "compaction_chain_p1",

@@ -552,3 +552,226 @@ data_gap_recovery = EvalScenario(
     tags=["model_quality", "reasoning"],
     ideal_iterations=5,
 )
+
+
+# ── Scenario 10: data_gap_recovery_extended ─────────────────────
+#
+# Extends data_gap_recovery: 5 facts to assemble (vs 3), 2-3 hop chains
+# with NO direct tool-name hints (model must discover tools by name and
+# infer routing from domain language), 2 misleading-by-name traps
+# (compensation_history, access_control), and 1 status-marker lure
+# (legacy_records — plausible-but-stale data with an embedded redirect
+# note). Plus a soft trap: security_audit returns provisioned access
+# groups (payments-prod, internal-apis) that look like a complete answer
+# but are missing the v3/v2 suffixes — the model must realize these are
+# stale and find project_assignments to get the current versions.
+# Same indirect-validation pattern as DGR — the unique markers in the
+# report (B7, payments-prod-v3, internal-apis-v2) only appear if the
+# model reached the right downstream tools.
+
+_data_gap_recovery_extended_tools: dict[str, ToolDef] = {
+    "get_employee": ToolDef(
+        spec=ToolSpec(
+            name="get_employee",
+            description="Look up an employee record by name.",
+            parameters=EmployeeNameParams,
+        ),
+        callable=lambda **kwargs: (
+            "Employee Record — Sarah Chen (ID: E-1847)\n"
+            "Department: Engineering\n"
+            "Title: Senior Backend Engineer\n"
+            "Start Date: 2019-03-15\n"
+            "Office: Building 3, Floor 2\n"
+            "Manager: David Park\n"
+            "Clearance Level: [RESTRICTED]\n"
+            "Emergency Contact: [unavailable in this record]\n"
+            "Salary Band: [PROTECTED]\n"
+            "Access Groups: [managed externally]"
+        ),
+    ),
+    "security_audit": ToolDef(
+        spec=ToolSpec(
+            name="security_audit",
+            description="Query security audit records for an employee.",
+            parameters=EmployeeIdParams,
+        ),
+        callable=lambda **kwargs: (
+            "Security Audit Record — E-1847 (Sarah Chen)\n"
+            "Clearance Level: L3 — Confidential\n"
+            "Granted: 2021-06-10\n"
+            "Sponsor: David Park (Director, Engineering)\n"
+            "Last Review: 2024-12-01 (passed, no findings)\n"
+            "Expires: 2025-12-01\n"
+            "Access Groups: payments-prod, internal-apis, staging-*"
+        ),
+    ),
+    "onboarding_records": ToolDef(
+        spec=ToolSpec(
+            name="onboarding_records",
+            description="Access HR onboarding records for an employee.",
+            parameters=EmployeeIdParams,
+        ),
+        callable=lambda **kwargs: (
+            "HR Onboarding Record — E-1847 (Sarah Chen)\n"
+            "Original Onboarding Date: 2019-03-15\n"
+            "Emergency Contact: Michael Chen (spouse) — (555) 867-5309\n"
+            "Dietary Restrictions: None\n"
+            "T-Shirt Size: M\n"
+            'Equipment Issued: MacBook Pro 16", 2x monitors'
+        ),
+    ),
+    "personnel_file": ToolDef(
+        spec=ToolSpec(
+            name="personnel_file",
+            description="Access an employee's personnel file.",
+            parameters=EmployeeIdParams,
+        ),
+        callable=lambda **kwargs: (
+            "Personnel File — E-1847 (Sarah Chen)\n"
+            "Contains: performance reviews, PTO balance.\n"
+            "Note: Compensation data is in our current pay system (migrated 2024).\n"
+            "Note: Emergency contact records are with HR onboarding (2020 migration)."
+        ),
+    ),
+    "compensation_v2": ToolDef(
+        spec=ToolSpec(
+            name="compensation_v2",
+            description="Current compensation system — salary band lookup.",
+            parameters=EmployeeIdParams,
+        ),
+        callable=lambda **kwargs: (
+            "Compensation v2 — E-1847 (Sarah Chen)\n"
+            "Salary Band: B7\n"
+            "Effective: 2024-04-01\n"
+            "Next Review: 2025-04-01"
+        ),
+    ),
+    "project_assignments": ToolDef(
+        spec=ToolSpec(
+            name="project_assignments",
+            description="Current project assignments and active access groups for an employee.",
+            parameters=EmployeeIdParams,
+        ),
+        callable=lambda **kwargs: (
+            "Project Assignments — E-1847 (Sarah Chen)\n"
+            "Active Access Groups: payments-prod-v3, internal-apis-v2, staging-test\n"
+            "Primary Project: Payments Platform Modernization\n"
+            "Secondary: Internal Tooling Sprint"
+        ),
+    ),
+    "compensation_history": ToolDef(
+        spec=ToolSpec(
+            name="compensation_history",
+            description="Look up compensation history for an employee.",
+            parameters=EmployeeIdParams,
+        ),
+        callable=lambda **kwargs: (
+            "compensation_history — DEPRECATED endpoint.\n"
+            "This service was retired in 2024. Use compensation_v2 for "
+            "current salary band data."
+        ),
+    ),
+    "access_control": ToolDef(
+        spec=ToolSpec(
+            name="access_control",
+            description="Look up access control entries for an employee.",
+            parameters=EmployeeIdParams,
+        ),
+        callable=lambda **kwargs: (
+            "access_control — DEPRECATED endpoint.\n"
+            "Replaced by project_assignments for current active access "
+            "group data. Static provisioning records remain in security_audit."
+        ),
+    ),
+    "legacy_records": ToolDef(
+        spec=ToolSpec(
+            name="legacy_records",
+            description="Search legacy records archive for an employee.",
+            parameters=EmployeeIdParams,
+        ),
+        callable=lambda **kwargs: (
+            "Legacy Archive — E-1847 (Sarah Chen)\n"
+            "Source: legacy_v1 (READ-ONLY — not synced with current systems)\n"
+            "Salary Band: B5\n"
+            "Access Groups: legacy-readonly\n"
+            "Note: legacy_v1 stopped syncing after the 2024 systems migration. "
+            "For current salary band, query compensation_v2. For current access "
+            "groups, query project_assignments. Data above is provided for "
+            "historical audit only."
+        ),
+    ),
+    "compliance_check": ToolDef(
+        spec=ToolSpec(
+            name="compliance_check",
+            description="Check compliance status for an employee.",
+            parameters=EmployeeIdParams,
+        ),
+        callable=lambda **kwargs: (
+            "Compliance Status — E-1847: All mandatory trainings complete.\n"
+            "Last security awareness training: 2024-11-15.\n"
+            "No outstanding compliance items."
+        ),
+    ),
+    "hr_directory": ToolDef(
+        spec=ToolSpec(
+            name="hr_directory",
+            description="Look up an employee in the HR directory.",
+            parameters=EmployeeNameParams,
+        ),
+        callable=lambda **kwargs: (
+            "HR Directory Entry — Sarah Chen\n"
+            "Department: Engineering | Reports to: David Park\n"
+            "Office: Building 3, Floor 2 | Extension: x4481\n"
+            "Status: Active | Full-time"
+        ),
+    ),
+    "submit_report": ToolDef(
+        spec=ToolSpec(
+            name="submit_report",
+            description="Submit a completed employee profile report.",
+            parameters=SubmitReportParams,
+        ),
+        callable=lambda **kwargs: f"Report submitted for {kwargs.get('employee_name', '')}.",
+    ),
+}
+
+
+def _validate_data_gap_recovery_extended(args: dict[str, Any]) -> bool:
+    text = f"{args.get('employee_name', '')} {args.get('report', '')}".lower()
+    has_dept      = "engineering" in text
+    has_clearance = "l3" in text or "confidential" in text
+    has_contact   = "michael" in text and ("867-5309" in text or "spouse" in text)
+    has_salary    = "b7" in text  # only in compensation_v2; "b5" is the legacy_records lure
+    has_groups    = "payments-prod-v3" in text or "internal-apis-v2" in text  # only in project_assignments
+    return has_dept and has_clearance and has_contact and has_salary and has_groups
+
+
+data_gap_recovery_extended = EvalScenario(
+    name="data_gap_recovery_extended",
+    description="Extended hint-chain — 5 facts, 2-3 hop chains, no direct hints, name-trap + status-marker + soft-trap lures.",
+    workflow=Workflow(
+        name="data_gap_recovery_extended",
+        description=(
+            "Build a complete employee profile with multi-hop data resolution "
+            "across legacy and current systems."
+        ),
+        tools=_data_gap_recovery_extended_tools,
+        required_steps=["get_employee"],
+        terminal_tool="submit_report",
+        system_prompt_template=(
+            "You are an HR systems assistant. Use the available tools to "
+            "gather the requested employee information and submit a complete "
+            "profile report. Read tool results carefully — some endpoints "
+            "redirect to newer systems."
+        ),
+    ),
+    user_message=(
+        "Pull together a complete profile for Sarah Chen — we need her "
+        "clearance level, current emergency contact, latest salary band, "
+        "and active access groups for the onboarding audit and access review."
+    ),
+    validate=_validate_data_gap_recovery_extended,
+    tags=["model_quality", "reasoning"],
+    ideal_iterations=8,
+    max_iterations=20,
+)

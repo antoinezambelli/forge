@@ -981,3 +981,309 @@ data_gap_recovery_stateful = EvalScenario(
     tags=["stateful", "model_quality", "reasoning"],
     ideal_iterations=5,
 )
+
+
+# ── Backend 9: HRRecordsSystemExtended (subclass) ───────────────
+
+
+class HRRecordsSystemExtended(HRRecordsSystem):
+    """Extends HRRecordsSystem with compensation_v2, project_assignments, and
+    deprecated/legacy endpoints used by data_gap_recovery_extended."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.compensation = {
+            "E-1847": {"name": "Sarah Chen", "band": "B7",
+                       "effective": "2024-04-01", "next_review": "2025-04-01"},
+            "E-2234": {"name": "James Liu", "band": "B4",
+                       "effective": "2024-08-01", "next_review": "2025-08-01"},
+        }
+        self.project_assignments_data = {
+            "E-1847": {
+                "name": "Sarah Chen",
+                "active_groups": "payments-prod-v3, internal-apis-v2, staging-test",
+                "primary": "Payments Platform Modernization",
+                "secondary": "Internal Tooling Sprint",
+            },
+            "E-2234": {
+                "name": "James Liu",
+                "active_groups": "marketing-tools-v2, cms-prod-v3",
+                "primary": "Brand Refresh",
+                "secondary": "Content Migration",
+            },
+        }
+        self.compensation_v2_fetched: str | None = None
+        self.project_assignments_fetched: str | None = None
+
+    def get_employee(self, name: str) -> str:
+        # Override to redact salary/access fields. No tool-name hints —
+        # model must discover the right downstream tools by name and
+        # infer routing from domain language in personnel_file.
+        key = name.strip().lower()
+        if key in self.employees:
+            e = self.employees[key]
+            self.employee_looked_up = e
+            return (
+                f"Employee Record — {name.title()} "
+                f"(ID: {e['employee_id']})\n"
+                f"Department: {e['department']}\n"
+                f"Title: {e['title']}\n"
+                f"Start Date: {e['start_date']}\n"
+                f"Office: {e['office']}\n"
+                f"Manager: {e['manager']}\n"
+                f"Clearance Level: [RESTRICTED]\n"
+                f"Emergency Contact: [unavailable in this record]\n"
+                f"Salary Band: [PROTECTED]\n"
+                f"Access Groups: [managed externally]"
+            )
+        return f"No employee found for '{name}'."
+
+    def security_audit(self, employee_id: str) -> str:
+        # Override to drop the project_assignments redirect — the
+        # provisioned access groups now look like a complete answer
+        # (soft trap; missing -v3/-v2 suffixes the validator wants).
+        eid = employee_id.strip()
+        if eid in self.security:
+            s = self.security[eid]
+            self.security_fetched = eid
+            return (
+                f"Security Audit Record — {eid} ({s['name']})\n"
+                f"Clearance Level: {s['clearance']}\n"
+                f"Granted: {s['granted']}\n"
+                f"Sponsor: {s['sponsor']}\n"
+                f"Last Review: {s['last_review']}\n"
+                f"Expires: {s['expires']}\n"
+                f"Access Groups: {s['access_groups']}"
+            )
+        return f"No security audit record for '{employee_id}'."
+
+    def personnel_file(self, employee_id: str) -> str:
+        # Override to use domain language only (no explicit tool names).
+        # Model must infer compensation_v2 vs compensation_history from
+        # "current pay system" and find onboarding_records by name.
+        eid = employee_id.strip()
+        if eid not in {"E-1847", "E-2234"}:
+            return f"No personnel file for '{employee_id}'."
+        return (
+            f"Personnel File — {eid}\n"
+            f"Contains: performance reviews, PTO balance.\n"
+            f"Note: Compensation data is in our current pay system "
+            f"(migrated 2024).\n"
+            f"Note: Emergency contact records are with HR onboarding "
+            f"(2020 migration)."
+        )
+
+    def compensation_v2(self, employee_id: str) -> str:
+        eid = employee_id.strip()
+        if eid in self.compensation:
+            c = self.compensation[eid]
+            self.compensation_v2_fetched = eid
+            return (
+                f"Compensation v2 — {eid} ({c['name']})\n"
+                f"Salary Band: {c['band']}\n"
+                f"Effective: {c['effective']}\n"
+                f"Next Review: {c['next_review']}"
+            )
+        return f"No compensation_v2 record for '{employee_id}'."
+
+    def project_assignments(self, employee_id: str) -> str:
+        eid = employee_id.strip()
+        if eid in self.project_assignments_data:
+            p = self.project_assignments_data[eid]
+            self.project_assignments_fetched = eid
+            return (
+                f"Project Assignments — {eid} ({p['name']})\n"
+                f"Active Access Groups: {p['active_groups']}\n"
+                f"Primary Project: {p['primary']}\n"
+                f"Secondary: {p['secondary']}"
+            )
+        return f"No project assignments for '{employee_id}'."
+
+    def compensation_history(self, employee_id: str) -> str:
+        return (
+            "compensation_history — DEPRECATED endpoint.\n"
+            "This service was retired in 2024. Use compensation_v2 for "
+            "current salary band data."
+        )
+
+    def access_control(self, employee_id: str) -> str:
+        return (
+            "access_control — DEPRECATED endpoint.\n"
+            "Replaced by project_assignments for current active access "
+            "group data. Static provisioning records remain in security_audit."
+        )
+
+    def legacy_records(self, employee_id: str) -> str:
+        eid = employee_id.strip()
+        if eid not in {"E-1847", "E-2234"}:
+            return f"No legacy archive for '{employee_id}'."
+        # Plausible-but-stale data with embedded redirect note.
+        return (
+            f"Legacy Archive — {eid}\n"
+            f"Source: legacy_v1 (READ-ONLY — not synced with current "
+            f"systems)\n"
+            f"Salary Band: B5\n"
+            f"Access Groups: legacy-readonly\n"
+            f"Note: legacy_v1 stopped syncing after the 2024 systems "
+            f"migration. For current salary band, query "
+            f"compensation_v2. For current access groups, query "
+            f"project_assignments. Data above is provided for "
+            f"historical audit only."
+        )
+
+
+def _validate_data_gap_recovery_extended_stateful(
+    args: dict[str, Any],
+) -> bool:
+    text = f"{args.get('employee_name', '')} {args.get('report', '')}".lower()
+    has_dept      = "engineering" in text
+    has_clearance = "l3" in text or "confidential" in text
+    has_contact   = "michael" in text and ("867-5309" in text or "spouse" in text)
+    has_salary    = "b7" in text
+    has_groups    = "payments-prod-v3" in text or "internal-apis-v2" in text
+    return has_dept and has_clearance and has_contact and has_salary and has_groups
+
+
+def _build_data_gap_recovery_extended_stateful() -> tuple[Workflow, callable]:
+    db = HRRecordsSystemExtended()
+    tools: dict[str, ToolDef] = {
+        "get_employee": ToolDef(
+            spec=ToolSpec(
+                name="get_employee",
+                description="Look up an employee record by name.",
+                parameters=EmployeeNameParams,
+            ),
+            callable=lambda **kw: db.get_employee(kw["name"]),
+        ),
+        "security_audit": ToolDef(
+            spec=ToolSpec(
+                name="security_audit",
+                description="Query security audit records for an employee.",
+                parameters=EmployeeIdParams,
+            ),
+            callable=lambda **kw: db.security_audit(kw["employee_id"]),
+        ),
+        "onboarding_records": ToolDef(
+            spec=ToolSpec(
+                name="onboarding_records",
+                description="Access HR onboarding records for an employee.",
+                parameters=EmployeeIdParams,
+            ),
+            callable=lambda **kw: db.onboarding_records(kw["employee_id"]),
+        ),
+        "personnel_file": ToolDef(
+            spec=ToolSpec(
+                name="personnel_file",
+                description="Access an employee's personnel file.",
+                parameters=EmployeeIdParams,
+            ),
+            callable=lambda **kw: db.personnel_file(kw["employee_id"]),
+        ),
+        "compensation_v2": ToolDef(
+            spec=ToolSpec(
+                name="compensation_v2",
+                description="Current compensation system — salary band lookup.",
+                parameters=EmployeeIdParams,
+            ),
+            callable=lambda **kw: db.compensation_v2(kw["employee_id"]),
+        ),
+        "project_assignments": ToolDef(
+            spec=ToolSpec(
+                name="project_assignments",
+                description="Current project assignments and active access groups for an employee.",
+                parameters=EmployeeIdParams,
+            ),
+            callable=lambda **kw: db.project_assignments(kw["employee_id"]),
+        ),
+        "compensation_history": ToolDef(
+            spec=ToolSpec(
+                name="compensation_history",
+                description="Look up compensation history for an employee.",
+                parameters=EmployeeIdParams,
+            ),
+            callable=lambda **kw: db.compensation_history(kw["employee_id"]),
+        ),
+        "access_control": ToolDef(
+            spec=ToolSpec(
+                name="access_control",
+                description="Look up access control entries for an employee.",
+                parameters=EmployeeIdParams,
+            ),
+            callable=lambda **kw: db.access_control(kw["employee_id"]),
+        ),
+        "legacy_records": ToolDef(
+            spec=ToolSpec(
+                name="legacy_records",
+                description="Search legacy records archive for an employee.",
+                parameters=EmployeeIdParams,
+            ),
+            callable=lambda **kw: db.legacy_records(kw["employee_id"]),
+        ),
+        "compliance_check": ToolDef(
+            spec=ToolSpec(
+                name="compliance_check",
+                description="Check compliance status for an employee.",
+                parameters=EmployeeIdParams,
+            ),
+            callable=lambda **kw: db.compliance_check(kw["employee_id"]),
+        ),
+        "hr_directory": ToolDef(
+            spec=ToolSpec(
+                name="hr_directory",
+                description="Look up an employee in the HR directory.",
+                parameters=EmployeeNameParams,
+            ),
+            callable=lambda **kw: db.hr_directory(kw["name"]),
+        ),
+        "submit_report": ToolDef(
+            spec=ToolSpec(
+                name="submit_report",
+                description="Submit a completed employee profile report.",
+                parameters=SubmitReportParams,
+            ),
+            callable=lambda **kw: db.submit_report(kw.get("employee_name", ""), kw.get("report", "")),
+        ),
+    }
+    workflow = Workflow(
+        name="data_gap_recovery_extended_stateful",
+        description=(
+            "Build a complete employee profile with multi-hop data resolution "
+            "across legacy and current systems."
+        ),
+        tools=tools,
+        required_steps=["get_employee"],
+        terminal_tool="submit_report",
+        system_prompt_template=(
+            "You are an HR systems assistant. Use the available tools to "
+            "gather the requested employee information and submit a complete "
+            "profile report. Read tool results carefully — some endpoints "
+            "redirect to newer systems."
+        ),
+    )
+    validate_state = lambda: (
+        db.employee_looked_up is not None
+        and db.security_fetched == "E-1847"
+        and db.onboarding_fetched == "E-1847"
+        and db.compensation_v2_fetched == "E-1847"
+        and db.project_assignments_fetched == "E-1847"
+    )
+    return workflow, validate_state
+
+
+data_gap_recovery_extended_stateful = EvalScenario(
+    name="data_gap_recovery_extended_stateful",
+    description="Stateful extended hint-chain — 5 facts, 2-3 hop chains, no direct hints, name-trap + status-marker + soft-trap lures.",
+    workflow=_placeholder_workflow(
+        "data_gap_recovery_extended_stateful", "submit_report", ["get_employee"],
+    ),
+    user_message=(
+        "Pull together a complete profile for Sarah Chen — we need her "
+        "clearance level, current emergency contact, latest salary band, "
+        "and active access groups for the onboarding audit and access review."
+    ),
+    validate=_validate_data_gap_recovery_extended_stateful,
+    build_workflow=_build_data_gap_recovery_extended_stateful,
+    tags=["stateful", "model_quality", "reasoning"],
+    ideal_iterations=8,
+    max_iterations=20,
+)
