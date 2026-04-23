@@ -150,6 +150,8 @@ client = LlamafileClient(
 
 | Model | temp | top_p | top_k | min_p | repeat_penalty | presence_penalty | Source |
 |---|---|---|---|---|---|---|---|
+| `qwen3:4b-instruct-2507-q4_K_M` | 0.7 | 0.8 | 20 | 0.0 | — | — | [Qwen3-4B-Instruct-2507](https://huggingface.co/Qwen/Qwen3-4B-Instruct-2507) |
+| `qwen3:4b-thinking-2507-q4_K_M` | 0.6 | 0.95 | 20 | 0.0 | — | — | [Qwen3-4B-Thinking-2507](https://huggingface.co/Qwen/Qwen3-4B-Thinking-2507) |
 | `qwen3:8b-q4_K_M` | 0.6 | 0.95 | 20 | 0.0 | — | — | [Qwen3-8B](https://huggingface.co/Qwen/Qwen3-8B) |
 | `qwen3:8b-q8_0` | 0.6 | 0.95 | 20 | 0.0 | — | — | [Qwen3-8B](https://huggingface.co/Qwen/Qwen3-8B) |
 | `qwen3:14b-q4_K_M` | 0.6 | 0.95 | 20 | 0.0 | — | — | [Qwen3-14B](https://huggingface.co/Qwen/Qwen3-14B) |

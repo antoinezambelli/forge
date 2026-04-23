@@ -29,6 +29,8 @@ _WARNED_UNKNOWN: set[str] = set()
 MODEL_SAMPLING_DEFAULTS: dict[str, dict[str, float | int]] = {
     # Qwen3 — thinking-mode values (card also lists non-thinking variant; forge
     # runs these in thinking mode by default via --reasoning-format auto).
+    "qwen3:4b-instruct-2507-q4_K_M":      {"temperature": 0.7, "top_p": 0.8,  "top_k": 20, "min_p": 0.0},                                                  # https://huggingface.co/Qwen/Qwen3-4B-Instruct-2507
+    "qwen3:4b-thinking-2507-q4_K_M":      {"temperature": 0.6, "top_p": 0.95, "top_k": 20, "min_p": 0.0},                                                  # https://huggingface.co/Qwen/Qwen3-4B-Thinking-2507
     "qwen3:8b-q4_K_M":                    {"temperature": 0.6, "top_p": 0.95, "top_k": 20, "min_p": 0.0},                                                  # https://huggingface.co/Qwen/Qwen3-8B
     "qwen3:8b-q8_0":                      {"temperature": 0.6, "top_p": 0.95, "top_k": 20, "min_p": 0.0},                                                  # https://huggingface.co/Qwen/Qwen3-8B
     "qwen3:14b-q4_K_M":                   {"temperature": 0.6, "top_p": 0.95, "top_k": 20, "min_p": 0.0},                                                  # https://huggingface.co/Qwen/Qwen3-14B
