@@ -5,6 +5,8 @@ tracking for `validate_state` checks.
 
 from __future__ import annotations
 
+import re
+from collections.abc import Callable
 from typing import Any
 
 from pydantic import BaseModel, Field
@@ -642,4 +644,342 @@ argument_transformation_stateful = EvalScenario(
     tags=["stateful", "advanced_reasoning", "reasoning", "model_quality"],
     ideal_iterations=5,
     max_iterations=15,
+)
+
+
+# ── Backend: LegacyAPISystem ────────────────────────────────────
+
+
+class PageParams(BaseModel):
+    page: int = Field(description="Page number")
+    page_size: int = Field(description="Records per page")
+
+class AccountIdParams(BaseModel):
+    account_id: str = Field(description="Account identifier")
+
+class TransactionRangeParams(BaseModel):
+    account_id: str = Field(description="Account identifier")
+    since: str = Field(description="Range start")
+    until: str = Field(description="Range end")
+
+class CategorizeSpendParams(BaseModel):
+    txn_id: int = Field(description="Transaction identifier")
+    category: str = Field(description="Spend category")
+
+class ComplianceCheckParams(BaseModel):
+    region: str = Field(description="Region")
+    period: str = Field(description="Reporting period")
+
+class AggregateSubtotalParams(BaseModel):
+    amounts: str = Field(description="Amounts to sum")
+
+class SubmitAuditParams(BaseModel):
+    report: str = Field(description="Audit report")
+
+
+_LEGACY_ACCOUNTS_STATEFUL = [
+    (12345, "Acme Corp"),
+    (67890, "Globex Industries"),
+    (24680, "Initech Systems"),
+]
+
+_LEGACY_BALANCES_STATEFUL = {
+    "ACC-12345": {"amount_cents": 750000, "last_txn_unix": 1696000000, "status": "ACTIVE"},
+    "ACC-67890": {"amount_cents": 320000, "last_txn_unix": 1697500000, "status": "ACTIVE"},
+    "ACC-24680": {"amount_cents": 180000, "last_txn_unix": 1698200000, "status": "FROZEN"},
+}
+
+_LEGACY_TRANSACTIONS_ACME_STATEFUL = [
+    ("TXN/00042", "2024-10-05",  500000, "services"),
+    ("TXN/00043", "2024-11-12", 1250000, "hardware"),
+    ("TXN/00044", "2024-12-08",  800000, "services"),
+]
+
+_VALID_CATEGORY_CODES_STATEFUL = {"SVCS", "HRDW", "TRVL", "MISC"}
+_ISO_DATE_RE_STATEFUL = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+_ISO_QUARTER_RE_STATEFUL = re.compile(r"^\d{4}-Q[1-4]$")
+
+
+class LegacyAPISystem:
+    """Stateful legacy-API audit backend. Tracks each tool's call shape so
+    validate_state can verify the model exercised each step with valid
+    args (i.e., recovered from any format errors) — not just guessed at
+    the final report."""
+
+    def __init__(self) -> None:
+        # State tracking
+        self.list_called: bool = False
+        self.balance_fetched_for: set[str] = set()
+        self.transactions_fetched_for: dict[str, tuple[str, str]] = {}
+        self.categorizations: list[tuple[int, str]] = []
+        self.compliance_checked_for: tuple[str, str] | None = None
+        self.subtotal_amounts: list[float] | None = None
+        self.submitted_args: dict[str, str] | None = None
+
+    def list_accounts(self, page: Any, page_size: Any) -> str:
+        if page is None or page_size is None:
+            return (
+                "ERROR: legacy_list_accounts requires 'page' and 'page_size' "
+                "(not offset/limit)."
+            )
+        try:
+            p = int(page)
+            ps = int(page_size)
+        except (TypeError, ValueError):
+            return "ERROR: page and page_size must be integers."
+        if p < 1 or ps < 1:
+            return "ERROR: page and page_size must be >= 1."
+        self.list_called = True
+        n = len(_LEGACY_ACCOUNTS_STATEFUL)
+        lines = [f"Page {p} of 1 ({n} of {n} accounts):"]
+        for acc_id, name in _LEGACY_ACCOUNTS_STATEFUL:
+            lines.append(f"  - id: {acc_id} | name: {name}")
+        return "\n".join(lines)
+
+    def get_balance(self, account_id: str) -> str:
+        aid = str(account_id).strip()
+        if not aid.startswith("ACC-"):
+            return (
+                f"ERROR: account_id '{aid}' must include the 'ACC-' prefix "
+                "(e.g. 'ACC-12345')."
+            )
+        if aid not in _LEGACY_BALANCES_STATEFUL:
+            return f"ERROR: account '{aid}' not found in balance system."
+        self.balance_fetched_for.add(aid)
+        b = _LEGACY_BALANCES_STATEFUL[aid]
+        return (
+            f"Balance for {aid}: amount={b['amount_cents']} (cents); "
+            f"last_txn={b['last_txn_unix']} (unix); status={b['status']}"
+        )
+
+    def get_transactions(self, account_id: str, since: str, until: str) -> str:
+        aid = str(account_id).strip()
+        s = str(since).strip()
+        u = str(until).strip()
+        if not aid.startswith("ACC-"):
+            return (
+                f"ERROR: account_id '{aid}' must include the 'ACC-' prefix "
+                "(e.g. 'ACC-12345')."
+            )
+        if not _ISO_DATE_RE_STATEFUL.match(s) or not _ISO_DATE_RE_STATEFUL.match(u):
+            return (
+                f"ERROR: since/until must be ISO date format YYYY-MM-DD "
+                f"(got since='{s}', until='{u}'). Unix timestamps are not "
+                "accepted here."
+            )
+        self.transactions_fetched_for[aid] = (s, u)
+        if aid != "ACC-12345":
+            return f"No transactions on file for {aid} between {s} and {u}."
+        lines = [f"Transactions for {aid} ({s} to {u}):"]
+        for tid, date, amount_cents, category in _LEGACY_TRANSACTIONS_ACME_STATEFUL:
+            lines.append(
+                f"  {tid} | {date} | amount: {amount_cents} (cents) | "
+                f"category: {category}"
+            )
+        return "\n".join(lines)
+
+    def categorize_spend(self, txn_id: Any, category: str) -> str:
+        cat = str(category).strip()
+        if isinstance(txn_id, str) and not txn_id.isdigit():
+            return (
+                f"ERROR: txn_id '{txn_id}' must be the numeric component as "
+                "int (for 'TXN/00042' pass 42, not the full string)."
+            )
+        try:
+            tid = int(txn_id)
+        except (TypeError, ValueError):
+            return (
+                "ERROR: txn_id must be an integer (for 'TXN/00042' pass 42)."
+            )
+        if cat not in _VALID_CATEGORY_CODES_STATEFUL:
+            return (
+                f"ERROR: category '{cat}' must be uppercase 4-letter "
+                "code: SVCS|HRDW|TRVL|MISC."
+            )
+        self.categorizations.append((tid, cat))
+        for full_tid, _date, amount_cents, _cat in _LEGACY_TRANSACTIONS_ACME_STATEFUL:
+            if full_tid == f"TXN/{tid:05d}":
+                return (
+                    f"Categorized TXN/{tid:05d} ({cat}): "
+                    f"amount={amount_cents/100:.2f} USD; bucket=GL-2400."
+                )
+        return f"Categorized txn_id={tid} ({cat}): no amount on record."
+
+    def check_compliance(self, region: str, period: str) -> str:
+        r = str(region).strip()
+        p = str(period).strip()
+        if not (len(r) == 2 and r.islower() and r.isalpha()):
+            return (
+                f"ERROR: region '{r}' must be lowercase 2-letter ISO code "
+                "(e.g. 'us', 'gb')."
+            )
+        if not _ISO_QUARTER_RE_STATEFUL.match(p):
+            return (
+                f"ERROR: period '{p}' must be ISO quarter notation YYYY-QN "
+                "(e.g. '2024-Q4')."
+            )
+        self.compliance_checked_for = (r, p)
+        return (
+            f"Compliance status for region={r}, period={p}: PASS "
+            "(3 checks: AML/KYC/SOX); flagged_count=0."
+        )
+
+    def aggregate_subtotal(self, amounts: str) -> str:
+        s = str(amounts).strip()
+        if not s:
+            return "ERROR: amounts is empty."
+        if "|" not in s:
+            return (
+                f"ERROR: amounts '{s}' must be pipe-separated decimal dollars "
+                "(e.g. '1000.00|2500.00'). Lists, comma/space-separated values, "
+                "and cent values are not accepted."
+            )
+        parts = [x.strip() for x in s.split("|") if x.strip()]
+        try:
+            nums = [float(x) for x in parts]
+        except ValueError:
+            return (
+                f"ERROR: amounts '{s}' contains non-numeric values; expected "
+                "decimal dollars."
+            )
+        self.subtotal_amounts = nums
+        total = sum(nums)
+        return f"Subtotal: {total:.2f} USD ({len(nums)} amounts processed)."
+
+    def submit_audit(self, report: str) -> str:
+        s = str(report).strip()
+        self.submitted_args = {"report": s}
+        return f"Audit submitted. Report: {s}"
+
+
+_INCAPI_REQUIRED_TOKENS_STATEFUL = ("25500", "pass", "txn_count")
+
+
+def _validate_inconsistent_api_recovery_stateful(args: dict[str, Any]) -> bool:
+    text = str(args.get("report", "")).lower().replace(",", "")
+    return all(tok in text for tok in _INCAPI_REQUIRED_TOKENS_STATEFUL)
+
+
+def _build_inconsistent_api_recovery_stateful() -> tuple[Workflow, Callable[[], bool]]:
+    db = LegacyAPISystem()
+    tools: dict[str, ToolDef] = {
+        "legacy_list_accounts": ToolDef(
+            spec=ToolSpec(
+                name="legacy_list_accounts",
+                description="List available accounts.",
+                parameters=PageParams,
+            ),
+            callable=lambda **kw: db.list_accounts(kw.get("page"), kw.get("page_size")),
+        ),
+        "legacy_get_balance": ToolDef(
+            spec=ToolSpec(
+                name="legacy_get_balance",
+                description="Get the current balance for an account.",
+                parameters=AccountIdParams,
+            ),
+            callable=lambda **kw: db.get_balance(kw.get("account_id", "")),
+        ),
+        "legacy_get_transactions": ToolDef(
+            spec=ToolSpec(
+                name="legacy_get_transactions",
+                description="List transactions for an account over a date range.",
+                parameters=TransactionRangeParams,
+            ),
+            callable=lambda **kw: db.get_transactions(
+                kw.get("account_id", ""), kw.get("since", ""), kw.get("until", ""),
+            ),
+        ),
+        "legacy_categorize_spend": ToolDef(
+            spec=ToolSpec(
+                name="legacy_categorize_spend",
+                description="Assign a spend category to a transaction.",
+                parameters=CategorizeSpendParams,
+            ),
+            callable=lambda **kw: db.categorize_spend(
+                kw.get("txn_id"), kw.get("category", ""),
+            ),
+        ),
+        "legacy_check_compliance": ToolDef(
+            spec=ToolSpec(
+                name="legacy_check_compliance",
+                description="Run a regional compliance check for a reporting period.",
+                parameters=ComplianceCheckParams,
+            ),
+            callable=lambda **kw: db.check_compliance(
+                kw.get("region", ""), kw.get("period", ""),
+            ),
+        ),
+        "legacy_aggregate_subtotal": ToolDef(
+            spec=ToolSpec(
+                name="legacy_aggregate_subtotal",
+                description="Compute the subtotal of a set of amounts.",
+                parameters=AggregateSubtotalParams,
+            ),
+            callable=lambda **kw: db.aggregate_subtotal(kw.get("amounts", "")),
+        ),
+        "legacy_submit_audit": ToolDef(
+            spec=ToolSpec(
+                name="legacy_submit_audit",
+                description="Submit the final compliance audit report.",
+                parameters=SubmitAuditParams,
+            ),
+            callable=lambda **kw: db.submit_audit(kw.get("report", "")),
+        ),
+    }
+    workflow = Workflow(
+        name="inconsistent_api_recovery_stateful",
+        description=(
+            "Run a Q4 2024 compliance audit on a legacy account by chaining "
+            "seven inconsistently-designed APIs."
+        ),
+        tools=tools,
+        required_steps=["legacy_list_accounts"],
+        terminal_tool="legacy_submit_audit",
+        system_prompt_template=(
+            "You are a compliance audit assistant. Use the available "
+            "tools to complete the requested audit."
+        ),
+    )
+    # State validator: every tool was exercised with valid args for the
+    # canonical audit path (ACC-12345, Q4 2024, US compliance), and the
+    # final report content is correct.
+    validate_state = lambda: (
+        db.list_called
+        and "ACC-12345" in db.balance_fetched_for
+        and "ACC-12345" in db.transactions_fetched_for
+        and any(tid in (42, 43, 44) for tid, _ in db.categorizations)
+        and db.compliance_checked_for == ("us", "2024-Q4")
+        and db.subtotal_amounts is not None
+        and abs(sum(db.subtotal_amounts) - 25500.00) < 0.01
+        and db.submitted_args is not None
+        and _validate_inconsistent_api_recovery_stateful(db.submitted_args)
+    )
+    return workflow, validate_state
+
+
+inconsistent_api_recovery_stateful = EvalScenario(
+    name="inconsistent_api_recovery_stateful",
+    description=(
+        "Stateful cascading error recovery — state tracks whether each of "
+        "the seven inconsistent legacy APIs was called with valid args, "
+        "and that the canonical subtotal was computed and submitted."
+    ),
+    workflow=_placeholder_workflow(
+        "inconsistent_api_recovery_stateful", "legacy_submit_audit",
+        ["legacy_list_accounts"],
+    ),
+    user_message=(
+        "Run a Q4 2024 (Oct 1 - Dec 31) compliance audit on Acme Corp "
+        "(account ACC-12345). Pull the account balance and Q4 transactions, "
+        "categorize at least one transaction, run a US-region compliance "
+        "check for the period, calculate the subtotal of all transaction "
+        "amounts in USD, and submit the audit report with keys: "
+        "flagged_count (int), total_usd (str), compliance_status (str), "
+        "txn_count (int)."
+    ),
+    validate=_validate_inconsistent_api_recovery_stateful,
+    build_workflow=_build_inconsistent_api_recovery_stateful,
+    tags=["stateful", "advanced_reasoning", "reasoning", "error_recovery"],
+    ideal_iterations=8,
+    max_iterations=20,
 )

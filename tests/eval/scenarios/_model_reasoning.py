@@ -9,6 +9,7 @@ model derived the right intermediates).
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from pydantic import BaseModel, Field
@@ -556,4 +557,331 @@ argument_transformation = EvalScenario(
     tags=["advanced_reasoning", "reasoning", "model_quality"],
     ideal_iterations=5,
     max_iterations=15,
+)
+
+
+# ── Scenario: inconsistent_api_recovery ─────────────────────────
+#
+# Tests cascading error recovery across heterogeneously-designed legacy
+# APIs. Each tool violates a different convention dimension (ID format,
+# date format, units, casing, separator, encoding) — so the recovery
+# lesson from one tool is wrong for the next. Designed for the
+# guardrails-vs-bare ablation: bare runs hit the first error and
+# cascade; reforged runs use retry nudges to recover at each step.
+#
+# Convention violations across the chain (no transferable lesson):
+#  Step 1 list_accounts:       page/page_size pagination; int IDs
+#  Step 2 get_balance:         ACC-prefixed string IDs (not int from #1);
+#                              returns cents + Unix timestamps
+#  Step 3 get_transactions:    ISO date strings (not the Unix ts from #2);
+#                              returns TXN/NNNNN string IDs
+#  Step 4 categorize_spend:    int txn_id (extract from "TXN/00042");
+#                              UPPERCASE 4-letter category code
+#  Step 5 check_compliance:    LOWERCASE 2-letter region (case flips
+#                              from #4); ISO quarter notation "2024-Q4"
+#  Step 6 aggregate_subtotal:  pipe-separated decimal dollars (not list,
+#                              not cents — units flip back from #2)
+#  Step 7 submit_audit:        JSON-encoded string (not natural dict)
+
+
+class PageParams(BaseModel):
+    page: int = Field(description="Page number")
+    page_size: int = Field(description="Records per page")
+
+
+class AccountIdParams(BaseModel):
+    account_id: str = Field(description="Account identifier")
+
+
+class TransactionRangeParams(BaseModel):
+    account_id: str = Field(description="Account identifier")
+    since: str = Field(description="Range start")
+    until: str = Field(description="Range end")
+
+
+class CategorizeSpendParams(BaseModel):
+    txn_id: int = Field(description="Transaction identifier")
+    category: str = Field(description="Spend category")
+
+
+class ComplianceCheckParams(BaseModel):
+    region: str = Field(description="Region")
+    period: str = Field(description="Reporting period")
+
+
+class AggregateSubtotalParams(BaseModel):
+    amounts: str = Field(description="Amounts to sum")
+
+
+class SubmitAuditParams(BaseModel):
+    report: str = Field(description="Audit report")
+
+
+_LEGACY_ACCOUNTS = [
+    (12345, "Acme Corp"),
+    (67890, "Globex Industries"),
+    (24680, "Initech Systems"),
+]
+
+_LEGACY_BALANCES = {
+    "ACC-12345": {"amount_cents": 750000, "last_txn_unix": 1696000000, "status": "ACTIVE"},
+    "ACC-67890": {"amount_cents": 320000, "last_txn_unix": 1697500000, "status": "ACTIVE"},
+    "ACC-24680": {"amount_cents": 180000, "last_txn_unix": 1698200000, "status": "FROZEN"},
+}
+
+_LEGACY_TRANSACTIONS_ACME = [
+    ("TXN/00042", "2024-10-05",  500000, "services"),
+    ("TXN/00043", "2024-11-12", 1250000, "hardware"),
+    ("TXN/00044", "2024-12-08",  800000, "services"),
+]
+
+_VALID_CATEGORY_CODES = {"SVCS", "HRDW", "TRVL", "MISC"}
+_ISO_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+_ISO_QUARTER_RE = re.compile(r"^\d{4}-Q[1-4]$")
+
+
+def _legacy_list_accounts(**kwargs: Any) -> str:
+    page = kwargs.get("page")
+    page_size = kwargs.get("page_size")
+    if page is None or page_size is None:
+        return (
+            "ERROR: legacy_list_accounts requires 'page' and 'page_size' "
+            "(not offset/limit)."
+        )
+    try:
+        p = int(page)
+        ps = int(page_size)
+    except (TypeError, ValueError):
+        return "ERROR: page and page_size must be integers."
+    if p < 1 or ps < 1:
+        return "ERROR: page and page_size must be >= 1."
+    n = len(_LEGACY_ACCOUNTS)
+    lines = [f"Page {p} of 1 ({n} of {n} accounts):"]
+    for acc_id, name in _LEGACY_ACCOUNTS:
+        lines.append(f"  - id: {acc_id} | name: {name}")
+    return "\n".join(lines)
+
+
+def _legacy_get_balance(**kwargs: Any) -> str:
+    aid = str(kwargs.get("account_id", "")).strip()
+    if not aid.startswith("ACC-"):
+        return (
+            f"ERROR: account_id '{aid}' must include the 'ACC-' prefix "
+            "(e.g. 'ACC-12345')."
+        )
+    if aid not in _LEGACY_BALANCES:
+        return f"ERROR: account '{aid}' not found in balance system."
+    b = _LEGACY_BALANCES[aid]
+    return (
+        f"Balance for {aid}: amount={b['amount_cents']} (cents); "
+        f"last_txn={b['last_txn_unix']} (unix); status={b['status']}"
+    )
+
+
+def _legacy_get_transactions(**kwargs: Any) -> str:
+    aid = str(kwargs.get("account_id", "")).strip()
+    since = str(kwargs.get("since", "")).strip()
+    until = str(kwargs.get("until", "")).strip()
+    if not aid.startswith("ACC-"):
+        return (
+            f"ERROR: account_id '{aid}' must include the 'ACC-' prefix "
+            "(e.g. 'ACC-12345')."
+        )
+    if not _ISO_DATE_RE.match(since) or not _ISO_DATE_RE.match(until):
+        return (
+            f"ERROR: since/until must be ISO date format YYYY-MM-DD "
+            f"(got since='{since}', until='{until}'). Unix timestamps are "
+            "not accepted here."
+        )
+    if aid != "ACC-12345":
+        return f"No transactions on file for {aid} between {since} and {until}."
+    lines = [f"Transactions for {aid} ({since} to {until}):"]
+    for tid, date, amount_cents, category in _LEGACY_TRANSACTIONS_ACME:
+        lines.append(
+            f"  {tid} | {date} | amount: {amount_cents} (cents) | "
+            f"category: {category}"
+        )
+    return "\n".join(lines)
+
+
+def _legacy_categorize_spend(**kwargs: Any) -> str:
+    raw_txn = kwargs.get("txn_id")
+    cat = str(kwargs.get("category", "")).strip()
+    if isinstance(raw_txn, str) and not raw_txn.isdigit():
+        return (
+            f"ERROR: txn_id '{raw_txn}' must be the numeric component as int "
+            "(for 'TXN/00042' pass 42, not the full string)."
+        )
+    try:
+        txn_id = int(raw_txn)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return (
+            "ERROR: txn_id must be an integer (for 'TXN/00042' pass 42)."
+        )
+    if cat not in _VALID_CATEGORY_CODES:
+        return (
+            f"ERROR: category '{cat}' must be uppercase 4-letter code: "
+            "SVCS|HRDW|TRVL|MISC."
+        )
+    for tid, _date, amount_cents, _cat in _LEGACY_TRANSACTIONS_ACME:
+        if tid == f"TXN/{txn_id:05d}":
+            return (
+                f"Categorized TXN/{txn_id:05d} ({cat}): "
+                f"amount={amount_cents/100:.2f} USD; bucket=GL-2400."
+            )
+    return f"Categorized txn_id={txn_id} ({cat}): no amount on record."
+
+
+def _legacy_check_compliance(**kwargs: Any) -> str:
+    region = str(kwargs.get("region", "")).strip()
+    period = str(kwargs.get("period", "")).strip()
+    if not (len(region) == 2 and region.islower() and region.isalpha()):
+        return (
+            f"ERROR: region '{region}' must be lowercase 2-letter ISO code "
+            "(e.g. 'us', 'gb')."
+        )
+    if not _ISO_QUARTER_RE.match(period):
+        return (
+            f"ERROR: period '{period}' must be ISO quarter notation "
+            "YYYY-QN (e.g. '2024-Q4'). Dates and Unix timestamps are not "
+            "accepted here."
+        )
+    return (
+        f"Compliance status for region={region}, period={period}: PASS "
+        "(3 checks: AML/KYC/SOX); flagged_count=0."
+    )
+
+
+def _legacy_aggregate_subtotal(**kwargs: Any) -> str:
+    s = str(kwargs.get("amounts", "")).strip()
+    if not s:
+        return "ERROR: amounts is empty."
+    if "|" not in s:
+        return (
+            f"ERROR: amounts '{s}' must be pipe-separated decimal dollars "
+            "(e.g. '1000.00|2500.00'). Lists, comma/space-separated values, "
+            "and cent values are not accepted."
+        )
+    parts = [p.strip() for p in s.split("|") if p.strip()]
+    try:
+        nums = [float(p) for p in parts]
+    except ValueError:
+        return (
+            f"ERROR: amounts '{s}' contains non-numeric values; expected "
+            "decimal dollars."
+        )
+    total = sum(nums)
+    return f"Subtotal: {total:.2f} USD ({len(nums)} amounts processed)."
+
+
+def _legacy_submit_audit(**kwargs: Any) -> str:
+    s = str(kwargs.get("report", "")).strip()
+    return f"Audit submitted. Report: {s}"
+
+
+_inconsistent_api_recovery_tools: dict[str, ToolDef] = {
+    "legacy_list_accounts": ToolDef(
+        spec=ToolSpec(
+            name="legacy_list_accounts",
+            description="List available accounts.",
+            parameters=PageParams,
+        ),
+        callable=_legacy_list_accounts,
+    ),
+    "legacy_get_balance": ToolDef(
+        spec=ToolSpec(
+            name="legacy_get_balance",
+            description="Get the current balance for an account.",
+            parameters=AccountIdParams,
+        ),
+        callable=_legacy_get_balance,
+    ),
+    "legacy_get_transactions": ToolDef(
+        spec=ToolSpec(
+            name="legacy_get_transactions",
+            description="List transactions for an account over a date range.",
+            parameters=TransactionRangeParams,
+        ),
+        callable=_legacy_get_transactions,
+    ),
+    "legacy_categorize_spend": ToolDef(
+        spec=ToolSpec(
+            name="legacy_categorize_spend",
+            description="Assign a spend category to a transaction.",
+            parameters=CategorizeSpendParams,
+        ),
+        callable=_legacy_categorize_spend,
+    ),
+    "legacy_check_compliance": ToolDef(
+        spec=ToolSpec(
+            name="legacy_check_compliance",
+            description="Run a regional compliance check for a reporting period.",
+            parameters=ComplianceCheckParams,
+        ),
+        callable=_legacy_check_compliance,
+    ),
+    "legacy_aggregate_subtotal": ToolDef(
+        spec=ToolSpec(
+            name="legacy_aggregate_subtotal",
+            description="Compute the subtotal of a set of amounts.",
+            parameters=AggregateSubtotalParams,
+        ),
+        callable=_legacy_aggregate_subtotal,
+    ),
+    "legacy_submit_audit": ToolDef(
+        spec=ToolSpec(
+            name="legacy_submit_audit",
+            description="Submit the final compliance audit report.",
+            parameters=SubmitAuditParams,
+        ),
+        callable=_legacy_submit_audit,
+    ),
+}
+
+
+# Canonical answer for ACC-12345 (Acme Corp) Q4 2024:
+#   3 transactions @ $5,000 + $12,500 + $8,000 = $25,500 USD
+#   Compliance: PASS, 0 flagged
+#   txn_count: 3
+_INCAPI_REQUIRED_TOKENS = ("25500", "pass", "txn_count")
+
+
+def _validate_inconsistent_api_recovery(args: dict[str, Any]) -> bool:
+    text = str(args.get("report", "")).lower().replace(",", "")
+    return all(tok in text for tok in _INCAPI_REQUIRED_TOKENS)
+
+
+inconsistent_api_recovery = EvalScenario(
+    name="inconsistent_api_recovery",
+    description=(
+        "Cascading error recovery across legacy APIs with no transferable "
+        "convention — each tool violates a different format/encoding/units rule."
+    ),
+    workflow=Workflow(
+        name="inconsistent_api_recovery",
+        description=(
+            "Run a Q4 2024 compliance audit on a legacy account by chaining "
+            "seven inconsistently-designed APIs."
+        ),
+        tools=_inconsistent_api_recovery_tools,
+        required_steps=["legacy_list_accounts"],
+        terminal_tool="legacy_submit_audit",
+        system_prompt_template=(
+            "You are a compliance audit assistant. Use the available "
+            "tools to complete the requested audit."
+        ),
+    ),
+    user_message=(
+        "Run a Q4 2024 (Oct 1 - Dec 31) compliance audit on Acme Corp "
+        "(account ACC-12345). Pull the account balance and Q4 transactions, "
+        "categorize at least one transaction, run a US-region compliance "
+        "check for the period, calculate the subtotal of all transaction "
+        "amounts in USD, and submit the audit report with keys: "
+        "flagged_count (int), total_usd (str), compliance_status (str), "
+        "txn_count (int)."
+    ),
+    validate=_validate_inconsistent_api_recovery,
+    tags=["advanced_reasoning", "reasoning", "error_recovery"],
+    ideal_iterations=8,
+    max_iterations=20,
 )
