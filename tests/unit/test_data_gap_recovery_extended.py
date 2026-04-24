@@ -15,11 +15,11 @@ from tests.eval.scenarios import (
     data_gap_recovery_extended,
     data_gap_recovery_extended_stateful,
 )
-from tests.eval.scenarios._model_quality import (
+from tests.eval.scenarios._model_reasoning import (
     _data_gap_recovery_extended_tools,
     _validate_data_gap_recovery_extended,
 )
-from tests.eval.scenarios._stateful_model_quality import (
+from tests.eval.scenarios._stateful_model_reasoning import (
     HRRecordsSystemExtended,
     _build_data_gap_recovery_extended_stateful,
     _validate_data_gap_recovery_extended_stateful,
