@@ -983,3 +983,411 @@ inconsistent_api_recovery_stateful = EvalScenario(
     ideal_iterations=8,
     max_iterations=20,
 )
+
+
+# ── Backend: HiringDecisionSystem ───────────────────────────────
+
+
+class CandidateNameParams(BaseModel):
+    candidate_name: str = Field(description="Candidate full name")
+
+class SubmitHiringDecisionParams(BaseModel):
+    candidate: str = Field(description="Selected candidate's name")
+    rationale: str = Field(description="Brief justification for the decision")
+
+
+_GS_OPEN_ROLE_STATEFUL = (
+    "Open Role: Senior Backend Engineer, Payments Platform.\n"
+    "Requirements:\n"
+    "  - 5+ years Python production experience\n"
+    "  - Distributed systems background\n"
+    "  - Payment processing experience strongly preferred (we are "
+    "building Stripe-Connect-style merchant integrations)\n"
+    "Context: this hire is for the Q3 product launch — the team needs "
+    "the new senior IC in seat and ramped well before the launch sprint "
+    "kicks off."
+)
+
+
+_GS_CANDIDATES_STATEFUL: dict[str, dict[str, str]] = {
+    "Sarah Chen": {
+        "brief": "8y Python, ex-Stripe Senior Engineer, payments domain leader",
+        "skill_summary": (
+            "Sarah Chen — Skill Assessment\n"
+            "Years: 8 | Primary stack: Python, Go, PostgreSQL, Redis\n"
+            "Domain depth: Payments — shipped Stripe Connect's webhook "
+            "reliability layer; designed idempotency middleware for Stripe "
+            "Subscriptions\n"
+            "Technical interview: Top decile (98th percentile)\n"
+            "Portfolio: 4 production payment-routing systems\n"
+            "Mentorship: led team of 4 at Stripe; promoted 2 junior "
+            "engineers to mid-level"
+        ),
+        "compatibility": (
+            "Compatibility — Sarah Chen\n"
+            "Background check: clean. References: glowing.\n"
+            "Note from Legal: Sarah's prior employment with Stripe included "
+            "a standard payments-vertical non-compete covenant that does "
+            "not lapse until late 2026. Starting her on a payments product "
+            "before then would require Legal to negotiate a waiver with "
+            "Stripe. Based on past similar cases, that's a meaningful "
+            "project of its own — drawn-out, with no guarantee of success. "
+            "Alternatively, she could start in a non-payments role "
+            "(infrastructure or platform) where the covenant does not "
+            "apply.\n"
+            "Compensation expectation: senior band, market-competitive."
+        ),
+        "team_dynamics": (
+            "Team Dynamics — Sarah Chen + Payments Platform team\n"
+            "Existing team has a notable gap in webhook reliability and "
+            "idempotency expertise (currently relying on a third-party SaaS "
+            "vendor). Sarah's Stripe webhook background closes this gap "
+            "precisely. Cultural fit: very strong — peers describe her as "
+            "'the engineer you want in the room when payment edge cases "
+            "come up'. Estimated ramp: 2 weeks to first production change."
+        ),
+    },
+    "James Patel": {
+        "brief": "9y Python, ex-DeepMind infrastructure, distributed-systems expert",
+        "skill_summary": (
+            "James Patel — Skill Assessment\n"
+            "Years: 9 | Primary stack: Python, C++, distributed systems\n"
+            "Domain depth: ML training infrastructure — designed DeepMind's "
+            "gradient-aggregation tier; contributed to JAX runtime\n"
+            "Technical interview: Top decile (96th percentile)\n"
+            "Portfolio: 3 large-scale ML training platforms; less direct "
+            "payments experience but very strong distributed-systems "
+            "intuition\n"
+            "Mentorship: led infra team of 6 at DeepMind"
+        ),
+        "compatibility": (
+            "Compatibility — James Patel\n"
+            "Background check: clean. References: glowing.\n"
+            "Note from People Ops: James is currently on F-1 OPT; for him "
+            "to continue working past his current authorization, our "
+            "company would need to sponsor him for an H1B visa. We do "
+            "sponsor H1B in selected engineering tracks, but the Payments "
+            "Platform team has not been allocated a sponsorship slot in "
+            "this hiring cycle. Bringing James onto Payments Platform "
+            "would require petitioning the immigration committee for an "
+            "additional slot — historically a slow process with mixed "
+            "success.\n"
+            "Compensation expectation: senior band, market-competitive."
+        ),
+        "team_dynamics": (
+            "Team Dynamics — James Patel + Payments Platform team\n"
+            "The team's distributed-systems intuition is uneven; James "
+            "would lift the bar on consistency reasoning at scale. He is "
+            "distributed-systems first and payments second — about 4-6 "
+            "weeks of payments-domain learning curve. Cultural fit: very "
+            "strong — references describe him as a 'systems thinker who "
+            "lifts everyone around him'."
+        ),
+    },
+    "Aisha Nakamura": {
+        "brief": "7y Python, ex-Square, payments-adjacent backend",
+        "skill_summary": (
+            "Aisha Nakamura — Skill Assessment\n"
+            "Years: 7 | Primary stack: Python, Java, MySQL, Kafka\n"
+            "Domain depth: Payments backend at Square — built reconciliation "
+            "pipeline; owned merchant-payout retries\n"
+            "Technical interview: Strong (78th percentile)\n"
+            "Portfolio: 2 payments-adjacent backend systems\n"
+            "Mentorship: tech-lead for team of 3"
+        ),
+        "compatibility": (
+            "Compatibility — Aisha Nakamura\n"
+            "Background check: clean. References: solid.\n"
+            "Note from People Ops: US citizen. No outstanding non-competes "
+            "or restrictive covenants. Standard onboarding paperwork — she "
+            "could start essentially immediately upon offer acceptance.\n"
+            "Compensation expectation: senior band, market-competitive."
+        ),
+        "team_dynamics": (
+            "Team Dynamics — Aisha Nakamura + Payments Platform team\n"
+            "Brings payments-experienced senior immediately. Reconciliation "
+            "and retry expertise from Square is directly applicable. "
+            "Cultural fit: strong — references describe her as steady and "
+            "pragmatic. Estimated ramp: 2-3 weeks."
+        ),
+    },
+    "Marcus Reyes": {
+        "brief": "5y Python, ex-Adobe Creative Cloud, generalist backend",
+        "skill_summary": (
+            "Marcus Reyes — Skill Assessment\n"
+            "Years: 5 | Primary stack: Python, JavaScript, MongoDB\n"
+            "Domain depth: Generalist backend at Adobe — built licensing "
+            "and entitlement APIs for Creative Cloud\n"
+            "Technical interview: Solid (72nd percentile)\n"
+            "Portfolio: 1 backend system at scale (Creative Cloud "
+            "entitlements); no payments background\n"
+            "Mentorship: senior IC, no formal management experience"
+        ),
+        "compatibility": (
+            "Compatibility — Marcus Reyes\n"
+            "Background check: clean. References: solid.\n"
+            "Note from People Ops: US permanent resident. No outstanding "
+            "non-competes or restrictive covenants. Adobe IP-assignment "
+            "standard release on file. He could start essentially "
+            "immediately upon offer acceptance.\n"
+            "Compensation expectation: senior band, market-competitive."
+        ),
+        "team_dynamics": (
+            "Team Dynamics — Marcus Reyes + Payments Platform team\n"
+            "Adds a generalist senior. Payments domain learning curve is "
+            "significant — Adobe licensing and entitlement is structurally "
+            "different from payment processing. Cultural fit: strong — "
+            "references describe him as adaptable and curious. Estimated "
+            "ramp: 8-12 weeks (substantial payments-domain learning)."
+        ),
+    },
+    "Diana Kim": {
+        "brief": "10y Python, ex-Stripe Principal Engineer, payments domain expert",
+        "skill_summary": (
+            "Diana Kim — Skill Assessment\n"
+            "Years: 10 | Primary stack: Python, Go, PostgreSQL, gRPC\n"
+            "Domain depth: Payments — Principal Engineer at Stripe; led "
+            "Stripe Issuing's authorization service; co-designed the "
+            "global fraud-scoring pipeline\n"
+            "Technical interview: Top decile (99th percentile)\n"
+            "Portfolio: 5 production payments systems at scale; multiple "
+            "internal-tech-blog publications\n"
+            "Mentorship: led Stripe's payments-platform reading group; "
+            "mentored 6 senior ICs"
+        ),
+        "compatibility": (
+            "Compatibility — Diana Kim\n"
+            "Background check: clean. References: glowing.\n"
+            "Note from Legal: Diana's prior employment with Stripe "
+            "predates their current non-compete policy; her offer letter "
+            "contained no restrictive covenants. US citizen. Standard "
+            "onboarding paperwork — she could start essentially "
+            "immediately upon offer acceptance.\n"
+            "Compensation expectation: principal band; she has indicated "
+            "flexibility to accept senior-band comp for the right role."
+        ),
+        "team_dynamics": (
+            "Team Dynamics — Diana Kim + Payments Platform team\n"
+            "Diana would be a strong addition technically — Stripe "
+            "Issuing experience directly applies to our roadmap. However, "
+            "in initial conversations she made clear that what she is "
+            "primarily looking for in her next move is a step into a "
+            "tech-lead or engineering-management track with direct "
+            "reports — she is evaluating multiple offers, several of "
+            "which are people-management roles. The Senior Backend "
+            "Engineer position is an IC track without direct reports, "
+            "and we have no open lead positions on Payments Platform "
+            "this cycle. The recruiter's read from her conversations is "
+            "that she would take this role only if her preferred lead "
+            "offers fall through, and would likely keep an eye out for "
+            "lead opportunities elsewhere over time."
+        ),
+    },
+}
+
+
+_GS_CORRECT_CANDIDATE_TOKENS_STATEFUL = ("aisha", "nakamura")
+_GS_BLOCKER_TOKENS_STATEFUL = (
+    # Sarah: non-compete covenant with Stripe (waiver process)
+    "non-compete", "noncompete", "non compete", "covenant", "waiver",
+    # James: visa sponsorship gap
+    "visa", "sponsor", "f-1", "h1b", "h-1b", "opt", "immigration",
+    "work auth",
+    # Diana: role mismatch (looking for tech-lead/EM, this is IC)
+    "tech-lead", "tech lead", "engineering manager", "engineering management",
+    "management track", "lead role", "lead position", "lead opportunit",
+    "ic track", "ic role", "fallback", "people-management",
+)
+_GS_REJECTED_NAMES_STATEFUL = ("sarah", "chen", "james", "patel", "diana", "kim")
+
+
+def _validate_grounded_synthesis_stateful(args: dict[str, Any]) -> bool:
+    candidate = str(args.get("candidate", "")).lower()
+    rationale = str(args.get("rationale", "")).lower()
+    has_correct_pick = any(
+        tok in candidate for tok in _GS_CORRECT_CANDIDATE_TOKENS_STATEFUL
+    )
+    has_blocker_ref = any(
+        tok in rationale for tok in _GS_BLOCKER_TOKENS_STATEFUL
+    )
+    has_rejection_named = any(
+        name in rationale for name in _GS_REJECTED_NAMES_STATEFUL
+    )
+    return has_correct_pick and (has_blocker_ref or has_rejection_named)
+
+
+class HiringDecisionSystem:
+    """Stateful hiring-decision backend. Tracks which candidates the model
+    actually drilled into so validate_state can verify the model checked
+    the blocker candidates' compatibility (i.e., it had the chance to see
+    the hard constraints) — not just guessed at the right answer."""
+
+    def __init__(self) -> None:
+        self.role_fetched: bool = False
+        self.pool_fetched: bool = False
+        self.skill_checked_for: set[str] = set()
+        self.compat_checked_for: set[str] = set()
+        self.team_checked_for: set[str] = set()
+        self.submitted_args: dict[str, str] | None = None
+
+    def _lookup(self, name: str) -> str | None:
+        key = str(name).strip().lower()
+        if not key:
+            return None
+        for canonical in _GS_CANDIDATES_STATEFUL:
+            clow = canonical.lower()
+            if key == clow or key in clow.split() or key in clow:
+                return canonical
+        return None
+
+    def get_open_role(self) -> str:
+        self.role_fetched = True
+        return _GS_OPEN_ROLE_STATEFUL
+
+    def get_candidate_pool(self) -> str:
+        self.pool_fetched = True
+        n = len(_GS_CANDIDATES_STATEFUL)
+        lines = [f"Candidate Pool — Senior Backend Engineer, Payments Platform ({n} candidates):"]
+        for name, info in _GS_CANDIDATES_STATEFUL.items():
+            lines.append(f"  - {name} — {info['brief']}")
+        return "\n".join(lines)
+
+    def get_skill_summary(self, candidate_name: str) -> str:
+        canonical = self._lookup(candidate_name)
+        if not canonical:
+            return f"No candidate found matching '{candidate_name}'."
+        self.skill_checked_for.add(canonical)
+        return _GS_CANDIDATES_STATEFUL[canonical]["skill_summary"]
+
+    def get_compatibility_check(self, candidate_name: str) -> str:
+        canonical = self._lookup(candidate_name)
+        if not canonical:
+            return f"No candidate found matching '{candidate_name}'."
+        self.compat_checked_for.add(canonical)
+        return _GS_CANDIDATES_STATEFUL[canonical]["compatibility"]
+
+    def get_team_dynamics(self, candidate_name: str) -> str:
+        canonical = self._lookup(candidate_name)
+        if not canonical:
+            return f"No candidate found matching '{candidate_name}'."
+        self.team_checked_for.add(canonical)
+        return _GS_CANDIDATES_STATEFUL[canonical]["team_dynamics"]
+
+    def submit_hiring_decision(self, candidate: str, rationale: str) -> str:
+        self.submitted_args = {
+            "candidate": str(candidate),
+            "rationale": str(rationale),
+        }
+        return (
+            f"Hiring decision recorded. Candidate: {candidate}. "
+            f"Rationale: {rationale}"
+        )
+
+
+def _build_grounded_synthesis_stateful() -> tuple[Workflow, Callable[[], bool]]:
+    db = HiringDecisionSystem()
+    tools: dict[str, ToolDef] = {
+        "get_open_role": ToolDef(
+            spec=ToolSpec(
+                name="get_open_role",
+                description="Get the spec and constraints for the open role.",
+                parameters=NoParams,
+            ),
+            callable=lambda **kw: db.get_open_role(),
+        ),
+        "get_candidate_pool": ToolDef(
+            spec=ToolSpec(
+                name="get_candidate_pool",
+                description="List the candidates being considered.",
+                parameters=NoParams,
+            ),
+            callable=lambda **kw: db.get_candidate_pool(),
+        ),
+        "get_skill_summary": ToolDef(
+            spec=ToolSpec(
+                name="get_skill_summary",
+                description="Get a candidate's distilled skill assessment.",
+                parameters=CandidateNameParams,
+            ),
+            callable=lambda **kw: db.get_skill_summary(kw.get("candidate_name", "")),
+        ),
+        "get_compatibility_check": ToolDef(
+            spec=ToolSpec(
+                name="get_compatibility_check",
+                description="Check a candidate's compliance and eligibility for the open role.",
+                parameters=CandidateNameParams,
+            ),
+            callable=lambda **kw: db.get_compatibility_check(
+                kw.get("candidate_name", ""),
+            ),
+        ),
+        "get_team_dynamics": ToolDef(
+            spec=ToolSpec(
+                name="get_team_dynamics",
+                description="Get the team-fit analysis for a candidate.",
+                parameters=CandidateNameParams,
+            ),
+            callable=lambda **kw: db.get_team_dynamics(kw.get("candidate_name", "")),
+        ),
+        "submit_hiring_decision": ToolDef(
+            spec=ToolSpec(
+                name="submit_hiring_decision",
+                description="Submit the final hiring decision with a brief rationale.",
+                parameters=SubmitHiringDecisionParams,
+            ),
+            callable=lambda **kw: db.submit_hiring_decision(
+                kw.get("candidate", ""), kw.get("rationale", ""),
+            ),
+        ),
+    }
+    workflow = Workflow(
+        name="grounded_synthesis_stateful",
+        description=(
+            "Pick the right candidate for an open role from a pool of four, "
+            "honoring compliance constraints surfaced by sub-agent tools."
+        ),
+        tools=tools,
+        required_steps=["get_open_role", "get_candidate_pool"],
+        terminal_tool="submit_hiring_decision",
+        system_prompt_template=(
+            "You are a hiring manager. Use the available tools to evaluate "
+            "the candidate pool for the open role and submit your decision."
+        ),
+    )
+    # State validator: model must have actually checked compatibility for
+    # the two blocker candidates (so it had the data to see the hard
+    # constraints) AND submitted the canonically-correct args.
+    validate_state = lambda: (
+        db.role_fetched
+        and db.pool_fetched
+        and "Sarah Chen" in db.compat_checked_for
+        and "James Patel" in db.compat_checked_for
+        and db.submitted_args is not None
+        and _validate_grounded_synthesis_stateful(db.submitted_args)
+    )
+    return workflow, validate_state
+
+
+grounded_synthesis_stateful = EvalScenario(
+    name="grounded_synthesis_stateful",
+    description=(
+        "Stateful synthesis under attractor pressure — state tracks whether "
+        "the model checked the blocker candidates' compatibility (saw the "
+        "hard constraints) and submitted the canonically-correct decision."
+    ),
+    workflow=_placeholder_workflow(
+        "grounded_synthesis_stateful", "submit_hiring_decision",
+        ["get_open_role", "get_candidate_pool"],
+    ),
+    user_message=(
+        "We have an open senior backend engineering role and four candidates "
+        "in the pool. Review the role, evaluate the candidates, and submit "
+        "your hiring decision with a brief rationale explaining why you "
+        "selected (and did not select) the candidates you considered."
+    ),
+    validate=_validate_grounded_synthesis_stateful,
+    build_workflow=_build_grounded_synthesis_stateful,
+    tags=["stateful", "advanced_reasoning", "reasoning", "model_quality"],
+    ideal_iterations=10,
+    max_iterations=20,
+)
