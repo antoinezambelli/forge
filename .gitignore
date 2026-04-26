@@ -22,10 +22,9 @@ htmlcov/
 # Claude Code
 .claude/
 
-# Eval results (scratch files only — eval_results.jsonl is tracked via LFS)
+# Eval results (scratch files only — eval_results.jsonl + eval_results_rig*.jsonl tracked via LFS)
 eval_tight*.jsonl
 eval_vram*.jsonl
-eval_results_rig*.jsonl
 ablation_progress.log
 ablation_run.log
 llama.log
