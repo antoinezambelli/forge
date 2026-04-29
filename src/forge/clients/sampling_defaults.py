@@ -63,12 +63,15 @@ MODEL_SAMPLING_DEFAULTS: dict[str, dict[str, float | int]] = {
     "ministral-3:14b-reasoning-2512-q4_K_M": {"temperature": 1.0},  # https://huggingface.co/mistralai/Ministral-3-14B-Reasoning-2512
     # Mistral Nemo — formal recommendation is temp=0.3; code examples on the card use 0.35 (formal rec wins).
     "mistral-nemo:12b-instruct-2407-q4_K_M": {"temperature": 0.3},  # https://huggingface.co/mistralai/Mistral-Nemo-Instruct-2407
+    # Granite 4.0 — IBM-pointed reference cites greedy decoding (T=0); top_p/top_k effectively no-op at T=0
+    # but kept explicit to match the source recommendation. IBM HF cards / GitHub repo / prompt-engineering
+    # guide v2 themselves do not document sampling; Unsloth's tutorial cites IBM directly.
+    "granite-4.0:h-micro-q4_K_M": {"temperature": 0.0, "top_p": 1.0, "top_k": 0},  # https://unsloth.ai/docs/models/tutorials/ibm-granite-4.0 (cites IBM)
+    "granite-4.0:h-tiny-q4_K_M":  {"temperature": 0.0, "top_p": 1.0, "top_k": 0},  # https://unsloth.ai/docs/models/tutorials/ibm-granite-4.0 (cites IBM)
     # Intentionally absent — no formal recommendation from any official source:
     #   llama3.1:*                Meta's HF card, llama.com/docs, and llama-recipes are all silent.
     #   mistral:7b-instruct-v0.3  HF card has no "recommended settings" section; code examples
     #                             use temperature=0.0 (greedy) but note it's demo-only, not a rec.
-    #   granite-4.0:h-*           IBM's HF cards, the granite-4.0-language-models GitHub repo,
-    #                             and the prompt engineering guide v2 are all silent on sampling.
     # These rows fall through to the unknown-model path (backend defaults).
 }
 

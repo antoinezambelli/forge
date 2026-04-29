@@ -44,7 +44,26 @@ LLAMAFILE_CONFIGS = [
     ("llamafile", "mistral:7b-instruct-v0.3-q8",  "mistral-7b-q8-lf"),
 ]
 
-CONFIGS = QWEN_CONFIGS + LLAMAFILE_CONFIGS
+# Granite 4.0 (IBM) — 2 models x 3 backend/mode combos. Q4 only (Ollama side
+# only publishes Q4 for these sizes; LS side matches for backend parity).
+GRANITE_CONFIGS = [
+    ("ollama",             "granite-4.0:h-micro-q4", "granite-4.0-h-micro-q4-ollama"),
+    ("llamaserver-native", "granite-4.0:h-micro-q4", "granite-4.0-h-micro-q4-lls-native"),
+    ("llamaserver-prompt", "granite-4.0:h-micro-q4", "granite-4.0-h-micro-q4-lls-prompt"),
+    ("ollama",             "granite-4.0:h-tiny-q4",  "granite-4.0-h-tiny-q4-ollama"),
+    ("llamaserver-native", "granite-4.0:h-tiny-q4",  "granite-4.0-h-tiny-q4-lls-native"),
+    ("llamaserver-prompt", "granite-4.0:h-tiny-q4",  "granite-4.0-h-tiny-q4-lls-prompt"),
+]
+
+CONFIG_BLOCKS = {
+    "qwen":      QWEN_CONFIGS,
+    "llamafile": LLAMAFILE_CONFIGS,
+    "granite":   GRANITE_CONFIGS,
+}
+
+# Default blocks preserve the rig-00 model-params re-run plan. Pass --blocks to
+# override (e.g. --blocks granite for a rig-03 Granite-only run).
+DEFAULT_BLOCKS = "qwen,llamafile"
 
 PRESETS = ["reforged", "bare"]
 
@@ -69,7 +88,7 @@ def build_cmd(
         "--config", config,
         "--ablation", preset,
         "--runs", str(RUNS_PER_SCENARIO),
-        "--tags", "plumbing", "model_quality",
+        "--tags", "plumbing", "model_quality", "error_recovery",
     ]
     if model:
         cmd.extend(["--model", model])
@@ -89,6 +108,11 @@ def main() -> None:
         default=None,
         help="JSONL output path (forwarded to batch_eval; defaults to eval_results.jsonl)",
     )
+    parser.add_argument(
+        "--blocks",
+        default=DEFAULT_BLOCKS,
+        help=f"Comma-separated config blocks to run (choices: {','.join(CONFIG_BLOCKS)}). Default: {DEFAULT_BLOCKS}",
+    )
     parser.add_argument("--dry-run", action="store_true", help="Print commands without executing")
     args = parser.parse_args()
 
@@ -96,8 +120,17 @@ def main() -> None:
     models_dir = args.models_dir
     output = args.output
 
-    total = len(CONFIGS) * len(PRESETS)
-    log(f"Ablation study: {len(CONFIGS)} configs x {len(PRESETS)} presets = {total} batches")
+    selected_blocks = [b.strip() for b in args.blocks.split(",") if b.strip()]
+    unknown = [b for b in selected_blocks if b not in CONFIG_BLOCKS]
+    if unknown:
+        raise SystemExit(f"Unknown block(s): {unknown}; valid: {list(CONFIG_BLOCKS)}")
+    configs_to_run = []
+    for b in selected_blocks:
+        configs_to_run.extend(CONFIG_BLOCKS[b])
+
+    total = len(configs_to_run) * len(PRESETS)
+    log(f"Blocks: {','.join(selected_blocks)}")
+    log(f"Ablation study: {len(configs_to_run)} configs x {len(PRESETS)} presets = {total} batches")
     if output:
         log(f"Output: {output}")
     if dry_run:
@@ -107,7 +140,7 @@ def main() -> None:
     skipped = 0
     failed = 0
 
-    for config, model, label in CONFIGS:
+    for config, model, label in configs_to_run:
         for preset in PRESETS:
             batch_label = f"{label} / {preset}"
             cmd = build_cmd(config, model, preset, models_dir, output)

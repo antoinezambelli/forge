@@ -129,7 +129,7 @@ Running Qwen3.5 27B at the "standard" 0.7 temperature — instead of the card-re
 
 ### How forge handles it
 
-Forge ships a per-model recommendations map at `forge.clients.sampling_defaults`. Each entry is sourced directly from the model's HuggingFace card, with the card URL as an inline comment in the source. Values are verified one card at a time — no best-effort or extrapolated entries.
+Forge ships a per-model recommendations map at `forge.clients.sampling_defaults`. Each entry is sourced directly from the model's HuggingFace card (or, when the vendor has not published sampling on the card, from a secondary source that cites the vendor — Granite 4.0 is the current example), with the source URL as an inline comment. Values are verified one entry at a time — no best-effort or extrapolated entries.
 
 ```python
 from forge.clients import LlamafileClient, get_sampling_defaults
@@ -175,16 +175,18 @@ client = LlamafileClient(
 | `ministral-3:8b-reasoning-2512-q8_0` | 0.7 | —² | — | — | — | — | [Ministral-3-8B-Reasoning-2512](https://huggingface.co/mistralai/Ministral-3-8B-Reasoning-2512) |
 | `ministral-3:14b-reasoning-2512-q4_K_M` | 1.0 | —² | — | — | — | — | [Ministral-3-14B-Reasoning-2512](https://huggingface.co/mistralai/Ministral-3-14B-Reasoning-2512) |
 | `mistral-nemo:12b-instruct-2407-q4_K_M` | 0.3 | — | — | — | — | — | [Mistral-Nemo-Instruct-2407](https://huggingface.co/mistralai/Mistral-Nemo-Instruct-2407) |
+| `granite-4.0:h-micro-q4_K_M` | 0.0³ | 1.0 | 0 | — | — | — | [Unsloth IBM-Granite-4.0 tutorial](https://unsloth.ai/docs/models/tutorials/ibm-granite-4.0) (cites IBM) |
+| `granite-4.0:h-tiny-q4_K_M` | 0.0³ | 1.0 | 0 | — | — | — | [Unsloth IBM-Granite-4.0 tutorial](https://unsloth.ai/docs/models/tutorials/ibm-granite-4.0) (cites IBM) |
 
 ¹ Ministral-3 Instruct cards say "temperature below 0.1 for production"; 0.05 picked within that range.
 ² Ministral-3 Reasoning cards show `top_p=0.95` in code examples but do NOT include it in the formal "Recommended Settings" section — omitted here. Add it explicitly if you want to follow the examples.
+³ Granite 4.0 sampling is greedy decoding (T=0); `top_p=1.0` and `top_k=0` are mathematical no-ops at T=0 but kept explicit to match the source recommendation. IBM's own HF cards, the granite-4.0-language-models GitHub repo, and the "Granite 4.0 Prompt engineering guide v2" do not publish sampling values directly — Unsloth's tutorial is a secondary source that cites IBM.
 
 **Intentionally absent from the map** (no formal recommendation on the official card):
 - **Llama 3.1 8B Instruct** — Meta's HF card, llama.com/docs, and llama-recipes are all silent on sampling.
 - **Mistral 7B Instruct v0.3** — HF card has no "recommended settings" section; code examples use `temperature=0.0` (greedy) but explicitly note it's demo-only.
-- **Granite 4.0 H-Micro / H-Tiny** — IBM's HF cards, the granite-4.0-language-models GitHub repo, and IBM's "Granite 4.0 Prompt engineering guide v2" are all silent on sampling. Third-party sources (Unsloth, muxup) publish values, but those aren't IBM-authoritative.
 
-Rows using these models hit the unknown-model path and inherit backend defaults. Two of three — Llama 3.1 and Mistral 7B v0.3 — are also in the [Models to Avoid](#models-to-avoid) section. The sparseness of official sampling guidance tracks with these being older or less-agentically-tuned releases.
+Rows using these models hit the unknown-model path and inherit backend defaults. Both are also in the [Models to Avoid](#models-to-avoid) section. The sparseness of official sampling guidance tracks with these being older or less-agentically-tuned releases.
 
 A dash means the card does not specify a value for that parameter — forge sends nothing and the backend's default applies.
 
