@@ -1297,3 +1297,52 @@ class TestTemperatureOptional:
         call_kwargs = client._http.post.call_args
         body = call_kwargs.kwargs.get("json") or call_kwargs[1].get("json")
         assert body["temperature"] == 0.5
+
+
+class TestRecommendedSampling:
+    """Issue B: recommended_sampling flag on LlamafileClient."""
+
+    def test_strict_known_model_applies_map_values(self) -> None:
+        """recommended_sampling=True + known model: map values populate fields."""
+        client = LlamafileClient(
+            model="qwen3:8b-q4_K_M",
+            mode="native",
+            recommended_sampling=True,
+        )
+        assert client.temperature == 0.6
+        assert client.top_p == 0.95
+        assert client.top_k == 20
+        assert client.min_p == 0.0
+
+    def test_strict_unknown_model_raises(self) -> None:
+        """recommended_sampling=True + unknown model: raises UnsupportedModelError."""
+        from forge.errors import UnsupportedModelError
+        with pytest.raises(UnsupportedModelError):
+            LlamafileClient(
+                model="nonexistent-model:1b",
+                mode="native",
+                recommended_sampling=True,
+            )
+
+    def test_explicit_kwarg_wins_over_map(self) -> None:
+        """Caller's explicit kwarg overrides the map entry field-by-field."""
+        client = LlamafileClient(
+            model="qwen3:8b-q4_K_M",
+            mode="native",
+            recommended_sampling=True,
+            temperature=0.99,  # overrides map's 0.6
+        )
+        assert client.temperature == 0.99
+        # Other fields still come from the map.
+        assert client.top_p == 0.95
+        assert client.top_k == 20
+
+    def test_default_no_opt_in_no_map_values(self) -> None:
+        """recommended_sampling=False (default) + known model: map values not applied."""
+        client = LlamafileClient(
+            model="qwen3:8b-q4_K_M",
+            mode="native",
+        )
+        assert client.temperature is None
+        assert client.top_p is None
+        assert client.top_k is None

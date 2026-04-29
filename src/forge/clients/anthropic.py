@@ -7,6 +7,7 @@ produces) and Anthropic's native Messages API format internally.
 from __future__ import annotations
 
 import json
+import logging
 from collections.abc import AsyncIterator
 from typing import Any
 
@@ -15,6 +16,8 @@ import anthropic
 from forge.clients.base import ChunkType, StreamChunk
 from forge.core.workflow import LLMResponse, TextResponse, ToolCall, ToolSpec
 from forge.errors import BackendError
+
+log = logging.getLogger(__name__)
 
 
 class AnthropicClient:
@@ -35,10 +38,18 @@ class AnthropicClient:
         timeout: float = 300.0,
         max_retries: int = 3,
         tool_choice: str | None = None,
+        recommended_sampling: bool = False,
     ) -> None:
         self.model = model
         self.max_tokens = max_tokens
         self._tool_choice = tool_choice  # "auto", "any", or None (default=auto)
+        # Accepted for API symmetry across clients but currently a no-op:
+        # AnthropicClient does not expose sampling kwargs through forge today.
+        # The Anthropic SDK manages sampling internally.
+        if recommended_sampling:
+            log.debug(
+                "AnthropicClient ignores recommended_sampling=True — no sampling kwargs are exposed."
+            )
         self._client = anthropic.AsyncAnthropic(
             api_key=api_key,
             timeout=timeout,

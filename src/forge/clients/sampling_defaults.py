@@ -1,15 +1,21 @@
 """Per-model recommended sampling defaults sourced from HF model cards.
 
-Used in managed mode (Engine, WorkflowRunner, batch_eval). Callers look up
-defaults explicitly via ``get_sampling_defaults(model)`` and splat into the
-client constructor.
+Two functions live here, separating lookup from policy:
+
+- ``get_sampling_defaults(model)``: pure lookup. Returns the map value (a
+  fresh copy) or ``{}`` for unknown models. No logging, no raising.
+- ``apply_sampling_defaults(model, *, strict)``: policy layer. Used by
+  client constructors when ``recommended_sampling=True``/``False``:
+
+    | strict | model in map | behavior                                     |
+    |--------|--------------|----------------------------------------------|
+    | True   | yes          | return dict                                  |
+    | True   | no           | raise ``UnsupportedModelError``              |
+    | False  | yes          | one-shot INFO log; return ``{}``             |
+    | False  | no           | return ``{}`` (silent)                       |
 
 Proxy/passthrough callers do NOT consult this map — they forward whatever
 the caller sent.
-
-An unknown model returns an empty dict rather than raising: forge allows all
-models, but only officially supports those listed here. For unknown models
-the backend's own defaults apply.
 
 Each row carries an inline URL comment pointing at the HF model card the
 values were pulled from. Values are verified one model at a time against
@@ -20,10 +26,14 @@ from __future__ import annotations
 
 import logging
 
+from forge.errors import UnsupportedModelError
+
 log = logging.getLogger(__name__)
 
-# Models for which we've already logged a "no defaults" warning this session.
-_WARNED_UNKNOWN: set[str] = set()
+# Models for which we've already logged the "supported but not opted-in" info
+# message this session. Keyed by model name; the log fires once per (model,
+# process) pair.
+_INFO_LOGGED: set[str] = set()
 
 
 MODEL_SAMPLING_DEFAULTS: dict[str, dict[str, float | int]] = {
@@ -79,24 +89,65 @@ MODEL_SAMPLING_DEFAULTS: dict[str, dict[str, float | int]] = {
 def get_sampling_defaults(model: str) -> dict[str, float | int]:
     """Return recommended sampling params for ``model``.
 
-    For unknown models returns ``{}`` and logs a one-shot warning. The caller
-    splats the result into the client constructor; an empty dict means no
-    overrides, which lets the backend's own defaults apply.
+    Pure lookup — no logging, no raising. For unknown models returns ``{}``.
+    Use ``apply_sampling_defaults`` for the constructor-time policy layer
+    that handles opt-in/opt-out, INFO logs, and ``UnsupportedModelError``.
 
     Args:
         model: Model name as used by the backend (e.g. ``"qwen3:8b-q4_K_M"``).
 
     Returns:
-        Dict of sampling kwargs (``temperature``, ``top_p``, ``top_k``,
-        ``min_p``, ``repeat_penalty`` — subset per model).
+        Fresh dict of sampling kwargs (``temperature``, ``top_p``, ``top_k``,
+        ``min_p``, ``repeat_penalty``, ``presence_penalty`` — subset per
+        model). Empty dict for unknown models.
     """
-    if model in MODEL_SAMPLING_DEFAULTS:
+    return dict(MODEL_SAMPLING_DEFAULTS.get(model, {}))
+
+
+def apply_sampling_defaults(
+    model: str,
+    *,
+    strict: bool,
+) -> dict[str, float | int]:
+    """Apply the recommended-sampling policy for ``model``.
+
+    Called by client constructors at instantiation time. The four-quadrant
+    behavior:
+
+    - ``strict=True`` + known model: return the map value (dict copy).
+    - ``strict=True`` + unknown model: raise ``UnsupportedModelError``.
+    - ``strict=False`` + known model: one-shot INFO log; return ``{}``.
+    - ``strict=False`` + unknown model: return ``{}`` (silent).
+
+    The INFO log fires once per (model, process) pair to surface that
+    forge has opinions about this model without spamming on every
+    constructor call.
+
+    Args:
+        model: Model name (e.g. ``"qwen3:8b-q4_K_M"``).
+        strict: If True, the caller declared ``recommended_sampling=True``;
+            unknown models are an error. If False, recommended sampling
+            was not opted into; the function returns ``{}`` and may log.
+
+    Returns:
+        Dict of sampling kwargs to splat onto the constructor, or ``{}``.
+
+    Raises:
+        UnsupportedModelError: ``strict=True`` and ``model`` is not in
+            ``MODEL_SAMPLING_DEFAULTS``.
+    """
+    in_map = model in MODEL_SAMPLING_DEFAULTS
+    if strict:
+        if not in_map:
+            raise UnsupportedModelError(model)
         return dict(MODEL_SAMPLING_DEFAULTS[model])
 
-    if model not in _WARNED_UNKNOWN:
-        log.warning(
-            "No sampling defaults registered for model %r — backend defaults will apply",
+    # strict=False: caller did not opt in.
+    if in_map and model not in _INFO_LOGGED:
+        log.info(
+            "Recommended sampling params exist for %r; "
+            "pass recommended_sampling=True to use them.",
             model,
         )
-        _WARNED_UNKNOWN.add(model)
+        _INFO_LOGGED.add(model)
     return {}

@@ -10,6 +10,7 @@ from typing import Any
 import httpx
 
 from forge.clients.base import ChunkType, StreamChunk, TokenUsage, format_tool
+from forge.clients.sampling_defaults import apply_sampling_defaults
 from forge.core.workflow import LLMResponse, TextResponse, ToolCall, ToolSpec
 from forge.errors import BackendError, ContextDiscoveryError
 from forge.prompts.templates import build_tool_prompt, extract_tool_call
@@ -139,15 +140,19 @@ class LlamafileClient:
         think: bool | None = None,
         cache_prompt: bool = True,
         slot_id: int | None = None,
+        recommended_sampling: bool = False,
     ) -> None:
         self.base_url = base_url
         self.model = model
-        self.temperature = temperature
-        self.top_p = top_p
-        self.top_k = top_k
-        self.min_p = min_p
-        self.repeat_penalty = repeat_penalty
-        self.presence_penalty = presence_penalty
+        # Apply per-model recommended sampling defaults. Caller's explicit
+        # (non-None) kwargs win over the map field-by-field.
+        defaults = apply_sampling_defaults(model, strict=recommended_sampling)
+        self.temperature = temperature if temperature is not None else defaults.get("temperature")
+        self.top_p = top_p if top_p is not None else defaults.get("top_p")
+        self.top_k = top_k if top_k is not None else defaults.get("top_k")
+        self.min_p = min_p if min_p is not None else defaults.get("min_p")
+        self.repeat_penalty = repeat_penalty if repeat_penalty is not None else defaults.get("repeat_penalty")
+        self.presence_penalty = presence_penalty if presence_penalty is not None else defaults.get("presence_penalty")
         self.mode = mode
         self._http = httpx.AsyncClient(timeout=timeout)
         self._think: bool = think if think is not None else True  # auto = capture
