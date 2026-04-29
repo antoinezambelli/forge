@@ -113,6 +113,101 @@ The same pattern appears across model families:
 
 ---
 
+## Sampling Parameters
+
+Temperature, `top_p`, `top_k`, `min_p`, `repeat_penalty`, and `presence_penalty` control how the model samples the next token. **Every model family has its own recommended values, and the recommendations differ substantially.** Running all models at a single "default" temperature — which is what most evaluation harnesses do — compares each model outside the sampling zone its authors designed it for.
+
+A few examples of how far recommendations spread:
+
+| Model family | Card-recommended temperature | top_p | top_k |
+|---|---|---|---|
+| Qwen3 8B/14B (thinking) | 0.6 | 0.95 | 20 |
+| Qwen3.5 / 3.6 (thinking, general) | **1.0** | 0.95 | 20 |
+| Qwen3-Coder Instruct | 0.7 | 0.8 | 20 |
+
+Running Qwen3.5 27B at the "standard" 0.7 temperature — instead of the card-recommended 1.0 — is a measurable handicap. The same logic applies across Gemma, Mistral, and Qwen families, all of which publish different recommendations.
+
+### How forge handles it
+
+Forge ships a per-model recommendations map at `forge.clients.sampling_defaults`. Each entry is sourced directly from the model's HuggingFace card (or, when the vendor has not published sampling on the card, from a secondary source that cites the vendor — Granite 4.0 is the current example), with the source URL as an inline comment. Values are verified one entry at a time — no best-effort or extrapolated entries.
+
+```python
+from forge.clients import LlamafileClient, get_sampling_defaults
+
+# Managed mode — explicitly pull recommended defaults
+client = LlamafileClient(
+    model="qwen3.5:27b-q4_K_M",
+    mode="native",
+    **get_sampling_defaults("qwen3.5:27b-q4_K_M"),
+)
+```
+
+**Unknown models** (not in the map): `get_sampling_defaults` returns an empty dict and logs a one-time warning. The backend's own defaults apply. Forge supports all models; it only has opinions about the ones in the map.
+
+**Proxy mode** does *not* consult the map — the proxy is a pure pass-through and forwards whatever sampling params the caller sends.
+
+### Supported models
+
+| Model | temp | top_p | top_k | min_p | repeat_penalty | presence_penalty | Source |
+|---|---|---|---|---|---|---|---|
+| `qwen3:4b-instruct-2507-q4_K_M` | 0.7 | 0.8 | 20 | 0.0 | — | — | [Qwen3-4B-Instruct-2507](https://huggingface.co/Qwen/Qwen3-4B-Instruct-2507) |
+| `qwen3:4b-thinking-2507-q4_K_M` | 0.6 | 0.95 | 20 | 0.0 | — | — | [Qwen3-4B-Thinking-2507](https://huggingface.co/Qwen/Qwen3-4B-Thinking-2507) |
+| `qwen3:8b-q4_K_M` | 0.6 | 0.95 | 20 | 0.0 | — | — | [Qwen3-8B](https://huggingface.co/Qwen/Qwen3-8B) |
+| `qwen3:8b-q8_0` | 0.6 | 0.95 | 20 | 0.0 | — | — | [Qwen3-8B](https://huggingface.co/Qwen/Qwen3-8B) |
+| `qwen3:14b-q4_K_M` | 0.6 | 0.95 | 20 | 0.0 | — | — | [Qwen3-14B](https://huggingface.co/Qwen/Qwen3-14B) |
+| `qwen3.5:27b-q4_K_M` | 1.0 | 0.95 | 20 | 0.0 | — | 1.5 | [Qwen3.5-27B](https://huggingface.co/Qwen/Qwen3.5-27B) |
+| `qwen3.5:35b-a3b-q4_K_M` | 1.0 | 0.95 | 20 | 0.0 | — | 1.5 | [Qwen3.5-35B-A3B](https://huggingface.co/Qwen/Qwen3.5-35B-A3B) |
+| `qwen3.6:35b-a3b-ud-q4_K_M` | 1.0 | 0.95 | 20 | 0.0 | — | 1.5 | [Qwen3.6-35B-A3B](https://huggingface.co/Qwen/Qwen3.6-35B-A3B) |
+| `qwen3-coder:30b-a3b-instruct-q4_K_M` | 0.7 | 0.8 | 20 | — | 1.05 | — | [Qwen3-Coder-30B-A3B-Instruct](https://huggingface.co/Qwen/Qwen3-Coder-30B-A3B-Instruct) |
+| `gemma4:31b-it-q4_K_M` | 1.0 | 0.95 | 64 | — | — | — | [gemma-4-31b-it](https://huggingface.co/google/gemma-4-31b-it) |
+| `gemma4:26b-a4b-it-q4_K_M` | 1.0 | 0.95 | 64 | — | — | — | [gemma-4-26b-a4b-it](https://huggingface.co/google/gemma-4-26b-a4b-it) |
+| `gemma4:26b-a4b-it-q8_0` | 1.0 | 0.95 | 64 | — | — | — | [gemma-4-26b-a4b-it](https://huggingface.co/google/gemma-4-26b-a4b-it) |
+| `gemma4:e4b-it-q4_K_M` | 1.0 | 0.95 | 64 | — | — | — | [gemma-4-e4b-it](https://huggingface.co/google/gemma-4-e4b-it) |
+| `gemma4:e4b-it-q8_0` | 1.0 | 0.95 | 64 | — | — | — | [gemma-4-e4b-it](https://huggingface.co/google/gemma-4-e4b-it) |
+| `mistral-small-3.2:24b-instruct-2506-q4_K_M` | 0.15 | — | — | — | — | — | [Mistral-Small-3.2-24B-Instruct-2506](https://huggingface.co/mistralai/Mistral-Small-3.2-24B-Instruct-2506) |
+| `mistral-small-3.2:24b-instruct-2506-q8_0` | 0.15 | — | — | — | — | — | [Mistral-Small-3.2-24B-Instruct-2506](https://huggingface.co/mistralai/Mistral-Small-3.2-24B-Instruct-2506) |
+| `devstral-small-2:24b-instruct-2512-q4_K_M` | 0.15 | — | — | — | — | — | [Devstral-Small-2-24B-Instruct-2512](https://huggingface.co/mistralai/Devstral-Small-2-24B-Instruct-2512) |
+| `devstral-small-2:24b-instruct-2512-q8_0` | 0.15 | — | — | — | — | — | [Devstral-Small-2-24B-Instruct-2512](https://huggingface.co/mistralai/Devstral-Small-2-24B-Instruct-2512) |
+| `ministral-3:8b-instruct-2512-q4_K_M` | 0.05¹ | — | — | — | — | — | [Ministral-3-8B-Instruct-2512](https://huggingface.co/mistralai/Ministral-3-8B-Instruct-2512) |
+| `ministral-3:8b-instruct-2512-q8_0` | 0.05¹ | — | — | — | — | — | [Ministral-3-8B-Instruct-2512](https://huggingface.co/mistralai/Ministral-3-8B-Instruct-2512) |
+| `ministral-3:14b-instruct-2512-q4_K_M` | 0.05¹ | — | — | — | — | — | [Ministral-3-14B-Instruct-2512](https://huggingface.co/mistralai/Ministral-3-14B-Instruct-2512) |
+| `ministral-3:8b-reasoning-2512-q4_K_M` | 0.7 | —² | — | — | — | — | [Ministral-3-8B-Reasoning-2512](https://huggingface.co/mistralai/Ministral-3-8B-Reasoning-2512) |
+| `ministral-3:8b-reasoning-2512-q8_0` | 0.7 | —² | — | — | — | — | [Ministral-3-8B-Reasoning-2512](https://huggingface.co/mistralai/Ministral-3-8B-Reasoning-2512) |
+| `ministral-3:14b-reasoning-2512-q4_K_M` | 1.0 | —² | — | — | — | — | [Ministral-3-14B-Reasoning-2512](https://huggingface.co/mistralai/Ministral-3-14B-Reasoning-2512) |
+| `mistral-nemo:12b-instruct-2407-q4_K_M` | 0.3 | — | — | — | — | — | [Mistral-Nemo-Instruct-2407](https://huggingface.co/mistralai/Mistral-Nemo-Instruct-2407) |
+| `granite-4.0:h-micro-q4_K_M` | 0.0³ | 1.0 | 0 | — | — | — | [Unsloth IBM-Granite-4.0 tutorial](https://unsloth.ai/docs/models/tutorials/ibm-granite-4.0) (cites IBM) |
+| `granite-4.0:h-tiny-q4_K_M` | 0.0³ | 1.0 | 0 | — | — | — | [Unsloth IBM-Granite-4.0 tutorial](https://unsloth.ai/docs/models/tutorials/ibm-granite-4.0) (cites IBM) |
+
+¹ Ministral-3 Instruct cards say "temperature below 0.1 for production"; 0.05 picked within that range.
+² Ministral-3 Reasoning cards show `top_p=0.95` in code examples but do NOT include it in the formal "Recommended Settings" section — omitted here. Add it explicitly if you want to follow the examples.
+³ Granite 4.0 sampling is greedy decoding (T=0); `top_p=1.0` and `top_k=0` are mathematical no-ops at T=0 but kept explicit to match the source recommendation. IBM's own HF cards, the granite-4.0-language-models GitHub repo, and the "Granite 4.0 Prompt engineering guide v2" do not publish sampling values directly — Unsloth's tutorial is a secondary source that cites IBM.
+
+**Intentionally absent from the map** (no formal recommendation on the official card):
+- **Llama 3.1 8B Instruct** — Meta's HF card, llama.com/docs, and llama-recipes are all silent on sampling.
+- **Mistral 7B Instruct v0.3** — HF card has no "recommended settings" section; code examples use `temperature=0.0` (greedy) but explicitly note it's demo-only.
+
+Rows using these models hit the unknown-model path and inherit backend defaults. Both are also in the [Models to Avoid](#models-to-avoid) section. The sparseness of official sampling guidance tracks with these being older or less-agentically-tuned releases.
+
+A dash means the card does not specify a value for that parameter — forge sends nothing and the backend's default applies.
+
+**Profile choices.** When a card gives multiple profiles (e.g. Qwen3.5 has separate "general" vs "precise coding" columns), forge uses the **general-tasks thinking-mode** profile. Consumers that know their workload better (code-focused harnesses, for instance) should override explicitly.
+
+### Overriding
+
+`get_sampling_defaults` returns a fresh dict per call — safe to mutate:
+
+```python
+defaults = get_sampling_defaults("qwen3.5:27b-q4_K_M")
+# Switch to the card's precise-coding (WebDev) profile:
+defaults["temperature"] = 0.6
+defaults["presence_penalty"] = 0.0
+client = LlamafileClient(model="qwen3.5:27b-q4_K_M", mode="native", **defaults)
+```
+
+For fully manual control, pass sampling kwargs directly and skip the helper.
+
+---
+
 ## Key Findings
 
 1. **Guardrails matter more than model size.** Forge's guardrail stack adds 10–79% accuracy depending on the model. Ministral-8B Instruct on Ollama jumps from 17% → 91% (+74 points). Claude Haiku drops from 99.6% → 66.3% without them. An 8B model *with* forge outperforms frontier APIs *without* forge.

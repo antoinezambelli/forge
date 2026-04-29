@@ -1,12 +1,13 @@
 """Unattended ablation study runner.
 
-Runs all 5 models × 5 ablation presets sequentially.
+Runs all configured models × ablation presets sequentially.
 Retries failed configs up to MAX_RETRIES times, then skips.
 Logs progress to ablation_progress.log.
 
 Usage:
     python run_ablation.py
     python run_ablation.py --dry-run
+    python run_ablation.py --output eval_results_rig-00.jsonl
 """
 
 import subprocess
@@ -20,33 +21,51 @@ RUNS_PER_SCENARIO = 50
 TIMEOUT_S = 21600  # 6 hours per batch
 LOG_FILE = Path("ablation_progress.log")
 
-CONFIGS = [
+# Rig-00 plan for the model-params re-run: all Qwen3 variants × all backends,
+# plus all llamafile configs. reforged + bare only.
+QWEN_CONFIGS = [
     # (config_set, model_filter, label)
-    # 12GB-tier extension: (backend, mode) = best reforged per model.
-    # The original 5-model paper set is already FULL in eval_results.jsonl
-    # and omitted here. Gemma4 e4b pair is omitted (GGUF files not on this rig).
-    ("llamaserver-native", "ministral-3:8b-instruct-2512-q4", "ministral-8b-instruct-q4"),
-    ("llamaserver-native", "ministral-3:8b-instruct-2512-q8", "ministral-8b-instruct-q8"),
-    ("llamaserver-native", "ministral-3:8b-reasoning-2512-q8", "ministral-8b-reasoning-q8"),
-    ("llamaserver-prompt", "ministral-3:14b-reasoning-2512-q4", "ministral-14b-reasoning-q4"),
-    ("llamaserver-native", "llama3.1:8b-instruct-q4", "llama3.1-8b-q4"),
-    ("llamaserver-native", "llama3.1:8b-instruct-q8", "llama3.1-8b-q8"),
-    ("llamafile", "mistral:7b-instruct-v0.3-q4", "mistral-7b-q4"),
-    ("llamafile", "mistral:7b-instruct-v0.3-q8", "mistral-7b-q8"),
+    ("ollama",            "qwen3:8b-q4",  "qwen3-8b-q4-ollama"),
+    ("llamaserver-native", "qwen3:8b-q4", "qwen3-8b-q4-lls-native"),
+    ("llamaserver-prompt", "qwen3:8b-q4", "qwen3-8b-q4-lls-prompt"),
+    ("ollama",            "qwen3:8b-q8",  "qwen3-8b-q8-ollama"),
+    ("llamaserver-native", "qwen3:8b-q8", "qwen3-8b-q8-lls-native"),
+    ("llamaserver-prompt", "qwen3:8b-q8", "qwen3-8b-q8-lls-prompt"),
+    ("ollama",            "qwen3:14b-q4", "qwen3-14b-q4-ollama"),
+    ("llamaserver-native", "qwen3:14b-q4", "qwen3-14b-q4-lls-native"),
+    ("llamaserver-prompt", "qwen3:14b-q4", "qwen3-14b-q4-lls-prompt"),
 ]
 
-PRESETS = ["no_rescue", "no_nudge", "no_steps", "no_recovery", "no_compact"]
+LLAMAFILE_CONFIGS = [
+    ("llamafile", "llama3.1:8b-instruct-q4",      "llama3.1-8b-q4-lf"),
+    ("llamafile", "llama3.1:8b-instruct-q8",      "llama3.1-8b-q8-lf"),
+    ("llamafile", "mistral-nemo",                 "nemo-12b-lf"),
+    ("llamafile", "mistral:7b-instruct-v0.3-q4",  "mistral-7b-q4-lf"),
+    ("llamafile", "mistral:7b-instruct-v0.3-q8",  "mistral-7b-q8-lf"),
+]
 
-# Granite: tail-end best-effort. Runs only reforged + bare (headline delta).
-# If the main batch finishes in time, these get picked up; if they hang or
-# time out, the main results are already durable on disk.
+# Granite 4.0 (IBM) — 2 models x 3 backend/mode combos. Q4 only (Ollama side
+# only publishes Q4 for these sizes; LS side matches for backend parity).
 GRANITE_CONFIGS = [
-    ("llamaserver-native", "granite-4.0:h-micro-q8_0", "granite-4.0-h-micro-q8"),
-    ("llamaserver-native", "granite-4.0:h-tiny-q4_K_M", "granite-4.0-h-tiny-q4"),
-    ("llamaserver-native", "granite-4.0:h-tiny-q8_0", "granite-4.0-h-tiny-q8"),
+    ("ollama",             "granite-4.0:h-micro-q4", "granite-4.0-h-micro-q4-ollama"),
+    ("llamaserver-native", "granite-4.0:h-micro-q4", "granite-4.0-h-micro-q4-lls-native"),
+    ("llamaserver-prompt", "granite-4.0:h-micro-q4", "granite-4.0-h-micro-q4-lls-prompt"),
+    ("ollama",             "granite-4.0:h-tiny-q4",  "granite-4.0-h-tiny-q4-ollama"),
+    ("llamaserver-native", "granite-4.0:h-tiny-q4",  "granite-4.0-h-tiny-q4-lls-native"),
+    ("llamaserver-prompt", "granite-4.0:h-tiny-q4",  "granite-4.0-h-tiny-q4-lls-prompt"),
 ]
 
-GRANITE_PRESETS = ["reforged", "bare"]
+CONFIG_BLOCKS = {
+    "qwen":      QWEN_CONFIGS,
+    "llamafile": LLAMAFILE_CONFIGS,
+    "granite":   GRANITE_CONFIGS,
+}
+
+# Default blocks preserve the rig-00 model-params re-run plan. Pass --blocks to
+# override (e.g. --blocks granite for a rig-03 Granite-only run).
+DEFAULT_BLOCKS = "qwen,llamafile"
+
+PRESETS = ["reforged", "bare"]
 
 
 def log(msg: str) -> None:
@@ -57,18 +76,26 @@ def log(msg: str) -> None:
         f.write(line + "\n")
 
 
-def build_cmd(config: str, model: str | None, preset: str, models_dir: str | None) -> list[str]:
+def build_cmd(
+    config: str,
+    model: str | None,
+    preset: str,
+    models_dir: str | None,
+    output: str | None,
+) -> list[str]:
     cmd = [
         sys.executable, "-m", "tests.eval.batch_eval",
         "--config", config,
         "--ablation", preset,
         "--runs", str(RUNS_PER_SCENARIO),
-        "--tags", "plumbing", "model_quality",
+        "--tags", "plumbing", "model_quality", "error_recovery",
     ]
     if model:
         cmd.extend(["--model", model])
     if models_dir:
         cmd.extend(["--models-dir", models_dir])
+    if output:
+        cmd.extend(["--output", output])
     return cmd
 
 
@@ -76,19 +103,36 @@ def main() -> None:
     import argparse
     parser = argparse.ArgumentParser(description="Unattended ablation study runner")
     parser.add_argument("--models-dir", default=None, help="Directory containing GGUF model files")
+    parser.add_argument(
+        "--output",
+        default=None,
+        help="JSONL output path (forwarded to batch_eval; defaults to eval_results.jsonl)",
+    )
+    parser.add_argument(
+        "--blocks",
+        default=DEFAULT_BLOCKS,
+        help=f"Comma-separated config blocks to run (choices: {','.join(CONFIG_BLOCKS)}). Default: {DEFAULT_BLOCKS}",
+    )
     parser.add_argument("--dry-run", action="store_true", help="Print commands without executing")
     args = parser.parse_args()
 
     dry_run = args.dry_run
     models_dir = args.models_dir
+    output = args.output
 
-    main_total = len(CONFIGS) * len(PRESETS)
-    granite_total = len(GRANITE_CONFIGS) * len(GRANITE_PRESETS)
-    total = main_total + granite_total
-    log(
-        f"Ablation study: {main_total} main batches "
-        f"+ {granite_total} Granite tail-end = {total} total"
-    )
+    selected_blocks = [b.strip() for b in args.blocks.split(",") if b.strip()]
+    unknown = [b for b in selected_blocks if b not in CONFIG_BLOCKS]
+    if unknown:
+        raise SystemExit(f"Unknown block(s): {unknown}; valid: {list(CONFIG_BLOCKS)}")
+    configs_to_run = []
+    for b in selected_blocks:
+        configs_to_run.extend(CONFIG_BLOCKS[b])
+
+    total = len(configs_to_run) * len(PRESETS)
+    log(f"Blocks: {','.join(selected_blocks)}")
+    log(f"Ablation study: {len(configs_to_run)} configs x {len(PRESETS)} presets = {total} batches")
+    if output:
+        log(f"Output: {output}")
     if dry_run:
         log("DRY RUN - commands only, no execution")
 
@@ -96,54 +140,10 @@ def main() -> None:
     skipped = 0
     failed = 0
 
-    # ── Main batch ──────────────────────────────────────────
-    for config, model, label in CONFIGS:
+    for config, model, label in configs_to_run:
         for preset in PRESETS:
             batch_label = f"{label} / {preset}"
-            cmd = build_cmd(config, model, preset, models_dir)
-
-            if dry_run:
-                log(f"  [{completed + 1}/{total}] {batch_label}: {' '.join(cmd)}")
-                completed += 1
-                continue
-
-            success = False
-            for attempt in range(1, MAX_RETRIES + 1):
-                log(f"  [{completed + 1}/{total}] {batch_label} (attempt {attempt}/{MAX_RETRIES})")
-                try:
-                    result = subprocess.run(
-                        cmd,
-                        cwd=str(Path(__file__).parent.parent),
-                        timeout=TIMEOUT_S,
-                    )
-                    if result.returncode == 0:
-                        log(f"  OK: {batch_label}")
-                        success = True
-                        break
-                    else:
-                        log(f"  FAILED (exit {result.returncode}): {batch_label}")
-                except subprocess.TimeoutExpired:
-                    log(f"  TIMEOUT: {batch_label}")
-                except Exception as e:
-                    log(f"  ERROR: {batch_label} - {e}")
-
-                if attempt < MAX_RETRIES:
-                    log(f"  Retrying in 30s...")
-                    time.sleep(30)
-
-            if success:
-                completed += 1
-            else:
-                log(f"  SKIPPING after {MAX_RETRIES} failures: {batch_label}")
-                skipped += 1
-                failed += 1
-
-    # ── Granite tail-end (best-effort) ──────────────────────
-    log("\n--- Granite tail-end batch ---")
-    for config, model, label in GRANITE_CONFIGS:
-        for preset in GRANITE_PRESETS:
-            batch_label = f"{label} / {preset}"
-            cmd = build_cmd(config, model, preset, models_dir)
+            cmd = build_cmd(config, model, preset, models_dir, output)
 
             if dry_run:
                 log(f"  [{completed + 1}/{total}] {batch_label}: {' '.join(cmd)}")

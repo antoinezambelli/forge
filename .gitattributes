@@ -6,3 +6,4 @@
 *.yml text eol=lf
 *.yaml text eol=lf
 eval_results.jsonl filter=lfs diff=lfs merge=lfs -text
+eval_results_rig*.jsonl filter=lfs diff=lfs merge=lfs -text

@@ -9,6 +9,12 @@ from ._model_quality import (
     sequential_reasoning,
     tool_selection,
 )
+from ._model_reasoning import (
+    argument_transformation,
+    data_gap_recovery_extended,
+    grounded_synthesis,
+    inconsistent_api_recovery,
+)
 from ._plumbing import basic_2step, error_recovery, sequential_3step
 from ._compaction_chain import (
     compaction_chain_baseline,
@@ -22,6 +28,12 @@ from ._stateful_model_quality import (
     data_gap_recovery_stateful,
     sequential_reasoning_stateful,
     tool_selection_stateful,
+)
+from ._stateful_model_reasoning import (
+    argument_transformation_stateful,
+    data_gap_recovery_extended_stateful,
+    grounded_synthesis_stateful,
+    inconsistent_api_recovery_stateful,
 )
 from ._stateful_plumbing import (
     basic_2step_stateful,
@@ -40,6 +52,10 @@ ALL_SCENARIOS: list[EvalScenario] = [
     sequential_reasoning,
     conditional_routing,
     data_gap_recovery,
+    data_gap_recovery_extended,
+    argument_transformation,
+    inconsistent_api_recovery,
+    grounded_synthesis,
     relevance_detection,
     # Stateful
     basic_2step_stateful,
@@ -50,6 +66,10 @@ ALL_SCENARIOS: list[EvalScenario] = [
     sequential_reasoning_stateful,
     conditional_routing_stateful,
     data_gap_recovery_stateful,
+    data_gap_recovery_extended_stateful,
+    argument_transformation_stateful,
+    inconsistent_api_recovery_stateful,
+    grounded_synthesis_stateful,
     relevance_detection_stateful,
     # Compaction chain
     compaction_chain_baseline,
@@ -70,6 +90,10 @@ __all__ = [
     "sequential_reasoning",
     "conditional_routing",
     "data_gap_recovery",
+    "data_gap_recovery_extended",
+    "argument_transformation",
+    "inconsistent_api_recovery",
+    "grounded_synthesis",
     "relevance_detection",
     "basic_2step_stateful",
     "sequential_3step_stateful",
@@ -79,6 +103,10 @@ __all__ = [
     "sequential_reasoning_stateful",
     "conditional_routing_stateful",
     "data_gap_recovery_stateful",
+    "data_gap_recovery_extended_stateful",
+    "argument_transformation_stateful",
+    "inconsistent_api_recovery_stateful",
+    "grounded_synthesis_stateful",
     "relevance_detection_stateful",
     "compaction_chain_baseline",
     "compaction_chain_p1",

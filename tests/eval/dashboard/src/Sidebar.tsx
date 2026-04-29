@@ -1,5 +1,5 @@
-import type { ConfigRow, FilterDimension, Filters, ScenarioScope, ScreenId, ViewId } from "./types";
-import { FILTER_DIMENSIONS, SCENARIO_SCOPES } from "./types";
+import type { ConfigRow, FilterDimension, Filters, ScenarioScope, ScreenId, SuiteScope, ViewId } from "./types";
+import { FILTER_DIMENSIONS, SCENARIO_SCOPES, SUITE_SCOPES } from "./types";
 import { ScreenSelector } from "./ScreenSelector";
 import { ViewSelector } from "./ViewSelector";
 
@@ -20,6 +20,8 @@ interface SidebarProps {
   onViewChange: (id: ViewId) => void;
   scenarioScope: ScenarioScope;
   onScopeChange: (scope: ScenarioScope) => void;
+  suiteScope: SuiteScope;
+  onSuiteChange: (suite: SuiteScope) => void;
   filteredCount: number;
   totalCount: number;
   totalRuns: number;
@@ -36,6 +38,8 @@ export function Sidebar({
   onViewChange,
   scenarioScope,
   onScopeChange,
+  suiteScope,
+  onSuiteChange,
   filteredCount,
   totalCount,
   totalRuns,
@@ -50,6 +54,27 @@ export function Sidebar({
       </p>
 
       <ScreenSelector active={activeScreen} onChange={onScreenChange} />
+
+      <fieldset className="mb-3 border border-zinc-800 rounded p-2">
+        <legend className="text-[0.65rem] font-semibold uppercase tracking-wider text-zinc-400 px-1">
+          Suite
+        </legend>
+        <div className="flex flex-wrap gap-1">
+          {SUITE_SCOPES.map((s) => (
+            <button
+              key={s.id}
+              onClick={() => onSuiteChange(s.id)}
+              className={`text-[0.65rem] px-2 py-0.5 rounded-full border transition-colors ${
+                suiteScope === s.id
+                  ? "border-emerald-500 bg-emerald-500/15 text-emerald-400"
+                  : "border-zinc-700 text-zinc-500 hover:border-zinc-500 hover:text-zinc-300"
+              }`}
+            >
+              {s.label}
+            </button>
+          ))}
+        </div>
+      </fieldset>
 
       <fieldset className="mb-3 border border-zinc-800 rounded p-2">
         <legend className="text-[0.65rem] font-semibold uppercase tracking-wider text-zinc-400 px-1">

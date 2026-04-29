@@ -340,6 +340,22 @@ def on_message(self, msg: Message) -> None:
 
 See [BACKEND_SETUP.md](BACKEND_SETUP.md) for full installation instructions and [MODEL_GUIDE.md](MODEL_GUIDE.md) for which model to pick.
 
+### Sampling Parameters
+
+Each model family has its own recommended temperature / top_p / top_k — and those recommendations differ substantially across families. Running everything at a single default is a measurable handicap for most models. Forge ships a per-model recommendations map that consumers opt into explicitly:
+
+```python
+from forge.clients import LlamafileClient, get_sampling_defaults
+
+client = LlamafileClient(
+    model="qwen3.5:27b-q4_K_M",
+    mode="native",
+    **get_sampling_defaults("qwen3.5:27b-q4_K_M"),
+)
+```
+
+See [MODEL_GUIDE.md#sampling-parameters](MODEL_GUIDE.md#sampling-parameters) for the supported-models table, source citations, and override patterns.
+
 ---
 
 ## Context Management

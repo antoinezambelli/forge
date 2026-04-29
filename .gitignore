@@ -22,7 +22,7 @@ htmlcov/
 # Claude Code
 .claude/
 
-# Eval results (scratch files only — eval_results.jsonl is tracked via LFS)
+# Eval results (scratch files only — eval_results.jsonl + eval_results_rig*.jsonl tracked via LFS)
 eval_tight*.jsonl
 eval_vram*.jsonl
 ablation_progress.log
@@ -38,3 +38,4 @@ Desktop.ini
 .opencode/
 opencode-panic-*.log
 .opencode.json
+scripts/run_ablation.bat

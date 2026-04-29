@@ -1,0 +1,6 @@
+{
+  "rig-00": {"gpu": "RTX 5070", "platform": "windows"},
+  "rig-01": {"gpu": "RTX 5070 Ti", "platform": "linux/ubuntu24.04"},
+  "rig-02": {"gpu": "2x RTX 5070 Ti", "platform": "linux/ubuntu24.04"},
+  "rig-03": {"gpu": "AMD Strix Halo APU (128GB unified)", "platform": "linux/fedora43"}
+}

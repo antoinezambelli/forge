@@ -17,6 +17,17 @@ export interface ConfigRow {
   scenarios: Record<string, number | null>;
   scenarioRuns?: Record<string, number>;
   scenarioCorrect?: Record<string, number>;
+  /** Per-scenario components used by scopeRows() to recompute aggregates
+   *  consistently when the scenario set is filtered. Optional for backward
+   *  compatibility with older data blobs. */
+  scenarioCompleted?: Record<string, number>;
+  scenarioValidated?: Record<string, number>;
+  scenarioIdealCalls?: Record<string, number>;
+  scenarioActualCalls?: Record<string, number>;
+  scenarioWastedSum?: Record<string, number>;
+  scenarioWastedN?: Record<string, number>;
+  scenarioSpeedSum?: Record<string, number>;
+  scenarioSpeedN?: Record<string, number>;
 }
 
 /** The full data blob injected by report.py into the built HTML. */
@@ -24,6 +35,8 @@ export interface DashboardData {
   rows: ConfigRow[];
   scenarios: string[];
   scenarioAbbrev: Record<string, string>;
+  /** scenario name -> suite ("og18" | "advanced_reasoning"). */
+  scenarioSuite: Record<string, string>;
   timestamp: string;
 }
 
@@ -32,13 +45,22 @@ export interface SortState {
   asc: boolean;
 }
 
-/** Scenario scope — controls which scenarios are included in aggregates and columns. */
+/** Scenario scope (statefulness axis) — controls which scenarios are included in aggregates and columns. */
 export type ScenarioScope = "all" | "lambda" | "stateful";
 
 export const SCENARIO_SCOPES: { id: ScenarioScope; label: string }[] = [
   { id: "all", label: "All" },
   { id: "lambda", label: "Lambda" },
   { id: "stateful", label: "Stateful" },
+];
+
+/** Suite scope (suite axis) — controls which scenario suite is shown. */
+export type SuiteScope = "all" | "og18" | "advanced_reasoning";
+
+export const SUITE_SCOPES: { id: SuiteScope; label: string }[] = [
+  { id: "all", label: "All" },
+  { id: "og18", label: "OG-18" },
+  { id: "advanced_reasoning", label: "Advanced Reasoning" },
 ];
 
 export const FILTER_DIMENSIONS = ["backend", "mode", "family", "quant"] as const;

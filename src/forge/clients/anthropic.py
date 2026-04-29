@@ -31,14 +31,12 @@ class AnthropicClient:
         self,
         model: str,
         api_key: str | None = None,
-        temperature: float = 0.7,
         max_tokens: int = 4096,
         timeout: float = 300.0,
         max_retries: int = 3,
         tool_choice: str | None = None,
     ) -> None:
         self.model = model
-        self.temperature = temperature
         self.max_tokens = max_tokens
         self._tool_choice = tool_choice  # "auto", "any", or None (default=auto)
         self._client = anthropic.AsyncAnthropic(
@@ -218,7 +216,6 @@ class AnthropicClient:
             "model": self.model,
             "messages": converted,
             "max_tokens": self.max_tokens,
-            "temperature": self.temperature,
         }
         if system:
             kwargs["system"] = system

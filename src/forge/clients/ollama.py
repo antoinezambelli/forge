@@ -45,12 +45,22 @@ class OllamaClient:
         model: str,
         base_url: str = "http://localhost:11434",
         temperature: float = 0.7,
+        top_p: float | None = None,
+        top_k: int | None = None,
+        min_p: float | None = None,
+        repeat_penalty: float | None = None,
+        presence_penalty: float | None = None,
         timeout: float = 300.0,
         think: bool | None = None,
     ) -> None:
         self.base_url = base_url
         self.model = model
         self.temperature = temperature
+        self.top_p = top_p
+        self.top_k = top_k
+        self.min_p = min_p
+        self.repeat_penalty = repeat_penalty
+        self.presence_penalty = presence_penalty
         self._http = httpx.AsyncClient(timeout=timeout)
         self._num_ctx: int | None = None
 
@@ -65,6 +75,16 @@ class OllamaClient:
 
     def _build_options(self) -> dict[str, Any]:
         opts: dict[str, Any] = {"temperature": self.temperature}
+        if self.top_p is not None:
+            opts["top_p"] = self.top_p
+        if self.top_k is not None:
+            opts["top_k"] = self.top_k
+        if self.min_p is not None:
+            opts["min_p"] = self.min_p
+        if self.repeat_penalty is not None:
+            opts["repeat_penalty"] = self.repeat_penalty
+        if self.presence_penalty is not None:
+            opts["presence_penalty"] = self.presence_penalty
         if self._num_ctx is not None:
             opts["num_ctx"] = self._num_ctx
         return opts

@@ -35,6 +35,11 @@ SCENARIO_NAMES = [
     "data_gap_recovery",
     "compaction_stress",
     "phase2_compaction",
+    # Advanced reasoning (lambda)
+    "data_gap_recovery_extended",
+    "argument_transformation",
+    "grounded_synthesis",
+    "inconsistent_api_recovery",
     # Stateful scenarios (same order as lambda)
     "compaction_stress_stateful",
     "phase2_compaction_stateful",
@@ -49,6 +54,11 @@ SCENARIO_NAMES = [
     "sequential_reasoning_stateful",
     "error_recovery_stateful",
     "data_gap_recovery_stateful",
+    # Advanced reasoning (stateful)
+    "data_gap_recovery_extended_stateful",
+    "argument_transformation_stateful",
+    "grounded_synthesis_stateful",
+    "inconsistent_api_recovery_stateful",
 ]
 
 # Fallback ideal iterations for JSONL files that predate the ideal_iterations field.
@@ -83,6 +93,15 @@ _SCENARIO_IDEAL_FALLBACK: dict[str, int] = {
 
 # Scenarios excluded from speed calculation (outlier timing)
 SPEED_EXCLUDE = {"compaction_stress", "compaction_stress_stateful", "inventory_audit", "supplier_deep_dive"}
+
+# Suite membership — advanced_reasoning vs og18. Used to drive the dashboard
+# suite slicer; everything not in _AR_SCENARIOS is treated as og18.
+_AR_SCENARIOS: set[str] = {
+    "data_gap_recovery_extended", "data_gap_recovery_extended_stateful",
+    "argument_transformation", "argument_transformation_stateful",
+    "grounded_synthesis", "grounded_synthesis_stateful",
+    "inconsistent_api_recovery", "inconsistent_api_recovery_stateful",
+}
 
 
 # ── Data loading ────────────────────────────────────────────────
@@ -182,6 +201,14 @@ class ConfigMetrics:
     per_scenario_score: dict[str, float | None]  # scenario -> correct / total
     per_scenario_runs: dict[str, int]  # scenario -> total run count
     per_scenario_correct: dict[str, int]  # scenario -> correct run count
+    per_scenario_completed: dict[str, int]  # scenario -> completed run count
+    per_scenario_validated: dict[str, int]  # scenario -> count of runs with non-None accuracy (denom for accuracy)
+    per_scenario_ideal_calls: dict[str, int]  # scenario -> sum of ideal_iterations across correct runs
+    per_scenario_actual_calls: dict[str, int]  # scenario -> sum of iterations across correct runs
+    per_scenario_wasted_sum: dict[str, float]  # scenario -> sum of wasted_calls across completed runs
+    per_scenario_wasted_n: dict[str, int]  # scenario -> count of completed runs with non-None wasted
+    per_scenario_speed_sum: dict[str, float]  # scenario -> sum of elapsed_s across completed runs (speed-eligible)
+    per_scenario_speed_n: dict[str, int]  # scenario -> count of speed-eligible completed runs
     efficiency: float  # 1.0 = perfect (no wasted calls)
     avg_wasted: float
     speed: float  # avg seconds per run (excluding compaction_stress)
@@ -232,6 +259,14 @@ def compute_config_metrics(
     per_scenario_score: dict[str, float | None] = {}
     per_scenario_runs: dict[str, int] = {}
     per_scenario_correct: dict[str, int] = {}
+    per_scenario_completed: dict[str, int] = {}
+    per_scenario_validated: dict[str, int] = {}
+    per_scenario_ideal_calls: dict[str, int] = {}
+    per_scenario_actual_calls: dict[str, int] = {}
+    per_scenario_wasted_sum: dict[str, float] = {}
+    per_scenario_wasted_n: dict[str, int] = {}
+    per_scenario_speed_sum: dict[str, float] = {}
+    per_scenario_speed_n: dict[str, int] = {}
 
     # A config is complete when every scenario it participates in (>0 runs)
     # has reached the global target run count for that scenario.
@@ -255,6 +290,7 @@ def compute_config_metrics(
         total_completed += completed
         per_scenario_completeness[scenario_name] = completed / n if n > 0 else 0.0
         per_scenario_runs[scenario_name] = n
+        per_scenario_completed[scenario_name] = completed
 
         # Accuracy (correct / total runs — score semantics)
         tainted = sum(1 for r in runs if r.get("validate_error"))
@@ -267,26 +303,50 @@ def compute_config_metrics(
         total_validated += len(validated)
         total_correct += sc_correct
         per_scenario_correct[scenario_name] = sc_correct
+        per_scenario_validated[scenario_name] = len(validated)
         if n > 0:
             per_scenario_score[scenario_name] = sc_correct / n
         else:
             per_scenario_score[scenario_name] = None
 
         # Wasted calls (completed runs only)
+        sc_wasted_sum = 0.0
+        sc_wasted_n = 0
         for r in runs:
             if r["completeness"] and r.get("wasted_calls") is not None:
                 total_wasted += r["wasted_calls"]
                 wasted_count += 1
+                sc_wasted_sum += r["wasted_calls"]
+                sc_wasted_n += 1
+        per_scenario_wasted_sum[scenario_name] = sc_wasted_sum
+        per_scenario_wasted_n[scenario_name] = sc_wasted_n
 
         # Stream retries
         for r in runs:
             total_stream_retries += r.get("stream_retries", 0)
 
         # Speed (exclude compaction_stress)
+        sc_speed_sum = 0.0
+        sc_speed_n = 0
         if scenario_name not in SPEED_EXCLUDE:
             for r in runs:
                 if r["completeness"]:
                     speed_times.append(r["elapsed_s"])
+                    sc_speed_sum += r["elapsed_s"]
+                    sc_speed_n += 1
+        per_scenario_speed_sum[scenario_name] = sc_speed_sum
+        per_scenario_speed_n[scenario_name] = sc_speed_n
+
+        # Per-scenario efficiency components (correct runs only, same gating as global)
+        sc_ideal = 0
+        sc_actual = 0
+        for r in runs:
+            if r["completeness"] and r.get("accuracy"):
+                ideal = r.get("ideal_iterations") or _SCENARIO_IDEAL_FALLBACK.get(scenario_name, 3)
+                sc_ideal += ideal
+                sc_actual += r["iterations"]
+        per_scenario_ideal_calls[scenario_name] = sc_ideal
+        per_scenario_actual_calls[scenario_name] = sc_actual
 
     completeness = total_completed / total_runs if total_runs > 0 else 0.0
     avg_wasted = total_wasted / wasted_count if wasted_count > 0 else 0.0
@@ -321,6 +381,14 @@ def compute_config_metrics(
         per_scenario_score=per_scenario_score,
         per_scenario_runs=per_scenario_runs,
         per_scenario_correct=per_scenario_correct,
+        per_scenario_completed=per_scenario_completed,
+        per_scenario_validated=per_scenario_validated,
+        per_scenario_ideal_calls=per_scenario_ideal_calls,
+        per_scenario_actual_calls=per_scenario_actual_calls,
+        per_scenario_wasted_sum=per_scenario_wasted_sum,
+        per_scenario_wasted_n=per_scenario_wasted_n,
+        per_scenario_speed_sum=per_scenario_speed_sum,
+        per_scenario_speed_n=per_scenario_speed_n,
         efficiency=efficiency,
         avg_wasted=avg_wasted,
         speed=speed,
@@ -345,6 +413,11 @@ _SCENARIO_ABBREV: dict[str, str] = {
     "data_gap_recovery": "dgr",
     "phase2_compaction": "p2c",
     "relevance_detection": "rel",
+    # Advanced reasoning (lambda)
+    "data_gap_recovery_extended": "dge",
+    "argument_transformation": "art",
+    "grounded_synthesis": "grs",
+    "inconsistent_api_recovery": "iar",
     # Stateful (same abbrev + _s)
     "basic_2step_stateful": "b2s_s",
     "sequential_3step_stateful": "s3s_s",
@@ -359,6 +432,11 @@ _SCENARIO_ABBREV: dict[str, str] = {
     "inventory_audit": "inv",
     "supplier_deep_dive": "sdd",
     "relevance_detection_stateful": "rel_s",
+    # Advanced reasoning (stateful)
+    "data_gap_recovery_extended_stateful": "dge_s",
+    "argument_transformation_stateful": "art_s",
+    "grounded_synthesis_stateful": "grs_s",
+    "inconsistent_api_recovery_stateful": "iar_s",
 }
 
 
@@ -381,6 +459,13 @@ def extract_family(model: str) -> str:
         return "mistral-nemo"
     if "mistral:" in model:
         return "mistral-v0.3"
+    if model.startswith("granite-4.0:"):
+        variant = model.split(":")[1].split("-")[0]  # "h", before splitting further
+        # Names look like "granite-4.0:h-micro-q4_K_M" or "granite-4.0:h-tiny-q8_0"
+        # We want family = "granite-4.0-h-micro" or "granite-4.0-h-tiny"
+        parts = model.split(":")[1].split("-")
+        # parts[0]="h", parts[1]="micro|tiny", rest is quant
+        return f"granite-4.0-{parts[0]}-{parts[1]}"
     return model.split(":")[0]
 
 
@@ -629,6 +714,14 @@ def _metrics_to_json_row(m: ConfigMetrics, scenarios: list[str]) -> dict:
         },
         "scenarioRuns": {sc: m.per_scenario_runs.get(sc, 0) for sc in scenarios},
         "scenarioCorrect": {sc: m.per_scenario_correct.get(sc, 0) for sc in scenarios},
+        "scenarioCompleted": {sc: m.per_scenario_completed.get(sc, 0) for sc in scenarios},
+        "scenarioValidated": {sc: m.per_scenario_validated.get(sc, 0) for sc in scenarios},
+        "scenarioIdealCalls": {sc: m.per_scenario_ideal_calls.get(sc, 0) for sc in scenarios},
+        "scenarioActualCalls": {sc: m.per_scenario_actual_calls.get(sc, 0) for sc in scenarios},
+        "scenarioWastedSum": {sc: round(m.per_scenario_wasted_sum.get(sc, 0.0), 2) for sc in scenarios},
+        "scenarioWastedN": {sc: m.per_scenario_wasted_n.get(sc, 0) for sc in scenarios},
+        "scenarioSpeedSum": {sc: round(m.per_scenario_speed_sum.get(sc, 0.0), 2) for sc in scenarios},
+        "scenarioSpeedN": {sc: m.per_scenario_speed_n.get(sc, 0) for sc in scenarios},
     }
 
 
@@ -687,11 +780,16 @@ def write_html(
 
     rows = [_metrics_to_json_row(m, scenarios) for m in _sort_metrics(metrics_list)]
     sc_abbrev = {sc: _SCENARIO_ABBREV.get(sc, sc[:3]) for sc in scenarios}
+    sc_suite = {
+        sc: "advanced_reasoning" if sc in _AR_SCENARIOS else "og18"
+        for sc in scenarios
+    }
 
     data_blob = json.dumps({
         "rows": rows,
         "scenarios": scenarios,
         "scenarioAbbrev": sc_abbrev,
+        "scenarioSuite": sc_suite,
         "timestamp": datetime.datetime.now().strftime("%Y-%m-%d %H:%M"),
     })
 
@@ -894,27 +992,27 @@ def write_markdown_views(
 
     # ── index.md ──────────────────────────────────────────────────
     if written:
+        # Section header → predicate over (relpath, desc) entries in `written`.
+        # A section is only emitted if at least one entry matches.
+        sections: list[tuple[str, callable]] = [
+            ("## Reforged — which model should I run?", lambda rp: rp.startswith("reforged/")),
+            ("## Reforged vs Bare — how much does forge lift a model?", lambda rp: rp == "reforged-vs-bare.md"),
+            ("## Full Ablation — which guardrails do the work?", lambda rp: rp == "ablation.md"),
+            ("## Other cross-cuts", lambda rp: rp in ("native-vs-prompt.md", "budget.md")),
+        ]
         index_lines = [
             "# Forge Eval Reports\n",
             "For model and backend recommendations, see [Model Guide](../MODEL_GUIDE.md).\n",
-            "## Reforged — which model should I run?\n",
         ]
-        for relpath, desc in written:
-            if relpath.startswith("reforged/"):
-                index_lines.append(f"- [{relpath}](raw/{relpath}) — {desc}")
-        index_lines.append("\n## Reforged vs Bare — how much does forge lift a model?\n")
-        for relpath, desc in written:
-            if relpath == "reforged-vs-bare.md":
-                index_lines.append(f"- [{relpath}](raw/{relpath}) — {desc}")
-        index_lines.append("\n## Full Ablation — which guardrails do the work?\n")
-        for relpath, desc in written:
-            if relpath == "ablation.md":
-                index_lines.append(f"- [{relpath}](raw/{relpath}) — {desc}")
-        index_lines.append("\n## Other cross-cuts\n")
-        for relpath, desc in written:
-            if relpath in ("native-vs-prompt.md", "budget.md"):
-                index_lines.append(f"- [{relpath}](raw/{relpath}) — {desc}")
-        index_lines.append(f"\n*Generated {timestamp}*\n")
+        for header, pred in sections:
+            entries = [(rp, desc) for rp, desc in written if pred(rp)]
+            if not entries:
+                continue
+            index_lines.append(f"{header}\n")
+            for rp, desc in entries:
+                index_lines.append(f"- [{rp}](raw/{rp}) — {desc}")
+            index_lines.append("")
+        index_lines.append(f"*Generated {timestamp}*\n")
         (output_dir / "index.md").write_text("\n".join(index_lines), encoding="utf-8")
         print(f"Markdown views written to {output_dir}/raw/ ({len(written)} files + index.md)")
 

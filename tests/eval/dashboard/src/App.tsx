@@ -7,6 +7,7 @@ import type {
   ScenarioScope,
   ScreenId,
   SortState,
+  SuiteScope,
   ViewId,
 } from "./types";
 import { FILTER_DIMENSIONS, VIEWS } from "./types";
@@ -32,6 +33,7 @@ function App() {
   const [activeScreen, setActiveScreen] = useState<ScreenId>("reforged");
   const [activeView, setActiveView] = useState<ViewId>("all");
   const [scenarioScope, setScenarioScope] = useState<ScenarioScope>("all");
+  const [suiteScope, setSuiteScope] = useState<SuiteScope>("all");
 
   useEffect(() => {
     loadData().then((d) => {
@@ -52,10 +54,17 @@ function App() {
     );
   }, [data, filters, activeScreen]);
 
-  // Apply scenario scope — filters scenario columns and recomputes score
+  // Apply scenario scope (statefulness) and suite scope — filters scenario
+  // columns and recomputes score from the intersected scenario set.
   const { rows: scopedRows, scenarios: scopedScenarios } = useMemo(
-    () => scopeRows(filtered, data?.scenarios ?? [], scenarioScope),
-    [filtered, data, scenarioScope],
+    () => scopeRows(
+      filtered,
+      data?.scenarios ?? [],
+      scenarioScope,
+      suiteScope,
+      data?.scenarioSuite ?? {},
+    ),
+    [filtered, data, scenarioScope, suiteScope],
   );
 
   const scopedAbbrev = useMemo(() => {
@@ -117,6 +126,11 @@ function App() {
     setChecked([]);
   }, []);
 
+  const handleSuiteChange = useCallback((suite: SuiteScope) => {
+    setSuiteScope(suite);
+    setChecked([]);
+  }, []);
+
   const handleSort = useCallback(
     (col: string) => {
       setSort((prev) =>
@@ -166,6 +180,8 @@ function App() {
         onViewChange={handleViewChange}
         scenarioScope={scenarioScope}
         onScopeChange={handleScopeChange}
+        suiteScope={suiteScope}
+        onSuiteChange={handleSuiteChange}
         filteredCount={filtered.length}
         totalCount={filterByScreen(data.rows, activeScreen).length}
         totalRuns={totalRuns}
