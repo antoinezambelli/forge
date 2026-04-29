@@ -1,4 +1,4 @@
-import type { ConfigRow, ScenarioScope, ScreenId, SortState, ViewDef } from "./types";
+import type { ConfigRow, ScenarioScope, ScreenId, SortState, SuiteScope, ViewDef } from "./types";
 import { ABLATION_ORDER } from "./types";
 
 /** Filter rows according to the active screen.
@@ -50,49 +50,100 @@ export function fmtPct(v: number | null, decimals: number = 0): string {
   return `${v.toFixed(decimals)}%`;
 }
 
-/** Filter scenarios by scope and recompute row aggregates.
+/** Filter scenarios by scope (statefulness) and suite (og18 / advanced_reasoning),
+ * then recompute row aggregates from the filtered scenario set.
  *
- * When scope is "lambda" or "stateful", we filter the scenario list and
- * recompute score from the per-scenario values.
- * Other aggregates (completeness, efficiency, wasted, speed) are kept
- * as-is since the data blob doesn't carry per-scenario breakdowns for those.
+ * Both axes intersect: e.g. scope="stateful" + suite="advanced_reasoning"
+ * yields the 4 stateful AR scenarios.
+ *
+ * All shown aggregates (score, accuracy, completeness, efficiency, wasted, speed)
+ * are recomputed from per-scenario components emitted by report.py — using the
+ * same formulas as the Python side — so a scoped view stays internally
+ * consistent. (Older data blobs without per-scenario components fall back to
+ * the unscoped values for the metrics they can't reconstruct.)
  */
 export function scopeRows(
   rows: ConfigRow[],
   allScenarios: string[],
   scope: ScenarioScope,
+  suite: SuiteScope,
+  scenarioSuite: Record<string, string>,
 ): { rows: ConfigRow[]; scenarios: string[] } {
-  if (scope === "all") {
-    return { rows, scenarios: allScenarios };
+  const isStateful = (sc: string) => sc.endsWith("_stateful");
+
+  let scenarios = allScenarios;
+  if (scope === "lambda") {
+    scenarios = scenarios.filter((sc) => !isStateful(sc));
+  } else if (scope === "stateful") {
+    scenarios = scenarios.filter(isStateful);
+  }
+  if (suite === "og18") {
+    scenarios = scenarios.filter((sc) => scenarioSuite[sc] === "og18");
+  } else if (suite === "advanced_reasoning") {
+    scenarios = scenarios.filter((sc) => scenarioSuite[sc] === "advanced_reasoning");
   }
 
-  const isStateful = (sc: string) => sc.endsWith("_stateful");
-  const scenarios = scope === "stateful"
-    ? allScenarios.filter(isStateful)
-    : allScenarios.filter((sc) => !isStateful(sc));
-
+  // Defensive: if filters wiped out everything, fall back to no-filter view.
   if (scenarios.length === 0) {
     return { rows, scenarios: allScenarios };
   }
 
+  // No filtering applied? Return unmodified.
+  if (scenarios.length === allScenarios.length) {
+    return { rows, scenarios: allScenarios };
+  }
+
   const recomputed = rows.map((row) => {
-    // Recompute using the same formula as Python: score = total_correct / total_runs
     let totalRuns = 0;
     let totalCorrect = 0;
-    for (const sc of scenarios) {
-      const runs = row.scenarioRuns?.[sc] ?? 0;
-      const correct = row.scenarioCorrect?.[sc] ?? 0;
-      totalRuns += runs;
-      totalCorrect += correct;
-    }
-    const score = totalRuns > 0
-      ? Math.round(totalCorrect / totalRuns * 1000) / 10
-      : 0;
+    let totalCompleted = 0;
+    let totalValidated = 0;
+    let totalIdeal = 0;
+    let totalActual = 0;
+    let wastedSum = 0;
+    let wastedN = 0;
+    let speedSum = 0;
+    let speedN = 0;
 
-    // Recompute N as max run count across scoped scenarios
+    for (const sc of scenarios) {
+      totalRuns      += row.scenarioRuns?.[sc] ?? 0;
+      totalCorrect   += row.scenarioCorrect?.[sc] ?? 0;
+      totalCompleted += row.scenarioCompleted?.[sc] ?? 0;
+      totalValidated += row.scenarioValidated?.[sc] ?? 0;
+      totalIdeal     += row.scenarioIdealCalls?.[sc] ?? 0;
+      totalActual    += row.scenarioActualCalls?.[sc] ?? 0;
+      wastedSum      += row.scenarioWastedSum?.[sc] ?? 0;
+      wastedN        += row.scenarioWastedN?.[sc] ?? 0;
+      speedSum       += row.scenarioSpeedSum?.[sc] ?? 0;
+      speedN         += row.scenarioSpeedN?.[sc] ?? 0;
+    }
+
+    // Match Python rounding: percentages to 1 decimal, wasted/speed to 1 decimal.
+    const round1 = (x: number) => Math.round(x * 10) / 10;
+
+    const score        = totalRuns > 0       ? round1((totalCorrect / totalRuns) * 100)        : 0;
+    const accuracy     = totalValidated > 0  ? round1((totalCorrect / totalValidated) * 100)   : null;
+    const completeness = totalRuns > 0       ? round1((totalCompleted / totalRuns) * 100)      : 0;
+    const efficiency   = totalActual > 0     ? round1(Math.min(totalIdeal / totalActual, 1) * 100) : 0;
+    const wasted       = wastedN > 0         ? round1(wastedSum / wastedN)                     : 0;
+    const speed        = speedN > 0          ? round1(speedSum / speedN)                       : 0;
+
+    // Detection: if per-scenario components are missing, fall back to original
+    // unscoped values for the metrics we can't reconstruct (older data blobs).
+    const hasFullDetail = row.scenarioCompleted !== undefined;
+
     const n = Math.max(0, ...scenarios.map((sc) => row.scenarioRuns?.[sc] ?? 0));
 
-    return { ...row, score, n };
+    return {
+      ...row,
+      score,
+      accuracy:     hasFullDetail ? accuracy     : row.accuracy,
+      completeness: hasFullDetail ? completeness : row.completeness,
+      efficiency:   hasFullDetail ? efficiency   : row.efficiency,
+      wasted:       hasFullDetail ? wasted       : row.wasted,
+      speed:        hasFullDetail ? speed        : row.speed,
+      n,
+    };
   });
 
   return { rows: recomputed, scenarios };
