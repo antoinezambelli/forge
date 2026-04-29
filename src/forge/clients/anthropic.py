@@ -240,8 +240,19 @@ class AnthropicClient:
         self,
         messages: list[dict[str, str]],
         tools: list[ToolSpec] | None = None,
+        sampling: dict[str, Any] | None = None,
     ) -> LLMResponse:
-        """Send messages via the Anthropic Messages API."""
+        """Send messages via the Anthropic Messages API.
+
+        ``sampling`` is accepted for protocol symmetry but ignored —
+        AnthropicClient does not currently expose sampling kwargs through
+        forge.
+        """
+        if sampling:
+            log.debug(
+                "AnthropicClient ignores per-call sampling overrides: %s",
+                sorted(sampling.keys()),
+            )
         kwargs = self._build_kwargs(messages, tools)
         try:
             response = await self._client.messages.create(**kwargs)
@@ -259,8 +270,17 @@ class AnthropicClient:
         self,
         messages: list[dict[str, str]],
         tools: list[ToolSpec] | None = None,
+        sampling: dict[str, Any] | None = None,
     ) -> AsyncIterator[StreamChunk]:
-        """Stream via the Anthropic Messages API."""
+        """Stream via the Anthropic Messages API.
+
+        ``sampling`` is accepted for protocol symmetry but ignored.
+        """
+        if sampling:
+            log.debug(
+                "AnthropicClient ignores per-call sampling overrides: %s",
+                sorted(sampling.keys()),
+            )
         kwargs = self._build_kwargs(messages, tools)
 
         accumulated_text = ""

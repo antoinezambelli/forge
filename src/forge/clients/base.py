@@ -83,6 +83,7 @@ class LLMClient(Protocol):
         self,
         messages: list[dict[str, str]],
         tools: list[ToolSpec] | None = None,
+        sampling: dict[str, Any] | None = None,
     ) -> LLMResponse:
         """Send messages and return a parsed response.
 
@@ -91,6 +92,15 @@ class LLMClient(Protocol):
         or malformed output that couldn't be parsed as a tool call).
 
         The runner inspects the response and decides whether to retry.
+
+        Args:
+            messages: API-format messages to send.
+            tools: Tool specs to include with the request.
+            sampling: Optional per-call sampling overrides
+                (``temperature``, ``top_p``, ``top_k``, ``min_p``,
+                ``repeat_penalty``, ``presence_penalty``, ``seed``).
+                Per-call values win over instance state for this call only;
+                the client's instance fields are not mutated.
         """
         ...
 
@@ -98,6 +108,7 @@ class LLMClient(Protocol):
         self,
         messages: list[dict[str, str]],
         tools: list[ToolSpec] | None = None,
+        sampling: dict[str, Any] | None = None,
     ) -> AsyncIterator[StreamChunk]:
         """Send messages and yield streaming chunks.
 
@@ -107,6 +118,12 @@ class LLMClient(Protocol):
 
         The runner forwards chunks to its on_chunk callback for UI/logging,
         then inspects the FINAL chunk and decides whether to retry.
+
+        Args:
+            messages: API-format messages to send.
+            tools: Tool specs to include with the request.
+            sampling: Optional per-call sampling overrides (see ``send``).
+                Per-call values win over instance state without mutating self.
         """
         ...
 

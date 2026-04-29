@@ -14,8 +14,12 @@ Two functions live here, separating lookup from policy:
     | False  | yes          | one-shot INFO log; return ``{}``             |
     | False  | no           | return ``{}`` (silent)                       |
 
-Proxy/passthrough callers do NOT consult this map — they forward whatever
-the caller sent.
+Proxy callers do not consult this map. The proxy plumbs through whatever
+sampling params the inbound request carries (OpenAI-compatible body
+fields: ``temperature``, ``top_p``, ``top_k``, ``min_p``,
+``repeat_penalty``, ``presence_penalty``, ``seed``). For per-model
+recommended sampling in proxy mode, the calling client looks up the map
+and includes the params in the request body.
 
 Each row carries an inline URL comment pointing at the HF model card the
 values were pulled from. Values are verified one model at a time against

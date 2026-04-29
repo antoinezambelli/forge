@@ -205,7 +205,7 @@ class TestInferenceInjection:
         # Mock client — capture what api_messages it receives
         captured_messages = []
 
-        async def mock_send(api_messages, tools=None):
+        async def mock_send(api_messages, tools=None, sampling=None):
             captured_messages.extend(api_messages)
             return [ToolCall(tool="done", args={})]
 
@@ -248,7 +248,7 @@ class TestInferenceInjection:
 
         captured_messages = []
 
-        async def mock_send(api_messages, tools=None):
+        async def mock_send(api_messages, tools=None, sampling=None):
             captured_messages.extend(api_messages)
             return [ToolCall(tool="done", args={})]
 

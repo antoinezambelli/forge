@@ -1346,3 +1346,71 @@ class TestRecommendedSampling:
         assert client.temperature is None
         assert client.top_p is None
         assert client.top_k is None
+
+
+class TestPerCallSampling:
+    """Issue A: per-call sampling overrides on send."""
+
+    @pytest.mark.asyncio
+    async def test_per_call_sampling_overrides_instance(self) -> None:
+        """sampling=... on send() overrides instance fields for this call only."""
+        client = LlamafileClient(
+            base_url="http://test:8080/v1",
+            model="test-model",
+            mode="native",
+            temperature=0.7,
+            top_p=0.9,
+        )
+        mock_http = AsyncMock()
+        mock_http.stream = MagicMock()
+        client._http = mock_http
+        client._http.post.return_value = _mock_response({
+            "choices": [{
+                "message": {"content": "ok", "tool_calls": None},
+                "finish_reason": "stop",
+            }],
+        })
+
+        await client.send(
+            [{"role": "user", "content": "hi"}],
+            tools=None,
+            sampling={"temperature": 0.0, "seed": 42},
+        )
+
+        body = client._http.post.call_args.kwargs["json"]
+        # Per-call wins for fields it specifies.
+        assert body["temperature"] == 0.0
+        assert body["seed"] == 42
+        # Instance values still apply for fields not in the override.
+        assert body["top_p"] == 0.9
+
+        # Instance fields are unmutated.
+        assert client.temperature == 0.7
+        assert client.top_p == 0.9
+
+    @pytest.mark.asyncio
+    async def test_per_call_sampling_none_uses_instance(self) -> None:
+        """sampling=None: only instance fields go on the wire."""
+        client = LlamafileClient(
+            base_url="http://test:8080/v1",
+            model="test-model",
+            mode="native",
+            temperature=0.5,
+        )
+        mock_http = AsyncMock()
+        mock_http.stream = MagicMock()
+        client._http = mock_http
+        client._http.post.return_value = _mock_response({
+            "choices": [{
+                "message": {"content": "ok", "tool_calls": None},
+                "finish_reason": "stop",
+            }],
+        })
+
+        await client.send(
+            [{"role": "user", "content": "hi"}], tools=None, sampling=None,
+        )
+
+        body = client._http.post.call_args.kwargs["json"]
+        assert body["temperature"] == 0.5
+        assert "seed" not in body

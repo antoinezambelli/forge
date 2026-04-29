@@ -887,3 +887,63 @@ class TestRecommendedSampling:
         assert client.temperature is None
         assert client.top_p is None
         assert client.top_k is None
+
+
+class TestPerCallSampling:
+    """Issue A: per-call sampling overrides on send/send_stream."""
+
+    @pytest.mark.asyncio
+    async def test_per_call_sampling_overrides_instance(self) -> None:
+        """sampling=... on send() overrides instance fields for this call only."""
+        client = OllamaClient(
+            base_url="http://test:11434",
+            model="test-model",
+            temperature=0.7,  # instance field
+            top_p=0.9,
+        )
+        mock_http = AsyncMock()
+        mock_http.stream = MagicMock()
+        client._http = mock_http
+        client._http.post.return_value = _mock_response({
+            "message": {"role": "assistant", "content": "ok"}
+        })
+
+        await client.send(
+            [{"role": "user", "content": "hi"}],
+            sampling={"temperature": 0.0, "seed": 42},
+        )
+
+        body = client._http.post.call_args.kwargs["json"]
+        opts = body["options"]
+        # Per-call wins for fields it specifies.
+        assert opts["temperature"] == 0.0
+        assert opts["seed"] == 42
+        # Instance values still apply for fields not in the override.
+        assert opts["top_p"] == 0.9
+
+        # Instance fields are unmutated.
+        assert client.temperature == 0.7
+        assert client.top_p == 0.9
+
+    @pytest.mark.asyncio
+    async def test_per_call_sampling_none_uses_instance(self) -> None:
+        """sampling=None: only instance fields go on the wire."""
+        client = OllamaClient(
+            base_url="http://test:11434",
+            model="test-model",
+            temperature=0.5,
+        )
+        mock_http = AsyncMock()
+        mock_http.stream = MagicMock()
+        client._http = mock_http
+        client._http.post.return_value = _mock_response({
+            "message": {"role": "assistant", "content": "ok"}
+        })
+
+        await client.send(
+            [{"role": "user", "content": "hi"}], sampling=None,
+        )
+
+        opts = client._http.post.call_args.kwargs["json"]["options"]
+        assert opts["temperature"] == 0.5
+        assert "seed" not in opts

@@ -61,14 +61,14 @@ class MockClient:
         self.responses = list(responses)
         self._call_index = 0
 
-    async def send(self, messages, tools=None):
+    async def send(self, messages, tools=None, sampling=None):
         resp = self.responses[self._call_index]
         self._call_index += 1
         if isinstance(resp, ToolCall):
             return [resp]
         return resp
 
-    async def send_stream(self, messages, tools=None):
+    async def send_stream(self, messages, tools=None, sampling=None):
         raise NotImplementedError
 
     async def get_context_length(self):

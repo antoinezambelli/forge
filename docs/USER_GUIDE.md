@@ -342,17 +342,37 @@ See [BACKEND_SETUP.md](BACKEND_SETUP.md) for full installation instructions and 
 
 ### Sampling Parameters
 
-Each model family has its own recommended temperature / top_p / top_k — and those recommendations differ substantially across families. Running everything at a single default is a measurable handicap for most models. Forge ships a per-model recommendations map that consumers opt into explicitly:
+Each model family has its own recommended temperature / top_p / top_k — and those recommendations differ substantially across families. Running everything at a single default is a measurable handicap for most models. Forge ships a per-model recommendations map that consumers opt into explicitly via a constructor flag:
 
 ```python
-from forge.clients import LlamafileClient, get_sampling_defaults
+from forge.clients import LlamafileClient
 
 client = LlamafileClient(
     model="qwen3.5:27b-q4_K_M",
     mode="native",
-    **get_sampling_defaults("qwen3.5:27b-q4_K_M"),
+    recommended_sampling=True,
 )
 ```
+
+The flag is opt-in. Default behavior (`recommended_sampling=False`) leaves sampling to backend defaults; if forge has opinions about the model, it logs a one-shot INFO message pointing the caller at the flag. With `recommended_sampling=True`, an unknown model raises `UnsupportedModelError`.
+
+#### Proxy mode
+
+The proxy does not consult the recommendations map. It plumbs whatever sampling params the inbound request body carries (OpenAI-compatible fields: `temperature`, `top_p`, `top_k`, `min_p`, `repeat_penalty`, `presence_penalty`, `seed`) through to the backend on a per-call basis. The proxy's pre-built client is treated as a "blank slate" — body fields are the only sampling source.
+
+```bash
+curl http://localhost:8081/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "qwen3.5:27b-q4_K_M",
+    "messages": [{"role": "user", "content": "hi"}],
+    "temperature": 1.0,
+    "top_p": 0.95,
+    "presence_penalty": 1.5
+  }'
+```
+
+To get card-recommended sampling in proxy mode, the calling client looks up `forge.clients.get_sampling_defaults(model)` and includes the values in the request body — the proxy is intentionally pure pass-through.
 
 See [MODEL_GUIDE.md#sampling-parameters](MODEL_GUIDE.md#sampling-parameters) for the supported-models table, source citations, and override patterns.
 

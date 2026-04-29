@@ -132,19 +132,34 @@ Running Qwen3.5 27B at the "standard" 0.7 temperature — instead of the card-re
 Forge ships a per-model recommendations map at `forge.clients.sampling_defaults`. Each entry is sourced directly from the model's HuggingFace card (or, when the vendor has not published sampling on the card, from a secondary source that cites the vendor — Granite 4.0 is the current example), with the source URL as an inline comment. Values are verified one entry at a time — no best-effort or extrapolated entries.
 
 ```python
-from forge.clients import LlamafileClient, get_sampling_defaults
+from forge.clients import LlamafileClient
 
-# Managed mode — explicitly pull recommended defaults
+# Managed mode — opt in to recommended defaults via constructor flag
 client = LlamafileClient(
     model="qwen3.5:27b-q4_K_M",
     mode="native",
-    **get_sampling_defaults("qwen3.5:27b-q4_K_M"),
+    recommended_sampling=True,
 )
 ```
 
-**Unknown models** (not in the map): `get_sampling_defaults` returns an empty dict and logs a one-time warning. The backend's own defaults apply. Forge supports all models; it only has opinions about the ones in the map.
+The flag is opt-in. Default behavior (`recommended_sampling=False`) leaves sampling to backend defaults; if forge has opinions about the model, it logs a one-shot INFO message pointing the caller at the flag. With `recommended_sampling=True`, an unknown model raises `UnsupportedModelError` — falling through to backend defaults silently would defeat the explicit opt-in.
 
-**Proxy mode** does *not* consult the map — the proxy is a pure pass-through and forwards whatever sampling params the caller sends.
+Caller's explicit non-None sampling kwargs win field-by-field over the map:
+
+```python
+client = LlamafileClient(
+    model="qwen3.5:27b-q4_K_M",
+    mode="native",
+    recommended_sampling=True,
+    temperature=0.5,  # overrides the map's 1.0; other map fields still apply
+)
+```
+
+For programmatic introspection without triggering policy, `forge.clients.get_sampling_defaults(model)` is a pure lookup — returns the map value (a fresh copy) or `{}` for unknown models. No logging, no raising.
+
+**Unknown models** (not in the map): forge supports all models; it only has opinions about the ones in the map. Without `recommended_sampling=True`, an unknown model gets backend defaults silently. With it, you get a fail-loud `UnsupportedModelError`.
+
+**Proxy mode** does not consult the map. The proxy plumbs whatever sampling params the inbound request body carries (OpenAI-compatible fields: `temperature`, `top_p`, `top_k`, `min_p`, `repeat_penalty`, `presence_penalty`, `seed`) through to the backend on a per-call basis without mutating the proxy's pre-built client. To get recommended-sampling behavior in proxy mode, the calling client looks up `get_sampling_defaults(model)` and includes the values in the request body.
 
 ### Supported models
 
@@ -194,17 +209,31 @@ A dash means the card does not specify a value for that parameter — forge send
 
 ### Overriding
 
-`get_sampling_defaults` returns a fresh dict per call — safe to mutate:
+The simplest path: opt in and override individual fields. Caller's explicit non-None kwargs win over the map field-by-field.
 
 ```python
-defaults = get_sampling_defaults("qwen3.5:27b-q4_K_M")
-# Switch to the card's precise-coding (WebDev) profile:
+# Card-recommended general-tasks profile, but with the precise-coding (WebDev)
+# profile's temperature and presence_penalty.
+client = LlamafileClient(
+    model="qwen3.5:27b-q4_K_M",
+    mode="native",
+    recommended_sampling=True,
+    temperature=0.6,
+    presence_penalty=0.0,
+)
+```
+
+For programmatic access to the map without triggering policy:
+
+```python
+from forge.clients import get_sampling_defaults
+
+defaults = get_sampling_defaults("qwen3.5:27b-q4_K_M")  # fresh dict, safe to mutate
 defaults["temperature"] = 0.6
-defaults["presence_penalty"] = 0.0
 client = LlamafileClient(model="qwen3.5:27b-q4_K_M", mode="native", **defaults)
 ```
 
-For fully manual control, pass sampling kwargs directly and skip the helper.
+For fully manual control, pass sampling kwargs directly and skip the helpers.
 
 ---
 

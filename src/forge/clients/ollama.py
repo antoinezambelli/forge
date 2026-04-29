@@ -78,20 +78,30 @@ class OllamaClient:
         self._think_resolved: bool = think is not None
         self.last_usage: dict[int, TokenUsage] = {}
 
-    def _build_options(self) -> dict[str, Any]:
+    # Sampling fields recognized in per-call overrides. ``seed`` is
+    # accepted only as a per-call override (not an instance field).
+    _SAMPLING_FIELDS = (
+        "temperature", "top_p", "top_k", "min_p",
+        "repeat_penalty", "presence_penalty", "seed",
+    )
+
+    def _build_options(
+        self, sampling: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Build the Ollama options dict.
+
+        Instance fields supply the base sampling values; ``sampling`` (when
+        provided) overrides per call. The instance is not mutated.
+        """
         opts: dict[str, Any] = {}
-        if self.temperature is not None:
-            opts["temperature"] = self.temperature
-        if self.top_p is not None:
-            opts["top_p"] = self.top_p
-        if self.top_k is not None:
-            opts["top_k"] = self.top_k
-        if self.min_p is not None:
-            opts["min_p"] = self.min_p
-        if self.repeat_penalty is not None:
-            opts["repeat_penalty"] = self.repeat_penalty
-        if self.presence_penalty is not None:
-            opts["presence_penalty"] = self.presence_penalty
+        for field in self._SAMPLING_FIELDS:
+            override = (sampling or {}).get(field)
+            if override is not None:
+                opts[field] = override
+                continue
+            instance_val = getattr(self, field, None)
+            if instance_val is not None:
+                opts[field] = instance_val
         if self._num_ctx is not None:
             opts["num_ctx"] = self._num_ctx
         return opts
@@ -128,13 +138,14 @@ class OllamaClient:
         self,
         messages: list[dict[str, str]],
         tools: list[ToolSpec] | None = None,
+        sampling: dict[str, Any] | None = None,
     ) -> LLMResponse:
         """Send messages via /api/chat and parse the response."""
         body: dict[str, Any] = {
             "model": self.model,
             "messages": messages,
             "stream": False,
-            "options": self._build_options(),
+            "options": self._build_options(sampling),
         }
         if self._think:
             body["think"] = True
@@ -186,13 +197,14 @@ class OllamaClient:
         self,
         messages: list[dict[str, str]],
         tools: list[ToolSpec] | None = None,
+        sampling: dict[str, Any] | None = None,
     ) -> AsyncIterator[StreamChunk]:
         """Stream via NDJSON from /api/chat."""
         body: dict[str, Any] = {
             "model": self.model,
             "messages": messages,
             "stream": True,
-            "options": self._build_options(),
+            "options": self._build_options(sampling),
         }
         if self._think:
             body["think"] = True

@@ -171,25 +171,33 @@ class LlamafileClient:
         if self._slot_id is not None:
             body["slot_id"] = self._slot_id
 
-    def _apply_sampling(self, body: dict[str, Any]) -> None:
+    # Sampling fields recognized in per-call overrides. ``seed`` is
+    # accepted only as a per-call override (not an instance field).
+    _SAMPLING_FIELDS = (
+        "temperature", "top_p", "top_k", "min_p",
+        "repeat_penalty", "presence_penalty", "seed",
+    )
+
+    def _apply_sampling(
+        self, body: dict[str, Any], sampling: dict[str, Any] | None = None,
+    ) -> None:
         """Inject optional sampling params into a request body.
 
-        llama-server accepts temperature/top_p/top_k/min_p/repeat_penalty as
-        top-level OpenAI-compatible body fields. None = don't send, backend
-        default applies.
+        Instance fields supply the base sampling values; ``sampling`` (when
+        provided) overrides per call. The instance is not mutated. None =
+        don't send; backend default applies.
+
+        llama-server accepts temperature/top_p/top_k/min_p/repeat_penalty/
+        presence_penalty/seed as top-level OpenAI-compatible body fields.
         """
-        if self.temperature is not None:
-            body["temperature"] = self.temperature
-        if self.top_p is not None:
-            body["top_p"] = self.top_p
-        if self.top_k is not None:
-            body["top_k"] = self.top_k
-        if self.min_p is not None:
-            body["min_p"] = self.min_p
-        if self.repeat_penalty is not None:
-            body["repeat_penalty"] = self.repeat_penalty
-        if self.presence_penalty is not None:
-            body["presence_penalty"] = self.presence_penalty
+        for field in self._SAMPLING_FIELDS:
+            override = (sampling or {}).get(field)
+            if override is not None:
+                body[field] = override
+                continue
+            instance_val = getattr(self, field, None)
+            if instance_val is not None:
+                body[field] = instance_val
 
     def _record_usage(self, data: dict[str, Any]) -> None:
         """Extract usage from a response and store it keyed by slot ID."""
@@ -232,25 +240,27 @@ class LlamafileClient:
         self,
         messages: list[dict[str, str]],
         tools: list[ToolSpec] | None = None,
+        sampling: dict[str, Any] | None = None,
     ) -> LLMResponse:
         """Resolve mode on first call with tools, then dispatch."""
         if self.resolved_mode is None:
-            return await self._resolve_and_send(messages, tools)
+            return await self._resolve_and_send(messages, tools, sampling)
         elif self.resolved_mode == "native":
-            return await self._send_native(messages, tools)
+            return await self._send_native(messages, tools, sampling)
         else:
-            return await self._send_prompt(messages, tools)
+            return await self._send_prompt(messages, tools, sampling)
 
     async def send_stream(
         self,
         messages: list[dict[str, str]],
         tools: list[ToolSpec] | None = None,
+        sampling: dict[str, Any] | None = None,
     ) -> AsyncIterator[StreamChunk]:
         """Stream via SSE, handling both native FC and prompt-injected paths."""
         if self.resolved_mode is None:
             # Probe with a non-streaming call to resolve native vs prompt.
             # Result is discarded — the runner will use the streamed response.
-            await self._resolve_and_send(messages, tools)
+            await self._resolve_and_send(messages, tools, sampling)
         mode = self.resolved_mode
 
         body: dict[str, Any] = {
@@ -260,7 +270,7 @@ class LlamafileClient:
             "cache_prompt": self._cache_prompt,
         }
         self._apply_slot_id(body)
-        self._apply_sampling(body)
+        self._apply_sampling(body, sampling)
 
         if mode == "native":
             prepared = _merge_consecutive(messages)
@@ -404,6 +414,7 @@ class LlamafileClient:
         self,
         messages: list[dict[str, str]],
         tools: list[ToolSpec] | None,
+        sampling: dict[str, Any] | None = None,
     ) -> LLMResponse:
         """Auto-resolve mode on first send with tools.
 
@@ -416,20 +427,21 @@ class LlamafileClient:
         if not tools:
             # No tools to test with — send without tools, defer resolution
             self.resolved_mode = "native"
-            return await self._send_native(messages, tools)
+            return await self._send_native(messages, tools, sampling)
 
         try:
-            result = await self._send_native(messages, tools)
+            result = await self._send_native(messages, tools, sampling)
             self.resolved_mode = "native"
             return result
         except (httpx.HTTPStatusError, BackendError):
             self.resolved_mode = "prompt"
-            return await self._send_prompt(messages, tools)
+            return await self._send_prompt(messages, tools, sampling)
 
     async def _send_native(
         self,
         messages: list[dict[str, str]],
         tools: list[ToolSpec] | None,
+        sampling: dict[str, Any] | None = None,
     ) -> LLMResponse:
         """Send using native function calling (OpenAI tools parameter)."""
         merged = _merge_consecutive(messages)
@@ -439,7 +451,7 @@ class LlamafileClient:
             "cache_prompt": self._cache_prompt,
         }
         self._apply_slot_id(body)
-        self._apply_sampling(body)
+        self._apply_sampling(body, sampling)
         if tools:
             body["tools"] = [format_tool(t) for t in tools]
 
@@ -488,6 +500,7 @@ class LlamafileClient:
         self,
         messages: list[dict[str, str]],
         tools: list[ToolSpec] | None,
+        sampling: dict[str, Any] | None = None,
     ) -> LLMResponse:
         """Send using prompt-injected tool calling."""
         prepared = _merge_consecutive(_downgrade_messages(messages))
@@ -504,7 +517,7 @@ class LlamafileClient:
             "cache_prompt": self._cache_prompt,
         }
         self._apply_slot_id(body)
-        self._apply_sampling(body)
+        self._apply_sampling(body, sampling)
 
         resp = await self._http.post(
             f"{self.base_url}/chat/completions", json=body
