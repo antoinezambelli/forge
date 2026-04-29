@@ -1251,3 +1251,49 @@ class TestSlotId:
         call_kwargs = mock_http.post.call_args
         body = call_kwargs.kwargs.get("json") or call_kwargs[1].get("json")
         assert body["slot_id"] == 1
+
+
+class TestTemperatureOptional:
+    """Issue C: temperature is optional; default constructor sends nothing."""
+
+    @pytest.mark.asyncio
+    async def test_no_temperature_when_default(self) -> None:
+        """Default constructor (no temperature kwarg): outbound body has no temperature field."""
+        client = _make_client(mode="native")
+        client._http.post.return_value = _mock_response({
+            "choices": [{
+                "message": {"content": "ok", "tool_calls": None},
+                "finish_reason": "stop",
+            }],
+        })
+
+        await client.send([{"role": "user", "content": "hi"}], tools=None)
+
+        call_kwargs = client._http.post.call_args
+        body = call_kwargs.kwargs.get("json") or call_kwargs[1].get("json")
+        assert "temperature" not in body
+
+    @pytest.mark.asyncio
+    async def test_explicit_temperature_in_body(self) -> None:
+        """Explicit temperature kwarg appears in outbound body."""
+        client = LlamafileClient(
+            base_url="http://test:8080/v1",
+            model="test-model",
+            mode="native",
+            temperature=0.5,
+        )
+        mock_http = AsyncMock()
+        mock_http.stream = MagicMock()
+        client._http = mock_http
+        client._http.post.return_value = _mock_response({
+            "choices": [{
+                "message": {"content": "ok", "tool_calls": None},
+                "finish_reason": "stop",
+            }],
+        })
+
+        await client.send([{"role": "user", "content": "hi"}], tools=None)
+
+        call_kwargs = client._http.post.call_args
+        body = call_kwargs.kwargs.get("json") or call_kwargs[1].get("json")
+        assert body["temperature"] == 0.5

@@ -44,7 +44,7 @@ class OllamaClient:
         self,
         model: str,
         base_url: str = "http://localhost:11434",
-        temperature: float = 0.7,
+        temperature: float | None = None,
         top_p: float | None = None,
         top_k: int | None = None,
         min_p: float | None = None,
@@ -74,7 +74,9 @@ class OllamaClient:
         self.last_usage: dict[int, TokenUsage] = {}
 
     def _build_options(self) -> dict[str, Any]:
-        opts: dict[str, Any] = {"temperature": self.temperature}
+        opts: dict[str, Any] = {}
+        if self.temperature is not None:
+            opts["temperature"] = self.temperature
         if self.top_p is not None:
             opts["top_p"] = self.top_p
         if self.top_k is not None:

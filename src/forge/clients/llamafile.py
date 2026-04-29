@@ -128,7 +128,7 @@ class LlamafileClient:
         self,
         model: str,
         base_url: str = "http://localhost:8080/v1",
-        temperature: float = 0.7,
+        temperature: float | None = None,
         top_p: float | None = None,
         top_k: int | None = None,
         min_p: float | None = None,
@@ -169,10 +169,12 @@ class LlamafileClient:
     def _apply_sampling(self, body: dict[str, Any]) -> None:
         """Inject optional sampling params into a request body.
 
-        llama-server accepts top_p/top_k/min_p/repeat_penalty as top-level
-        OpenAI-compatible body fields. None = don't send, backend default
-        applies.
+        llama-server accepts temperature/top_p/top_k/min_p/repeat_penalty as
+        top-level OpenAI-compatible body fields. None = don't send, backend
+        default applies.
         """
+        if self.temperature is not None:
+            body["temperature"] = self.temperature
         if self.top_p is not None:
             body["top_p"] = self.top_p
         if self.top_k is not None:
@@ -248,7 +250,6 @@ class LlamafileClient:
 
         body: dict[str, Any] = {
             "model": self.model,
-            "temperature": self.temperature,
             "stream": True,
             "stream_options": {"include_usage": True},
             "cache_prompt": self._cache_prompt,
@@ -430,7 +431,6 @@ class LlamafileClient:
         body: dict[str, Any] = {
             "model": self.model,
             "messages": merged,
-            "temperature": self.temperature,
             "cache_prompt": self._cache_prompt,
         }
         self._apply_slot_id(body)
@@ -496,7 +496,6 @@ class LlamafileClient:
         body: dict[str, Any] = {
             "model": self.model,
             "messages": prepared,
-            "temperature": self.temperature,
             "cache_prompt": self._cache_prompt,
         }
         self._apply_slot_id(body)

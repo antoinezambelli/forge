@@ -111,7 +111,8 @@ class TestOllamaSend:
         assert body["model"] == "test-model"
         assert body["stream"] is False
         assert "options" in body
-        assert "temperature" in body["options"]
+        # Default constructor sends no temperature; backend default applies.
+        assert "temperature" not in body["options"]
 
     @pytest.mark.asyncio
     async def test_tool_role_passes_through(self) -> None:
@@ -722,10 +723,10 @@ class TestBuildOptions:
     """Tests for _build_options() with and without num_ctx."""
 
     def test_without_num_ctx(self) -> None:
-        """Fresh client: options has temperature but no num_ctx."""
+        """Fresh client: options is empty (no temperature, no num_ctx)."""
         client = _make_client()
         opts = client._build_options()
-        assert "temperature" in opts
+        assert "temperature" not in opts
         assert "num_ctx" not in opts
 
     def test_with_num_ctx(self) -> None:
@@ -805,3 +806,40 @@ class TestFormatTool:
         required = result["function"]["parameters"]["required"]
         assert "query" in required
         assert "limit" not in required
+
+
+class TestTemperatureOptional:
+    """Issue C: temperature is optional; default constructor sends nothing."""
+
+    @pytest.mark.asyncio
+    async def test_no_temperature_when_default(self) -> None:
+        """Default constructor (no temperature kwarg): options has no temperature field."""
+        client = _make_client()
+        client._http.post.return_value = _mock_response({
+            "message": {"role": "assistant", "content": "ok"}
+        })
+
+        await client.send([{"role": "user", "content": "hi"}])
+
+        call_args = client._http.post.call_args
+        body = call_args.kwargs.get("json") or call_args[1].get("json")
+        assert "temperature" not in body["options"]
+
+    @pytest.mark.asyncio
+    async def test_explicit_temperature_in_options(self) -> None:
+        """Explicit temperature kwarg appears in options."""
+        client = OllamaClient(
+            base_url="http://test:11434", model="test-model", temperature=0.5,
+        )
+        mock_http = AsyncMock()
+        mock_http.stream = MagicMock()
+        client._http = mock_http
+        client._http.post.return_value = _mock_response({
+            "message": {"role": "assistant", "content": "ok"}
+        })
+
+        await client.send([{"role": "user", "content": "hi"}])
+
+        call_args = client._http.post.call_args
+        body = call_args.kwargs.get("json") or call_args[1].get("json")
+        assert body["options"]["temperature"] == 0.5
