@@ -16,7 +16,7 @@ pip install -e ".[dev]"
 Unit tests are fully deterministic — no LLM backend required.
 
 ```bash
-# Full suite (638 tests)
+# Full suite (865 tests)
 python -m pytest tests/unit/ -v --tb=short
 
 # With coverage
@@ -44,7 +44,6 @@ tests/
   unit/              # Deterministic tests
   eval/              # Eval harness (requires live backends)
     scenarios/       # Eval scenario definitions
-    bfcl/            # BFCL benchmark integration
     dashboard/       # React-based HTML dashboard (separate npm build)
 docs/                # User-facing documentation
   decisions/         # Architecture Decision Records (ADRs)

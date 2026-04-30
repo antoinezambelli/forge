@@ -1313,13 +1313,15 @@ forge/
 │   │   └── test_eval_budget.py    # Eval budget override logic
 │   │
 │   └── eval/                      # Eval harness — model qualification against real backends
-│       ├── scenarios/             # EvalScenario dataclass, 22 scenarios, ALL_SCENARIOS
+│       ├── scenarios/             # EvalScenario dataclass, 30 scenarios (18 OG + 8 advanced_reasoning + 4 compaction-chain), ALL_SCENARIOS
 │       │   ├── _base.py           # EvalScenario dataclass
 │       │   ├── _plumbing.py       # basic_2step, sequential_3step, error_recovery
 │       │   ├── _model_quality.py  # tool_selection, argument_fidelity, sequential_reasoning, etc.
+│       │   ├── _model_reasoning.py # data_gap_recovery_extended, argument_transformation, inconsistent_api_recovery, grounded_synthesis (advanced_reasoning tag)
 │       │   ├── _compaction.py     # relevance_detection
 │       │   ├── _stateful_plumbing.py      # Stateful variants of plumbing scenarios
-│       │   ├── _stateful_model_quality.py  # Stateful variants of model quality scenarios
+│       │   ├── _stateful_model_quality.py # Stateful variants of model quality scenarios
+│       │   ├── _stateful_model_reasoning.py # Stateful variants of advanced_reasoning scenarios
 │       │   ├── _stateful_relevance.py     # Stateful relevance detection
 │       │   └── _compaction_chain.py       # 10-step medical investigation chain (4 budget variants)
 │       ├── eval_runner.py         # RunResult, EvalConfig, run_scenario, run_eval, CLI

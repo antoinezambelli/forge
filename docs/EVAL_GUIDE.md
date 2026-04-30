@@ -27,7 +27,7 @@ python -m tests.eval.eval_runner --backend anthropic --model claude-haiku-4-5-20
 | `--runs` | int | `10` | Runs per scenario |
 | `--stream` | flag | off | Use streaming mode |
 | `--verbose`, `-v` | flag | off | Print live per-message trace |
-| `--tags` | `plumbing`, `model_quality`, `compaction`, `stateful`, `reasoning` | all | Filter scenarios by tag |
+| `--tags` | `plumbing`, `model_quality`, `advanced_reasoning`, `compaction`, `stateful`, `reasoning`, `error_recovery` | all | Filter scenarios by tag |
 | `--scenario` | name(s) | all | Run specific scenario(s) by name |
 | `--llamafile-mode` | `native`, `prompt`, `auto` | `auto` | FC mode for llamafile/llama-server backend |
 | `--think` | `true`, `false`, `auto` | `auto` | Thinking mode. Ollama: controls `think` param. Llamafile: captures `[THINK]` tags and `reasoning_content` |
@@ -43,7 +43,7 @@ python -m tests.eval.eval_runner --backend anthropic --model claude-haiku-4-5-20
 
 ### Scenarios
 
-22 scenarios across four categories:
+30 scenarios across five categories. The 26 non-compaction scenarios split into two difficulty tiers — **OG-18** (baseline) and **advanced_reasoning** (hard) — with the dashboard's Suite scope filtering between them.
 
 **Plumbing** (does forge's tool-calling loop work?):
 - `basic_2step`, `sequential_3step`, `error_recovery`
@@ -51,13 +51,18 @@ python -m tests.eval.eval_runner --backend anthropic --model claude-haiku-4-5-20
 **Model quality** (does the model reason correctly?):
 - `tool_selection`, `argument_fidelity`, `sequential_reasoning`, `conditional_routing`, `data_gap_recovery`, `relevance_detection`
 
+**Advanced reasoning** (top-tier separators — designed to weed out 8B-class winners after sampling-defaults closed the OG-18 gap):
+- `data_gap_recovery_extended`, `argument_transformation`, `inconsistent_api_recovery`, `grounded_synthesis`
+
 **Compaction chain** (multi-phase compaction retention):
 - `compaction_chain_baseline`, `compaction_chain_p1`, `compaction_chain_p2`, `compaction_chain_p3`
 
 **Stateful variants** (state carries between calls — wrong arguments cascade):
-- `basic_2step_stateful`, `sequential_3step_stateful`, `error_recovery_stateful`, `tool_selection_stateful`, `argument_fidelity_stateful`, `sequential_reasoning_stateful`, `conditional_routing_stateful`, `data_gap_recovery_stateful`, `relevance_detection_stateful`
+- All scenarios above (except compaction chain) ship a `_stateful` pair: `basic_2step_stateful`, `sequential_3step_stateful`, `error_recovery_stateful`, `tool_selection_stateful`, `argument_fidelity_stateful`, `sequential_reasoning_stateful`, `conditional_routing_stateful`, `data_gap_recovery_stateful`, `relevance_detection_stateful`, `data_gap_recovery_extended_stateful`, `argument_transformation_stateful`, `inconsistent_api_recovery_stateful`, `grounded_synthesis_stateful`.
 
 **Lambda vs stateful:** Lambda scenarios use hardcoded echo tools — tool arguments don't affect the result. Stateful scenarios use backend classes where arguments matter and state carries between calls. The delta between lambda and stateful scores for the same model isolates model reasoning quality from forge correctness.
+
+**OG-18 vs advanced_reasoning:** OG-18 is the 18-scenario baseline (plumbing + model_quality + their stateful pairs). advanced_reasoning is the 8 scenarios tagged for top-tier-only batching. Most published results split aggregates across the two; see [MODEL_GUIDE.md](MODEL_GUIDE.md#difficulty-tiers) for context.
 
 ### Examples
 
@@ -79,16 +84,28 @@ python -m tests.eval.eval_runner --backend ollama --model "ministral-3:8b-instru
 python -m tests.eval.eval_runner --backend anthropic --model claude-haiku-4-5-20251001 --runs 5 --stream --ablation bare
 ```
 
-All non-compaction scenarios (copy-paste friendly):
+All OG-18 non-stateful scenarios (copy-paste friendly):
 
 ```
 --scenario basic_2step sequential_3step error_recovery tool_selection argument_fidelity sequential_reasoning conditional_routing data_gap_recovery relevance_detection
 ```
 
-All stateful scenarios (copy-paste friendly):
+All OG-18 stateful scenarios:
 
 ```
 --scenario basic_2step_stateful sequential_3step_stateful error_recovery_stateful tool_selection_stateful argument_fidelity_stateful sequential_reasoning_stateful conditional_routing_stateful data_gap_recovery_stateful relevance_detection_stateful
+```
+
+All advanced_reasoning scenarios (lambda + stateful, 8 total):
+
+```
+--scenario data_gap_recovery_extended argument_transformation inconsistent_api_recovery grounded_synthesis data_gap_recovery_extended_stateful argument_transformation_stateful inconsistent_api_recovery_stateful grounded_synthesis_stateful
+```
+
+Or via tag (equivalent):
+
+```
+--tags advanced_reasoning
 ```
 
 ---

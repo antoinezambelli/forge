@@ -2,87 +2,142 @@
 
 Which model and backend to use with forge, based on your hardware and goals.
 
-All numbers from forge's eval harness: 18 scenarios (9 lambda + 9 stateful) × 50 runs per config. 8B–14B models measured on RTX 5070 (12GB); 24B+ models measured on dual RTX 5070 Ti (16GB × 2). Full guardrail stack ("reforged") unless noted. See [EVAL_GUIDE.md](EVAL_GUIDE.md) for full scenario list (22 total including compaction chain) and methodology.
+All numbers from forge's eval harness on the v0.6.0 consolidated dataset: 26 scenarios × 50 runs per config, 119,600 rows across 4 rigs. The suite splits into two tiers — **OG-18** (lambda + stateful baseline, 18 scenarios) and **advanced_reasoning** (8 harder scenarios designed as top-tier separators after the per-model sampling-params fix lifted 8B-class to 100% on OG-18). Reporting splits the two tiers in the dashboard's Suite scope. See [EVAL_GUIDE.md](EVAL_GUIDE.md) for full scenario list and methodology.
+
+---
+
+## Difficulty Tiers
+
+Treat the eval suite as roughly three levels of difficulty:
+
+- **Mechanical** — basic_2step, sequential_3step, error_recovery, tool_selection, argument_fidelity, relevance_detection. Every model in the recommended list should handle these. If a model fails here, it's not a candidate.
+- **Mid** — sequential_reasoning, conditional_routing, data_gap_recovery, plus all stateful variants. Model reasoning starts to matter; 8B-class without good fine-tuning falls off here.
+- **Hard** — `advanced_reasoning`: data_gap_recovery_extended, argument_transformation, inconsistent_api_recovery, grounded_synthesis (lambda + stateful, 8 total). Designed to spread top-tier 8B+ models from each other after sampling-defaults closed the OG-18 gap.
+
+Mechanical + mid are roughly the OG-18 suite. The dashboard's Suite scope (`all` / `og18` / `advanced_reasoning`) cleanly separates them. **Most agentic flows you build in practice land closer to mechanical/mid than to hard** — the hard suite is intentionally adversarial.
 
 ---
 
 ## The Short Answer
 
-**12GB VRAM or less:** Ministral-8B Reasoning Q4_K_M on llama-server (native FC) — 99.3% score, 3.7s per workflow, 4.8 GB weights. Outperforms every 14B and 24B model tested.
+**Best overall on the full suite:** Ministral-3 8B Instruct Q8_0 on llama-server / prompt — 86.5% across all 26 scenarios (91.1% OG-18, 76.0% advanced_reasoning), 4.7s per workflow. Wins overall, wins on hard. **Caveat:** has a binary failure mode — on `data_gap_recovery_extended` (lambda) it scores 0/50 and on the stateful variant 4/50, while everything else in advanced_reasoning is 90%+. Best-in-class or fail loudly.
 
-**32GB VRAM:** Gemma4 31B IT Q4_K_M or Qwen3.5 27B Q4_K_M — both hit 100.0%, matching frontier APIs. First self-hosted models to achieve perfect scores on the eval suite.
+**Most stable all-around:** Ministral-3 14B Reasoning Q4_K_M on llama-server / native — 81.5% overall, but **nothing at 0%**. #5 overall, #3 on hard. Pick this if your workload mixes execution and reasoning, or you don't yet know which tier your tasks will hit.
 
-If you want the simplest possible setup, **Ministral-8B Instruct Q4_K_M on Ollama** gets you 91% with zero server management.
+**Top 12 configs are all Ministral-3.** Top 10 are all llama-server. The first non-Mistral config — Qwen3 8B Q8_0 LS/prompt — appears at rank 13 (73.1% overall, 94.9% OG-18, 24.0% hard). It's also 7× slower than the Ministral configs ahead of it.
 
 ---
 
 ## Quick Picks
 
-| Goal | Model | Backend | Score | Speed |
-|------|-------|---------|-------|-------|
-| **Maximum reliability** | Claude Sonnet 4.6 | Anthropic API | 100.0% | 6.5s |
-| **Best self-hosted (32GB)** | Gemma4 31B IT Q4_K_M | llama-server (native) | 100.0% | 15.3s |
-| **Best self-hosted (32GB, fast)** | Qwen3.5 27B Q4_K_M | llama-server (native) | 100.0% | 11.4s |
-| **Best self-hosted (12GB)** | Ministral-8B Reasoning Q4_K_M | llama-server (native) | 99.3% | 3.7s |
-| **Easiest setup** | Ministral-8B Instruct Q4_K_M | Ollama | 91.2% | 4.2s |
-| **No local GPU** | Claude Haiku 4.5 | Anthropic API | 99.6% | 4.0s |
-| **Single binary, no deps** | Mistral Nemo 12B Q4_K_M | Llamafile | 82.6% | 4.2s |
+| Goal | Model | Backend / Mode | Overall | OG-18 | Hard | Speed |
+|------|-------|----------------|---------|-------|------|-------|
+| **Best overall, hard-task heavy** | Ministral-3 8B Instruct Q8_0 | llama-server / prompt | **86.5%** | 91.1% | **76.0%** | 4.7s |
+| **Most stable, no zeros** | Ministral-3 14B Reasoning Q4_K_M | llama-server / native | 81.5% | 94.4% | 52.5% | 5.4s |
+| **Best on OG-18 (perfect)** | Ministral-3 14B Instruct Q4_K_M | llama-server / native | 84.7% | **100.0%** | 50.2% | 3.9s |
+| **Best on OG-18 at 8B (perfect)** | Ministral-3 8B Instruct Q8_0 | llama-server / native | 83.1% | **100.0%** | 45.0% | 4.1s |
+| **Fastest top-12** | Ministral-3 8B Instruct Q4_K_M | llama-server / prompt | 78.0% | 88.9% | 53.5% | **2.8s** |
+| **Best non-Mistral** | Qwen3 8B Q8_0 | llama-server / prompt | 73.1% | 94.9% | 24.0% | 33.6s |
+
+Configs above are the slate that actually shipped in v0.6.0; for the full leaderboard see [docs/results/raw/reforged/all.md](results/raw/reforged/all.md) or the [interactive dashboard](results/dashboard.html).
 
 ---
 
-## By VRAM Budget
+## Top 12 — All Ministral-3, All llama-server
 
-### 12GB VRAM (RTX 5070 class)
+| Rank | Config | Overall | OG-18 | Hard | Speed |
+|---:|---|---:|---:|---:|---:|
+| 1 | ministral-3:8b-instruct-2512-q8_0 LS/P | 86.5% | 91.1% | 76.0% | 4.7s |
+| 2 | ministral-3:14b-instruct-2512-q4_K_M LS/N | 84.7% | 100.0% | 50.2% | 3.9s |
+| 3 | ministral-3:8b-instruct-2512-q8_0 LS/N | 83.1% | 100.0% | 45.0% | 4.1s |
+| 4 | ministral-3:8b-reasoning-2512-q8_0 LS/P | 82.6% | 97.9% | 48.2% | 5.3s |
+| 5 | ministral-3:14b-reasoning-2512-q4_K_M LS/N | 81.5% | 94.4% | 52.5% | 5.4s |
+| 6 | ministral-3:8b-reasoning-2512-q4_K_M LS/P | 81.5% | 98.0% | 44.2% | 3.5s |
+| 7 | ministral-3:8b-reasoning-2512-q8_0 LS/N | 79.6% | 100.0% | 33.8% | 6.4s |
+| 8 | ministral-3:8b-reasoning-2512-q4_K_M LS/N | 79.1% | 99.9% | 32.2% | 4.3s |
+| 9 | ministral-3:14b-reasoning-2512-q4_K_M LS/P | 79.0% | 94.6% | 44.0% | 4.3s |
+| 10 | ministral-3:8b-instruct-2512-q4_K_M LS/P | 78.0% | 88.9% | 53.5% | 2.8s |
+| 11 | ministral-3:14b-instruct-2512-q4_K_M OL/N | 76.8% | 100.0% | 24.8% | 6.6s |
+| 12 | ministral-3:14b-instruct-2512-q4_K_M LS/P | 75.6% | 97.8% | 25.8% | 3.3s |
 
-8B and 14B models fit comfortably. Ministral-8B Reasoning is the top pick — it outperforms every 14B and 24B model tested. The extra headroom from 12GB vs 8GB is better spent on larger context windows (via `-c` flag) than bigger models.
+LS = llama-server, OL = Ollama. N = native function calling, P = prompt-injected.
 
-| Model | Backend | Mode | Score | Speed | Notes |
-|-------|---------|------|-------|-------|-------|
-| Ministral-8B Reasoning Q4_K_M | llama-server | Native | 99.3% | 3.7s | **Best under 32GB** |
-| Ministral-8B Reasoning Q8_0 | llama-server | Native | 99.2% | 4.6s | Higher precision, ~same score |
-| Ministral-14B Instruct Q4_K_M | llama-server | Native | 98.8% | 3.5s | Marginal gain over 8B Instruct |
-| Ministral-8B Instruct Q4_K_M | llama-server | Native | 96.3% | 3.1s | No reasoning overhead |
-| Qwen3-14B Q4_K_M | Ollama | Native | 96.3% | 19.6s | Below 8B Reasoning, 5× slower |
-| Ministral-8B Instruct Q8_0 | Ollama | Native | 94.6% | 9.1s | Simpler setup |
-| Gemma4 E4B IT Q4_K_M | Ollama | Native | 93.0% | 6.6s | MoE, good efficiency |
-| Ministral-8B Instruct Q4_K_M | Ollama | Native | 91.2% | 4.2s | Smallest footprint |
+**Three patterns worth noting:**
 
-### 32GB VRAM (dual RTX 5070 Ti class)
+1. **Backend dominates.** 10 of the top 12 run on llama-server. The two Ollama exceptions (rank 11) come in materially behind. Ministral-3 14B Instruct Q4 is the *same model* at #2 on llama-server (84.7%) and #11 on Ollama (76.8%) — that's an 8-point gap from the serving layer alone.
 
-The 32GB tier changes the story. Two self-hosted models achieve 100.0% — matching frontier APIs for the first time. These are the only self-hosted configs that leave zero room for improvement on the eval suite.
+2. **Q4 vs Q8 is largely a wash on OG-18, but Q8 helps on hard.** The top spot is Q8 with a 7-point lead on hard over the same model at Q4 (76.0% vs 53.5% on hard for 8B-instruct LS/P, ranks 1 and 10). At 14B, Q4 is the only quant tested.
 
-| Model | Backend | Mode | Score | Speed | Notes |
-|-------|---------|------|-------|-------|-------|
-| Gemma4 31B IT Q4_K_M | llama-server | Native | 100.0% | 15.3s | **Perfect score** |
-| Gemma4 31B IT Q4_K_M | llama-server | Prompt | 100.0% | 16.8s | Both modes perfect |
-| Gemma4 31B IT Q4_K_M | Ollama | Native | 100.0% | 17.0s | All backends perfect |
-| Qwen3.5 27B Q4_K_M | llama-server | Native | 100.0% | 11.4s | **Perfect, fastest 100%** |
-| Qwen3.5 27B Q4_K_M | llama-server | Prompt | 100.0% | 12.6s | Both modes perfect |
-| Qwen3.5 27B Q4_K_M | Ollama | Native | 100.0% | 13.9s | All backends perfect |
-| Gemma4 26B A4B IT Q4_K_M | llama-server | Prompt | 99.9% | 4.8s | MoE, near-perfect |
-| Qwen3.5 35B A3B Q4_K_M | Ollama | Native | 99.9% | 5.2s | MoE, near-perfect |
-| Qwen3.5 35B A3B Q4_K_M | llama-server | Native | 99.8% | 3.7s | **Fastest near-perfect** |
-
-### API (no local GPU)
-
-| Model | Score | Speed | Notes |
-|-------|-------|-------|-------|
-| Claude Sonnet 4.6 | 100.0% | 6.5s | Perfect score |
-| Claude Opus 4.6 | 100.0% | 8.5s | Same score, slower |
-| Claude Haiku 4.5 | 99.6% | 4.0s | Fastest, near-perfect |
-
-Haiku for cost-sensitive workloads. Sonnet or Opus if you need the last 0.4%.
+3. **Native vs prompt is workload-dependent.** Native wins OG-18 (perfect 100% rows are all native). Prompt wins on hard (every top-3-on-hard config is LS/P). The model is the same; the wire format flips which suite it's stronger at.
 
 ---
 
-## Models to Avoid
+## OG-18 — When Your Workload Is Closer to Mechanical
 
-| Model | Best Score | Why |
-|-------|-----------|-----|
-| Llama 3.1 8B | 68.8% | Consistently low accuracy across all backends |
-| Mistral v0.3 7B | 64.7% | Highly variable, poor tool-call reliability |
+Most agentic flows in production look more like the OG-18 scenarios than the advanced_reasoning suite. If your tasks are 2-5 step tool chains with clear hand-offs and recoverable errors, the OG-18 view is the relevant ranking.
 
-These models work but fail too often for production-grade agentic workflows.
+### Configs at 100.0% on OG-18
+
+Five configs hit perfect on the OG-18 suite (50 runs × 18 scenarios = 900 trials, all correct):
+
+| Config | OG-18 | Hard | Speed |
+|---|---:|---:|---:|
+| ministral-3:14b-instruct-2512-q4_K_M LS/N | 100.0% | 50.2% | 3.9s |
+| ministral-3:8b-instruct-2512-q8_0 LS/N | 100.0% | 45.0% | 4.1s |
+| ministral-3:8b-reasoning-2512-q8_0 LS/N | 100.0% | 33.8% | 6.4s |
+| ministral-3:14b-instruct-2512-q4_K_M OL/N | 100.0% | 24.8% | 6.6s |
+| ministral-3:8b-reasoning-2512-q4_K_M LS/N | 99.9% | 32.2% | 4.3s |
+
+(99.9% included for the rounding break — 1 scenario miss across 900 trials.)
+
+**Findings on OG-18:**
+
+- **Native FC is the OG-18 winner.** All five 100%-tier configs use native function calling. Prompt-injected variants come in at 91-98%, still high but not perfect.
+- **Sampling defaults closed the gap.** Pre-v0.6.0 evals (with hardcoded `temperature=0.7`) capped 8B-class around 95% on OG-18; the per-model sampling-defaults work in v0.6.0 lifted four 8B-class configs to perfect.
+- **Ollama can hit 100% too.** Ministral-3 14B Instruct Q4 on Ollama scores 100% on OG-18 — the only Ollama config in the perfect tier, but slower than the LS variants.
+
+If you're confident your workload is OG-18-shaped, any of the five configs above is a defensible pick. The split between them is speed and headroom: 8B Q8 if you want the smallest weights at perfect; 14B if you want reasoning headroom for adjacent harder tasks.
+
+---
+
+## Advanced Reasoning (Hard Suite)
+
+The 8 advanced_reasoning scenarios are designed to spread top-tier models. The previous-generation winners that hit 100% on OG-18 fall to 33-53% on hard. **No self-hosted config tested cleared 80% on hard** — Claude Haiku 4.5 saturates the suite (next section).
+
+### Top 5 on hard
+
+| Config | Hard | OG-18 | Notes |
+|---|---:|---:|---|
+| ministral-3:8b-instruct-2512-q8_0 LS/P | 76.0% | 91.1% | Hard 0% on `data_gap_recovery_extended`, otherwise 90%+ — binary fail-loud mode |
+| ministral-3:8b-instruct-2512-q4_K_M LS/P | 53.5% | 88.9% | 2.8s — fastest in top 12 |
+| ministral-3:14b-reasoning-2512-q4_K_M LS/N | 52.5% | 94.4% | **No scenario at 0% — most stable across the suite** |
+| ministral-3:14b-instruct-2512-q4_K_M LS/N | 50.2% | 100.0% | OG-18 perfect, hard middling |
+| ministral-3:8b-reasoning-2512-q8_0 LS/P | 48.2% | 97.9% | Both modes (P/N) of this config place near the top on hard |
+
+The #1-on-hard config has a hard failure mode worth understanding: on `data_gap_recovery_extended` (lambda) it scores 0/50, and on the stateful variant 4/50. Every other advanced_reasoning scenario for that config sits at 90-100%. If your workload includes data-gap-recovery patterns specifically, the #3 config (14B Reasoning Q4 LS/N, no zeros) is the safer pick at the cost of 23 points on the hard average.
+
+### Why Ministral-3 dominates
+
+Ministral-3 wins the top 12 across both Instruct and Reasoning variants, at 8B and 14B, in both quants, on both native and prompt modes. Two factors stand out:
+
+1. **Tool-calling fine-tuning is more important than parameter count.** Ministral-3 8B Instruct Q4 (rank 10, 78.0%) outscores Qwen3 14B Q4 LS/N (rank 18, 68.9%). Throwing parameters at the problem stops paying after fine-tuning quality.
+2. **Speed is competitive.** Top Ministral configs run at 2.8-6.6s per workflow; top Qwen3 configs at 28-35s — a 5-10× gap that compounds at scale.
+
+---
+
+## API Tier (No Local GPU)
+
+API models still serve as the ceiling and the baseline:
+
+| Model | Overall | OG-18 | Hard | Speed |
+|-------|---:|---:|---:|---:|
+| Claude Haiku 4.5 | ~95% | 99.6% | ~85% | 4.0s |
+| Claude Sonnet 4.6 | ~99% | 100.0% | ~95% | 6.5s |
+| Claude Opus 4.6 | ~99% | 100.0% | ~95% | 8.5s |
+
+(API tier has full eval coverage on OG-18; selective coverage on advanced_reasoning — not all scenarios re-run on every API model. Numbers above are approximate from partial coverage.)
+
+Haiku for cost-sensitive workloads. Sonnet or Opus for the last few points on hard. The gap between best-self-hosted and Haiku on the hard suite is real (~10 points) and is the current ceiling for self-hosted at 12-16GB VRAM.
 
 ---
 
@@ -90,26 +145,19 @@ These models work but fail too often for production-grade agentic workflows.
 
 The same model weights can produce dramatically different results depending on the serving backend. This is a hidden variable that no published benchmark we are aware of controls for.
 
-| Model | Backend/Mode | Score | Notes |
-|-------|-------------|-------|-------|
-| Mistral Nemo 12B | Llamafile (prompt) | 82.6% | Best result for this model |
-| Mistral Nemo 12B | llama-server (prompt) | 75.0% | Same weights, different backend |
-| Mistral Nemo 12B | Ollama (native) | 44.6% | Same weights, 38% lower |
-| Mistral Nemo 12B | llama-server (native) | 7.2% | Same weights, near-zero |
-
-The same pattern appears across model families:
-
-| Model | llama-server (native) | llama-server (prompt) | Ollama (native) |
-|-------|-----------------------|----------------------|-----------------|
-| Ministral-8B Reasoning Q4_K_M | 99.3% | 98.1% | — |
-| Qwen3-14B Q4_K_M | 88.4% | 93.3% | 96.3% |
-| Gemma4 26B A4B Q4_K_M | 96.9% | 99.9% | 85.1% |
+| Model | Backend / Mode | OG-18 | Notes |
+|-------|----------------|---:|-------|
+| Ministral-3 14B Instruct Q4 | LS / native | 100.0% | Rank 2 |
+| Ministral-3 14B Instruct Q4 | Ollama / native | 100.0% | Rank 11 — same OG-18 score, slower, weaker on hard |
+| Ministral-3 14B Instruct Q4 | LS / prompt | 97.8% | Rank 12 |
+| Mistral Nemo 12B | LS / prompt | (~76%) | OG-18 only |
+| Mistral Nemo 12B | LS / native | (~5%) | Same weights, 70+ point drop |
 
 **Takeaways:**
-- **llama-server native is the best backend for most models** — but not all. Qwen3, Nemo, and Gemma4 MoE variants perform *worse* with native FC on llama-server than with prompt-injected or Ollama.
-- **Always test your specific model/backend combination.** Don't assume native FC is better than prompt-injected — it depends on the model's training and the backend's template handling.
-- **Forge's prompt-injection fallback is effective.** The gap between native and prompt-injected is often small (1–2%), and sometimes prompt wins.
-- **Model availability varies by backend.** llama-server (via GGUF files from HuggingFace) has the widest model selection — any model with a GGUF release works, at any quantization. Ollama's registry is convenient but lags behind and is missing key models (including Ministral-8B Reasoning, the top self-hosted pick). Llamafile has the most limited selection and tends to trail further behind new releases. If you want access to the latest models, start with llama-server + GGUF.
+- **llama-server is the right default for most models** — top 10 are all LS.
+- **Native vs prompt depends on the model and the suite.** Native wins OG-18 perfects; prompt wins hard. Test both for your workload.
+- **Ollama is convenient but slower and missing the top-tier model selection.** Ministral-3 8B Reasoning, the most accessible reasoning model, is not in the Ollama registry as of this writing — llama-server + GGUF is the only path.
+- **Forge's prompt-injection fallback is real.** The gap between native and prompt is often small (1-2%), and prompt wins on the hardest scenarios. If your model has poor native FC support, prompt mode is not a downgrade.
 
 ---
 
@@ -124,8 +172,10 @@ A few examples of how far recommendations spread:
 | Qwen3 8B/14B (thinking) | 0.6 | 0.95 | 20 |
 | Qwen3.5 / 3.6 (thinking, general) | **1.0** | 0.95 | 20 |
 | Qwen3-Coder Instruct | 0.7 | 0.8 | 20 |
+| Ministral-3 Instruct | 0.05 | — | — |
+| Granite 4.0 | 0.0 (greedy) | 1.0 | 0 |
 
-Running Qwen3.5 27B at the "standard" 0.7 temperature — instead of the card-recommended 1.0 — is a measurable handicap. The same logic applies across Gemma, Mistral, and Qwen families, all of which publish different recommendations.
+Running Ministral-3 Instruct at the "standard" 0.7 temperature — instead of the card-recommended 0.05 — is a measurable handicap. The v0.6.0 sampling-defaults work specifically targeted this gap; eval results jumped 3-8 points on most 8B-class configs after the fix.
 
 ### How forge handles it
 
@@ -136,7 +186,7 @@ from forge.clients import LlamafileClient
 
 # Managed mode — opt in to recommended defaults via constructor flag
 client = LlamafileClient(
-    model="qwen3.5:27b-q4_K_M",
+    model="ministral-3:8b-instruct-2512-q8_0",
     mode="native",
     recommended_sampling=True,
 )
@@ -148,10 +198,10 @@ Caller's explicit non-None sampling kwargs win field-by-field over the map:
 
 ```python
 client = LlamafileClient(
-    model="qwen3.5:27b-q4_K_M",
+    model="ministral-3:8b-instruct-2512-q8_0",
     mode="native",
     recommended_sampling=True,
-    temperature=0.5,  # overrides the map's 1.0; other map fields still apply
+    temperature=0.1,  # overrides the map's 0.05; other map fields still apply
 )
 ```
 
@@ -237,21 +287,35 @@ For fully manual control, pass sampling kwargs directly and skip the helpers.
 
 ---
 
+## Models to Avoid
+
+Configs that score below 60% overall and aren't recommended for production agentic workloads:
+
+| Model | Best Score | Why |
+|-------|-----------|-----|
+| Llama 3.1 8B | ~54% | Tool-call reliability falls off on stateful + hard scenarios |
+| Mistral 7B v0.3 | ~46% | Older release, no formal sampling guidance, weak on multi-step workflows |
+| Granite 4.0 h-micro / h-tiny | 26-65% | Hybrid architecture leaves reliability on the table even with full guardrails |
+
+These models work but fail too often for production-grade agentic workflows. Forge's guardrails still help (Granite 4.0 lifts from low single digits to 65% with the full stack), but the floor isn't high enough to ship.
+
+---
+
 ## Key Findings
 
-1. **Guardrails matter more than model size.** Forge's guardrail stack adds 10–79% accuracy depending on the model. Ministral-8B Instruct on Ollama jumps from 17% → 91% (+74 points). Claude Haiku drops from 99.6% → 66.3% without them. An 8B model *with* forge outperforms frontier APIs *without* forge.
+1. **Guardrails matter more than model size.** Forge's guardrail stack adds 10-79 points depending on the model. The same 8B Ministral-3 Instruct that hits 86.5% with reforged guardrails drops to single digits on bare. An 8B model *with* forge outperforms most frontier APIs *without* forge.
 
-2. **Bigger is not better — until 27B+.** Ministral-8B Reasoning (99.3%) outperforms every 14B and 24B model tested on 12GB hardware. Devstral 24B (96.3%), Mistral Small 24B (94.7%), and Ministral-14B Reasoning (95.6%) all fall short. The inflection point is ~27B on 32GB hardware: Qwen3.5 27B and Gemma4 31B both hit 100.0%. Below that threshold, reasoning-oriented fine-tuning at 8B produces better tool-calling discipline than scale alone.
+2. **Tool-calling fine-tuning beats parameter count.** Ministral-3 8B Instruct outscores Qwen3 14B and Mistral Nemo 12B at the same backend. The Ministral-3 family was trained explicitly for agentic workflows; that fine-tuning quality carries further than 6B more parameters of general capability.
 
-3. **32GB unlocks frontier-matching self-hosted performance.** Gemma4 31B and Qwen3.5 27B achieve 100.0% on dual 5070 Ti (16GB × 2) — the first self-hosted models to match Claude Sonnet/Opus. This was not possible at any VRAM tier prior to this generation of models.
+3. **The serving backend is a hidden variable.** Same weights, different backend, scores 70+ points apart. Backend choice can swing accuracy more than model choice. Any evaluation that doesn't specify the backend may be producing misleading results.
 
-4. **The serving backend is a hidden variable.** The same weights produce 7% on one backend and 83% on another. Backend choice can swing accuracy more than model choice. Any evaluation that doesn't specify the backend may be producing misleading results.
+4. **Sampling defaults are a real lever.** Pre-v0.6.0, hardcoded `temperature=0.7` left ~3-8 points on the table for most 8B-class configs. Per-model card-recommended sampling (forge's `recommended_sampling=True`) closes that gap and lifts four 8B-class configs to perfect on OG-18.
 
 5. **Error recovery is an architectural gap, not a capability gap.** Error recovery scores 0% for *every* model tested — local and frontier — without forge's retry mechanism. No model can self-correct from tool errors without a framework feeding errors back.
 
-6. **Quantization impact is minimal.** Q4_K_M vs Q8_0 on the same model: <1% score difference in most cases. Use Q4_K_M to maximize context window headroom.
+6. **Quantization impact is workload-dependent.** Q4_K_M vs Q8_0 on the same model: <2% on OG-18 in most cases, but Q8 helps on hard (the top-1 config gains 7-23 points on hard at Q8). Use Q4 for context window headroom; Q8 if your workload leans hard.
 
-7. **Speed varies widely.** Ministral models cluster at 2.5–4.6s per workflow. Qwen3 and Gemma4 dense models are 3–5× slower (11–20s) despite competitive accuracy. MoE variants (Gemma4 A4B, Qwen3.5 A3B) are fast (2–5s) at near-perfect scores — the best speed/accuracy tradeoff at 32GB.
+7. **Speed varies widely.** Top Ministral configs cluster at 2.8-6.6s per workflow. Top Qwen3 configs are 28-35s — a 5-10× gap that compounds at scale.
 
 ---
 

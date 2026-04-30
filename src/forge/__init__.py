@@ -1,5 +1,12 @@
 """forge — a reusable framework for self-hosted LLM tool-calling and multi-step agentic workflows."""
 
+from importlib.metadata import PackageNotFoundError, version as _pkg_version
+
+try:
+    __version__ = _pkg_version("forge-guardrails")
+except PackageNotFoundError:
+    __version__ = "0.0.0+unknown"
+
 from forge.core.messages import Message, MessageMeta, MessageRole, MessageType, ToolCallInfo
 from forge.core.workflow import (
     LLMResponse,
@@ -58,6 +65,8 @@ from forge.errors import (
 )
 
 __all__ = [
+    # Version
+    "__version__",
     # Messages
     "Message",
     "MessageMeta",

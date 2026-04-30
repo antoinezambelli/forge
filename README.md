@@ -6,7 +6,7 @@
 [![Python 3.12+](https://img.shields.io/badge/python-3.12%2B-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
-A reliability layer for self-hosted LLM tool-calling. Forge takes an 8B model from ~38% to ~99% on multi-step agentic workflows through guardrails (rescue parsing, retry nudges, step enforcement) and context management (VRAM-aware budgets, tiered compaction).
+A reliability layer for self-hosted LLM tool-calling. Forge lifts an 8B local model to the top of its class on multi-step agentic workflows through guardrails (rescue parsing, retry nudges, step enforcement) and context management (VRAM-aware budgets, tiered compaction). The current top self-hosted config (Ministral-3 8B Instruct Q8 on llama-server) scores 86.5% across forge's 26-scenario eval suite — and 76% on the hardest tier.
 
 Three ways to use it:
 
@@ -40,16 +40,16 @@ pip install -e ".[dev]"
 
 ### Backend setup (pick one)
 
-**Ollama** (easiest):
+**llama-server** (recommended — top 10 eval configs all run on llama-server):
+```bash
+# Install from https://github.com/ggml-org/llama.cpp/releases
+llama-server -m path/to/Ministral-3-8B-Instruct-2512-Q8_0.gguf --jinja -ngl 999 --port 8080
+```
+
+**Ollama** (alternative — easier setup, slightly weaker on harder workloads):
 ```bash
 # Install from https://ollama.com/download
 ollama pull ministral-3:8b-instruct-2512-q4_K_M
-```
-
-**llama-server** (best performance):
-```bash
-# Install from https://github.com/ggml-org/llama.cpp/releases
-llama-server -m path/to/Ministral-3-8B-Reasoning-2512-Q4_K_M.gguf --jinja -ngl 999 --port 8080
 ```
 
 **Anthropic** (API, no local GPU needed):
@@ -145,11 +145,11 @@ python -m pytest tests/ --cov=forge --cov-report=term-missing
 
 ## Eval Harness
 
-22 scenarios measuring how reliably a model + backend combo navigates multi-step tool-calling workflows. See [Eval Guide](docs/EVAL_GUIDE.md) for full CLI reference.
+26 scenarios measuring how reliably a model + backend combo navigates multi-step tool-calling workflows — split into an OG-18 baseline tier and an 8-scenario advanced_reasoning tier for top-end separation. See [Eval Guide](docs/EVAL_GUIDE.md) for full CLI reference.
 
 ```bash
-# Ollama
-python -m tests.eval.eval_runner --backend ollama --model "ministral-3:8b-instruct-2512-q4_K_M" --runs 10 --stream --verbose
+# llama-server (start in another terminal first; see Eval Guide)
+python -m tests.eval.eval_runner --backend llamafile --llamafile-mode prompt --model "ministral-3:8b-instruct-2512-q8_0" --runs 10 --stream --verbose
 
 # Batch eval (JSONL output, automatic resume)
 python -m tests.eval.batch_eval --config all --runs 50
@@ -197,7 +197,7 @@ src/forge/
     handler.py         # Request handler — bridge between HTTP and run_inference
     convert.py         # OpenAI messages ↔ forge Messages conversion
 tests/
-  unit/                # 638 deterministic tests — no LLM backend required
+  unit/                # 865 deterministic tests — no LLM backend required
   eval/                # Eval harness — model qualification against real backends
 ```
 
@@ -210,6 +210,15 @@ tests/
 - [Architecture](docs/ARCHITECTURE.md) — Full design document
 - [Workflow Internals](docs/WORKFLOW.md) — Workflow design and runner internals
 - [Contributing](CONTRIBUTING.md) — How to set up, test, and add new backends or scenarios
+
+## Paper
+
+The forge guardrail framework and ablation study are published as:
+
+> Zambelli, A. *Forge: A Reliability Layer for Self-Hosted LLM Tool-Calling.*
+> [https://doi.org/10.1145/3786335.3813193](https://doi.org/10.1145/3786335.3813193)
+
+A pre-publication preprint is also available at [docs/forge_ieee_preprint.pdf](docs/forge_ieee_preprint.pdf) — kept as a historical artifact. Cite the published version above; the DOI link may not resolve immediately depending on the publisher's release timing.
 
 ## License
 
