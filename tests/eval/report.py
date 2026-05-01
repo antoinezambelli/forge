@@ -442,9 +442,103 @@ _SCENARIO_ABBREV: dict[str, str] = {
 
 # ── Model metadata extraction ─────────────────────────────────
 
+# Cross-backend model identity map. Different backends report the same
+# model under different identity strings:
+#   - ollama:      "qwen3:8b-q8_0"         (Ollama-style key)
+#   - llamaserver: "Qwen3-8B-Q8_0"         (GGUF stem)
+#   - llamafile:   "Mistral-Nemo-Instruct-2407.Q4_K_M"  (binary stem)
+# Each entry maps a known identity to:
+#   - "family": coarse rollup ("qwen3-8b" lumps Q4 + Q8), used by by-family.md
+#   - "cross_backend_key": fine key (per name+size+quant), used by by-backend.md
+#     for "compare same model across backends" — keeps Q4 vs Q8 separate.
+#
+# Unknown models fall back to extract_family() string-pattern logic and
+# m.key.model directly; they get reasonable behavior but lose the
+# cross-backend rollup if their identity strings differ between backends.
+MODEL_FAMILIES: dict[str, dict[str, str]] = {
+    # llama3.1 8B
+    "llama3.1:8b-instruct-q4_K_M":          {"family": "llama3.1", "cross_backend_key": "llama3.1-8b-q4_K_M"},
+    "Meta-Llama-3.1-8B-Instruct-Q4_K_M":    {"family": "llama3.1", "cross_backend_key": "llama3.1-8b-q4_K_M"},
+    "Meta-Llama-3.1-8B-Instruct.Q4_K_M":    {"family": "llama3.1", "cross_backend_key": "llama3.1-8b-q4_K_M"},
+    "llama3.1:8b-instruct-q8_0":            {"family": "llama3.1", "cross_backend_key": "llama3.1-8b-q8_0"},
+    "Meta-Llama-3.1-8B-Instruct-Q8_0":      {"family": "llama3.1", "cross_backend_key": "llama3.1-8b-q8_0"},
+    "Meta-Llama-3.1-8B-Instruct.Q8_0":      {"family": "llama3.1", "cross_backend_key": "llama3.1-8b-q8_0"},
+    # mistral-nemo 12B
+    "mistral-nemo:12b-instruct-2407-q4_K_M": {"family": "mistral-nemo", "cross_backend_key": "mistral-nemo-12b-q4_K_M"},
+    "Mistral-Nemo-Instruct-2407-Q4_K_M":     {"family": "mistral-nemo", "cross_backend_key": "mistral-nemo-12b-q4_K_M"},
+    "Mistral-Nemo-Instruct-2407.Q4_K_M":     {"family": "mistral-nemo", "cross_backend_key": "mistral-nemo-12b-q4_K_M"},
+    # mistral 7B v0.3
+    "mistral:7b-instruct-v0.3-q4_K_M":      {"family": "mistral-v0.3", "cross_backend_key": "mistral-v0.3-7b-q4_K_M"},
+    "Mistral-7B-Instruct-v0.3-Q4_K_M":      {"family": "mistral-v0.3", "cross_backend_key": "mistral-v0.3-7b-q4_K_M"},
+    "Mistral-7B-Instruct-v0.3.Q4_K_M":      {"family": "mistral-v0.3", "cross_backend_key": "mistral-v0.3-7b-q4_K_M"},
+    "mistral:7b-instruct-v0.3-q8_0":        {"family": "mistral-v0.3", "cross_backend_key": "mistral-v0.3-7b-q8_0"},
+    "Mistral-7B-Instruct-v0.3-Q8_0":        {"family": "mistral-v0.3", "cross_backend_key": "mistral-v0.3-7b-q8_0"},
+    "Mistral-7B-Instruct-v0.3.Q8_0":        {"family": "mistral-v0.3", "cross_backend_key": "mistral-v0.3-7b-q8_0"},
+    # qwen3 8B / 14B
+    "qwen3:8b-q4_K_M":                      {"family": "qwen3-8b", "cross_backend_key": "qwen3-8b-q4_K_M"},
+    "Qwen3-8B-Q4_K_M":                      {"family": "qwen3-8b", "cross_backend_key": "qwen3-8b-q4_K_M"},
+    "qwen3:8b-q8_0":                        {"family": "qwen3-8b", "cross_backend_key": "qwen3-8b-q8_0"},
+    "Qwen3-8B-Q8_0":                        {"family": "qwen3-8b", "cross_backend_key": "qwen3-8b-q8_0"},
+    "qwen3:14b-q4_K_M":                     {"family": "qwen3-14b", "cross_backend_key": "qwen3-14b-q4_K_M"},
+    "Qwen3-14B-Q4_K_M":                     {"family": "qwen3-14b", "cross_backend_key": "qwen3-14b-q4_K_M"},
+    # ministral-3 (instruct + reasoning, 8B / 14B)
+    "ministral-3:8b-instruct-2512-q4_K_M":  {"family": "ministral-8b", "cross_backend_key": "ministral-3-8b-instruct-q4_K_M"},
+    "Ministral-3-8B-Instruct-2512-Q4_K_M":  {"family": "ministral-8b", "cross_backend_key": "ministral-3-8b-instruct-q4_K_M"},
+    "ministral-3:8b-instruct-2512-q8_0":    {"family": "ministral-8b", "cross_backend_key": "ministral-3-8b-instruct-q8_0"},
+    "Ministral-3-8B-Instruct-2512-Q8_0":    {"family": "ministral-8b", "cross_backend_key": "ministral-3-8b-instruct-q8_0"},
+    "ministral-3:14b-instruct-2512-q4_K_M": {"family": "ministral-14b", "cross_backend_key": "ministral-3-14b-instruct-q4_K_M"},
+    "Ministral-3-14B-Instruct-2512-Q4_K_M": {"family": "ministral-14b", "cross_backend_key": "ministral-3-14b-instruct-q4_K_M"},
+    "ministral-3:8b-reasoning-2512-q4_K_M":  {"family": "ministral-8b", "cross_backend_key": "ministral-3-8b-reasoning-q4_K_M"},
+    "Ministral-3-8B-Reasoning-2512-Q4_K_M":  {"family": "ministral-8b", "cross_backend_key": "ministral-3-8b-reasoning-q4_K_M"},
+    "ministral-3:8b-reasoning-2512-q8_0":    {"family": "ministral-8b", "cross_backend_key": "ministral-3-8b-reasoning-q8_0"},
+    "Ministral-3-8B-Reasoning-2512-Q8_0":    {"family": "ministral-8b", "cross_backend_key": "ministral-3-8b-reasoning-q8_0"},
+    "ministral-3:14b-reasoning-2512-q4_K_M": {"family": "ministral-14b", "cross_backend_key": "ministral-3-14b-reasoning-q4_K_M"},
+    "Ministral-3-14B-Reasoning-2512-Q4_K_M": {"family": "ministral-14b", "cross_backend_key": "ministral-3-14b-reasoning-q4_K_M"},
+    # gemma 4 (31b / 26b a4b / e4b)
+    "gemma4:31b-it-q4_K_M":                 {"family": "gemma4-31b", "cross_backend_key": "gemma4-31b-q4_K_M"},
+    "gemma-4-31B-it-Q4_K_M":                {"family": "gemma4-31b", "cross_backend_key": "gemma4-31b-q4_K_M"},
+    "gemma4:26b-a4b-it-q4_K_M":             {"family": "gemma4-26b-a4b", "cross_backend_key": "gemma4-26b-a4b-q4_K_M"},
+    "gemma-4-26B-A4B-it-UD-Q4_K_M":         {"family": "gemma4-26b-a4b", "cross_backend_key": "gemma4-26b-a4b-q4_K_M"},
+    "gemma4:26b-a4b-it-q8_0":               {"family": "gemma4-26b-a4b", "cross_backend_key": "gemma4-26b-a4b-q8_0"},
+    "gemma-4-26B-A4B-it-Q8_0":              {"family": "gemma4-26b-a4b", "cross_backend_key": "gemma4-26b-a4b-q8_0"},
+    "gemma4:e4b-it-q4_K_M":                 {"family": "gemma4-e4b", "cross_backend_key": "gemma4-e4b-q4_K_M"},
+    "gemma-4-E4B-it-Q4_K_M":                {"family": "gemma4-e4b", "cross_backend_key": "gemma4-e4b-q4_K_M"},
+    "gemma4:e4b-it-q8_0":                   {"family": "gemma4-e4b", "cross_backend_key": "gemma4-e4b-q8_0"},
+    "gemma-4-E4B-it-Q8_0":                  {"family": "gemma4-e4b", "cross_backend_key": "gemma4-e4b-q8_0"},
+    # mistral small 3.2 24b (llama-server only)
+    "Mistral-Small-3.2-24B-Instruct-2506-Q4_K_M": {"family": "mistral-small-3.2", "cross_backend_key": "mistral-small-3.2-24b-q4_K_M"},
+    "Mistral-Small-3.2-24B-Instruct-2506-Q8_0":   {"family": "mistral-small-3.2", "cross_backend_key": "mistral-small-3.2-24b-q8_0"},
+    # devstral small 2 24b (llama-server only)
+    "Devstral-Small-2-24B-Instruct-2512-Q4_K_M": {"family": "devstral-small-2", "cross_backend_key": "devstral-small-2-24b-q4_K_M"},
+    "Devstral-Small-2-24B-Instruct-2512-Q8_0":   {"family": "devstral-small-2", "cross_backend_key": "devstral-small-2-24b-q8_0"},
+    # qwen3.5
+    "Qwen3.5-27B-Q4_K_M":                   {"family": "qwen3.5-27b", "cross_backend_key": "qwen3.5-27b-q4_K_M"},
+    "Qwen3.5-35B-A3B-Q4_K_M":               {"family": "qwen3.5-35b-a3b", "cross_backend_key": "qwen3.5-35b-a3b-q4_K_M"},
+    "qwen3.5:27b-q4_K_M":                   {"family": "qwen3.5-27b", "cross_backend_key": "qwen3.5-27b-q4_K_M"},
+    "qwen3.5:35b-a3b-q4_K_M":               {"family": "qwen3.5-35b-a3b", "cross_backend_key": "qwen3.5-35b-a3b-q4_K_M"},
+    # granite 4.0 (h-micro / h-tiny)
+    "granite-4.0:h-micro-q4_K_M":           {"family": "granite-4.0-h-micro", "cross_backend_key": "granite-4.0-h-micro-q4_K_M"},
+    "granite-4.0-h-micro-Q4_K_M":           {"family": "granite-4.0-h-micro", "cross_backend_key": "granite-4.0-h-micro-q4_K_M"},
+    "granite-4.0:h-micro-q8_0":             {"family": "granite-4.0-h-micro", "cross_backend_key": "granite-4.0-h-micro-q8_0"},
+    "granite-4.0-h-micro-Q8_0":             {"family": "granite-4.0-h-micro", "cross_backend_key": "granite-4.0-h-micro-q8_0"},
+    "granite-4.0:h-tiny-q4_K_M":            {"family": "granite-4.0-h-tiny", "cross_backend_key": "granite-4.0-h-tiny-q4_K_M"},
+    "granite-4.0-h-tiny-Q4_K_M":            {"family": "granite-4.0-h-tiny", "cross_backend_key": "granite-4.0-h-tiny-q4_K_M"},
+    "granite-4.0:h-tiny-q8_0":              {"family": "granite-4.0-h-tiny", "cross_backend_key": "granite-4.0-h-tiny-q8_0"},
+    "granite-4.0-h-tiny-Q8_0":              {"family": "granite-4.0-h-tiny", "cross_backend_key": "granite-4.0-h-tiny-q8_0"},
+}
+
 
 def extract_family(model: str) -> str:
-    """Extract model family from Ollama-style model name."""
+    """Coarse model family ('qwen3-8b', 'ministral-8b', etc.) for by-family rollup.
+
+    Consults MODEL_FAMILIES first. Falls back to string-pattern logic for
+    unknown models — covers anything that doesn't have an entry yet, but
+    relies on Ollama-style colon syntax in the input.
+    """
+    info = MODEL_FAMILIES.get(model)
+    if info is not None:
+        return info["family"]
+    # Fallback: original string-pattern logic for unmapped Ollama-style names.
     if "claude" in model:
         return "claude"
     if "llama3.1" in model:
@@ -460,13 +554,22 @@ def extract_family(model: str) -> str:
     if "mistral:" in model:
         return "mistral-v0.3"
     if model.startswith("granite-4.0:"):
-        variant = model.split(":")[1].split("-")[0]  # "h", before splitting further
-        # Names look like "granite-4.0:h-micro-q4_K_M" or "granite-4.0:h-tiny-q8_0"
-        # We want family = "granite-4.0-h-micro" or "granite-4.0-h-tiny"
         parts = model.split(":")[1].split("-")
-        # parts[0]="h", parts[1]="micro|tiny", rest is quant
         return f"granite-4.0-{parts[0]}-{parts[1]}"
     return model.split(":")[0]
+
+
+def cross_backend_key(model: str) -> str:
+    """Canonical key for grouping the same logical model across backends.
+
+    Returns the per-name-size-quant identity from MODEL_FAMILIES, falling
+    back to the raw model string for unknowns (which means unmapped models
+    won't cross-backend-group, but they'll still appear in the report).
+    """
+    info = MODEL_FAMILIES.get(model)
+    if info is not None:
+        return info["cross_backend_key"]
+    return model
 
 
 def extract_quant(model: str) -> str:
@@ -905,17 +1008,21 @@ def write_markdown_views(
         [(family, sorted(group, key=lambda m: -m.score)) for family, group in sorted_families],
     )
 
-    # reforged/by-backend.md — reforged only, grouped by model when >1 backend available
+    # reforged/by-backend.md — reforged only, grouped by canonical
+    # cross-backend key when >1 backend available. Different backends
+    # store the same model under different identity strings post-v0.6.0
+    # (Ollama-style for ollama, GGUF stem for llamaserver, etc.) — the
+    # cross_backend_key map normalizes them.
     backend_groups: dict[str, list[ConfigMetrics]] = defaultdict(list)
     for m in reforged_only:
-        backend_groups[m.key.model].append(m)
+        backend_groups[cross_backend_key(m.key.model)].append(m)
     backend_pairs = {k: v for k, v in backend_groups.items() if len({m.key.backend for m in v}) > 1}
     sorted_bg = sorted(backend_pairs.items(), key=lambda kv: max(m.score for m in kv[1]), reverse=True)
     _grouped_view(
         "reforged/by-backend.md",
         "Forge Eval — Reforged by Backend",
         "Same model across backends (reforged only)",
-        [(model, sorted(group, key=lambda m: -m.score)) for model, group in sorted_bg],
+        [(key, sorted(group, key=lambda m: -m.score)) for key, group in sorted_bg],
     )
 
     # ── Screen 2: reforged-vs-bare.md ─────────────────────────────
