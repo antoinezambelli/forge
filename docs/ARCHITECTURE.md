@@ -1622,7 +1622,7 @@ class ServerManager:
 
 ```python
 # setup_backend() wires ServerManager + ContextManager together:
-client = OllamaClient(model="ministral-3:14b-instruct-2512-q4_K_M")
+client = OllamaClient(model="ministral-3:14b-instruct-2512-q4_K_M", recommended_sampling=True)
 server, ctx = await setup_backend(
     backend="ollama",
     model="ministral-3:14b-instruct-2512-q4_K_M",

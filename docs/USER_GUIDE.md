@@ -227,14 +227,14 @@ workflow = Workflow(
 # resolves a VRAM-aware context budget, and returns a ContextManager ready to use.
 server, ctx = await setup_backend(
     backend="llamaserver",
-    model="ministral-8b-instruct",
-    gguf_path="path/to/Ministral-3-8B-Instruct-2512-Q4_K_M.gguf",
+    model="ministral-3:8b-instruct-2512-q8_0",
+    gguf_path="path/to/Ministral-3-8B-Instruct-2512-Q8_0.gguf",
     budget_mode=BudgetMode.FORGE_FULL,
 )
 # Or manage the server yourself and create the ContextManager directly:
 # ctx = ContextManager(strategy=TieredCompact(keep_recent=2), budget_tokens=8192)
 
-client = LlamafileClient(model="ministral-8b-instruct", mode="native")
+client = LlamafileClient(model="ministral-3:8b-instruct-2512-q8_0", mode="native", recommended_sampling=True)
 runner = WorkflowRunner(client=client, context_manager=ctx, stream=True)
 await runner.run(workflow, "What's the weather in Paris?")
 await server.stop()
@@ -266,7 +266,7 @@ from forge.core.runner import WorkflowRunner
 from forge.core.messages import Message, MessageMeta, MessageRole, MessageType
 
 # 1. Start server once — stays up for the lifetime of the consumer
-client = OllamaClient(model="ministral-3:8b-instruct-2512-q4_K_M")
+client = OllamaClient(model="ministral-3:8b-instruct-2512-q4_K_M", recommended_sampling=True)
 server, ctx = await setup_backend(
     backend="ollama", model="ministral-3:8b-instruct-2512-q4_K_M",
     budget_mode=BudgetMode.FORGE_FULL, client=client,

@@ -96,7 +96,7 @@ workflow = Workflow(
 )
 
 async def main():
-    client = OllamaClient(model="ministral-3:8b-instruct-2512-q4_K_M")
+    client = OllamaClient(model="ministral-3:8b-instruct-2512-q4_K_M", recommended_sampling=True)
     ctx = ContextManager(strategy=TieredCompact(keep_recent=2), budget_tokens=8192)
     runner = WorkflowRunner(client=client, context_manager=ctx)
     await runner.run(workflow, "What's the weather in Paris?")

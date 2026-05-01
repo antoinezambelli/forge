@@ -16,4 +16,4 @@ For model and backend recommendations, see [Model Guide](../MODEL_GUIDE.md).
 
 - [native-vs-prompt.md](raw/native-vs-prompt.md) — llama-server native FC vs prompt-injected, reforged only
 
-*Generated 2026-04-29 02:47*
+*Generated 2026-05-01 08:14*

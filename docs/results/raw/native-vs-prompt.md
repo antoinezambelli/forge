@@ -169,4 +169,4 @@ Scr=score(correct/total), Acc=accuracy(correct/total, excl validate errors), Cmp
 rel=relevance_detection, arg=argument_fidelity, tsl=tool_selection, b2s=basic_2step, s3s=sequential_3step, crt=conditional_routing, srn=sequential_reasoning, err=error_recovery, dgr=data_gap_recovery, dge=data_gap_recovery_extended, art=argument_transformation, grs=grounded_synthesis, iar=inconsistent_api_recovery, rel_s=relevance_detection_stateful, arg_s=argument_fidelity_stateful, tsl_s=tool_selection_stateful, b2s_s=basic_2step_stateful, s3s_s=sequential_3step_stateful, crt_s=conditional_routing_stateful, srn_s=sequential_reasoning_stateful, err_s=error_recovery_stateful, dgr_s=data_gap_recovery_stateful, dge_s=data_gap_recovery_extended_stateful, art_s=argument_transformation_stateful, grs_s=grounded_synthesis_stateful, iar_s=inconsistent_api_recovery_stateful
 Ablation: full=all guardrails, no_rescue=no rescue loop, no_nudge=no rescue/retry nudge, no_steps=no step enforcement, no_recovery=no error recovery, no_compact=no compaction, bare=all guardrails off
 
-*Generated 2026-04-29 02:47*
+*Generated 2026-05-01 08:14*
