@@ -11,8 +11,8 @@ Internal tooling for measuring how reliably a model + backend combo navigates mu
 python -m tests.eval.eval_runner --backend ollama --model "ministral-3:8b-instruct-2512-q4_K_M" --runs 10 --stream --verbose
 
 # llama-server — start server in one terminal, run eval in another
-llama-server --jinja -m path/to/model.gguf -ngl 999 --port 8080
-python -m tests.eval.eval_runner --backend llamafile --llamafile-mode native --model ministral-14b-instruct-q4_k_m --runs 10 --stream --verbose
+llama-server --jinja -m path/to/Ministral-3-14B-Instruct-2512-Q4_K_M.gguf -ngl 999 --port 8080
+python -m tests.eval.eval_runner --backend llamafile --llamafile-mode native --gguf path/to/Ministral-3-14B-Instruct-2512-Q4_K_M.gguf --runs 10 --stream --verbose
 
 # Anthropic API
 python -m tests.eval.eval_runner --backend anthropic --model claude-haiku-4-5-20251001 --runs 5 --stream --verbose
@@ -23,7 +23,8 @@ python -m tests.eval.eval_runner --backend anthropic --model claude-haiku-4-5-20
 | Flag | Values | Default | Description |
 |------|--------|---------|-------------|
 | `--backend` | `ollama`, `llamafile`, `anthropic` | `ollama` | Backend to target |
-| `--model` | string | *(required)* | Model name (Ollama-style or Anthropic model ID) |
+| `--model` | string | *(required for ollama/anthropic)* | Model name (Ollama-style or Anthropic model ID). Rejected for llamafile (use `--gguf`). |
+| `--gguf` | path | *(required for llamafile)* | Path to GGUF / llamafile model file. Rejected for ollama/anthropic (use `--model`). |
 | `--runs` | int | `10` | Runs per scenario |
 | `--stream` | flag | off | Use streaming mode |
 | `--verbose`, `-v` | flag | off | Print live per-message trace |
@@ -75,7 +76,7 @@ python -m tests.eval.eval_runner --backend ollama --model "ministral-3:8b-instru
 
 # Qwen3 with thinking on llama-server
 llama-server --jinja -m path/to/Qwen3-8B-Q4_K_M.gguf -ngl 999 --port 8080 --reasoning-format auto
-python -m tests.eval.eval_runner --backend llamafile --llamafile-mode native --model qwen3-8b-q4_k_m --runs 10 --stream --think true
+python -m tests.eval.eval_runner --backend llamafile --llamafile-mode native --gguf path/to/Qwen3-8B-Q4_K_M.gguf --runs 10 --stream --think true
 
 # Probe budget without running eval
 python -m tests.eval.eval_runner --backend ollama --model "ministral-3:8b-instruct-2512-q4_K_M" --probe

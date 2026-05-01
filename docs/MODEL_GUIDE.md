@@ -184,9 +184,11 @@ Forge ships a per-model recommendations map at `forge.clients.sampling_defaults`
 ```python
 from forge.clients import LlamafileClient
 
-# Managed mode — opt in to recommended defaults via constructor flag
+# Managed mode — opt in to recommended defaults via constructor flag.
+# For local-server backends, the GGUF / llamafile path *is* the model
+# identity — its filename stem is the lookup key.
 client = LlamafileClient(
-    model="ministral-3:8b-instruct-2512-q8_0",
+    gguf_path="path/to/Ministral-3-8B-Instruct-2512-Q8_0.gguf",
     mode="native",
     recommended_sampling=True,
 )
@@ -198,14 +200,14 @@ Caller's explicit non-None sampling kwargs win field-by-field over the map:
 
 ```python
 client = LlamafileClient(
-    model="ministral-3:8b-instruct-2512-q8_0",
+    gguf_path="path/to/Ministral-3-8B-Instruct-2512-Q8_0.gguf",
     mode="native",
     recommended_sampling=True,
     temperature=0.1,  # overrides the map's 0.05; other map fields still apply
 )
 ```
 
-For programmatic introspection without triggering policy, `forge.clients.get_sampling_defaults(model)` is a pure lookup — returns the map value (a fresh copy) or `{}` for unknown models. No logging, no raising.
+For programmatic introspection without triggering policy, `forge.clients.get_sampling_defaults(model)` is a pure lookup — returns the map value (a fresh copy) or `{}` for unknown models. No logging, no raising. Pass either an Ollama-style key (`"qwen3:8b-q8_0"`), a GGUF stem (`"Qwen3-8B-Q8_0"`), or a llamafile stem (`"Mistral-Nemo-Instruct-2407.Q4_K_M"`) — the map is keyed on all three identity forms.
 
 **Unknown models** (not in the map): forge supports all models; it only has opinions about the ones in the map. Without `recommended_sampling=True`, an unknown model gets backend defaults silently. With it, you get a fail-loud `UnsupportedModelError`.
 
@@ -265,7 +267,7 @@ The simplest path: opt in and override individual fields. Caller's explicit non-
 # Card-recommended general-tasks profile, but with the precise-coding (WebDev)
 # profile's temperature and presence_penalty.
 client = LlamafileClient(
-    model="qwen3.5:27b-q4_K_M",
+    gguf_path="path/to/Qwen3.5-27B-Q4_K_M.gguf",
     mode="native",
     recommended_sampling=True,
     temperature=0.6,
@@ -278,9 +280,9 @@ For programmatic access to the map without triggering policy:
 ```python
 from forge.clients import get_sampling_defaults
 
-defaults = get_sampling_defaults("qwen3.5:27b-q4_K_M")  # fresh dict, safe to mutate
+defaults = get_sampling_defaults("Qwen3.5-27B-Q4_K_M")  # GGUF-stem lookup; fresh dict, safe to mutate
 defaults["temperature"] = 0.6
-client = LlamafileClient(model="qwen3.5:27b-q4_K_M", mode="native", **defaults)
+client = LlamafileClient(gguf_path="path/to/Qwen3.5-27B-Q4_K_M.gguf", mode="native", **defaults)
 ```
 
 For fully manual control, pass sampling kwargs directly and skip the helpers.

@@ -149,7 +149,7 @@ python -m pytest tests/ --cov=forge --cov-report=term-missing
 
 ```bash
 # llama-server (start in another terminal first; see Eval Guide)
-python -m tests.eval.eval_runner --backend llamafile --llamafile-mode prompt --model "ministral-3:8b-instruct-2512-q8_0" --runs 10 --stream --verbose
+python -m tests.eval.eval_runner --backend llamafile --llamafile-mode prompt --gguf "path/to/Ministral-3-8B-Instruct-2512-Q8_0.gguf" --runs 10 --stream --verbose
 
 # Batch eval (JSONL output, automatic resume)
 python -m tests.eval.batch_eval --config all --runs 50

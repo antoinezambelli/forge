@@ -227,14 +227,17 @@ workflow = Workflow(
 # resolves a VRAM-aware context budget, and returns a ContextManager ready to use.
 server, ctx = await setup_backend(
     backend="llamaserver",
-    model="ministral-3:8b-instruct-2512-q8_0",
     gguf_path="path/to/Ministral-3-8B-Instruct-2512-Q8_0.gguf",
     budget_mode=BudgetMode.FORGE_FULL,
 )
 # Or manage the server yourself and create the ContextManager directly:
 # ctx = ContextManager(strategy=TieredCompact(keep_recent=2), budget_tokens=8192)
 
-client = LlamafileClient(model="ministral-3:8b-instruct-2512-q8_0", mode="native", recommended_sampling=True)
+client = LlamafileClient(
+    gguf_path="path/to/Ministral-3-8B-Instruct-2512-Q8_0.gguf",
+    mode="native",
+    recommended_sampling=True,
+)
 runner = WorkflowRunner(client=client, context_manager=ctx, stream=True)
 await runner.run(workflow, "What's the weather in Paris?")
 await server.stop()
@@ -348,11 +351,13 @@ Each model family has its own recommended temperature / top_p / top_k — and th
 from forge.clients import LlamafileClient
 
 client = LlamafileClient(
-    model="qwen3.5:27b-q4_K_M",
+    gguf_path="path/to/Qwen3.5-27B-Q4_K_M.gguf",
     mode="native",
     recommended_sampling=True,
 )
 ```
+
+For local-server backends, the GGUF (or llamafile) path is the canonical model identity — its filename stem (e.g. `Qwen3.5-27B-Q4_K_M`) is what forge uses for sampling-defaults lookup, the wire-format `model` field, and JSONL eval rows. Use Ollama-style strings only with `OllamaClient`.
 
 The flag is opt-in. Default behavior (`recommended_sampling=False`) leaves sampling to backend defaults; if forge has opinions about the model, it logs a one-shot INFO message pointing the caller at the flag. With `recommended_sampling=True`, an unknown model raises `UnsupportedModelError`.
 
@@ -543,11 +548,11 @@ For multi-slot setups (e.g., with `--kv-unified`), create one `SlotWorker` per s
 
 ```python
 # Slot 0: main conversation (no worker needed — dedicated)
-main_client = LlamafileClient(model="...", slot_id=0)
+main_client = LlamafileClient(gguf_path="path/to/model.gguf", slot_id=0)
 main_runner = WorkflowRunner(client=main_client, context_manager=ctx)
 
 # Slot 1: shared specialist slot (needs a worker)
-service_client = LlamafileClient(model="...", slot_id=1)
+service_client = LlamafileClient(gguf_path="path/to/model.gguf", slot_id=1)
 service_runner = WorkflowRunner(client=service_client, context_manager=ctx)
 service_worker = SlotWorker(service_runner)
 await service_worker.start()

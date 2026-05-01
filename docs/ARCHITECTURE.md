@@ -1150,13 +1150,14 @@ class LlamafileClient:
 
     def __init__(
         self,
-        model: str,
+        gguf_path: str | Path,    # canonical identity; self.model = stem
         base_url: str = "http://localhost:8080/v1",
-        temperature: float = 0.7,
-        mode: str = "auto",   # "native", "prompt", or "auto"
+        temperature: float | None = None,  # None = let backend default apply
+        mode: str = "auto",       # "native", "prompt", or "auto"
         timeout: float = 300.0,
         think: bool | None = None,
         cache_prompt: bool = True,  # Enable llama-server prompt caching
+        recommended_sampling: bool = False,  # opt-in to per-model HF-card defaults
     ):
         ...
 
@@ -1392,7 +1393,7 @@ python -m tests.eval.eval_runner --backend ollama --model "..." --runs 5 --tags 
 python -m tests.eval.eval_runner --backend ollama --model "..." --runs 10 --scenario basic_2step sequential_3step
 
 # llama-server (start server separately, use llamafile backend with native mode)
-python -m tests.eval.eval_runner --backend llamafile --llamafile-mode native --model "..." --runs 10 --stream
+python -m tests.eval.eval_runner --backend llamafile --llamafile-mode native --gguf path/to/model.gguf --runs 10 --stream
 
 # Thinking mode (Qwen3, Ministral Reasoning)
 python -m tests.eval.eval_runner --backend ollama --model "qwen3:8b-q4_K_M" --runs 10 --stream --think true
@@ -1404,7 +1405,7 @@ python -m tests.eval.eval_runner --backend anthropic --model claude-haiku-4-5-20
 python -m tests.eval.eval_runner --backend ollama --model "..." --runs 10 --ablation bare
 
 # Override compaction strategy (tiered, sliding, none)
-python -m tests.eval.eval_runner --backend llamafile --llamafile-mode native --model "..." --runs 50 --stream --compact-strategy tiered --tags compaction
+python -m tests.eval.eval_runner --backend llamafile --llamafile-mode native --gguf path/to/model.gguf --runs 50 --stream --compact-strategy tiered --tags compaction
 
 # Probe context length only (no eval run)
 python -m tests.eval.eval_runner --backend ollama --model "..." --probe

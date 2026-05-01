@@ -73,6 +73,8 @@ The proxy's pre-built client stays "blank slate." Body params are the only sampl
 - Eval surface (`tests/eval/batch_eval.py`, `tests/eval/eval_runner.py`) migrated to `recommended_sampling=True`. Now goes through the policy layer — unknown models in the eval list raise instead of silently running with backend defaults.
 - The pre-v0.6.0 hardcoded `T=0.7` was a real handicap on eval data: the v0.6.0 dataset (with per-model sampling) shows 3-8 point jumps over the v0.5.0 dataset on most 8B-class configs, attributable to this fix alone.
 
+> **Note (post-merge):** `LlamafileClient(model=...)` was later replaced with `LlamafileClient(gguf_path=...)` as part of the v0.6.0 GGUF-as-identity refactor — the model identity for local-server backends is now the GGUF file itself rather than a separate string. The `model=` examples in this ADR's "Context" and "Decision" sections describe the API as it stood when this work landed; current code uses `gguf_path=`.
+
 ## References
 
 - Sampling map and policy: `src/forge/clients/sampling_defaults.py`
