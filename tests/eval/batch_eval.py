@@ -30,53 +30,49 @@ from tests.eval.scenarios import ALL_SCENARIOS, EvalScenario
 
 MODELS_DIR_DEFAULT = Path("models")
 
-# Map Ollama model names → GGUF filenames for llama-server / llamafile
-GGUF_MAP: dict[str, str] = {
-    "llama3.1:8b-instruct-q4_K_M": "Meta-Llama-3.1-8B-Instruct-Q4_K_M.gguf",
-    "llama3.1:8b-instruct-q8_0": "Meta-Llama-3.1-8B-Instruct-Q8_0.gguf",
-    "mistral-nemo:12b-instruct-2407-q4_K_M": "Mistral-Nemo-Instruct-2407-Q4_K_M.gguf",
-    "mistral:7b-instruct-v0.3-q4_K_M": "Mistral-7B-Instruct-v0.3-Q4_K_M.gguf",
-    "mistral:7b-instruct-v0.3-q8_0": "Mistral-7B-Instruct-v0.3-Q8_0.gguf",
-    "qwen3:8b-q4_K_M": "Qwen3-8B-Q4_K_M.gguf",
-    "qwen3:8b-q8_0": "Qwen3-8B-Q8_0.gguf",
-    "qwen3:14b-q4_K_M": "Qwen3-14B-Q4_K_M.gguf",
-    "ministral-3:8b-instruct-2512-q4_K_M": "Ministral-3-8B-Instruct-2512-Q4_K_M.gguf",
-    "ministral-3:8b-instruct-2512-q8_0": "Ministral-3-8B-Instruct-2512-Q8_0.gguf",
-    "ministral-3:14b-instruct-2512-q4_K_M": "Ministral-3-14B-Instruct-2512-Q4_K_M.gguf",
-    # Reasoning models (GGUF only, no Ollama)
-    "ministral-3:8b-reasoning-2512-q4_K_M": "Ministral-3-8B-Reasoning-2512-Q4_K_M.gguf",
-    "ministral-3:8b-reasoning-2512-q8_0": "Ministral-3-8B-Reasoning-2512-Q8_0.gguf",
-    "ministral-3:14b-reasoning-2512-q4_K_M": "Ministral-3-14B-Reasoning-2512-Q4_K_M.gguf",
-    # ── 32GB eval additions ──
-    # Gemma 4 family
-    "gemma4:31b-it-q4_K_M": "gemma-4-31B-it-Q4_K_M.gguf",
-    "gemma4:26b-a4b-it-q4_K_M": "gemma-4-26B-A4B-it-UD-Q4_K_M.gguf",
-    "gemma4:26b-a4b-it-q8_0": "gemma-4-26B-A4B-it-Q8_0.gguf",
-    "gemma4:e4b-it-q4_K_M": "gemma-4-E4B-it-Q4_K_M.gguf",
-    "gemma4:e4b-it-q8_0": "gemma-4-E4B-it-Q8_0.gguf",
-    # Mistral Small 3.2 (llama-server only)
-    "mistral-small-3.2:24b-instruct-2506-q4_K_M": "Mistral-Small-3.2-24B-Instruct-2506-Q4_K_M.gguf",
-    "mistral-small-3.2:24b-instruct-2506-q8_0": "Mistral-Small-3.2-24B-Instruct-2506-Q8_0.gguf",
-    # Devstral Small 2 (llama-server only)
-    "devstral-small-2:24b-instruct-2512-q4_K_M": "Devstral-Small-2-24B-Instruct-2512-Q4_K_M.gguf",
-    "devstral-small-2:24b-instruct-2512-q8_0": "Devstral-Small-2-24B-Instruct-2512-Q8_0.gguf",
-    # Qwen 3.5 family
-    "qwen3.5:27b-q4_K_M": "Qwen3.5-27B-Q4_K_M.gguf",
-    "qwen3.5:35b-a3b-q4_K_M": "Qwen3.5-35B-A3B-Q4_K_M.gguf",
-    # Granite family (IBM)
-    "granite-4.0:h-micro-q4_K_M": "granite-4.0-h-micro-Q4_K_M.gguf",
-    "granite-4.0:h-micro-q8_0": "granite-4.0-h-micro-Q8_0.gguf",
-    "granite-4.0:h-tiny-q4_K_M": "granite-4.0-h-tiny-Q4_K_M.gguf",
-    "granite-4.0:h-tiny-q8_0": "granite-4.0-h-tiny-Q8_0.gguf",
-}
+# GGUF and llamafile model files for local-server backends.
+# Each entry is just the filename — paired into a BatchConfig below
+# alongside the canonical identity (the file stem, no extension).
+_GGUF_FILES: list[str] = [
+    "Meta-Llama-3.1-8B-Instruct-Q4_K_M.gguf",
+    "Meta-Llama-3.1-8B-Instruct-Q8_0.gguf",
+    "Mistral-Nemo-Instruct-2407-Q4_K_M.gguf",
+    "Mistral-7B-Instruct-v0.3-Q4_K_M.gguf",
+    "Mistral-7B-Instruct-v0.3-Q8_0.gguf",
+    "Qwen3-8B-Q4_K_M.gguf",
+    "Qwen3-8B-Q8_0.gguf",
+    "Qwen3-14B-Q4_K_M.gguf",
+    "Ministral-3-8B-Instruct-2512-Q4_K_M.gguf",
+    "Ministral-3-8B-Instruct-2512-Q8_0.gguf",
+    "Ministral-3-14B-Instruct-2512-Q4_K_M.gguf",
+    "Ministral-3-8B-Reasoning-2512-Q4_K_M.gguf",
+    "Ministral-3-8B-Reasoning-2512-Q8_0.gguf",
+    "Ministral-3-14B-Reasoning-2512-Q4_K_M.gguf",
+    # 32GB tier
+    "gemma-4-31B-it-Q4_K_M.gguf",
+    "gemma-4-26B-A4B-it-UD-Q4_K_M.gguf",
+    "gemma-4-26B-A4B-it-Q8_0.gguf",
+    "gemma-4-E4B-it-Q4_K_M.gguf",
+    "gemma-4-E4B-it-Q8_0.gguf",
+    "Mistral-Small-3.2-24B-Instruct-2506-Q4_K_M.gguf",
+    "Mistral-Small-3.2-24B-Instruct-2506-Q8_0.gguf",
+    "Devstral-Small-2-24B-Instruct-2512-Q4_K_M.gguf",
+    "Devstral-Small-2-24B-Instruct-2512-Q8_0.gguf",
+    "Qwen3.5-27B-Q4_K_M.gguf",
+    "Qwen3.5-35B-A3B-Q4_K_M.gguf",
+    "granite-4.0-h-micro-Q4_K_M.gguf",
+    "granite-4.0-h-micro-Q8_0.gguf",
+    "granite-4.0-h-tiny-Q4_K_M.gguf",
+    "granite-4.0-h-tiny-Q8_0.gguf",
+]
 
-LLAMAFILE_MAP: dict[str, str] = {
-    "llama3.1:8b-instruct-q4_K_M": "Meta-Llama-3.1-8B-Instruct.Q4_K_M.llamafile",
-    "llama3.1:8b-instruct-q8_0": "Meta-Llama-3.1-8B-Instruct.Q8_0.llamafile",
-    "mistral-nemo:12b-instruct-2407-q4_K_M": "Mistral-Nemo-Instruct-2407.Q4_K_M.llamafile",
-    "mistral:7b-instruct-v0.3-q4_K_M": "Mistral-7B-Instruct-v0.3.Q4_K_M.llamafile",
-    "mistral:7b-instruct-v0.3-q8_0": "Mistral-7B-Instruct-v0.3.Q8_0.llamafile",
-}
+_LLAMAFILE_FILES: list[str] = [
+    "Meta-Llama-3.1-8B-Instruct.Q4_K_M.llamafile",
+    "Meta-Llama-3.1-8B-Instruct.Q8_0.llamafile",
+    "Mistral-Nemo-Instruct-2407.Q4_K_M.llamafile",
+    "Mistral-7B-Instruct-v0.3.Q4_K_M.llamafile",
+    "Mistral-7B-Instruct-v0.3.Q8_0.llamafile",
+]
 
 
 # ── Config definitions ──────────────────────────────────────────
@@ -84,13 +80,27 @@ LLAMAFILE_MAP: dict[str, str] = {
 
 @dataclass
 class BatchConfig:
-    """A single eval configuration to run."""
+    """A single eval configuration to run.
 
-    model: str  # Ollama-style name (canonical)
+    The ``model`` field is the canonical identity used for JSONL row keys,
+    resume matching, and display labels:
+      - ollama: Ollama-style string (e.g. "qwen3:8b-q8_0")
+      - llamaserver: GGUF stem (e.g. "Qwen3-8B-Q8_0")
+      - llamafile: llamafile binary stem (e.g. "Mistral-Nemo-Instruct-2407.Q4_K_M")
+      - anthropic: model ID (e.g. "claude-haiku-4-5-20251001")
+
+    ``gguf_filename`` is the on-disk filename for llamaserver/llamafile
+    backends (joined with ``models_dir`` to form the path passed to the
+    server and to ``LlamafileClient(gguf_path=...)``). None for
+    ollama/anthropic.
+    """
+
+    model: str
     backend: str  # "ollama" | "llamaserver" | "llamafile" | "anthropic"
     mode: str  # "native" | "prompt"
     think: bool | None  # None = auto
     tool_choice: str | None = None  # Anthropic only: "auto", "any"
+    gguf_filename: str | None = None  # llamaserver/llamafile only
 
 
 # Ollama configs: 11 instruct models, native FC, stream
@@ -122,22 +132,30 @@ OLLAMA_CONFIGS: list[BatchConfig] = [
     ]
 ]
 
-# llama-server configs: 14 GGUFs x 2 modes (native + prompt)
-_LLAMASERVER_MODELS = list(GGUF_MAP.keys())  # all 14
-
+# llama-server configs: each GGUF × 2 modes (native + prompt)
 LLAMASERVER_CONFIGS: list[BatchConfig] = []
-for m in _LLAMASERVER_MODELS:
+for _filename in _GGUF_FILES:
+    _stem = Path(_filename).stem
     LLAMASERVER_CONFIGS.append(
-        BatchConfig(model=m, backend="llamaserver", mode="native", think=None)
+        BatchConfig(
+            model=_stem, backend="llamaserver", mode="native",
+            think=None, gguf_filename=_filename,
+        )
     )
     LLAMASERVER_CONFIGS.append(
-        BatchConfig(model=m, backend="llamaserver", mode="prompt", think=None)
+        BatchConfig(
+            model=_stem, backend="llamaserver", mode="prompt",
+            think=None, gguf_filename=_filename,
+        )
     )
 
-# Llamafile binary configs: 5 models, prompt only
+# Llamafile binary configs: prompt only (no native FC support)
 LLAMAFILE_CONFIGS: list[BatchConfig] = [
-    BatchConfig(model=m, backend="llamafile", mode="prompt", think=None)
-    for m in LLAMAFILE_MAP
+    BatchConfig(
+        model=Path(filename).stem, backend="llamafile", mode="prompt",
+        think=None, gguf_filename=filename,
+    )
+    for filename in _LLAMAFILE_FILES
 ]
 
 ANTHROPIC_CONFIGS: list[BatchConfig] = [
@@ -306,15 +324,16 @@ def _run_result_to_row(
 
 # ── llama-server flags ───────────────────────────────────────────
 
-# Extra flags per model for llama-server.
+# Extra flags per model for llama-server, keyed by config.model (the GGUF
+# stem for llamaserver configs).
 # Qwen3 models: --reasoning-format auto (server-side <think> tag parsing)
 # Everything else: no extra flags needed.
 _SERVER_EXTRA_FLAGS: dict[str, list[str]] = {
-    "qwen3:8b-q4_K_M": ["--reasoning-format", "auto"],
-    "qwen3:8b-q8_0": ["--reasoning-format", "auto"],
-    "qwen3:14b-q4_K_M": ["--reasoning-format", "auto"],
-    "qwen3.5:27b-q4_K_M": ["--reasoning-format", "auto"],
-    "qwen3.5:35b-a3b-q4_K_M": ["--reasoning-format", "auto"],
+    "Qwen3-8B-Q4_K_M": ["--reasoning-format", "auto"],
+    "Qwen3-8B-Q8_0": ["--reasoning-format", "auto"],
+    "Qwen3-14B-Q4_K_M": ["--reasoning-format", "auto"],
+    "Qwen3.5-27B-Q4_K_M": ["--reasoning-format", "auto"],
+    "Qwen3.5-35B-A3B-Q4_K_M": ["--reasoning-format", "auto"],
 }
 
 
@@ -340,12 +359,10 @@ def _check_model_available(
 ) -> str | None:
     """Return a skip reason if the model isn't available, or None if ready."""
     if config.backend in ("llamaserver", "llamafile"):
-        file_map = LLAMAFILE_MAP if config.backend == "llamafile" else GGUF_MAP
-        gguf_filename = file_map.get(config.model)
-        if not gguf_filename:
-            return f"no GGUF mapping for {config.model}"
-        if not (models_dir / gguf_filename).exists():
-            return f"GGUF not found: {models_dir / gguf_filename}"
+        if not config.gguf_filename:
+            return f"no GGUF/llamafile filename on config for {config.model}"
+        if not (models_dir / config.gguf_filename).exists():
+            return f"file not found: {models_dir / config.gguf_filename}"
     elif config.backend == "ollama":
         available = _ollama_models()
         if config.model not in available:
@@ -441,10 +458,12 @@ async def _recover_server(
 
     await asyncio.sleep(backoff)
 
-    # Restart
+    # Restart. Cache-equality identity: model string for ollama,
+    # GGUF path for non-Ollama (matches run_batch and setup_backend).
+    cache_identity = config.model if config.backend == "ollama" else gguf_path
     try:
         await server.start(
-            model=config.model,
+            model=cache_identity,
             gguf_path=gguf_path,
             mode=config.mode,
             extra_flags=extra_flags,
@@ -459,8 +478,12 @@ async def _recover_server(
 # ── Client factory ──────────────────────────────────────────────
 
 
-def _build_client(config: BatchConfig) -> Any:
-    """Build the appropriate LLM client for a BatchConfig."""
+def _build_client(config: BatchConfig, models_dir: Path) -> Any:
+    """Build the appropriate LLM client for a BatchConfig.
+
+    For llamaserver/llamafile, ``gguf_path`` is constructed from
+    ``models_dir / config.gguf_filename``.
+    """
     think_val = config.think
 
     if config.backend == "ollama":
@@ -474,16 +497,19 @@ def _build_client(config: BatchConfig) -> Any:
     elif config.backend == "llamaserver":
         from forge.clients.llamafile import LlamafileClient
 
+        assert config.gguf_filename, f"llamaserver config missing gguf_filename: {config.model}"
         return LlamafileClient(
-            model=config.model, mode=config.mode, think=think_val,
+            gguf_path=str(models_dir / config.gguf_filename),
+            mode=config.mode, think=think_val,
             recommended_sampling=True,
         )
 
     elif config.backend == "llamafile":
         from forge.clients.llamafile import LlamafileClient
 
+        assert config.gguf_filename, f"llamafile config missing gguf_filename: {config.model}"
         return LlamafileClient(
-            model=config.model,
+            gguf_path=str(models_dir / config.gguf_filename),
             mode=config.mode,
             think=think_val,
             base_url="http://localhost:8080/v1",
@@ -635,7 +661,7 @@ async def run_batch(
             # ── Anthropic cloud API path ─────────────────────
             # No server management, no GGUF, no VRAM budget.
             if config.backend == "anthropic":
-                client = _build_client(config)
+                client = _build_client(config, models_dir)
 
                 for sc_idx, scenario in enumerate(scenarios, 1):
                     if scenario.name in _COMPACTION_SCENARIOS:
@@ -727,20 +753,20 @@ async def run_batch(
                     backend=config.backend, port=8080, models_dir=models_dir
                 )
 
-            # Resolve GGUF path for non-Ollama backends
+            # Resolve GGUF/llamafile path for non-Ollama backends
             gguf_path = ""
             if config.backend in ("llamaserver", "llamafile"):
-                file_map = LLAMAFILE_MAP if config.backend == "llamafile" else GGUF_MAP
-                gguf_filename = file_map.get(config.model)
-                if not gguf_filename:
-                    raise ValueError(f"No GGUF mapping for model: {config.model}")
-                gguf_path = str(models_dir / gguf_filename)
+                assert config.gguf_filename, f"missing gguf_filename: {config.model}"
+                gguf_path = str(models_dir / config.gguf_filename)
 
-            # Start server and get extra flags
+            # Start server and get extra flags. For non-Ollama backends pass
+            # the GGUF path as the cache-equality key (matches setup_backend
+            # convention from server.py); for Ollama, pass the model string.
             extra_flags = _get_server_flags(config.model, config.mode)
+            cache_identity = config.model if config.backend == "ollama" else gguf_path
             try:
                 await server.start(
-                    model=config.model,
+                    model=cache_identity,
                     gguf_path=gguf_path,
                     mode=config.mode,
                     extra_flags=extra_flags if extra_flags else None,
@@ -761,7 +787,7 @@ async def run_batch(
             prev_server = server
 
             # Build client
-            client = _build_client(config)
+            client = _build_client(config, models_dir)
 
             # Resolve budget through prod ServerManager path
             resolved_budget = await server.resolve_budget(budget_mode, manual_tokens)
@@ -843,7 +869,7 @@ async def run_batch(
                             break
 
                         # Rebuild client and retry the failed run
-                        client = _build_client(config)
+                        client = _build_client(config, models_dir)
                         resolved_budget = await server.resolve_budget(budget_mode, manual_tokens)
                         if hasattr(client, "set_num_ctx"):
                             client.set_num_ctx(scenario_budget)
