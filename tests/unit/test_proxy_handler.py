@@ -222,3 +222,78 @@ class TestErrorPaths:
             if e["choices"][0].get("delta", {}).get("content")
         ]
         assert len(content_events) > 0
+
+
+class TestSamplingPlumbing:
+    """Issue A: inbound body sampling fields plumbed through to client.send."""
+
+    @pytest.mark.asyncio
+    async def test_no_tools_path_passes_sampling(self):
+        """Inbound body sampling fields reach client.send on the no-tools path."""
+        client = _mock_client(TextResponse(content="ok"))
+        body = _body(messages=[{"role": "user", "content": "hi"}])
+        body["temperature"] = 0.5
+        body["top_p"] = 0.9
+
+        await handle_chat_completions(body, client, _context_manager(), max_retries=1)
+
+        client.send.assert_called_once()
+        sampling = client.send.call_args.kwargs["sampling"]
+        assert sampling == {"temperature": 0.5, "top_p": 0.9}
+
+    @pytest.mark.asyncio
+    async def test_no_tools_path_no_sampling_fields(self):
+        """No sampling fields in body → sampling=None."""
+        client = _mock_client(TextResponse(content="ok"))
+
+        await handle_chat_completions(
+            _body(), client, _context_manager(), max_retries=1,
+        )
+
+        sampling = client.send.call_args.kwargs["sampling"]
+        assert sampling is None
+
+    @pytest.mark.asyncio
+    async def test_tools_path_passes_sampling_to_run_inference(self, monkeypatch):
+        """With tools, sampling reaches run_inference (and through it the client)."""
+        client = _mock_client([ToolCall(tool="search", args={"q": "x"})])
+        captured: dict = {}
+
+        async def fake_run_inference(**kwargs):
+            captured["sampling"] = kwargs.get("sampling")
+            from forge.core.inference import InferenceResult
+            return InferenceResult(
+                response=[ToolCall(tool="search", args={"q": "x"})],
+                new_messages=[],
+                tool_call_counter=0,
+                attempts=1,
+            )
+
+        monkeypatch.setattr(
+            "forge.proxy.handler.run_inference", fake_run_inference,
+        )
+
+        body = _body(tools=[_tool_def("search")])
+        body["seed"] = 42
+        body["temperature"] = 0.3
+
+        await handle_chat_completions(body, client, _context_manager(), max_retries=1)
+
+        assert captured["sampling"] == {"temperature": 0.3, "seed": 42}
+
+    @pytest.mark.asyncio
+    async def test_per_call_sampling_does_not_mutate_client(self):
+        """Per-call sampling overrides do not leak into subsequent calls."""
+        client = _mock_client(TextResponse(content="ok"))
+
+        # First request: with temperature override.
+        body1 = _body()
+        body1["temperature"] = 0.99
+        await handle_chat_completions(body1, client, _context_manager(), max_retries=1)
+        first_sampling = client.send.call_args.kwargs["sampling"]
+        assert first_sampling == {"temperature": 0.99}
+
+        # Second request: no sampling fields.
+        await handle_chat_completions(_body(), client, _context_manager(), max_retries=1)
+        second_sampling = client.send.call_args.kwargs["sampling"]
+        assert second_sampling is None

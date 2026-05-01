@@ -163,8 +163,11 @@ class ProxyServer:
             base = self._backend_url.rstrip("/")
             if not base.endswith("/v1"):
                 base = base + "/v1"
+            # External mode: caller manages the backend, so we don't have a
+            # GGUF path. "default" is a placeholder identity for the wire
+            # model field (llama-server ignores it) and JSONL model field.
             client = LlamafileClient(
-                model="default",
+                gguf_path="default",
                 base_url=base,
                 mode="native",
             )
@@ -186,7 +189,7 @@ class ProxyServer:
                 client = OllamaClient(model=self._model)
             else:
                 client = LlamafileClient(
-                    model=self._model or "default",
+                    gguf_path=self._gguf or "default",
                     base_url=f"http://localhost:{self._backend_port}/v1",
                     mode="native",
                 )

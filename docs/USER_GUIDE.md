@@ -227,14 +227,17 @@ workflow = Workflow(
 # resolves a VRAM-aware context budget, and returns a ContextManager ready to use.
 server, ctx = await setup_backend(
     backend="llamaserver",
-    model="ministral-8b-instruct",
-    gguf_path="path/to/Ministral-3-8B-Instruct-2512-Q4_K_M.gguf",
+    gguf_path="path/to/Ministral-3-8B-Instruct-2512-Q8_0.gguf",
     budget_mode=BudgetMode.FORGE_FULL,
 )
 # Or manage the server yourself and create the ContextManager directly:
 # ctx = ContextManager(strategy=TieredCompact(keep_recent=2), budget_tokens=8192)
 
-client = LlamafileClient(model="ministral-8b-instruct", mode="native")
+client = LlamafileClient(
+    gguf_path="path/to/Ministral-3-8B-Instruct-2512-Q8_0.gguf",
+    mode="native",
+    recommended_sampling=True,
+)
 runner = WorkflowRunner(client=client, context_manager=ctx, stream=True)
 await runner.run(workflow, "What's the weather in Paris?")
 await server.stop()
@@ -266,7 +269,7 @@ from forge.core.runner import WorkflowRunner
 from forge.core.messages import Message, MessageMeta, MessageRole, MessageType
 
 # 1. Start server once — stays up for the lifetime of the consumer
-client = OllamaClient(model="ministral-3:8b-instruct-2512-q4_K_M")
+client = OllamaClient(model="ministral-3:8b-instruct-2512-q4_K_M", recommended_sampling=True)
 server, ctx = await setup_backend(
     backend="ollama", model="ministral-3:8b-instruct-2512-q4_K_M",
     budget_mode=BudgetMode.FORGE_FULL, client=client,
@@ -342,17 +345,39 @@ See [BACKEND_SETUP.md](BACKEND_SETUP.md) for full installation instructions and 
 
 ### Sampling Parameters
 
-Each model family has its own recommended temperature / top_p / top_k — and those recommendations differ substantially across families. Running everything at a single default is a measurable handicap for most models. Forge ships a per-model recommendations map that consumers opt into explicitly:
+Each model family has its own recommended temperature / top_p / top_k — and those recommendations differ substantially across families. Running everything at a single default is a measurable handicap for most models. Forge ships a per-model recommendations map that consumers opt into explicitly via a constructor flag:
 
 ```python
-from forge.clients import LlamafileClient, get_sampling_defaults
+from forge.clients import LlamafileClient
 
 client = LlamafileClient(
-    model="qwen3.5:27b-q4_K_M",
+    gguf_path="path/to/Qwen3.5-27B-Q4_K_M.gguf",
     mode="native",
-    **get_sampling_defaults("qwen3.5:27b-q4_K_M"),
+    recommended_sampling=True,
 )
 ```
+
+For local-server backends, the GGUF (or llamafile) path is the canonical model identity — its filename stem (e.g. `Qwen3.5-27B-Q4_K_M`) is what forge uses for sampling-defaults lookup, the wire-format `model` field, and JSONL eval rows. Use Ollama-style strings only with `OllamaClient`.
+
+The flag is opt-in. Default behavior (`recommended_sampling=False`) leaves sampling to backend defaults; if forge has opinions about the model, it logs a one-shot INFO message pointing the caller at the flag. With `recommended_sampling=True`, an unknown model raises `UnsupportedModelError`.
+
+#### Proxy mode
+
+The proxy does not consult the recommendations map. It plumbs whatever sampling params the inbound request body carries (OpenAI-compatible fields: `temperature`, `top_p`, `top_k`, `min_p`, `repeat_penalty`, `presence_penalty`, `seed`) through to the backend on a per-call basis. The proxy's pre-built client is treated as a "blank slate" — body fields are the only sampling source.
+
+```bash
+curl http://localhost:8081/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "qwen3.5:27b-q4_K_M",
+    "messages": [{"role": "user", "content": "hi"}],
+    "temperature": 1.0,
+    "top_p": 0.95,
+    "presence_penalty": 1.5
+  }'
+```
+
+To get card-recommended sampling in proxy mode, the calling client looks up `forge.clients.get_sampling_defaults(model)` and includes the values in the request body — the proxy is intentionally pure pass-through.
 
 See [MODEL_GUIDE.md#sampling-parameters](MODEL_GUIDE.md#sampling-parameters) for the supported-models table, source citations, and override patterns.
 
@@ -523,11 +548,11 @@ For multi-slot setups (e.g., with `--kv-unified`), create one `SlotWorker` per s
 
 ```python
 # Slot 0: main conversation (no worker needed — dedicated)
-main_client = LlamafileClient(model="...", slot_id=0)
+main_client = LlamafileClient(gguf_path="path/to/model.gguf", slot_id=0)
 main_runner = WorkflowRunner(client=main_client, context_manager=ctx)
 
 # Slot 1: shared specialist slot (needs a worker)
-service_client = LlamafileClient(model="...", slot_id=1)
+service_client = LlamafileClient(gguf_path="path/to/model.gguf", slot_id=1)
 service_runner = WorkflowRunner(client=service_client, context_manager=ctx)
 service_worker = SlotWorker(service_runner)
 await service_worker.start()

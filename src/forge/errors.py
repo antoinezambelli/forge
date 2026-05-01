@@ -7,6 +7,25 @@ class ForgeError(Exception):
     pass
 
 
+class UnsupportedModelError(ForgeError):
+    """Caller opted into recommended sampling for a model not in the map.
+
+    Raised by ``apply_sampling_defaults(model, strict=True)`` when ``model``
+    has no entry in ``MODEL_SAMPLING_DEFAULTS``. Failing loud is intentional:
+    ``recommended_sampling=True`` declares "I want the per-card sampling
+    profile for this model"; falling through to backend defaults silently
+    would defeat that intent.
+    """
+
+    def __init__(self, model: str):
+        super().__init__(
+            f"No recommended sampling defaults registered for model {model!r}. "
+            f"Either add an entry to MODEL_SAMPLING_DEFAULTS (with HF card URL) "
+            f"or drop recommended_sampling=True."
+        )
+        self.model = model
+
+
 class ToolCallError(ForgeError):
     """LLM failed to produce a valid tool call after retries."""
 

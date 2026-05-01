@@ -9,6 +9,7 @@ from typing import Any
 import httpx
 
 from forge.clients.base import ChunkType, StreamChunk, TokenUsage, format_tool
+from forge.clients.sampling_defaults import apply_sampling_defaults
 from forge.core.workflow import LLMResponse, TextResponse, ToolCall, ToolSpec
 from forge.errors import BackendError, ThinkingNotSupportedError
 
@@ -44,7 +45,7 @@ class OllamaClient:
         self,
         model: str,
         base_url: str = "http://localhost:11434",
-        temperature: float = 0.7,
+        temperature: float | None = None,
         top_p: float | None = None,
         top_k: int | None = None,
         min_p: float | None = None,
@@ -52,15 +53,19 @@ class OllamaClient:
         presence_penalty: float | None = None,
         timeout: float = 300.0,
         think: bool | None = None,
+        recommended_sampling: bool = False,
     ) -> None:
         self.base_url = base_url
         self.model = model
-        self.temperature = temperature
-        self.top_p = top_p
-        self.top_k = top_k
-        self.min_p = min_p
-        self.repeat_penalty = repeat_penalty
-        self.presence_penalty = presence_penalty
+        # Apply per-model recommended sampling defaults. Caller's explicit
+        # (non-None) kwargs win over the map field-by-field.
+        defaults = apply_sampling_defaults(model, strict=recommended_sampling)
+        self.temperature = temperature if temperature is not None else defaults.get("temperature")
+        self.top_p = top_p if top_p is not None else defaults.get("top_p")
+        self.top_k = top_k if top_k is not None else defaults.get("top_k")
+        self.min_p = min_p if min_p is not None else defaults.get("min_p")
+        self.repeat_penalty = repeat_penalty if repeat_penalty is not None else defaults.get("repeat_penalty")
+        self.presence_penalty = presence_penalty if presence_penalty is not None else defaults.get("presence_penalty")
         self._http = httpx.AsyncClient(timeout=timeout)
         self._num_ctx: int | None = None
 
@@ -73,18 +78,30 @@ class OllamaClient:
         self._think_resolved: bool = think is not None
         self.last_usage: dict[int, TokenUsage] = {}
 
-    def _build_options(self) -> dict[str, Any]:
-        opts: dict[str, Any] = {"temperature": self.temperature}
-        if self.top_p is not None:
-            opts["top_p"] = self.top_p
-        if self.top_k is not None:
-            opts["top_k"] = self.top_k
-        if self.min_p is not None:
-            opts["min_p"] = self.min_p
-        if self.repeat_penalty is not None:
-            opts["repeat_penalty"] = self.repeat_penalty
-        if self.presence_penalty is not None:
-            opts["presence_penalty"] = self.presence_penalty
+    # Sampling fields recognized in per-call overrides. ``seed`` is
+    # accepted only as a per-call override (not an instance field).
+    _SAMPLING_FIELDS = (
+        "temperature", "top_p", "top_k", "min_p",
+        "repeat_penalty", "presence_penalty", "seed",
+    )
+
+    def _build_options(
+        self, sampling: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Build the Ollama options dict.
+
+        Instance fields supply the base sampling values; ``sampling`` (when
+        provided) overrides per call. The instance is not mutated.
+        """
+        opts: dict[str, Any] = {}
+        for field in self._SAMPLING_FIELDS:
+            override = (sampling or {}).get(field)
+            if override is not None:
+                opts[field] = override
+                continue
+            instance_val = getattr(self, field, None)
+            if instance_val is not None:
+                opts[field] = instance_val
         if self._num_ctx is not None:
             opts["num_ctx"] = self._num_ctx
         return opts
@@ -121,13 +138,14 @@ class OllamaClient:
         self,
         messages: list[dict[str, str]],
         tools: list[ToolSpec] | None = None,
+        sampling: dict[str, Any] | None = None,
     ) -> LLMResponse:
         """Send messages via /api/chat and parse the response."""
         body: dict[str, Any] = {
             "model": self.model,
             "messages": messages,
             "stream": False,
-            "options": self._build_options(),
+            "options": self._build_options(sampling),
         }
         if self._think:
             body["think"] = True
@@ -179,13 +197,14 @@ class OllamaClient:
         self,
         messages: list[dict[str, str]],
         tools: list[ToolSpec] | None = None,
+        sampling: dict[str, Any] | None = None,
     ) -> AsyncIterator[StreamChunk]:
         """Stream via NDJSON from /api/chat."""
         body: dict[str, Any] = {
             "model": self.model,
             "messages": messages,
             "stream": True,
-            "options": self._build_options(),
+            "options": self._build_options(sampling),
         }
         if self._think:
             body["think"] = True

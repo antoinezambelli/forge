@@ -932,7 +932,6 @@ class TestSetupBackend:
         ):
             server, ctx = await setup_backend(
                 backend="llamaserver",
-                model="llama3",
                 gguf_path="/models/llama3.gguf",
             )
 
@@ -950,7 +949,6 @@ class TestSetupBackend:
         ):
             _, ctx = await setup_backend(
                 backend="llamaserver",
-                model="llama3",
                 gguf_path="/models/llama3.gguf",
             )
 
@@ -966,7 +964,6 @@ class TestSetupBackend:
         ):
             _, ctx = await setup_backend(
                 backend="llamaserver",
-                model="llama3",
                 gguf_path="/models/llama3.gguf",
                 compact_threshold=0.5,
             )
@@ -985,7 +982,6 @@ class TestSetupBackend:
         ):
             _, ctx = await setup_backend(
                 backend="llamaserver",
-                model="llama3",
                 gguf_path="/models/llama3.gguf",
                 on_compact=callback,
             )
@@ -1020,7 +1016,6 @@ class TestSetupBackend:
         ):
             await setup_backend(
                 backend="llamaserver",
-                model="llama3",
                 client=mock_client,
                 gguf_path="/models/llama3.gguf",
             )
@@ -1038,6 +1033,34 @@ class TestSetupBackend:
                 model="llama3",
             )
         assert ctx.budget_tokens == 4096
+
+    @pytest.mark.asyncio
+    async def test_setup_backend_ollama_rejects_gguf_path(self) -> None:
+        """Ollama backend must not accept gguf_path."""
+        with pytest.raises(ValueError, match="ollama.*does not accept gguf_path"):
+            await setup_backend(
+                backend="ollama", model="llama3", gguf_path="/models/x.gguf",
+            )
+
+    @pytest.mark.asyncio
+    async def test_setup_backend_ollama_requires_model(self) -> None:
+        """Ollama backend must have a model."""
+        with pytest.raises(ValueError, match="ollama.*requires model"):
+            await setup_backend(backend="ollama")
+
+    @pytest.mark.asyncio
+    async def test_setup_backend_llamaserver_rejects_model(self) -> None:
+        """llamaserver/llamafile must not accept model (use gguf_path)."""
+        with pytest.raises(ValueError, match="does not accept model"):
+            await setup_backend(
+                backend="llamaserver", model="llama3", gguf_path="/x.gguf",
+            )
+
+    @pytest.mark.asyncio
+    async def test_setup_backend_llamaserver_requires_gguf(self) -> None:
+        """llamaserver/llamafile must have a gguf_path."""
+        with pytest.raises(ValueError, match="requires gguf_path"):
+            await setup_backend(backend="llamaserver")
 
 
 # ── Full workflow wiring (integration-style, mocked) ─────────────

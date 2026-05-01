@@ -39,3 +39,6 @@ Desktop.ini
 opencode-panic-*.log
 .opencode.json
 scripts/run_ablation.bat
+scripts/run_anthropic_ablation.bat
+scripts/run_anthropic_t1.bat
+scripts/run_anthropic_t2.bat

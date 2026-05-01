@@ -117,6 +117,7 @@ async def run_inference(
     max_attempts: int | None = None,
     stream: bool = False,
     on_chunk: Callable[[StreamChunk], Awaitable[None]] | None = None,
+    sampling: dict[str, Any] | None = None,
 ) -> InferenceResult | None:
     """Send messages to the LLM with compaction, folding, validation, and retry.
 
@@ -197,9 +198,9 @@ async def run_inference(
 
         # Send
         if stream:
-            response = await _send_streaming(client, api_messages, tool_specs, on_chunk)
+            response = await _send_streaming(client, api_messages, tool_specs, on_chunk, sampling)
         else:
-            response = await client.send(api_messages, tools=tool_specs)
+            response = await client.send(api_messages, tools=tool_specs, sampling=sampling)
 
         # Update context manager with real token count if available.
         _sync_token_count(client, context_manager)
@@ -279,10 +280,11 @@ async def _send_streaming(
     api_messages: list[dict[str, Any]],
     tool_specs: list[ToolSpec],
     on_chunk: Callable[[StreamChunk], Awaitable[None]] | None = None,
+    sampling: dict[str, Any] | None = None,
 ) -> LLMResponse:
     """Send via streaming, forwarding chunks to on_chunk callback."""
     response = None
-    async for chunk in client.send_stream(api_messages, tools=tool_specs):
+    async for chunk in client.send_stream(api_messages, tools=tool_specs, sampling=sampling):
         if on_chunk is not None:
             await on_chunk(chunk)
         if chunk.type == ChunkType.FINAL:

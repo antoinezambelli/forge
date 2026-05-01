@@ -499,7 +499,7 @@ python -m tests.eval.eval_runner --backend ollama --model "ministral-3:8b-instru
 python -m tests.eval.eval_runner --backend ollama --model "ministral-3:8b-instruct-2512-q4_K_M" --runs 10 --scenario basic_2step sequential_3step
 
 # Eval: llama-server (start server in separate terminal first)
-python -m tests.eval.eval_runner --backend llamafile --llamafile-mode native --model ministral-14b-instruct-q4_k_m --runs 10 --stream
+python -m tests.eval.eval_runner --backend llamafile --llamafile-mode native --gguf path/to/Ministral-3-14B-Instruct-2512-Q4_K_M.gguf --runs 10 --stream
 
 # Eval: Anthropic baseline
 python -m tests.eval.eval_runner --backend anthropic --model claude-haiku-4-5-20251001 --runs 5 --stream

@@ -111,7 +111,8 @@ class TestOllamaSend:
         assert body["model"] == "test-model"
         assert body["stream"] is False
         assert "options" in body
-        assert "temperature" in body["options"]
+        # Default constructor sends no temperature; backend default applies.
+        assert "temperature" not in body["options"]
 
     @pytest.mark.asyncio
     async def test_tool_role_passes_through(self) -> None:
@@ -722,10 +723,10 @@ class TestBuildOptions:
     """Tests for _build_options() with and without num_ctx."""
 
     def test_without_num_ctx(self) -> None:
-        """Fresh client: options has temperature but no num_ctx."""
+        """Fresh client: options is empty (no temperature, no num_ctx)."""
         client = _make_client()
         opts = client._build_options()
-        assert "temperature" in opts
+        assert "temperature" not in opts
         assert "num_ctx" not in opts
 
     def test_with_num_ctx(self) -> None:
@@ -805,3 +806,144 @@ class TestFormatTool:
         required = result["function"]["parameters"]["required"]
         assert "query" in required
         assert "limit" not in required
+
+
+class TestTemperatureOptional:
+    """Issue C: temperature is optional; default constructor sends nothing."""
+
+    @pytest.mark.asyncio
+    async def test_no_temperature_when_default(self) -> None:
+        """Default constructor (no temperature kwarg): options has no temperature field."""
+        client = _make_client()
+        client._http.post.return_value = _mock_response({
+            "message": {"role": "assistant", "content": "ok"}
+        })
+
+        await client.send([{"role": "user", "content": "hi"}])
+
+        call_args = client._http.post.call_args
+        body = call_args.kwargs.get("json") or call_args[1].get("json")
+        assert "temperature" not in body["options"]
+
+    @pytest.mark.asyncio
+    async def test_explicit_temperature_in_options(self) -> None:
+        """Explicit temperature kwarg appears in options."""
+        client = OllamaClient(
+            base_url="http://test:11434", model="test-model", temperature=0.5,
+        )
+        mock_http = AsyncMock()
+        mock_http.stream = MagicMock()
+        client._http = mock_http
+        client._http.post.return_value = _mock_response({
+            "message": {"role": "assistant", "content": "ok"}
+        })
+
+        await client.send([{"role": "user", "content": "hi"}])
+
+        call_args = client._http.post.call_args
+        body = call_args.kwargs.get("json") or call_args[1].get("json")
+        assert body["options"]["temperature"] == 0.5
+
+
+class TestRecommendedSampling:
+    """Issue B: recommended_sampling flag on OllamaClient."""
+
+    def test_strict_known_model_applies_map_values(self) -> None:
+        """recommended_sampling=True + known model: map values populate fields."""
+        client = OllamaClient(
+            model="qwen3:8b-q4_K_M",
+            recommended_sampling=True,
+        )
+        assert client.temperature == 0.6
+        assert client.top_p == 0.95
+        assert client.top_k == 20
+        assert client.min_p == 0.0
+
+    def test_strict_unknown_model_raises(self) -> None:
+        """recommended_sampling=True + unknown model: raises UnsupportedModelError."""
+        from forge.errors import UnsupportedModelError
+        with pytest.raises(UnsupportedModelError):
+            OllamaClient(
+                model="nonexistent-model:1b",
+                recommended_sampling=True,
+            )
+
+    def test_explicit_kwarg_wins_over_map(self) -> None:
+        """Caller's explicit kwarg overrides the map entry field-by-field."""
+        client = OllamaClient(
+            model="qwen3:8b-q4_K_M",
+            recommended_sampling=True,
+            temperature=0.99,  # overrides map's 0.6
+        )
+        assert client.temperature == 0.99
+        assert client.top_p == 0.95
+        assert client.top_k == 20
+
+    def test_default_no_opt_in_no_map_values(self) -> None:
+        """recommended_sampling=False (default) + known model: map values not applied."""
+        client = OllamaClient(
+            model="qwen3:8b-q4_K_M",
+        )
+        assert client.temperature is None
+        assert client.top_p is None
+        assert client.top_k is None
+
+
+class TestPerCallSampling:
+    """Issue A: per-call sampling overrides on send/send_stream."""
+
+    @pytest.mark.asyncio
+    async def test_per_call_sampling_overrides_instance(self) -> None:
+        """sampling=... on send() overrides instance fields for this call only."""
+        client = OllamaClient(
+            base_url="http://test:11434",
+            model="test-model",
+            temperature=0.7,  # instance field
+            top_p=0.9,
+        )
+        mock_http = AsyncMock()
+        mock_http.stream = MagicMock()
+        client._http = mock_http
+        client._http.post.return_value = _mock_response({
+            "message": {"role": "assistant", "content": "ok"}
+        })
+
+        await client.send(
+            [{"role": "user", "content": "hi"}],
+            sampling={"temperature": 0.0, "seed": 42},
+        )
+
+        body = client._http.post.call_args.kwargs["json"]
+        opts = body["options"]
+        # Per-call wins for fields it specifies.
+        assert opts["temperature"] == 0.0
+        assert opts["seed"] == 42
+        # Instance values still apply for fields not in the override.
+        assert opts["top_p"] == 0.9
+
+        # Instance fields are unmutated.
+        assert client.temperature == 0.7
+        assert client.top_p == 0.9
+
+    @pytest.mark.asyncio
+    async def test_per_call_sampling_none_uses_instance(self) -> None:
+        """sampling=None: only instance fields go on the wire."""
+        client = OllamaClient(
+            base_url="http://test:11434",
+            model="test-model",
+            temperature=0.5,
+        )
+        mock_http = AsyncMock()
+        mock_http.stream = MagicMock()
+        client._http = mock_http
+        client._http.post.return_value = _mock_response({
+            "message": {"role": "assistant", "content": "ok"}
+        })
+
+        await client.send(
+            [{"role": "user", "content": "hi"}], sampling=None,
+        )
+
+        opts = client._http.post.call_args.kwargs["json"]["options"]
+        assert opts["temperature"] == 0.5
+        assert "seed" not in opts

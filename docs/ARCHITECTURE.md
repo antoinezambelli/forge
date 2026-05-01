@@ -1150,13 +1150,14 @@ class LlamafileClient:
 
     def __init__(
         self,
-        model: str,
+        gguf_path: str | Path,    # canonical identity; self.model = stem
         base_url: str = "http://localhost:8080/v1",
-        temperature: float = 0.7,
-        mode: str = "auto",   # "native", "prompt", or "auto"
+        temperature: float | None = None,  # None = let backend default apply
+        mode: str = "auto",       # "native", "prompt", or "auto"
         timeout: float = 300.0,
         think: bool | None = None,
         cache_prompt: bool = True,  # Enable llama-server prompt caching
+        recommended_sampling: bool = False,  # opt-in to per-model HF-card defaults
     ):
         ...
 
@@ -1313,13 +1314,15 @@ forge/
 │   │   └── test_eval_budget.py    # Eval budget override logic
 │   │
 │   └── eval/                      # Eval harness — model qualification against real backends
-│       ├── scenarios/             # EvalScenario dataclass, 22 scenarios, ALL_SCENARIOS
+│       ├── scenarios/             # EvalScenario dataclass, 30 scenarios (18 OG + 8 advanced_reasoning + 4 compaction-chain), ALL_SCENARIOS
 │       │   ├── _base.py           # EvalScenario dataclass
 │       │   ├── _plumbing.py       # basic_2step, sequential_3step, error_recovery
 │       │   ├── _model_quality.py  # tool_selection, argument_fidelity, sequential_reasoning, etc.
+│       │   ├── _model_reasoning.py # data_gap_recovery_extended, argument_transformation, inconsistent_api_recovery, grounded_synthesis (advanced_reasoning tag)
 │       │   ├── _compaction.py     # relevance_detection
 │       │   ├── _stateful_plumbing.py      # Stateful variants of plumbing scenarios
-│       │   ├── _stateful_model_quality.py  # Stateful variants of model quality scenarios
+│       │   ├── _stateful_model_quality.py # Stateful variants of model quality scenarios
+│       │   ├── _stateful_model_reasoning.py # Stateful variants of advanced_reasoning scenarios
 │       │   ├── _stateful_relevance.py     # Stateful relevance detection
 │       │   └── _compaction_chain.py       # 10-step medical investigation chain (4 budget variants)
 │       ├── eval_runner.py         # RunResult, EvalConfig, run_scenario, run_eval, CLI
@@ -1390,7 +1393,7 @@ python -m tests.eval.eval_runner --backend ollama --model "..." --runs 5 --tags 
 python -m tests.eval.eval_runner --backend ollama --model "..." --runs 10 --scenario basic_2step sequential_3step
 
 # llama-server (start server separately, use llamafile backend with native mode)
-python -m tests.eval.eval_runner --backend llamafile --llamafile-mode native --model "..." --runs 10 --stream
+python -m tests.eval.eval_runner --backend llamafile --llamafile-mode native --gguf path/to/model.gguf --runs 10 --stream
 
 # Thinking mode (Qwen3, Ministral Reasoning)
 python -m tests.eval.eval_runner --backend ollama --model "qwen3:8b-q4_K_M" --runs 10 --stream --think true
@@ -1402,7 +1405,7 @@ python -m tests.eval.eval_runner --backend anthropic --model claude-haiku-4-5-20
 python -m tests.eval.eval_runner --backend ollama --model "..." --runs 10 --ablation bare
 
 # Override compaction strategy (tiered, sliding, none)
-python -m tests.eval.eval_runner --backend llamafile --llamafile-mode native --model "..." --runs 50 --stream --compact-strategy tiered --tags compaction
+python -m tests.eval.eval_runner --backend llamafile --llamafile-mode native --gguf path/to/model.gguf --runs 50 --stream --compact-strategy tiered --tags compaction
 
 # Probe context length only (no eval run)
 python -m tests.eval.eval_runner --backend ollama --model "..." --probe
@@ -1620,7 +1623,7 @@ class ServerManager:
 
 ```python
 # setup_backend() wires ServerManager + ContextManager together:
-client = OllamaClient(model="ministral-3:14b-instruct-2512-q4_K_M")
+client = OllamaClient(model="ministral-3:14b-instruct-2512-q4_K_M", recommended_sampling=True)
 server, ctx = await setup_backend(
     backend="ollama",
     model="ministral-3:14b-instruct-2512-q4_K_M",

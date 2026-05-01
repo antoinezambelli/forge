@@ -24,6 +24,25 @@ from forge.tools.respond import RESPOND_TOOL_NAME, respond_spec
 logger = logging.getLogger("forge.proxy")
 
 
+# OpenAI-compatible sampling fields plumbed from inbound body to client.
+# llama-server / Ollama support all of these as top-level body / options
+# fields. Anthropic ignores them.
+_SAMPLING_FIELDS = (
+    "temperature", "top_p", "top_k", "min_p",
+    "repeat_penalty", "presence_penalty", "seed",
+)
+
+
+def _extract_sampling(body: dict[str, Any]) -> dict[str, Any] | None:
+    """Pull recognized sampling fields out of the inbound request body.
+
+    Returns None if the body carries no sampling fields, matching the
+    "no overrides; use client instance state" path in the clients.
+    """
+    extracted = {f: body[f] for f in _SAMPLING_FIELDS if f in body}
+    return extracted or None
+
+
 def _extract_tool_specs(request_tools: list[dict[str, Any]] | None) -> list[ToolSpec]:
     """Extract ToolSpec objects from the OpenAI tools array in the request."""
     if not request_tools:
@@ -76,6 +95,7 @@ async def handle_chat_completions(
     request_tools = body.get("tools")
     is_stream = body.get("stream", False)
     model_name = body.get("model", "forge")
+    sampling = _extract_sampling(body)
 
     # Convert inbound
     messages = openai_to_messages(openai_messages)
@@ -96,7 +116,7 @@ async def handle_chat_completions(
         logger.info("No tools in request, passing through to backend")
         api_format = getattr(client, "api_format", "ollama")
         api_messages = fold_and_serialize(messages, api_format)
-        response = await client.send(api_messages, tools=None)
+        response = await client.send(api_messages, tools=None, sampling=sampling)
         text = response.content if isinstance(response, TextResponse) else ""
         if is_stream:
             return text_to_sse_events(text, model=model_name)
@@ -115,6 +135,7 @@ async def handle_chat_completions(
             validator=validator,
             error_tracker=error_tracker,
             tool_specs=tool_specs,
+            sampling=sampling,
         )
     except ToolCallError as exc:
         # Retries exhausted — the model kept returning text instead of tool

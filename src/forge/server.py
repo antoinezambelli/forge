@@ -437,7 +437,7 @@ class ServerManager:
 
 async def setup_backend(
     backend: str,
-    model: str,
+    model: str | None = None,
     budget_mode: BudgetMode = BudgetMode.BACKEND,
     manual_tokens: int | None = None,
     client: Any | None = None,
@@ -456,6 +456,13 @@ async def setup_backend(
     on_context_threshold: Callable[[int, int, float], str | None] | None = None,
 ) -> tuple[ServerManager, ContextManager]:
     """One-call setup: start backend, resolve budget, create ContextManager.
+
+    Identity rules (mutually exclusive, enforced at call time):
+
+    - ``backend="ollama"``: ``model`` required, ``gguf_path`` rejected. The
+      Ollama runtime is keyed by the model string.
+    - ``backend in ("llamaserver", "llamafile")``: ``gguf_path`` required,
+      ``model`` rejected. The model file *is* the identity.
 
     For Ollama backends, pass the ``client`` so that ``set_num_ctx()`` is
     called automatically — keeping the client's per-request ``num_ctx``
@@ -490,9 +497,27 @@ async def setup_backend(
         (ServerManager, ContextManager) tuple. Caller is responsible
         for calling ``server.stop()`` when done.
     """
+    if backend == "ollama":
+        if gguf_path is not None:
+            raise ValueError("backend='ollama' does not accept gguf_path (use model)")
+        if not model:
+            raise ValueError("backend='ollama' requires model")
+        identity = model
+    else:  # llamaserver / llamafile
+        if model is not None:
+            raise ValueError(f"backend={backend!r} does not accept model (use gguf_path)")
+        if not gguf_path:
+            raise ValueError(f"backend={backend!r} requires gguf_path")
+        # ServerManager's cache-equality check keys off the identity string.
+        # For non-Ollama backends the GGUF path *is* the identity, so feed
+        # str(gguf_path) into ServerManager's `model` param. The wire format
+        # 'model' field is set elsewhere (LlamafileClient derives it from
+        # gguf_path stem); ServerManager only needs equality semantics.
+        identity = str(gguf_path)
+
     server = ServerManager(backend=backend, port=port)
     budget = await server.start_with_budget(
-        model=model,
+        model=identity,
         gguf_path=gguf_path or "",
         mode=mode,
         budget_mode=budget_mode,
