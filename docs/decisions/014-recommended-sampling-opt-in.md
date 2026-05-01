@@ -83,4 +83,4 @@ The proxy's pre-built client stays "blank slate." Body params are the only sampl
 - Exception: `src/forge/errors.py` (`UnsupportedModelError`)
 - Unit tests: `tests/unit/test_sampling_defaults.py`, `test_ollama_client.py` (`TestRecommendedSampling`, `TestPerCallSampling`), `test_llamafile_client.py`, `test_proxy_handler.py` (`TestSamplingPlumbing`)
 - User-facing docs: [MODEL_GUIDE.md#sampling-parameters](../MODEL_GUIDE.md#sampling-parameters), [USER_GUIDE.md#sampling-parameters](../USER_GUIDE.md#sampling-parameters)
-- Closes: #58, #59, #61
+- Closes: #58, #59
