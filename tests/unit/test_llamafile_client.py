@@ -28,7 +28,7 @@ def _make_spec(name: str = "get_pricing") -> ToolSpec:
 def _make_client(mode: str = "native", think: bool | None = None) -> LlamafileClient:
     """Create a LlamafileClient with a mocked HTTP client."""
     client = LlamafileClient(
-        base_url="http://test:8080/v1", model="test-model", mode=mode, think=think
+        base_url="http://test:8080/v1", gguf_path="test-model", mode=mode, think=think
     )
     mock_http = AsyncMock()
     # stream() is a sync method returning an async context manager, not a coroutine
@@ -673,15 +673,15 @@ class TestLlamafileSendStream:
 
 class TestResolvedMode:
     def test_native_mode_set_immediately(self) -> None:
-        client = LlamafileClient(model="test", mode="native")
+        client = LlamafileClient(gguf_path="test", mode="native")
         assert client.resolved_mode == "native"
 
     def test_prompt_mode_set_immediately(self) -> None:
-        client = LlamafileClient(model="test", mode="prompt")
+        client = LlamafileClient(gguf_path="test", mode="prompt")
         assert client.resolved_mode == "prompt"
 
     def test_auto_mode_unset(self) -> None:
-        client = LlamafileClient(model="test", mode="auto")
+        client = LlamafileClient(gguf_path="test", mode="auto")
         assert client.resolved_mode is None
 
 
@@ -693,7 +693,7 @@ class TestApplySampling:
 
     def test_sampling_absent_by_default(self) -> None:
         """Unset sampling params don't appear in the body."""
-        client = LlamafileClient(model="test", mode="native")
+        client = LlamafileClient(gguf_path="test", mode="native")
         body: dict = {}
         client._apply_sampling(body)
         assert body == {}
@@ -701,7 +701,7 @@ class TestApplySampling:
     def test_sampling_params_populate_body(self) -> None:
         """All sampling kwargs land as top-level body fields when set."""
         client = LlamafileClient(
-            model="test",
+            gguf_path="test",
             mode="native",
             top_p=0.95,
             top_k=20,
@@ -1199,19 +1199,19 @@ class TestSlotId:
 
     def test_slot_id_stored(self) -> None:
         client = LlamafileClient(
-            base_url="http://test:8080/v1", model="test", mode="native", slot_id=1
+            base_url="http://test:8080/v1", gguf_path="test", mode="native", slot_id=1
         )
         assert client._slot_id == 1
 
     def test_slot_id_default_none(self) -> None:
         client = LlamafileClient(
-            base_url="http://test:8080/v1", model="test", mode="native"
+            base_url="http://test:8080/v1", gguf_path="test", mode="native"
         )
         assert client._slot_id is None
 
     def test_apply_slot_id_injects(self) -> None:
         client = LlamafileClient(
-            base_url="http://test:8080/v1", model="test", mode="native", slot_id=1
+            base_url="http://test:8080/v1", gguf_path="test", mode="native", slot_id=1
         )
         body: dict = {"model": "test"}
         client._apply_slot_id(body)
@@ -1219,7 +1219,7 @@ class TestSlotId:
 
     def test_apply_slot_id_noop_when_none(self) -> None:
         client = LlamafileClient(
-            base_url="http://test:8080/v1", model="test", mode="native"
+            base_url="http://test:8080/v1", gguf_path="test", mode="native"
         )
         body: dict = {"model": "test"}
         client._apply_slot_id(body)
@@ -1228,7 +1228,7 @@ class TestSlotId:
     @pytest.mark.asyncio
     async def test_native_send_includes_slot_id(self) -> None:
         client = LlamafileClient(
-            base_url="http://test:8080/v1", model="test", mode="native", slot_id=1
+            base_url="http://test:8080/v1", gguf_path="test", mode="native", slot_id=1
         )
         mock_http = AsyncMock()
         client._http = mock_http
@@ -1278,7 +1278,7 @@ class TestTemperatureOptional:
         """Explicit temperature kwarg appears in outbound body."""
         client = LlamafileClient(
             base_url="http://test:8080/v1",
-            model="test-model",
+            gguf_path="test-model",
             mode="native",
             temperature=0.5,
         )
@@ -1305,7 +1305,7 @@ class TestRecommendedSampling:
     def test_strict_known_model_applies_map_values(self) -> None:
         """recommended_sampling=True + known model: map values populate fields."""
         client = LlamafileClient(
-            model="qwen3:8b-q4_K_M",
+            gguf_path="qwen3:8b-q4_K_M",
             mode="native",
             recommended_sampling=True,
         )
@@ -1319,7 +1319,7 @@ class TestRecommendedSampling:
         from forge.errors import UnsupportedModelError
         with pytest.raises(UnsupportedModelError):
             LlamafileClient(
-                model="nonexistent-model:1b",
+                gguf_path="nonexistent-model:1b",
                 mode="native",
                 recommended_sampling=True,
             )
@@ -1327,7 +1327,7 @@ class TestRecommendedSampling:
     def test_explicit_kwarg_wins_over_map(self) -> None:
         """Caller's explicit kwarg overrides the map entry field-by-field."""
         client = LlamafileClient(
-            model="qwen3:8b-q4_K_M",
+            gguf_path="qwen3:8b-q4_K_M",
             mode="native",
             recommended_sampling=True,
             temperature=0.99,  # overrides map's 0.6
@@ -1340,7 +1340,7 @@ class TestRecommendedSampling:
     def test_default_no_opt_in_no_map_values(self) -> None:
         """recommended_sampling=False (default) + known model: map values not applied."""
         client = LlamafileClient(
-            model="qwen3:8b-q4_K_M",
+            gguf_path="qwen3:8b-q4_K_M",
             mode="native",
         )
         assert client.temperature is None
@@ -1356,7 +1356,7 @@ class TestPerCallSampling:
         """sampling=... on send() overrides instance fields for this call only."""
         client = LlamafileClient(
             base_url="http://test:8080/v1",
-            model="test-model",
+            gguf_path="test-model",
             mode="native",
             temperature=0.7,
             top_p=0.9,
@@ -1393,7 +1393,7 @@ class TestPerCallSampling:
         """sampling=None: only instance fields go on the wire."""
         client = LlamafileClient(
             base_url="http://test:8080/v1",
-            model="test-model",
+            gguf_path="test-model",
             mode="native",
             temperature=0.5,
         )

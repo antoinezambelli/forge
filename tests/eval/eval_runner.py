@@ -471,7 +471,16 @@ async def main() -> None:
         choices=["ollama", "llamafile", "anthropic"],
         default="ollama",
     )
-    parser.add_argument("--model", required=True, help="Model name (e.g. ministral-3:14b)")
+    parser.add_argument(
+        "--model",
+        help="Model name (e.g. ministral-3:14b for Ollama, claude-... for Anthropic). "
+        "Required for ollama/anthropic backends; rejected for llamafile (use --gguf).",
+    )
+    parser.add_argument(
+        "--gguf",
+        help="Path to GGUF / llamafile model file. Required for llamafile backend; "
+        "rejected for ollama/anthropic (use --model).",
+    )
     parser.add_argument("--runs", type=int, default=10)
     parser.add_argument("--stream", action="store_true")
     parser.add_argument(
@@ -551,6 +560,25 @@ async def main() -> None:
     if budget_mode == BudgetMode.MANUAL and args.num_ctx is None:
         parser.error("--budget-mode manual requires --num-ctx")
 
+    # Identity rules: --model for ollama/anthropic, --gguf for llamafile.
+    # Mutex enforced here, fail-loud at parse time. Forbidden checks first so
+    # the error message points at the wrong flag rather than the missing one.
+    if args.backend in ("ollama", "anthropic"):
+        if args.gguf:
+            parser.error(f"--backend {args.backend} does not accept --gguf (use --model)")
+        if not args.model:
+            parser.error(f"--backend {args.backend} requires --model")
+    else:  # llamafile
+        if args.model:
+            parser.error("--backend llamafile does not accept --model (use --gguf)")
+        if not args.gguf:
+            parser.error("--backend llamafile requires --gguf")
+
+    # Display name for reports / cost lookup. For llamafile this is the GGUF
+    # stem (matches what self.model in the client resolves to).
+    from pathlib import Path as _Path
+    display_name = args.model if args.backend != "llamafile" else _Path(args.gguf).stem
+
     # Build client
     url_kw: dict = {"base_url": args.base_url} if args.base_url else {}
     if args.backend == "ollama":
@@ -570,7 +598,7 @@ async def main() -> None:
 
         think_val = {"true": True, "false": False, "auto": None}[args.think]
         client = LlamafileClient(
-            model=args.model, mode=args.llamafile_mode, think=think_val,
+            gguf_path=args.gguf, mode=args.llamafile_mode, think=think_val,
             cache_prompt=not args.no_cache_prompt, **url_kw,
             recommended_sampling=True,
         )
@@ -630,7 +658,7 @@ async def main() -> None:
 
     strategy_label = args.compact_strategy or "auto"
     print(
-        f"\nForge Eval — backend: {args.backend}, model: {args.model}, "
+        f"\nForge Eval — backend: {args.backend}, model: {display_name}, "
         f"runs: {args.runs}, stream: {args.stream}, budget-mode: {budget_mode.value}"
     )
     print(f"Resolved budget: {resolved_budget} tokens")
@@ -649,7 +677,7 @@ async def main() -> None:
 
     from tests.eval.metrics import print_report
 
-    print_report(results, scenarios=ALL_SCENARIOS, model_name=args.model)
+    print_report(results, scenarios=ALL_SCENARIOS, model_name=display_name)
 
     # Print cost summary for Anthropic runs
     all_runs = [r for runs in results.values() for r in runs]

@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import re
 from collections.abc import AsyncIterator
+from pathlib import Path
 from typing import Any
 
 import httpx
@@ -127,7 +128,7 @@ class LlamafileClient:
 
     def __init__(
         self,
-        model: str,
+        gguf_path: str | Path,
         base_url: str = "http://localhost:8080/v1",
         temperature: float | None = None,
         top_p: float | None = None,
@@ -143,10 +144,15 @@ class LlamafileClient:
         recommended_sampling: bool = False,
     ) -> None:
         self.base_url = base_url
-        self.model = model
+        # gguf_path is the canonical identity. self.model is the stem (no
+        # .gguf / .llamafile suffix) — used for the wire-format model field
+        # (llama-server ignores it but it flows into eval JSONL rows) and
+        # for sampling-defaults lookup.
+        self.gguf_path = Path(gguf_path)
+        self.model = self.gguf_path.stem
         # Apply per-model recommended sampling defaults. Caller's explicit
         # (non-None) kwargs win over the map field-by-field.
-        defaults = apply_sampling_defaults(model, strict=recommended_sampling)
+        defaults = apply_sampling_defaults(self.model, strict=recommended_sampling)
         self.temperature = temperature if temperature is not None else defaults.get("temperature")
         self.top_p = top_p if top_p is not None else defaults.get("top_p")
         self.top_k = top_k if top_k is not None else defaults.get("top_k")
