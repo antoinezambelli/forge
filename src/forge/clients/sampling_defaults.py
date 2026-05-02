@@ -67,8 +67,10 @@ MODEL_SAMPLING_DEFAULTS: dict[str, dict[str, float | int]] = {
     "qwen3.5:35b-a3b-q4_K_M":             {"temperature": 1.0, "top_p": 0.95, "top_k": 20, "min_p": 0.0, "presence_penalty": 1.5},                         # https://huggingface.co/Qwen/Qwen3.5-35B-A3B
     "Qwen3.5-35B-A3B-Q4_K_M":             {"temperature": 1.0, "top_p": 0.95, "top_k": 20, "min_p": 0.0, "presence_penalty": 1.5},                         # https://huggingface.co/Qwen/Qwen3.5-35B-A3B
     "qwen3.6:35b-a3b-ud-q4_K_M":          {"temperature": 1.0, "top_p": 0.95, "top_k": 20, "min_p": 0.0, "presence_penalty": 1.5},                         # https://huggingface.co/Qwen/Qwen3.6-35B-A3B
+    "Qwen3.6-35B-A3B-UD-Q4_K_M":          {"temperature": 1.0, "top_p": 0.95, "top_k": 20, "min_p": 0.0, "presence_penalty": 1.5},                         # https://huggingface.co/Qwen/Qwen3.6-35B-A3B
     # Qwen3-Coder — non-thinking instruct; card does not mention min_p or presence_penalty
-    "qwen3-coder:30b-a3b-instruct-q4_K_M": {"temperature": 0.7, "top_p": 0.8, "top_k": 20, "repeat_penalty": 1.05},                                          # https://huggingface.co/Qwen/Qwen3-Coder-30B-A3B-Instruct
+    "qwen3-coder:30b-a3b-instruct-q4_K_M":  {"temperature": 0.7, "top_p": 0.8, "top_k": 20, "repeat_penalty": 1.05},                                         # https://huggingface.co/Qwen/Qwen3-Coder-30B-A3B-Instruct
+    "Qwen3-Coder-30B-A3B-Instruct-Q4_K_M":  {"temperature": 0.7, "top_p": 0.8, "top_k": 20, "repeat_penalty": 1.05},                                         # https://huggingface.co/Qwen/Qwen3-Coder-30B-A3B-Instruct
     # Gemma 4 — card gives one standardized profile for all use cases; no min_p/repeat/presence recommended
     "gemma4:31b-it-q4_K_M":               {"temperature": 1.0, "top_p": 0.95, "top_k": 64},  # https://huggingface.co/google/gemma-4-31b-it
     "gemma-4-31B-it-Q4_K_M":              {"temperature": 1.0, "top_p": 0.95, "top_k": 64},  # https://huggingface.co/google/gemma-4-31b-it
