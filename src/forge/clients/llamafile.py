@@ -136,6 +136,7 @@ class LlamafileClient:
         min_p: float | None = None,
         repeat_penalty: float | None = None,
         presence_penalty: float | None = None,
+        chat_template_kwargs: dict[str, Any] | None = None,
         mode: str = "auto",
         timeout: float = 300.0,
         think: bool | None = None,
@@ -159,6 +160,14 @@ class LlamafileClient:
         self.min_p = min_p if min_p is not None else defaults.get("min_p")
         self.repeat_penalty = repeat_penalty if repeat_penalty is not None else defaults.get("repeat_penalty")
         self.presence_penalty = presence_penalty if presence_penalty is not None else defaults.get("presence_penalty")
+        # chat_template_kwargs is a nested dict of Jinja template variables
+        # (e.g. {"reasoning_effort": "high", "enable_thinking": False}) that
+        # llama-server unpacks into the chat template at render time.
+        # Whole-value replacement at the field level — no nested merge.
+        self.chat_template_kwargs = (
+            chat_template_kwargs if chat_template_kwargs is not None
+            else defaults.get("chat_template_kwargs")
+        )
         self.mode = mode
         self._http = httpx.AsyncClient(timeout=timeout)
         self._think: bool = think if think is not None else True  # auto = capture
@@ -179,9 +188,12 @@ class LlamafileClient:
 
     # Sampling fields recognized in per-call overrides. ``seed`` is
     # accepted only as a per-call override (not an instance field).
+    # ``chat_template_kwargs`` is a nested dict of Jinja template variables
+    # — whole-value replacement at this field level (no nested merge).
     _SAMPLING_FIELDS = (
         "temperature", "top_p", "top_k", "min_p",
         "repeat_penalty", "presence_penalty", "seed",
+        "chat_template_kwargs",
     )
 
     def _apply_sampling(

@@ -71,6 +71,13 @@ MODEL_SAMPLING_DEFAULTS: dict[str, dict[str, float | int]] = {
     # Qwen3-Coder — non-thinking instruct; card does not mention min_p or presence_penalty
     "qwen3-coder:30b-a3b-instruct-q4_K_M":  {"temperature": 0.7, "top_p": 0.8, "top_k": 20, "repeat_penalty": 1.05},                                         # https://huggingface.co/Qwen/Qwen3-Coder-30B-A3B-Instruct
     "Qwen3-Coder-30B-A3B-Instruct-Q4_K_M":  {"temperature": 0.7, "top_p": 0.8, "top_k": 20, "repeat_penalty": 1.05},                                         # https://huggingface.co/Qwen/Qwen3-Coder-30B-A3B-Instruct
+    # Qwen3-Next 80B-A3B-Instruct — hybrid attention MoE, 80B/3B-active; card lists thinking-mode profile
+    "qwen3-next:80b-a3b-instruct-q4_K_M":   {"temperature": 0.7, "top_p": 0.8,  "top_k": 20, "min_p": 0.0},                                                  # https://huggingface.co/Qwen/Qwen3-Next-80B-A3B-Instruct
+    "Qwen3-Next-80B-A3B-Instruct-Q4_K_M":   {"temperature": 0.7, "top_p": 0.8,  "top_k": 20, "min_p": 0.0},                                                  # https://huggingface.co/Qwen/Qwen3-Next-80B-A3B-Instruct
+    # Qwen3-Coder-Next — coder fine-tune over Qwen3-Next-80B-A3B base; card differs notably from Qwen3-Coder-30B
+    # (no min_p / repeat_penalty / presence_penalty recommendation)
+    "qwen3-coder-next:80b-a3b-q4_K_M":      {"temperature": 1.0, "top_p": 0.95, "top_k": 40},                                                                # https://huggingface.co/Qwen/Qwen3-Coder-Next
+    "Qwen3-Coder-Next-Q4_K_M":              {"temperature": 1.0, "top_p": 0.95, "top_k": 40},                                                                # https://huggingface.co/Qwen/Qwen3-Coder-Next
     # Gemma 4 — card gives one standardized profile for all use cases; no min_p/repeat/presence recommended
     "gemma4:31b-it-q4_K_M":               {"temperature": 1.0, "top_p": 0.95, "top_k": 64},  # https://huggingface.co/google/gemma-4-31b-it
     "gemma-4-31B-it-Q4_K_M":              {"temperature": 1.0, "top_p": 0.95, "top_k": 64},  # https://huggingface.co/google/gemma-4-31b-it
@@ -82,6 +89,12 @@ MODEL_SAMPLING_DEFAULTS: dict[str, dict[str, float | int]] = {
     "gemma-4-E4B-it-Q4_K_M":              {"temperature": 1.0, "top_p": 0.95, "top_k": 64},  # https://huggingface.co/google/gemma-4-e4b-it
     "gemma4:e4b-it-q8_0":                 {"temperature": 1.0, "top_p": 0.95, "top_k": 64},  # https://huggingface.co/google/gemma-4-e4b-it
     "gemma-4-E4B-it-Q8_0":                {"temperature": 1.0, "top_p": 0.95, "top_k": 64},  # https://huggingface.co/google/gemma-4-e4b-it
+    # Mistral Small 4 — card gives T=0.7 for reasoning_effort="high" and "between 0.0 and 0.7" for
+    # reasoning_effort="none" (task-dependent). Picking the high-effort profile (T=0.7 + explicit
+    # reasoning_effort="high" via chat_template_kwargs envelope) as the safer default. top_p/top_k
+    # not specified on the card.
+    "mistral-small-4:119b-2603-q4_K_M":     {"temperature": 0.7, "chat_template_kwargs": {"reasoning_effort": "high"}},                                      # https://huggingface.co/mistralai/Mistral-Small-4-119B-2603
+    "Mistral-Small-4-119B-2603-UD-Q4_K_M":  {"temperature": 0.7, "chat_template_kwargs": {"reasoning_effort": "high"}},                                      # https://huggingface.co/mistralai/Mistral-Small-4-119B-2603
     # Mistral Small 3.2 & Devstral Small 2 — cards only specify temperature; top_p/top_k/etc. left to backend defaults
     "mistral-small-3.2:24b-instruct-2506-q4_K_M":  {"temperature": 0.15},  # https://huggingface.co/mistralai/Mistral-Small-3.2-24B-Instruct-2506
     "Mistral-Small-3.2-24B-Instruct-2506-Q4_K_M":  {"temperature": 0.15},  # https://huggingface.co/mistralai/Mistral-Small-3.2-24B-Instruct-2506
