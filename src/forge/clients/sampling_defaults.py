@@ -95,6 +95,25 @@ MODEL_SAMPLING_DEFAULTS: dict[str, dict[str, float | int]] = {
     # not specified on the card.
     "mistral-small-4:119b-2603-q4_K_M":     {"temperature": 0.7, "chat_template_kwargs": {"reasoning_effort": "high"}},                                      # https://huggingface.co/mistralai/Mistral-Small-4-119B-2603
     "Mistral-Small-4-119B-2603-UD-Q4_K_M":  {"temperature": 0.7, "chat_template_kwargs": {"reasoning_effort": "high"}},                                      # https://huggingface.co/mistralai/Mistral-Small-4-119B-2603
+    # gpt-oss-120b — OpenAI open-weight MoE (117B total, 5.1B active). Reasoning model with three
+    # discrete levels: "low" / "medium" / "high", controlled via chat_template_kwargs.reasoning_effort
+    # (per llama.cpp guide: `--chat-template-kwargs '{"reasoning_effort": "high"}'`). Defaulting to
+    # "high" — bring down if overthinking observed. Card says T=1.0, top_p=1.0; llama.cpp guide adds
+    # top_k=0, min_p=0.0 (OpenAI's stated default; llama.cpp maintainer notes top_k=0 may add CPU
+    # overhead but we're GPU). CRITICAL: do NOT set repeat_penalty/presence_penalty (guide explicitly
+    # warns to disable repetition penalties) — registry omission == None == field omitted from body.
+    "gpt-oss:120b-q4_K_M":  {"temperature": 1.0, "top_p": 1.0, "top_k": 0, "min_p": 0.0, "chat_template_kwargs": {"reasoning_effort": "high"}},  # https://huggingface.co/openai/gpt-oss-120b + https://github.com/ggml-org/llama.cpp/discussions/15396
+    "gpt-oss-120b-Q4_K_M":  {"temperature": 1.0, "top_p": 1.0, "top_k": 0, "min_p": 0.0, "chat_template_kwargs": {"reasoning_effort": "high"}},  # https://huggingface.co/openai/gpt-oss-120b + https://github.com/ggml-org/llama.cpp/discussions/15396
+    # NVIDIA Nemotron-3-Super-120B-A12B — hybrid Mamba-2 + Transformer + MoE. Reasoning model with
+    # three states via chat_template_kwargs.enable_thinking: True (full default), True+low_effort
+    # for lighter think, or False (off). Defaulting to enable_thinking=True (no low_effort) for full
+    # effort, mirroring Mistral-Small-4 decision; bring down if overthinking. Card recommends
+    # T=1.0, top_p=0.95 across all tasks. Coding-agent serving guidance also adds force_nonempty_content
+    # so the model emits something substantive instead of empty <think> blocks. Native tool format is
+    # Qwen3-coder-style (vLLM uses --tool-call-parser qwen3_coder); should work fine through forge's
+    # existing prompt-mode rescue parsers, no new parser needed.
+    "nemotron-3-super:120b-a12b-q4_K_M":            {"temperature": 1.0, "top_p": 0.95, "chat_template_kwargs": {"enable_thinking": True, "force_nonempty_content": True}},  # https://huggingface.co/nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-BF16
+    "NVIDIA-Nemotron-3-Super-120B-A12B-UD-Q4_K_M":  {"temperature": 1.0, "top_p": 0.95, "chat_template_kwargs": {"enable_thinking": True, "force_nonempty_content": True}},  # https://huggingface.co/nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-BF16
     # Mistral Small 3.2 & Devstral Small 2 — cards only specify temperature; top_p/top_k/etc. left to backend defaults
     "mistral-small-3.2:24b-instruct-2506-q4_K_M":  {"temperature": 0.15},  # https://huggingface.co/mistralai/Mistral-Small-3.2-24B-Instruct-2506
     "Mistral-Small-3.2-24B-Instruct-2506-Q4_K_M":  {"temperature": 0.15},  # https://huggingface.co/mistralai/Mistral-Small-3.2-24B-Instruct-2506

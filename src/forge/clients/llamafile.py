@@ -25,6 +25,11 @@ _THINK_TAG_RE = re.compile(
     r"\[THINK\](.*?)\[/THINK\]|<think>(.*?)</think>", re.DOTALL
 )
 
+# Multi-shard GGUF naming convention: "<stem>-00001-of-00003.gguf". The shard
+# index is filesystem layout, not model identity, so strip it for the
+# sampling-defaults registry key.
+_SHARD_SUFFIX_RE = re.compile(r"-\d{5}-of-\d{5}$")
+
 
 def _extract_think_tags(text: str) -> tuple[str, str]:
     """Extract thinking blocks from text.
@@ -150,7 +155,7 @@ class LlamafileClient:
         # (llama-server ignores it but it flows into eval JSONL rows) and
         # for sampling-defaults lookup.
         self.gguf_path = Path(gguf_path)
-        self.model = self.gguf_path.stem
+        self.model = _SHARD_SUFFIX_RE.sub("", self.gguf_path.stem)
         # Apply per-model recommended sampling defaults. Caller's explicit
         # (non-None) kwargs win over the map field-by-field.
         defaults = apply_sampling_defaults(self.model, strict=recommended_sampling)
