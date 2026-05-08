@@ -233,11 +233,16 @@ class WorkflowRunner:
                 ))
                 nudge = step_check.nudge
                 nudge_type = _NUDGE_KIND_TO_TYPE[nudge.kind]
-                _emit(Message(
-                    MessageRole.USER,
-                    nudge.content,
-                    MessageMeta(nudge_type, step_index=iteration),
-                ))
+                # Surface premature-terminal violation as a tool error result.
+                # See prereq path below for rationale.
+                for tc_info in tc_infos:
+                    _emit(Message(
+                        MessageRole.TOOL,
+                        f"[StepEnforcementError] {nudge.content}",
+                        MessageMeta(nudge_type, step_index=iteration),
+                        tool_name=tc_info.name,
+                        tool_call_id=tc_info.call_id,
+                    ))
                 continue
 
             # 3b.2 — Check prerequisites
@@ -273,11 +278,21 @@ class WorkflowRunner:
                 ))
                 nudge = prereq_check.nudge
                 nudge_type = _NUDGE_KIND_TO_TYPE[nudge.kind]
-                _emit(Message(
-                    MessageRole.USER,
-                    nudge.content,
-                    MessageMeta(nudge_type, step_index=iteration),
-                ))
+                # Surface the prereq violation as a tool error result rather
+                # than a trailing user nudge. Models are pretrained on the
+                # "tool failed → try something else" shape; the user-nudge
+                # shape was getting muddied by _merge_consecutive folding it
+                # into the original user message, hiding the correction signal.
+                # Pair one tool-error result with each tool_call in the batch
+                # so the message structure stays consistent.
+                for tc_info in tc_infos:
+                    _emit(Message(
+                        MessageRole.TOOL,
+                        f"[PrerequisiteError] {nudge.content}",
+                        MessageMeta(nudge_type, step_index=iteration),
+                        tool_name=tc_info.name,
+                        tool_call_id=tc_info.call_id,
+                    ))
                 continue
 
             # 3c — Execute all tool calls in the batch
