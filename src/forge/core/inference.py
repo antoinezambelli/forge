@@ -230,7 +230,18 @@ async def run_inference(
                 raw_response=raw,
             )
 
-        # Emit the assistant's failed output
+        # Emit the assistant's failed output, then the corrective signal.
+        # Two shapes:
+        #   - Bare text (no tool_call to anchor on): assistant(text) + user nudge.
+        #   - Unknown tool (assistant emitted a tool_call with a bad name): emit
+        #     assistant(tc) + one tool-error result per tc, mirroring step/prereq
+        #     enforcement in runner.py. Tool-error rides the canonical channel
+        #     the model was pretrained on, surviving heavy-context attention
+        #     drop-off and Mistral _merge_consecutive folding far better than a
+        #     trailing user-role nudge.
+        nudge = validation.nudge
+        nudge_type = _NUDGE_KIND_TO_TYPE[nudge.kind]
+
         if isinstance(response, TextResponse):
             msg = Message(
                 MessageRole.ASSISTANT,
@@ -239,8 +250,18 @@ async def run_inference(
             )
             messages.append(msg)
             new_messages.append(msg)
+            # Bare text: no tool_call to attach to, fall back to user nudge.
+            nudge_msg = Message(
+                MessageRole.USER,
+                nudge.content,
+                MessageMeta(nudge_type, step_index=step_index),
+            )
+            messages.append(nudge_msg)
+            new_messages.append(nudge_msg)
         else:
-            # Unknown tool — emit reasoning + tool call messages
+            # Unknown tool — emit reasoning + tool_call, then one tool-error
+            # result per tool_call so the corrective signal rides the canonical
+            # channel.
             tool_calls = response
             if tool_calls[0].reasoning:
                 reasoning_msg = Message(
@@ -259,17 +280,16 @@ async def run_inference(
             )
             messages.append(tc_msg)
             new_messages.append(tc_msg)
-
-        # Emit nudge
-        nudge = validation.nudge
-        nudge_type = _NUDGE_KIND_TO_TYPE[nudge.kind]
-        nudge_msg = Message(
-            MessageRole.USER,
-            nudge.content,
-            MessageMeta(nudge_type, step_index=step_index),
-        )
-        messages.append(nudge_msg)
-        new_messages.append(nudge_msg)
+            for tc_info in tc_infos:
+                err_msg = Message(
+                    MessageRole.TOOL,
+                    f"[UnknownTool] {nudge.content}",
+                    MessageMeta(nudge_type, step_index=step_index),
+                    tool_name=tc_info.name,
+                    tool_call_id=tc_info.call_id,
+                )
+                messages.append(err_msg)
+                new_messages.append(err_msg)
 
     # max_attempts exhausted without valid response — signal to caller
     return None
