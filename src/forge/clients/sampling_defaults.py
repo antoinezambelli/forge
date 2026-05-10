@@ -114,6 +114,21 @@ MODEL_SAMPLING_DEFAULTS: dict[str, dict[str, float | int]] = {
     # existing prompt-mode rescue parsers, no new parser needed.
     "nemotron-3-super:120b-a12b-q4_K_M":            {"temperature": 1.0, "top_p": 0.95, "chat_template_kwargs": {"enable_thinking": True, "force_nonempty_content": True}},  # https://huggingface.co/nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-BF16
     "NVIDIA-Nemotron-3-Super-120B-A12B-UD-Q4_K_M":  {"temperature": 1.0, "top_p": 0.95, "chat_template_kwargs": {"enable_thinking": True, "force_nonempty_content": True}},  # https://huggingface.co/nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-BF16
+    # NVIDIA Nemotron-3-Nano-30B-A3B — same hybrid Mamba-2 + Transformer + MoE family as Super, 30B
+    # total / ~3.5B active. Card splits sampling into two presets:
+    #   - "Reasoning":    T=1.0, top_p=1.0   — wider nucleus than Super's 0.95
+    #   - "Tool-calling": T=0.6, top_p=0.95  — deterministic preset (active below)
+    # The "tool-calling" label is misleading: temperature is per-call and global, so the same low-T
+    # preset reins in *all* generation (reasoning, tool emission, prose). 2026-05-05 N=5 probe with
+    # the reasoning preset (T=1.0, top_p=1.0) gave decep% 16.04 driven entirely by F3 (9/15 silent
+    # fails) — model confidently claimed completion while pipeline output diverged from golden.
+    # Switched to the deterministic preset to test whether F3 deception is structural or temperature-
+    # tunable. Native tool format is qwen3_coder XML — irrelevant for forge prompt-mode runs.
+    # force_nonempty_content (Super's empty-<think> fix) is undocumented for Nano; add only if eval
+    # shows empty thinking blocks. Per gpt_oss precedent, repeat_penalty/presence_penalty are
+    # deliberately omitted (LlamafileClient drops missing fields entirely; explicit values would
+    # degrade output for unfiltered models).
+    "Nemotron-3-Nano-30B-A3B-Q4_K_M":               {"temperature": 0.6, "top_p": 0.95, "chat_template_kwargs": {"enable_thinking": True}},  # https://huggingface.co/nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16
     # Mistral Small 3.2 & Devstral Small 2 — cards only specify temperature; top_p/top_k/etc. left to backend defaults
     "mistral-small-3.2:24b-instruct-2506-q4_K_M":  {"temperature": 0.15},  # https://huggingface.co/mistralai/Mistral-Small-3.2-24B-Instruct-2506
     "Mistral-Small-3.2-24B-Instruct-2506-Q4_K_M":  {"temperature": 0.15},  # https://huggingface.co/mistralai/Mistral-Small-3.2-24B-Instruct-2506
