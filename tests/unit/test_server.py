@@ -372,6 +372,139 @@ class TestServerManagerStart:
         assert "--parallel" not in cmd
 
 
+# ── ServerManager.start() — vllm backend ────────────────────────
+
+
+class TestServerManagerStartVllm:
+    """start() vLLM-specific path: cmd build, validation, /v1/models discovery."""
+
+    @pytest.fixture()
+    def sm(self) -> ServerManager:
+        return ServerManager(backend="vllm", port=8000)
+
+    @pytest.mark.asyncio
+    async def test_start_launches_vllm_serve(self, sm: ServerManager) -> None:
+        mock_proc = MagicMock()
+        with (
+            patch("forge.server.subprocess.Popen", return_value=mock_proc) as mock_popen,
+            patch.object(sm, "_wait_healthy", new_callable=AsyncMock),
+        ):
+            await sm.start(
+                "gemma-4-AWQ",
+                model_path="/models/gemma-4-26B-A4B-it-AWQ-4bit",
+            )
+
+        cmd = mock_popen.call_args[0][0]
+        assert cmd[0] == "vllm"
+        assert cmd[1] == "serve"
+        assert "/models/gemma-4-26B-A4B-it-AWQ-4bit" in cmd
+        assert "--port" in cmd
+        assert "8000" in cmd
+
+    @pytest.mark.asyncio
+    async def test_start_does_not_pass_llamacpp_flags(self, sm: ServerManager) -> None:
+        """vLLM should never receive llama.cpp-specific flags like --jinja."""
+        mock_proc = MagicMock()
+        with (
+            patch("forge.server.subprocess.Popen", return_value=mock_proc) as mock_popen,
+            patch.object(sm, "_wait_healthy", new_callable=AsyncMock),
+        ):
+            await sm.start(
+                "gemma-4-AWQ",
+                model_path="/models/gemma",
+                mode="native",
+            )
+
+        cmd = mock_popen.call_args[0][0]
+        assert "--jinja" not in cmd
+        assert "-c" not in cmd  # llama.cpp ctx flag
+        assert "-m" not in cmd  # llama.cpp model flag
+
+    @pytest.mark.asyncio
+    async def test_ctx_override_passes_max_model_len(self, sm: ServerManager) -> None:
+        mock_proc = MagicMock()
+        with (
+            patch("forge.server.subprocess.Popen", return_value=mock_proc) as mock_popen,
+            patch.object(sm, "_wait_healthy", new_callable=AsyncMock),
+        ):
+            await sm.start(
+                "gemma-4-AWQ",
+                model_path="/models/gemma",
+                ctx_override=113000,
+            )
+
+        cmd = mock_popen.call_args[0][0]
+        assert "--max-model-len" in cmd
+        idx = cmd.index("--max-model-len")
+        assert cmd[idx + 1] == "113000"
+
+    @pytest.mark.asyncio
+    async def test_extra_flags_appended(self, sm: ServerManager) -> None:
+        mock_proc = MagicMock()
+        with (
+            patch("forge.server.subprocess.Popen", return_value=mock_proc) as mock_popen,
+            patch.object(sm, "_wait_healthy", new_callable=AsyncMock),
+        ):
+            await sm.start(
+                "gemma-4-AWQ",
+                model_path="/models/gemma",
+                extra_flags=[
+                    "--tensor-parallel-size", "2",
+                    "--reasoning-parser", "gemma4",
+                    "--tool-call-parser", "gemma4",
+                    "--enable-auto-tool-choice",
+                ],
+            )
+
+        cmd = mock_popen.call_args[0][0]
+        assert "--tensor-parallel-size" in cmd
+        assert "--reasoning-parser" in cmd
+        assert "gemma4" in cmd
+
+    @pytest.mark.asyncio
+    async def test_rejects_gguf_path(self, sm: ServerManager) -> None:
+        with pytest.raises(ValueError, match="does not accept gguf_path"):
+            await sm.start("x", gguf_path="/models/x.gguf")
+
+    @pytest.mark.asyncio
+    async def test_requires_model_path(self, sm: ServerManager) -> None:
+        with pytest.raises(ValueError, match="requires model_path"):
+            await sm.start("x")
+
+    @pytest.mark.asyncio
+    async def test_rejects_cache_type_k(self, sm: ServerManager) -> None:
+        with pytest.raises(ValueError, match="does not support cache_type"):
+            await sm.start("x", model_path="/m", cache_type_k="q8_0")
+
+    @pytest.mark.asyncio
+    async def test_rejects_cache_type_v(self, sm: ServerManager) -> None:
+        with pytest.raises(ValueError, match="does not support cache_type"):
+            await sm.start("x", model_path="/m", cache_type_v="q8_0")
+
+    @pytest.mark.asyncio
+    async def test_rejects_n_slots(self, sm: ServerManager) -> None:
+        with pytest.raises(ValueError, match="does not support n_slots"):
+            await sm.start("x", model_path="/m", n_slots=2)
+
+    @pytest.mark.asyncio
+    async def test_rejects_kv_unified(self, sm: ServerManager) -> None:
+        with pytest.raises(ValueError, match="does not support n_slots"):
+            await sm.start("x", model_path="/m", kv_unified=True)
+
+    @pytest.mark.asyncio
+    async def test_llamaserver_rejects_model_path(self) -> None:
+        """Symmetry: llamaserver should reject model_path (it's a vllm-only param)."""
+        sm = ServerManager(backend="llamaserver")
+        with pytest.raises(ValueError, match="does not accept model_path"):
+            await sm.start("x", model_path="/models/x")
+
+    @pytest.mark.asyncio
+    async def test_unknown_backend_raises(self) -> None:
+        sm = ServerManager(backend="bogus")
+        with pytest.raises(ValueError, match="unsupported backend"):
+            await sm.start("x", gguf_path="/models/x.gguf")
+
+
 # ── ServerManager.stop() ────────────────────────────────────────
 
 
@@ -478,6 +611,76 @@ class TestGetServerContext:
             with pytest.raises(BudgetResolutionError) as exc_info:
                 await sm.get_server_context()
             assert exc_info.value.__cause__ is not None
+
+
+# ── ServerManager.get_server_context() — vllm backend ───────────
+
+
+class TestGetServerContextVllm:
+    """get_server_context() vllm path: parses max_model_len from /v1/models."""
+
+    @pytest.mark.asyncio
+    async def test_reads_max_model_len_from_models_endpoint(self) -> None:
+        sm = ServerManager(backend="vllm", port=8000)
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = {
+            "data": [{"id": "/models/x", "max_model_len": 113000}],
+        }
+        with patch("forge.server.httpx.AsyncClient") as mock_client_cls:
+            mock_client = AsyncMock()
+            mock_client.__aenter__.return_value = mock_client
+            mock_client.get.return_value = mock_resp
+            mock_client_cls.return_value = mock_client
+
+            result = await sm.get_server_context()
+
+        assert result == 113000
+
+    @pytest.mark.asyncio
+    async def test_raises_on_empty_data(self) -> None:
+        sm = ServerManager(backend="vllm", port=8000)
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = {"data": []}
+        with patch("forge.server.httpx.AsyncClient") as mock_client_cls:
+            mock_client = AsyncMock()
+            mock_client.__aenter__.return_value = mock_client
+            mock_client.get.return_value = mock_resp
+            mock_client_cls.return_value = mock_client
+
+            with pytest.raises(BudgetResolutionError):
+                await sm.get_server_context()
+
+    @pytest.mark.asyncio
+    async def test_raises_on_missing_max_model_len(self) -> None:
+        sm = ServerManager(backend="vllm", port=8000)
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = {"data": [{"id": "/models/x"}]}
+        with patch("forge.server.httpx.AsyncClient") as mock_client_cls:
+            mock_client = AsyncMock()
+            mock_client.__aenter__.return_value = mock_client
+            mock_client.get.return_value = mock_resp
+            mock_client_cls.return_value = mock_client
+
+            with pytest.raises(BudgetResolutionError):
+                await sm.get_server_context()
+
+    @pytest.mark.asyncio
+    async def test_raises_on_non_200(self) -> None:
+        sm = ServerManager(backend="vllm", port=8000)
+        mock_resp = MagicMock()
+        mock_resp.status_code = 503
+        mock_resp.text = "service unavailable"
+        with patch("forge.server.httpx.AsyncClient") as mock_client_cls:
+            mock_client = AsyncMock()
+            mock_client.__aenter__.return_value = mock_client
+            mock_client.get.return_value = mock_resp
+            mock_client_cls.return_value = mock_client
+
+            with pytest.raises(BudgetResolutionError):
+                await sm.get_server_context()
 
 
 # ── ServerManager.resolve_budget() ──────────────────────────────
@@ -1070,6 +1273,55 @@ class TestSetupBackend:
         """llamaserver/llamafile must have a gguf_path."""
         with pytest.raises(ValueError, match="requires gguf_path"):
             await setup_backend(backend="llamaserver")
+
+    # ── vllm identity rules ────────────────────────────────────
+
+    @pytest.mark.asyncio
+    async def test_vllm_requires_model_path(self) -> None:
+        with pytest.raises(ValueError, match="requires model_path"):
+            await setup_backend(backend="vllm")
+
+    @pytest.mark.asyncio
+    async def test_vllm_rejects_gguf_path(self) -> None:
+        with pytest.raises(ValueError, match="does not accept gguf_path"):
+            await setup_backend(backend="vllm", model_path="/m", gguf_path="/x")
+
+    @pytest.mark.asyncio
+    async def test_vllm_rejects_model(self) -> None:
+        with pytest.raises(ValueError, match="does not accept model"):
+            await setup_backend(backend="vllm", model_path="/m", model="ollama-tag")
+
+    @pytest.mark.asyncio
+    async def test_ollama_rejects_model_path(self) -> None:
+        with pytest.raises(ValueError, match="does not accept model_path"):
+            await setup_backend(backend="ollama", model="tag", model_path="/x")
+
+    @pytest.mark.asyncio
+    async def test_llamaserver_rejects_model_path(self) -> None:
+        with pytest.raises(ValueError, match="does not accept model_path"):
+            await setup_backend(backend="llamaserver", gguf_path="/x", model_path="/y")
+
+    @pytest.mark.asyncio
+    async def test_unknown_backend_raises(self) -> None:
+        with pytest.raises(ValueError, match="unsupported backend"):
+            await setup_backend(backend="bogus")
+
+    @pytest.mark.asyncio
+    async def test_vllm_setup_returns_manager_and_ctx(self) -> None:
+        with (
+            patch.object(
+                ServerManager, "start_with_budget",
+                new_callable=AsyncMock, return_value=113000,
+            ),
+        ):
+            server, ctx = await setup_backend(
+                backend="vllm",
+                model_path="/models/gemma-4-AWQ",
+            )
+
+        assert isinstance(server, ServerManager)
+        assert isinstance(ctx, ContextManager)
+        assert ctx.budget_tokens == 113000
 
 
 # ── Full workflow wiring (integration-style, mocked) ─────────────
