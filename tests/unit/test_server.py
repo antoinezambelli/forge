@@ -71,7 +71,7 @@ class TestServerManagerStart:
             patch("forge.server.subprocess.Popen", return_value=mock_proc) as mock_popen,
             patch.object(sm, "_wait_healthy", new_callable=AsyncMock),
         ):
-            await sm.start("llama3", "/models/llama3.gguf")
+            await sm.start("llama3", gguf_path="/models/llama3.gguf")
 
         args = mock_popen.call_args[0][0]
         assert "llama-server" in args
@@ -89,7 +89,7 @@ class TestServerManagerStart:
             patch("forge.server.subprocess.Popen", return_value=mock_proc) as mock_popen,
             patch.object(sm, "_wait_healthy", new_callable=AsyncMock),
         ):
-            await sm.start("llama3", "/models/llama3.gguf", mode="native")
+            await sm.start("llama3", gguf_path="/models/llama3.gguf", mode="native")
 
         args = mock_popen.call_args[0][0]
         assert "--jinja" in args
@@ -101,7 +101,7 @@ class TestServerManagerStart:
             patch("forge.server.subprocess.Popen", return_value=mock_proc) as mock_popen,
             patch.object(sm, "_wait_healthy", new_callable=AsyncMock),
         ):
-            await sm.start("llama3", "/models/llama3.gguf", mode="prompt")
+            await sm.start("llama3", gguf_path="/models/llama3.gguf", mode="prompt")
 
         args = mock_popen.call_args[0][0]
         assert "--jinja" not in args
@@ -114,7 +114,7 @@ class TestServerManagerStart:
             patch.object(sm, "_wait_healthy", new_callable=AsyncMock),
         ):
             await sm.start(
-                "qwen3", "/models/qwen3.gguf",
+                "qwen3", gguf_path="/models/qwen3.gguf",
                 extra_flags=["--reasoning-format", "auto"],
             )
 
@@ -129,7 +129,7 @@ class TestServerManagerStart:
             patch("forge.server.subprocess.Popen", return_value=mock_proc) as mock_popen,
             patch.object(sm, "_wait_healthy", new_callable=AsyncMock),
         ):
-            await sm.start("llama3", "/models/llama3.gguf", ctx_override=8000)
+            await sm.start("llama3", gguf_path="/models/llama3.gguf", ctx_override=8000)
 
         args = mock_popen.call_args[0][0]
         assert "-c" in args
@@ -142,8 +142,8 @@ class TestServerManagerStart:
             patch("forge.server.subprocess.Popen", return_value=mock_proc) as mock_popen,
             patch.object(sm, "_wait_healthy", new_callable=AsyncMock),
         ):
-            await sm.start("llama3", "/models/llama3.gguf", mode="native")
-            await sm.start("llama3", "/models/llama3.gguf", mode="native")
+            await sm.start("llama3", gguf_path="/models/llama3.gguf", mode="native")
+            await sm.start("llama3", gguf_path="/models/llama3.gguf", mode="native")
 
         assert mock_popen.call_count == 1
 
@@ -156,14 +156,14 @@ class TestServerManagerStart:
             patch.object(sm, "stop", new_callable=AsyncMock) as mock_stop,
         ):
             # First start — stop is called but nothing to stop
-            await sm.start("llama3", "/models/llama3.gguf", mode="native")
+            await sm.start("llama3", gguf_path="/models/llama3.gguf", mode="native")
             # Simulate state after first start
             sm._current_model = "llama3"
             sm._current_mode = "native"
             sm._current_ctx = None
 
             # Second start with different mode — should restart
-            await sm.start("llama3", "/models/llama3.gguf", mode="prompt")
+            await sm.start("llama3", gguf_path="/models/llama3.gguf", mode="prompt")
 
         assert mock_popen.call_count == 2
         # stop() called before each start
@@ -177,12 +177,12 @@ class TestServerManagerStart:
             patch.object(sm, "_wait_healthy", new_callable=AsyncMock),
             patch.object(sm, "stop", new_callable=AsyncMock) as mock_stop,
         ):
-            await sm.start("llama3", "/models/llama3.gguf")
+            await sm.start("llama3", gguf_path="/models/llama3.gguf")
             sm._current_model = "llama3"
             sm._current_mode = "native"
             sm._current_ctx = None
 
-            await sm.start("llama3", "/models/llama3.gguf", ctx_override=8000)
+            await sm.start("llama3", gguf_path="/models/llama3.gguf", ctx_override=8000)
 
         assert mock_popen.call_count == 2
 
@@ -194,14 +194,14 @@ class TestServerManagerStart:
             patch.object(sm, "_wait_healthy", new_callable=AsyncMock),
             patch.object(sm, "stop", new_callable=AsyncMock) as mock_stop,
         ):
-            await sm.start("llama3", "/models/llama3.gguf", mode="native")
+            await sm.start("llama3", gguf_path="/models/llama3.gguf", mode="native")
             sm._current_model = "llama3"
             sm._current_mode = "native"
             sm._current_ctx = None
 
             # Same model/mode/ctx but different extra_flags — should restart
             await sm.start(
-                "llama3", "/models/llama3.gguf", mode="native",
+                "llama3", gguf_path="/models/llama3.gguf", mode="native",
                 extra_flags=["--reasoning-format", "auto"],
             )
 
@@ -215,11 +215,11 @@ class TestServerManagerStart:
             patch.object(sm, "_wait_healthy", new_callable=AsyncMock),
         ):
             await sm.start(
-                "llama3", "/models/llama3.gguf", mode="native",
+                "llama3", gguf_path="/models/llama3.gguf", mode="native",
                 extra_flags=["--reasoning-format", "auto"],
             )
             await sm.start(
-                "llama3", "/models/llama3.gguf", mode="native",
+                "llama3", gguf_path="/models/llama3.gguf", mode="native",
                 extra_flags=["--reasoning-format", "auto"],
             )
 
@@ -229,7 +229,7 @@ class TestServerManagerStart:
     async def test_start_noop_for_ollama(self) -> None:
         sm = ServerManager(backend="ollama")
         with patch("forge.server.subprocess.Popen") as mock_popen:
-            await sm.start("llama3", "/models/llama3.gguf")
+            await sm.start("llama3", gguf_path="/models/llama3.gguf")
 
         mock_popen.assert_not_called()
 
@@ -247,7 +247,7 @@ class TestServerManagerStart:
             patch("forge.server.subprocess.Popen", return_value=mock_proc) as mock_popen,
             patch.object(sm, "_wait_healthy", new_callable=AsyncMock),
         ):
-            await sm.start("llama3", str(model_path), mode="prompt")
+            await sm.start("llama3", gguf_path=str(model_path), mode="prompt")
 
         args = mock_popen.call_args[0][0]
         assert str(runtime) in args
@@ -264,7 +264,7 @@ class TestServerManagerStart:
         model_path.touch()
         # No llamafile-* runtime in tmp_path
         with pytest.raises(FileNotFoundError, match="No llamafile runtime"):
-            await sm.start("llama3", str(model_path), mode="prompt")
+            await sm.start("llama3", gguf_path=str(model_path), mode="prompt")
 
     @pytest.mark.asyncio
     async def test_start_llamafile_picks_highest_version(self, tmp_path: Path) -> None:
@@ -281,7 +281,7 @@ class TestServerManagerStart:
             patch("forge.server.subprocess.Popen", return_value=mock_proc) as mock_popen,
             patch.object(sm, "_wait_healthy", new_callable=AsyncMock),
         ):
-            await sm.start("llama3", str(model_path), mode="prompt")
+            await sm.start("llama3", gguf_path=str(model_path), mode="prompt")
 
         args = mock_popen.call_args[0][0]
         assert str(tmp_path / "llamafile-0.9.2.exe") in args
@@ -295,7 +295,7 @@ class TestServerManagerStart:
             patch.object(sm, "_wait_healthy", new_callable=AsyncMock),
         ):
             await sm.start(
-                "llama3", "/models/llama3.gguf",
+                "llama3", gguf_path="/models/llama3.gguf",
                 cache_type_k="q8_0", cache_type_v="q8_0",
             )
 
@@ -317,7 +317,7 @@ class TestServerManagerStart:
             patch("forge.server.subprocess.Popen", return_value=mock_proc) as mock_popen,
             patch.object(sm, "_wait_healthy", new_callable=AsyncMock),
         ):
-            await sm.start("llama3", "/models/llama3.gguf")
+            await sm.start("llama3", gguf_path="/models/llama3.gguf")
 
         cmd = mock_popen.call_args[0][0]
         assert "--cache-type-k" not in cmd
@@ -332,14 +332,14 @@ class TestServerManagerStart:
             patch.object(sm, "_wait_healthy", new_callable=AsyncMock),
             patch("forge.server.asyncio.sleep", new_callable=AsyncMock),
         ):
-            await sm.start("llama3", "/models/llama3.gguf", cache_type_k="q8_0")
+            await sm.start("llama3", gguf_path="/models/llama3.gguf", cache_type_k="q8_0")
             assert sm._current_cache_type_k == "q8_0"
 
             # Same config — should reuse (no restart)
-            await sm.start("llama3", "/models/llama3.gguf", cache_type_k="q8_0")
+            await sm.start("llama3", gguf_path="/models/llama3.gguf", cache_type_k="q8_0")
 
             # Different cache type — should restart
-            await sm.start("llama3", "/models/llama3.gguf", cache_type_k="q4_0")
+            await sm.start("llama3", gguf_path="/models/llama3.gguf", cache_type_k="q4_0")
             assert sm._current_cache_type_k == "q4_0"
 
     @pytest.mark.asyncio
@@ -350,7 +350,7 @@ class TestServerManagerStart:
             patch("forge.server.subprocess.Popen", return_value=mock_proc) as mock_popen,
             patch.object(sm, "_wait_healthy", new_callable=AsyncMock),
         ):
-            await sm.start("llama3", "/models/llama3.gguf", n_slots=2)
+            await sm.start("llama3", gguf_path="/models/llama3.gguf", n_slots=2)
 
         cmd = mock_popen.call_args[0][0]
         assert "--parallel" in cmd
@@ -366,7 +366,7 @@ class TestServerManagerStart:
             patch("forge.server.subprocess.Popen", return_value=mock_proc) as mock_popen,
             patch.object(sm, "_wait_healthy", new_callable=AsyncMock),
         ):
-            await sm.start("llama3", "/models/llama3.gguf")
+            await sm.start("llama3", gguf_path="/models/llama3.gguf")
 
         cmd = mock_popen.call_args[0][0]
         assert "--parallel" not in cmd
@@ -612,12 +612,13 @@ class TestStartWithBudget:
             patch.object(sm, "get_server_context", new_callable=AsyncMock, return_value=13568),
         ):
             result = await sm.start_with_budget(
-                "llama3", "/models/llama3.gguf",
+                "llama3", gguf_path="/models/llama3.gguf",
                 budget_mode=BudgetMode.BACKEND,
             )
 
         mock_start.assert_called_once_with(
-            "llama3", "/models/llama3.gguf", "native", None, ctx_override=None,
+            "llama3", gguf_path="/models/llama3.gguf", model_path=None,
+            mode="native", extra_flags=None, ctx_override=None,
             cache_type_k=None, cache_type_v=None, n_slots=None, kv_unified=False,
         )
         assert result == 13568
@@ -630,13 +631,14 @@ class TestStartWithBudget:
             patch.object(sm, "get_server_context", new_callable=AsyncMock, return_value=8000),
         ):
             result = await sm.start_with_budget(
-                "llama3", "/models/llama3.gguf",
+                "llama3", gguf_path="/models/llama3.gguf",
                 budget_mode=BudgetMode.MANUAL,
                 manual_tokens=8000,
             )
 
         mock_start.assert_called_once_with(
-            "llama3", "/models/llama3.gguf", "native", None, ctx_override=8000,
+            "llama3", gguf_path="/models/llama3.gguf", model_path=None,
+            mode="native", extra_flags=None, ctx_override=8000,
             cache_type_k=None, cache_type_v=None, n_slots=None, kv_unified=False,
         )
         assert result == 8000
@@ -646,7 +648,7 @@ class TestStartWithBudget:
         sm = ServerManager(backend="llamaserver")
         with pytest.raises(ValueError, match="manual mode requires manual_tokens"):
             await sm.start_with_budget(
-                "llama3", "/models/llama3.gguf",
+                "llama3", gguf_path="/models/llama3.gguf",
                 budget_mode=BudgetMode.MANUAL,
             )
 
@@ -658,12 +660,13 @@ class TestStartWithBudget:
             patch.object(sm, "get_server_context", new_callable=AsyncMock, return_value=13568),
         ):
             result = await sm.start_with_budget(
-                "llama3", "/models/llama3.gguf",
+                "llama3", gguf_path="/models/llama3.gguf",
                 budget_mode=BudgetMode.FORGE_FULL,
             )
 
         mock_start.assert_called_once_with(
-            "llama3", "/models/llama3.gguf", "native", None, ctx_override=None,
+            "llama3", gguf_path="/models/llama3.gguf", model_path=None,
+            mode="native", extra_flags=None, ctx_override=None,
             cache_type_k=None, cache_type_v=None, n_slots=None, kv_unified=False,
         )
         assert result == 13568
@@ -682,19 +685,21 @@ class TestStartWithBudget:
             ),
         ):
             result = await sm.start_with_budget(
-                "llama3", "/models/llama3.gguf",
+                "llama3", gguf_path="/models/llama3.gguf",
                 budget_mode=BudgetMode.FORGE_FAST,
             )
 
         assert mock_start.call_count == 2
         # Phase 1: start without -c
         mock_start.assert_any_call(
-            "llama3", "/models/llama3.gguf", "native", None, ctx_override=None,
+            "llama3", gguf_path="/models/llama3.gguf", model_path=None,
+            mode="native", extra_flags=None, ctx_override=None,
             cache_type_k=None, cache_type_v=None, n_slots=None, kv_unified=False,
         )
         # Phase 2: restart with half (13568 // 2 = 6784)
         mock_start.assert_any_call(
-            "llama3", "/models/llama3.gguf", "native", None, ctx_override=6784,
+            "llama3", gguf_path="/models/llama3.gguf", model_path=None,
+            mode="native", extra_flags=None, ctx_override=6784,
             cache_type_k=None, cache_type_v=None, n_slots=None, kv_unified=False,
         )
         assert result == 6784
@@ -708,7 +713,7 @@ class TestStartWithBudget:
         ):
             with pytest.raises(BudgetResolutionError):
                 await sm.start_with_budget(
-                    "llama3", "/models/llama3.gguf",
+                    "llama3", gguf_path="/models/llama3.gguf",
                     budget_mode=BudgetMode.FORGE_FAST,
                 )
 
@@ -718,7 +723,7 @@ class TestStartWithBudget:
         hw = MagicMock(vram_total_gb=12.0)
         with patch("forge.server.detect_hardware", return_value=hw):
             result = await sm.start_with_budget(
-                "llama3", "/models/llama3.gguf",
+                "llama3", gguf_path="/models/llama3.gguf",
                 budget_mode=BudgetMode.BACKEND,
             )
         assert result == 4096
@@ -731,7 +736,7 @@ class TestStartWithBudget:
         hw = MagicMock(vram_total_gb=12.0)
         with patch("forge.server.detect_hardware", return_value=hw):
             result = await sm.start_with_budget(
-                "llama3", "/models/llama3.gguf",
+                "llama3", gguf_path="/models/llama3.gguf",
                 budget_mode=BudgetMode.FORGE_FAST,
             )
         assert result == 2048  # half of 4096 tier for <24 GB
@@ -750,7 +755,7 @@ class TestStartWithBudget:
             ),
         ):
             result = await sm.start_with_budget(
-                "llama3", "/models/llama3.gguf",
+                "llama3", gguf_path="/models/llama3.gguf",
                 budget_mode=BudgetMode.FORGE_FAST,
                 n_slots=2,
             )
@@ -758,7 +763,8 @@ class TestStartWithBudget:
         assert mock_start.call_count == 2
         # Phase 2: -c should be 35000 (half of 70K total), NOT 17500 (half of per-slot)
         mock_start.assert_any_call(
-            "llama3", "/models/llama3.gguf", "native", None, ctx_override=35000,
+            "llama3", gguf_path="/models/llama3.gguf", model_path=None,
+            mode="native", extra_flags=None, ctx_override=35000,
             cache_type_k=None, cache_type_v=None, n_slots=2, kv_unified=False,
         )
         # Budget returned is per-slot (non-unified): 17500
@@ -776,13 +782,14 @@ class TestStartWithBudget:
             ),
         ):
             result = await sm.start_with_budget(
-                "llama3", "/models/llama3.gguf",
+                "llama3", gguf_path="/models/llama3.gguf",
                 budget_mode=BudgetMode.FORGE_FAST,
                 n_slots=1,
             )
 
         mock_start.assert_any_call(
-            "llama3", "/models/llama3.gguf", "native", None, ctx_override=6784,
+            "llama3", gguf_path="/models/llama3.gguf", model_path=None,
+            mode="native", extra_flags=None, ctx_override=6784,
             cache_type_k=None, cache_type_v=None, n_slots=1, kv_unified=False,
         )
         assert result == 6784
@@ -802,7 +809,7 @@ class TestStartWithBudget:
             patch.object(sm, "get_server_context", new_callable=AsyncMock, return_value=70000),
         ):
             result = await sm.start_with_budget(
-                "llama3", "/models/llama3.gguf",
+                "llama3", gguf_path="/models/llama3.gguf",
                 budget_mode=BudgetMode.FORGE_FULL,
                 n_slots=2,
                 kv_unified=True,
@@ -821,7 +828,7 @@ class TestStartWithBudget:
             patch.object(sm, "get_server_context", new_callable=AsyncMock, return_value=70000),
         ):
             result = await sm.start_with_budget(
-                "llama3", "/models/llama3.gguf",
+                "llama3", gguf_path="/models/llama3.gguf",
                 budget_mode=BudgetMode.FORGE_FULL,
                 n_slots=1,
                 kv_unified=True,
@@ -838,7 +845,7 @@ class TestStartWithBudget:
             patch.object(sm, "get_server_context", new_callable=AsyncMock, return_value=35000),
         ):
             result = await sm.start_with_budget(
-                "llama3", "/models/llama3.gguf",
+                "llama3", gguf_path="/models/llama3.gguf",
                 budget_mode=BudgetMode.FORGE_FULL,
                 n_slots=2,
                 kv_unified=False,
@@ -856,14 +863,15 @@ class TestStartWithBudget:
             patch.object(sm, "get_server_context", new_callable=AsyncMock, return_value=35000),
         ):
             await sm.start_with_budget(
-                "llama3", "/models/llama3.gguf",
+                "llama3", gguf_path="/models/llama3.gguf",
                 budget_mode=BudgetMode.FORGE_FULL,
                 n_slots=2,
                 kv_unified=True,
             )
 
         mock_start.assert_called_once_with(
-            "llama3", "/models/llama3.gguf", "native", None, ctx_override=None,
+            "llama3", gguf_path="/models/llama3.gguf", model_path=None,
+            mode="native", extra_flags=None, ctx_override=None,
             cache_type_k=None, cache_type_v=None, n_slots=2, kv_unified=True,
         )
 
@@ -883,7 +891,7 @@ class TestStartWithBudget:
             ),
         ):
             result = await sm.start_with_budget(
-                "llama3", "/models/llama3.gguf",
+                "llama3", gguf_path="/models/llama3.gguf",
                 budget_mode=BudgetMode.FORGE_FAST,
                 n_slots=2,
                 kv_unified=True,
@@ -903,14 +911,15 @@ class TestStartWithBudget:
             ),
         ):
             result = await sm.start_with_budget(
-                "llama3", "/models/llama3.gguf",
+                "llama3", gguf_path="/models/llama3.gguf",
                 budget_mode=BudgetMode.FORGE_FAST,
                 n_slots=1,
                 kv_unified=True,
             )
 
         mock_start.assert_any_call(
-            "llama3", "/models/llama3.gguf", "native", None, ctx_override=35000,
+            "llama3", gguf_path="/models/llama3.gguf", model_path=None,
+            mode="native", extra_flags=None, ctx_override=35000,
             cache_type_k=None, cache_type_v=None, n_slots=1, kv_unified=True,
         )
         assert result == 35000
