@@ -17,21 +17,26 @@ def main() -> None:
         description="forge proxy — OpenAI-compatible proxy with guardrails",
     )
 
-    # Mode selection
-    group = parser.add_mutually_exclusive_group(required=True)
-    group.add_argument(
-        "--backend-url",
-        help="URL of externally managed backend (external mode)",
-    )
-    group.add_argument(
+    parser.add_argument(
         "--backend",
-        choices=["llamaserver", "llamafile", "ollama"],
-        help="Backend type (managed mode)",
+        required=True,
+        choices=["llamaserver", "llamafile", "ollama", "vllm"],
+        help="Backend type (required)",
     )
 
-    # Managed mode options
-    parser.add_argument("--model", help="Model name (required for ollama)")
-    parser.add_argument("--gguf", help="Path to GGUF file (llamaserver/llamafile)")
+    # External mode
+    parser.add_argument(
+        "--url",
+        help="URL of an externally managed backend (external mode). "
+             "Ollama not supported in external mode.",
+    )
+
+    # Managed mode — identity (one of, depending on backend)
+    parser.add_argument("--model", help="Ollama model name (managed mode, ollama only)")
+    parser.add_argument("--gguf", help="Path to GGUF file (managed mode, llamaserver/llamafile)")
+    parser.add_argument("--model-path", help="Model directory or HF repo id (managed mode, vllm)")
+
+    # Managed mode — server config
     parser.add_argument("--backend-port", type=int, default=8080, help="Backend port (default: 8080)")
     parser.add_argument(
         "--budget-mode",
@@ -39,7 +44,11 @@ def main() -> None:
         default="backend",
         help="Context budget mode (default: backend)",
     )
-    parser.add_argument("--budget-tokens", type=int, help="Manual token budget")
+    parser.add_argument(
+        "--budget-tokens", type=int,
+        help="Explicit token budget (required for manual mode; "
+             "fallback for external mode if backend can't report)",
+    )
     parser.add_argument("--extra-flags", nargs="*", help="Additional backend CLI flags")
 
     # Proxy options
@@ -62,17 +71,18 @@ def main() -> None:
     )
 
     # Resolve serialize flag
-    serialize = None
+    serialize: bool | None = None
     if args.serialize:
         serialize = True
     elif args.no_serialize:
         serialize = False
 
     proxy = ProxyServer(
-        backend_url=args.backend_url,
         backend=args.backend,
+        url=args.url,
         model=args.model,
         gguf=args.gguf,
+        model_path=args.model_path,
         backend_port=args.backend_port,
         budget_mode=BudgetMode(args.budget_mode),
         budget_tokens=args.budget_tokens,
