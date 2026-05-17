@@ -406,7 +406,7 @@ class ServerManager:
 
     # ── health polling ──────────────────────────────────────────
 
-    async def _wait_healthy(self, timeout: float = 120.0) -> None:
+    async def _wait_healthy(self, timeout: float = 180.0) -> None:
         """Poll ``/props`` until the server is fully ready.
 
         Uses ``/props`` rather than ``/health`` because llama-server's

@@ -95,6 +95,12 @@ MODEL_SAMPLING_DEFAULTS: dict[str, dict[str, float | int]] = {
     # not specified on the card.
     "mistral-small-4:119b-2603-q4_K_M":     {"temperature": 0.7, "chat_template_kwargs": {"reasoning_effort": "high"}},                                      # https://huggingface.co/mistralai/Mistral-Small-4-119B-2603
     "Mistral-Small-4-119B-2603-UD-Q4_K_M":  {"temperature": 0.7, "chat_template_kwargs": {"reasoning_effort": "high"}},                                      # https://huggingface.co/mistralai/Mistral-Small-4-119B-2603
+    # Qwen3.5-122B-A10B — 122B / 10B active MoE. Smoke probe starts in instruct
+    # mode (--reasoning-budget 0 in server flags). Card's "balanced" preset:
+    # T=0.7, top_p=0.8, top_k=20. Bumping to thinking mode is a separate run if
+    # smoke clean. enable_thinking left as template default (true server-side
+    # but reasoning-budget=0 caps it to 0 tokens).
+    "Qwen3.5-122B-A10B-Q4_K_M":             {"temperature": 0.7, "top_p": 0.8, "top_k": 20},                                                                 # https://huggingface.co/Qwen/Qwen3.5-122B-A10B
     # gpt-oss-120b — OpenAI open-weight MoE (117B total, 5.1B active). Reasoning model with three
     # discrete levels: "low" / "medium" / "high", controlled via chat_template_kwargs.reasoning_effort
     # (per llama.cpp guide: `--chat-template-kwargs '{"reasoning_effort": "high"}'`). Defaulting to
@@ -102,8 +108,8 @@ MODEL_SAMPLING_DEFAULTS: dict[str, dict[str, float | int]] = {
     # top_k=0, min_p=0.0 (OpenAI's stated default; llama.cpp maintainer notes top_k=0 may add CPU
     # overhead but we're GPU). CRITICAL: do NOT set repeat_penalty/presence_penalty (guide explicitly
     # warns to disable repetition penalties) — registry omission == None == field omitted from body.
-    "gpt-oss:120b-q4_K_M":  {"temperature": 1.0, "top_p": 1.0, "top_k": 0, "min_p": 0.0, "chat_template_kwargs": {"reasoning_effort": "high"}},  # https://huggingface.co/openai/gpt-oss-120b + https://github.com/ggml-org/llama.cpp/discussions/15396
-    "gpt-oss-120b-Q4_K_M":  {"temperature": 1.0, "top_p": 1.0, "top_k": 0, "min_p": 0.0, "chat_template_kwargs": {"reasoning_effort": "high"}},  # https://huggingface.co/openai/gpt-oss-120b + https://github.com/ggml-org/llama.cpp/discussions/15396
+    "gpt-oss:120b-q4_K_M":  {"temperature": 1.0, "top_p": 1.0, "top_k": 0, "min_p": 0.0, "chat_template_kwargs": {"reasoning_effort": "medium"}},  # https://huggingface.co/openai/gpt-oss-120b + https://github.com/ggml-org/llama.cpp/discussions/15396
+    "gpt-oss-120b-Q4_K_M":  {"temperature": 1.0, "top_p": 1.0, "top_k": 0, "min_p": 0.0, "chat_template_kwargs": {"reasoning_effort": "medium"}},  # https://huggingface.co/openai/gpt-oss-120b + https://github.com/ggml-org/llama.cpp/discussions/15396
     # NVIDIA Nemotron-3-Super-120B-A12B — hybrid Mamba-2 + Transformer + MoE. Reasoning model with
     # three states via chat_template_kwargs.enable_thinking: True (full default), True+low_effort
     # for lighter think, or False (off). Defaulting to enable_thinking=True (no low_effort) for full
@@ -112,8 +118,8 @@ MODEL_SAMPLING_DEFAULTS: dict[str, dict[str, float | int]] = {
     # so the model emits something substantive instead of empty <think> blocks. Native tool format is
     # Qwen3-coder-style (vLLM uses --tool-call-parser qwen3_coder); should work fine through forge's
     # existing prompt-mode rescue parsers, no new parser needed.
-    "nemotron-3-super:120b-a12b-q4_K_M":            {"temperature": 1.0, "top_p": 0.95, "chat_template_kwargs": {"enable_thinking": True, "force_nonempty_content": True}},  # https://huggingface.co/nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-BF16
-    "NVIDIA-Nemotron-3-Super-120B-A12B-UD-Q4_K_M":  {"temperature": 1.0, "top_p": 0.95, "chat_template_kwargs": {"enable_thinking": True, "force_nonempty_content": True}},  # https://huggingface.co/nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-BF16
+    "nemotron-3-super:120b-a12b-q4_K_M":            {"temperature": 1.0, "top_p": 0.95, "chat_template_kwargs": {"enable_thinking": True, "low_effort": True, "force_nonempty_content": True}},  # https://huggingface.co/nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-BF16
+    "NVIDIA-Nemotron-3-Super-120B-A12B-UD-Q4_K_M":  {"temperature": 1.0, "top_p": 0.95, "chat_template_kwargs": {"enable_thinking": True, "low_effort": True, "force_nonempty_content": True}},  # https://huggingface.co/nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-BF16
     # NVIDIA Nemotron-3-Nano-30B-A3B — same hybrid Mamba-2 + Transformer + MoE family as Super, 30B
     # total / ~3.5B active. Card splits sampling into two presets:
     #   - "Reasoning":    T=1.0, top_p=1.0   — wider nucleus than Super's 0.95
