@@ -174,14 +174,21 @@ class TestToolDef:
 
 
 class TestToolCall:
-    def test_is_pydantic_model(self):
+    def test_construction(self):
         tc = ToolCall(tool="fetch", args={"key": "value"})
         assert tc.tool == "fetch"
         assert tc.args == {"key": "value"}
 
-    def test_validates_on_construction(self):
-        with pytest.raises(ValidationError):
-            ToolCall(tool=123, args="not_a_dict")  # type: ignore[arg-type]
+    def test_args_not_validated_at_construction(self):
+        # args-shape enforcement moved to ResponseValidator so malformed args
+        # ride the tool-error channel instead of crashing the parser. Any value
+        # is accepted at the ToolCall layer.
+        tc = ToolCall(tool="fetch", args="")  # type: ignore[arg-type]
+        assert tc.args == ""
+        tc2 = ToolCall(tool="fetch", args=None)  # type: ignore[arg-type]
+        assert tc2.args is None
+        tc3 = ToolCall(tool="fetch", args=[1, 2])  # type: ignore[arg-type]
+        assert tc3.args == [1, 2]
 
     def test_reasoning_defaults_to_none(self):
         tc = ToolCall(tool="fetch", args={})
@@ -193,13 +200,9 @@ class TestToolCall:
 
 
 class TestTextResponse:
-    def test_is_pydantic_model(self):
+    def test_construction(self):
         tr = TextResponse(content="I cannot do that.")
         assert tr.content == "I cannot do that."
-
-    def test_validates_on_construction(self):
-        with pytest.raises(ValidationError):
-            TextResponse(content=12345)  # type: ignore[arg-type]
 
 
 class TestFromJsonSchema:

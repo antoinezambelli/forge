@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 
 def retry_nudge(raw_response: str) -> str:
     """Nudge for when the model returns text instead of a tool call.
@@ -57,6 +59,27 @@ def step_nudge(terminal_tool: str, pending_steps: list[str], tier: int = 1) -> s
         f"STOP. You MUST call one of: {steps}. "
         f"Do NOT call {terminal_tool}. "
         f"Your next response MUST be a tool call to one of: {steps}."
+    )
+
+
+def tool_arg_validation_nudge(tool_name: str, args: Any) -> str:
+    """Nudge for when a tool call's args are not a JSON object.
+
+    The model emitted a structurally valid tool call but with malformed
+    args content (e.g. an empty string, null, a list, or a primitive
+    instead of a JSON object). Same shape as calling a tool with a bad
+    path — the call exists, the inputs are wrong.
+
+    Args:
+        tool_name: The tool the model tried to call.
+        args: The raw args value the model emitted (any type).
+    """
+    return (
+        f"Tool call to '{tool_name}' had malformed arguments. "
+        f"Got args={args!r} (type: {type(args).__name__}). "
+        "Required: args must be a JSON object (dict). "
+        "Re-emit the tool call with args as an object — "
+        "{} for no-arg tools or {\"key\": value} otherwise."
     )
 
 

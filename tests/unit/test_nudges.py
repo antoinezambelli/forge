@@ -1,6 +1,11 @@
 """Tests for forge.prompts.nudges — retry, step, and prerequisite nudge templates."""
 
-from forge.prompts.nudges import prerequisite_nudge, retry_nudge, step_nudge
+from forge.prompts.nudges import (
+    prerequisite_nudge,
+    retry_nudge,
+    step_nudge,
+    tool_arg_validation_nudge,
+)
 
 
 class TestRetryNudge:
@@ -83,3 +88,30 @@ class TestPrerequisiteNudge:
     def test_single_missing_prereq(self) -> None:
         result = prerequisite_nudge("edit_file", ["read_file"])
         assert "read_file" in result
+
+
+class TestToolArgValidationNudge:
+    def test_returns_non_empty_string(self) -> None:
+        result = tool_arg_validation_nudge("edit", "")
+        assert isinstance(result, str)
+        assert len(result) > 0
+
+    def test_contains_tool_name(self) -> None:
+        result = tool_arg_validation_nudge("edit_file", "")
+        assert "edit_file" in result
+
+    def test_mentions_required_shape(self) -> None:
+        result = tool_arg_validation_nudge("edit", "")
+        assert "JSON object" in result or "dict" in result
+
+    def test_echoes_received_args_shape(self) -> None:
+        result = tool_arg_validation_nudge("edit", "")
+        assert "str" in result  # type name appears
+
+    def test_handles_none_args(self) -> None:
+        result = tool_arg_validation_nudge("edit", None)
+        assert "NoneType" in result
+
+    def test_handles_list_args(self) -> None:
+        result = tool_arg_validation_nudge("edit", [1, 2, 3])
+        assert "list" in result

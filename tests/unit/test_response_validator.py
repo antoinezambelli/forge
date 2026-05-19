@@ -119,3 +119,64 @@ class TestResponseValidatorToolCalls:
         result = self.validator.validate([])
         assert result.needs_retry is False
         assert result.tool_calls == []
+
+
+class TestResponseValidatorArgsShape:
+    """Args-shape enforcement — moved out of pydantic ToolCall construction."""
+
+    def setup_method(self):
+        self.validator = ResponseValidator(
+            tool_names=["search", "answer"], rescue_enabled=True
+        )
+
+    def test_empty_string_args_returns_nudge(self):
+        calls = [ToolCall(tool="search", args="")]  # type: ignore[arg-type]
+        result = self.validator.validate(calls)
+        assert result.needs_retry is True
+        assert result.tool_calls is None
+        assert result.nudge.kind == "tool_arg_validation"
+        assert "search" in result.nudge.content
+        assert "JSON object" in result.nudge.content
+
+    def test_none_args_returns_nudge(self):
+        calls = [ToolCall(tool="search", args=None)]  # type: ignore[arg-type]
+        result = self.validator.validate(calls)
+        assert result.needs_retry is True
+        assert result.nudge.kind == "tool_arg_validation"
+
+    def test_list_args_returns_nudge(self):
+        calls = [ToolCall(tool="search", args=[1, 2])]  # type: ignore[arg-type]
+        result = self.validator.validate(calls)
+        assert result.needs_retry is True
+        assert result.nudge.kind == "tool_arg_validation"
+
+    def test_primitive_args_returns_nudge(self):
+        calls = [ToolCall(tool="search", args=42)]  # type: ignore[arg-type]
+        result = self.validator.validate(calls)
+        assert result.needs_retry is True
+        assert result.nudge.kind == "tool_arg_validation"
+
+    def test_unknown_tool_takes_precedence_over_bad_args(self):
+        # Unknown-tool check runs first; no point validating args of a
+        # hallucinated tool.
+        calls = [ToolCall(tool="hallucinated", args="")]  # type: ignore[arg-type]
+        result = self.validator.validate(calls)
+        assert result.needs_retry is True
+        assert result.nudge.kind == "unknown_tool"
+
+    def test_mixed_good_and_bad_args_returns_nudge(self):
+        calls = [
+            ToolCall(tool="search", args={"q": "hi"}),
+            ToolCall(tool="answer", args=""),  # type: ignore[arg-type]
+        ]
+        result = self.validator.validate(calls)
+        assert result.needs_retry is True
+        assert result.nudge.kind == "tool_arg_validation"
+        assert "answer" in result.nudge.content
+
+    def test_empty_dict_args_pass(self):
+        # {} is a valid dict — no-arg tools are fine.
+        calls = [ToolCall(tool="search", args={})]
+        result = self.validator.validate(calls)
+        assert result.needs_retry is False
+        assert result.nudge is None

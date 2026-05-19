@@ -31,9 +31,16 @@ from forge.guardrails import ErrorTracker, ResponseValidator
 _NUDGE_KIND_TO_TYPE: dict[str, MessageType] = {
     "retry": MessageType.RETRY_NUDGE,
     "unknown_tool": MessageType.RETRY_NUDGE,
+    "tool_arg_validation": MessageType.RETRY_NUDGE,
     "step": MessageType.STEP_NUDGE,
     "prerequisite": MessageType.PREREQUISITE_NUDGE,
 }
+
+# Nudge kinds that drain the tool-error budget (record_result, max_tool_errors)
+# rather than the retry budget (record_retry, max_retries). Args-validation
+# failures are conceptually "tool called with bad args" — same family as
+# FileNotFoundError at runtime — so they share that budget.
+_TOOL_ERROR_KINDS: frozenset[str] = frozenset({"tool_arg_validation"})
 
 
 def _get_usage(client: LLMClient) -> TokenUsage | None:
@@ -278,28 +285,40 @@ async def run_inference(
                 attempts=attempts,
             )
 
-        # Retry path
-        error_tracker.record_retry()
-        if error_tracker.retries_exhausted:
+        # Retry path. Budget depends on nudge kind:
+        #   - tool_arg_validation: tool-error budget (record_result/max_tool_errors).
+        #     Same family as FileNotFoundError — the model emitted a tool call
+        #     with bad inputs; the dispatcher just rejected it before tool body.
+        #   - everything else (retry, unknown_tool): retry budget (max_retries).
+        nudge = validation.nudge
+        nudge_type = _NUDGE_KIND_TO_TYPE[nudge.kind]
+        is_tool_error = nudge.kind in _TOOL_ERROR_KINDS
+        if is_tool_error:
+            error_tracker.record_result(success=False)
+            exhausted = error_tracker.tool_errors_exhausted
+            budget_label = f"max_tool_errors={error_tracker.max_tool_errors}"
+        else:
+            error_tracker.record_retry()
+            exhausted = error_tracker.retries_exhausted
+            budget_label = f"max_retries={max_retries}"
+        if exhausted:
             raw = response.content if isinstance(response, TextResponse) else str(
                 [(tc.tool, tc.args) for tc in response]
             )
             raise ToolCallError(
-                f"Retries exhausted after {max_retries} consecutive failed attempts",
+                f"Exhausted after {budget_label} consecutive failed attempts ({nudge.kind})",
                 raw_response=raw,
             )
 
         # Emit the assistant's failed output, then the corrective signal.
         # Two shapes:
         #   - Bare text (no tool_call to anchor on): assistant(text) + user nudge.
-        #   - Unknown tool (assistant emitted a tool_call with a bad name): emit
-        #     assistant(tc) + one tool-error result per tc, mirroring step/prereq
-        #     enforcement in runner.py. Tool-error rides the canonical channel
-        #     the model was pretrained on, surviving heavy-context attention
-        #     drop-off and Mistral _merge_consecutive folding far better than a
-        #     trailing user-role nudge.
-        nudge = validation.nudge
-        nudge_type = _NUDGE_KIND_TO_TYPE[nudge.kind]
+        #   - Tool call with a recoverable defect (unknown tool name, malformed
+        #     args): emit assistant(tc) + one tool-error result per tc, mirroring
+        #     step/prereq enforcement in runner.py. Tool-error rides the canonical
+        #     channel the model was pretrained on, surviving heavy-context
+        #     attention drop-off and Mistral _merge_consecutive folding far
+        #     better than a trailing user-role nudge.
 
         if isinstance(response, TextResponse):
             msg = Message(
@@ -318,9 +337,14 @@ async def run_inference(
             messages.append(nudge_msg)
             new_messages.append(nudge_msg)
         else:
-            # Unknown tool — emit reasoning + tool_call, then one tool-error
-            # result per tool_call so the corrective signal rides the canonical
-            # channel.
+            # Tool call with a recoverable defect (unknown tool name, malformed
+            # args). Emit reasoning + tool_call, then one tool-error result per
+            # tool_call so the corrective signal rides the canonical channel.
+            err_prefix = (
+                "[ToolArgValidationError]"
+                if nudge.kind == "tool_arg_validation"
+                else "[UnknownTool]"
+            )
             tool_calls = response
             if tool_calls[0].reasoning:
                 reasoning_msg = Message(
@@ -342,7 +366,7 @@ async def run_inference(
             for tc_info in tc_infos:
                 err_msg = Message(
                     MessageRole.TOOL,
-                    f"[UnknownTool] {nudge.content}",
+                    f"{err_prefix} {nudge.content}",
                     MessageMeta(nudge_type, step_index=step_index),
                     tool_name=tc_info.name,
                     tool_call_id=tc_info.call_id,

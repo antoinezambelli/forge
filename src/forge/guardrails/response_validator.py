@@ -7,7 +7,7 @@ from dataclasses import dataclass
 
 from forge.core.workflow import LLMResponse, TextResponse, ToolCall
 from forge.guardrails.nudge import Nudge
-from forge.prompts.nudges import retry_nudge, unknown_tool_nudge
+from forge.prompts.nudges import retry_nudge, tool_arg_validation_nudge, unknown_tool_nudge
 from forge.prompts.templates import rescue_tool_call
 
 
@@ -78,7 +78,8 @@ class ResponseValidator:
                 needs_retry=True,
             )
 
-        # list[ToolCall]: check for unknown tools
+        # list[ToolCall]: check for unknown tools first (cheap, no point
+        # validating args of a hallucinated tool).
         tool_calls = response
         unknown = [tc for tc in tool_calls if tc.tool not in self.tool_names]
         if unknown:
@@ -88,6 +89,22 @@ class ResponseValidator:
                     role="user",
                     content=unknown_tool_nudge(unknown[0].tool, self.tool_names),
                     kind="unknown_tool",
+                ),
+                needs_retry=True,
+            )
+
+        # Args-shape check. ToolCall no longer enforces dict-args at
+        # construction (see workflow.py); the structural check lives here so
+        # malformed args ride the tool-error channel via inference.py instead
+        # of crashing the client parser.
+        bad_args = [tc for tc in tool_calls if not isinstance(tc.args, dict)]
+        if bad_args:
+            return ValidationResult(
+                tool_calls=None,
+                nudge=Nudge(
+                    role="user",
+                    content=tool_arg_validation_nudge(bad_args[0].tool, bad_args[0].args),
+                    kind="tool_arg_validation",
                 ),
                 needs_retry=True,
             )

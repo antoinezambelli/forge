@@ -469,8 +469,54 @@ class TestErrorHandling:
             ToolCall(tool="bad4", args={}),
         ])
         runner = _make_runner(client, max_retries_per_step=3)
-        with pytest.raises(ToolCallError, match="Retries exhausted"):
+        with pytest.raises(ToolCallError, match="Exhausted after max_retries"):
             await runner.run(_make_workflow(), "go", prompt_vars={"role": "agent"})
+
+    @pytest.mark.asyncio
+    async def test_tool_arg_validation_nudges_then_recovers(self):
+        """Malformed args → nudge, model corrects → workflow completes."""
+        client = MockClient([
+            ToolCall(tool="fetch", args=""),    # type: ignore[arg-type]
+            ToolCall(tool="fetch", args={}),    # corrected
+            ToolCall(tool="submit", args={}),   # terminal
+        ])
+        runner = _make_runner(client)
+        result = await runner.run(_make_workflow(), "go", prompt_vars={"role": "agent"})
+        assert result == "submit_result"
+
+    @pytest.mark.asyncio
+    async def test_tool_arg_validation_drains_tool_error_budget(self):
+        """Repeated args-validation failures exhaust max_tool_errors, not
+        max_retries — these are conceptually 'tool called with bad args',
+        same family as FileNotFoundError at runtime."""
+        client = MockClient([
+            ToolCall(tool="fetch", args=""),    # type: ignore[arg-type]  # err 1
+            ToolCall(tool="fetch", args=None),  # type: ignore[arg-type]  # err 2
+            ToolCall(tool="fetch", args=[1]),   # type: ignore[arg-type]  # err 3 → exceeds max_tool_errors=2
+        ])
+        runner = _make_runner(client, max_tool_errors=2)
+        with pytest.raises(ToolCallError, match="Exhausted after max_tool_errors"):
+            await runner.run(_make_workflow(), "go", prompt_vars={"role": "agent"})
+
+    @pytest.mark.asyncio
+    async def test_tool_arg_validation_uses_separate_budget_from_unknown_tool(self):
+        """Parse errors drain max_tool_errors=2, unknown-tool drains max_retries=3.
+        Verify they don't share a counter by alternating and exceeding only one."""
+        # max_tool_errors=2, max_retries=3. We send: 2 parse-errors → would exhaust
+        # tool-error budget on the 3rd if shared, but we send an unknown-tool 3rd.
+        # If counters were shared, this would raise. If separate, parse-error
+        # counter hit 2 (not yet exhausted at 2, exceeds at 3), then unknown_tool
+        # adds 1 retry. Final fetch+submit recovers.
+        client = MockClient([
+            ToolCall(tool="fetch", args=""),         # type: ignore[arg-type]  # tool_err 1
+            ToolCall(tool="fetch", args=None),       # type: ignore[arg-type]  # tool_err 2
+            ToolCall(tool="nonexistent", args={}),   # retry 1 (different budget)
+            ToolCall(tool="fetch", args={}),         # recovers
+            ToolCall(tool="submit", args={}),
+        ])
+        runner = _make_runner(client, max_tool_errors=2, max_retries_per_step=3)
+        result = await runner.run(_make_workflow(), "go", prompt_vars={"role": "agent"})
+        assert result == "submit_result"
 
     @pytest.mark.asyncio
     async def test_unknown_tool_and_text_response_share_retry_counter(self):
@@ -482,7 +528,7 @@ class TestErrorHandling:
             ToolCall(tool="still_wrong", args={}),   # retry 4 → exceeds max_retries=3
         ])
         runner = _make_runner(client, max_retries_per_step=3)
-        with pytest.raises(ToolCallError, match="Retries exhausted"):
+        with pytest.raises(ToolCallError, match="Exhausted after max_retries"):
             await runner.run(_make_workflow(), "go", prompt_vars={"role": "agent"})
 
     @pytest.mark.asyncio
@@ -923,6 +969,27 @@ class TestMessageStructure:
         assert second_call_msgs[3]["role"] == "tool"
         assert "[UnknownTool]" in second_call_msgs[3]["content"]
         assert "does not exist" in second_call_msgs[3]["content"]
+
+    @pytest.mark.asyncio
+    async def test_tool_arg_validation_emits_assistant_before_nudge(self):
+        """Malformed args is recorded as ASSISTANT(tc) + TOOL(error) on the
+        canonical tool-result channel, with [ToolArgValidationError] prefix."""
+        client = MockClient([
+            ToolCall(tool="fetch", args=""),  # type: ignore[arg-type]
+            ToolCall(tool="fetch", args={}),
+            ToolCall(tool="submit", args={}),
+        ])
+        runner = _make_runner(client)
+        await runner.run(_make_workflow(), "go", prompt_vars={"role": "agent"})
+
+        # Second send call: system, user, assistant(tool_call), tool(error)
+        second_call_msgs = client.send_calls[1][0]
+        assert len(second_call_msgs) == 4
+        assert second_call_msgs[2]["role"] == "assistant"
+        assert second_call_msgs[2]["tool_calls"][0]["function"]["name"] == "fetch"
+        assert second_call_msgs[3]["role"] == "tool"
+        assert "[ToolArgValidationError]" in second_call_msgs[3]["content"]
+        assert "JSON object" in second_call_msgs[3]["content"]
 
     @pytest.mark.asyncio
     async def test_step_nudge_emits_assistant_before_nudge(self):

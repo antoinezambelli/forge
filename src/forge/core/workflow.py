@@ -162,15 +162,24 @@ class ToolDef:
         return self.spec.name
 
 
-class ToolCall(BaseModel):
-    """Validated tool invocation returned by an LLMClient."""
+@dataclass
+class ToolCall:
+    """Tool invocation returned by an LLMClient.
+
+    ``args`` is *not* validated at construction. ResponseValidator enforces
+    args-shape (must be a dict) before the call reaches downstream stages
+    that read into it. Treating args-shape uniformly with other validator
+    checks (unknown tool name) lets a malformed call ride the canonical
+    tool-error channel instead of crashing the parser.
+    """
 
     tool: str
     args: dict[str, Any]
     reasoning: str | None = None
 
 
-class TextResponse(BaseModel):
+@dataclass
+class TextResponse:
     """Non-tool-call response from the model (reasoning trace, refusal, etc.)."""
 
     content: str
