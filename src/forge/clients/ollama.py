@@ -78,6 +78,10 @@ class OllamaClient:
         self._think_resolved: bool = think is not None
         self.last_usage: dict[int, TokenUsage] = {}
 
+    async def aclose(self) -> None:
+        """Close the underlying httpx connection pool."""
+        await self._http.aclose()
+
     # Sampling fields recognized in per-call overrides. ``seed`` is
     # accepted only as a per-call override (not an instance field).
     _SAMPLING_FIELDS = (

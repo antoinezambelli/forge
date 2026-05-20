@@ -167,6 +167,10 @@ class LlamafileClient:
 
         self.last_usage: dict[int, TokenUsage] = {}
 
+    async def aclose(self) -> None:
+        """Close the underlying httpx connection pool."""
+        await self._http.aclose()
+
         if mode in ("native", "prompt"):
             self.resolved_mode: str | None = mode
         else:
