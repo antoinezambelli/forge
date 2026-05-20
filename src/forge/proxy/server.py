@@ -28,8 +28,12 @@ class _QueueItem:
     """A request waiting to be processed by the inference worker."""
 
     body: dict[str, Any]
-    future: asyncio.Future = field(default_factory=lambda: asyncio.get_event_loop().create_future())
+    future: asyncio.Future = field(default=None)  # type: ignore[assignment]
     cancelled: bool = False
+
+    def __post_init__(self) -> None:
+        if self.future is None:
+            self.future = asyncio.get_running_loop().create_future()
 
 
 class HTTPServer:
@@ -126,7 +130,11 @@ class HTTPServer:
 
             # Read headers
             headers = await self._read_headers(reader)
-            content_length = int(headers.get("content-length", "0"))
+            try:
+                content_length = int(headers.get("content-length", "0"))
+            except ValueError:
+                await self._send_error(writer, 400, "Invalid Content-Length")
+                return
 
             # Read body
             body_bytes = b""
@@ -201,6 +209,10 @@ class HTTPServer:
             body = json.loads(body_bytes)
         except json.JSONDecodeError:
             await self._send_error(writer, 400, "Invalid JSON")
+            return
+
+        if not isinstance(body, dict):
+            await self._send_error(writer, 400, "Request body must be a JSON object")
             return
 
         is_stream = body.get("stream", False)
