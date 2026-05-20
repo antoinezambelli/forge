@@ -97,6 +97,8 @@ def tool_calls_to_openai(
     model: str = "forge",
 ) -> dict[str, Any]:
     """Convert forge ToolCalls to an OpenAI chat completions response object."""
+    if not tool_calls:
+        return text_response_to_openai("", model=model)
     tc_list = []
     for i, tc in enumerate(tool_calls):
         tc_list.append({
@@ -157,6 +159,8 @@ def tool_calls_to_sse_events(
     Returns the complete list of chunk dicts ready to be formatted as
     SSE data lines. The caller handles the actual SSE wire format.
     """
+    if not tool_calls:
+        return text_to_sse_events("", model=model)
     cmpl_id = f"chatcmpl-{uuid.uuid4().hex[:12]}"
     events: list[dict[str, Any]] = []
 
