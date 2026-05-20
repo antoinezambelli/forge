@@ -140,22 +140,28 @@ class Guardrails:
 
         return CheckResult(action="execute", tool_calls=validation.tool_calls)
 
-    def record(self, executed: list[str]) -> bool:
+    def record(self, executed: list[str | tuple[str, dict]]) -> bool:
         """Record which tools were successfully executed.
 
         Call this after executing tools to keep the middleware in sync.
 
         Args:
-            executed: Names of tools that succeeded.
+            executed: Names of tools that succeeded, or (name, args) tuples
+                for prerequisite tracking.
 
         Returns:
             True if the terminal tool was reached and all required
             steps are satisfied (workflow is done).
         """
-        for name in executed:
-            self._enforcer.record(name)
+        for entry in executed:
+            if isinstance(entry, tuple):
+                name, args = entry
+                self._enforcer.record(name, args)
+            else:
+                self._enforcer.record(entry)
         self._errors.reset_errors()
         self._enforcer.reset_premature()
         return self._enforcer.is_satisfied() and any(
-            name in self._enforcer.terminal_tools for name in executed
+            (entry if isinstance(entry, str) else entry[0]) in self._enforcer.terminal_tools
+            for entry in executed
         )
