@@ -32,12 +32,18 @@ _NUDGE_KIND_TO_TYPE: dict[str, MessageType] = {
 def _sync_token_count(client: LLMClient, context_manager: ContextManager) -> None:
     """Feed actual token count from the client into the context manager."""
     last_usage = getattr(client, "last_usage", None)
-    if not isinstance(last_usage, dict):
+    if not isinstance(last_usage, dict) or not last_usage:
         return
     slot_id = getattr(client, "_slot_id", None) or 0
     usage: TokenUsage | None = last_usage.get(slot_id)
     if usage is not None:
         context_manager.update_token_count(usage.total_tokens)
+        return
+    # AnthropicClient stores usage as {"input_tokens": int, "output_tokens": int}
+    input_tok = last_usage.get("input_tokens")
+    output_tok = last_usage.get("output_tokens")
+    if isinstance(input_tok, int) and isinstance(output_tok, int):
+        context_manager.update_token_count(input_tok + output_tok)
 
 
 @dataclass
