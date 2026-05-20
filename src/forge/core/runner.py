@@ -353,7 +353,11 @@ class WorkflowRunner:
             if batch_had_error:
                 error_tracker.record_result(success=False)
                 if error_tracker.tool_errors_exhausted:
-                    assert last_error is not None
+                    if last_error is None:
+                        raise ToolExecutionError(
+                            "unknown",
+                            cause=RuntimeError("batch_had_error but last_error is None"),
+                        )
                     raise ToolExecutionError(
                         last_error[0],
                         cause=last_error[1],
