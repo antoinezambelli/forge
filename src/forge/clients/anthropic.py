@@ -110,7 +110,10 @@ class AnthropicClient:
                         func = tc["function"]
                         args = func.get("arguments", "{}")
                         if isinstance(args, str):
-                            args = json.loads(args)
+                            try:
+                                args = json.loads(args)
+                            except json.JSONDecodeError:
+                                args = {}
                         tc_id = tc.get("id", f"toolu_{len(converted)}")
                         blocks.append({
                             "type": "tool_use",
