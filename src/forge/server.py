@@ -183,7 +183,11 @@ class ServerManager:
         """Stop the current server / unload the Ollama model."""
         if self._backend == "ollama":
             if self._current_model is not None:
-                wombat = subprocess.run(["ollama", "stop", self._current_model])
+                proc = await asyncio.create_subprocess_exec(
+                    "ollama", "stop", self._current_model,
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                )
+                await proc.wait()
                 self._current_model = None
             return
 
