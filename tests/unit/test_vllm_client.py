@@ -391,6 +391,31 @@ class TestGetContextLength:
             await client.get_context_length()
 
 
+# ── get_served_model_name ──────────────────────────────────────
+
+
+class TestGetServedModelName:
+    @pytest.mark.asyncio
+    async def test_returns_first_model_id(self) -> None:
+        client = _make_client()
+        client._http.get.return_value = _mock_response({
+            "data": [{"id": "local-primary", "max_model_len": 262144}],
+        })
+        assert await client.get_served_model_name() == "local-primary"
+
+    @pytest.mark.asyncio
+    async def test_empty_data_returns_none(self) -> None:
+        client = _make_client()
+        client._http.get.return_value = _mock_response({"data": []})
+        assert await client.get_served_model_name() is None
+
+    @pytest.mark.asyncio
+    async def test_http_error_returns_none(self) -> None:
+        client = _make_client()
+        client._http.get.side_effect = httpx.ConnectError("refused")
+        assert await client.get_served_model_name() is None
+
+
 # ── edge cases ─────────────────────────────────────────────────
 
 

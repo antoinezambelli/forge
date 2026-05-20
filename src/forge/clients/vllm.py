@@ -332,3 +332,25 @@ class VLLMClient:
                 500, f"/v1/models entry missing max_model_len: {models[0]}",
             )
         return int(max_model_len)
+
+    async def get_served_model_name(self) -> str | None:
+        """Query /v1/models for the name vLLM is actually serving.
+
+        vLLM validates the request ``model`` field against its
+        ``--served-model-name`` aliases and returns 404 for an unknown name —
+        unlike llama.cpp, which ignores the field entirely. In external mode
+        the proxy has no model path to send, so it discovers the served
+        identity here (the first ``data[].id``) rather than guessing.
+
+        Returns None if the endpoint reports no models or is unreachable, in
+        which case the caller keeps its placeholder identity.
+        """
+        try:
+            resp = await self._http.get(f"{self.base_url}/models")
+            resp.raise_for_status()
+        except httpx.HTTPError:
+            return None
+        models = resp.json().get("data") or []
+        if not models:
+            return None
+        return models[0].get("id")

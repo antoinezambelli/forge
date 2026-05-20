@@ -246,6 +246,22 @@ class ProxyServer:
                 model_path="default",
                 base_url=base,
             )
+            # Unlike llama.cpp, vLLM validates the wire `model` field against
+            # its --served-model-name aliases (404 on mismatch). External mode
+            # has no model path to send, so discover the served identity from
+            # /v1/models instead of shipping the "default" placeholder.
+            served = await client.get_served_model_name()
+            if served:
+                logger.info("Discovered vLLM served model name: %s", served)
+                client.model_path = served
+                client.model = served
+            else:
+                logger.warning(
+                    "Could not discover a served model name from %s/models; "
+                    "sending placeholder 'default' (vLLM will 404 if it "
+                    "validates the model field)",
+                    base,
+                )
         else:
             # Should be unreachable per __init__ validation
             raise ValueError(f"backend={self._backend!r} not valid in external mode")
