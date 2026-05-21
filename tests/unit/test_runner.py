@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncIterator
 from unittest.mock import MagicMock
 
 import pytest
@@ -15,7 +14,6 @@ from forge.core.messages import Message, MessageMeta, MessageRole, MessageType, 
 from forge.core.runner import WorkflowRunner
 from pydantic import BaseModel
 from forge.core.workflow import (
-    LLMResponse,
     TextResponse,
     ToolCall,
     ToolDef,

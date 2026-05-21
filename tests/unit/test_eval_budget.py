@@ -2,15 +2,13 @@
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator
 from functools import partial
 from typing import Any
 
 import pytest
 
-from forge.clients.base import ChunkType, StreamChunk
 from forge.context.strategies import TieredCompact
-from forge.core.workflow import LLMResponse, ToolCall, ToolSpec, TextResponse
+from forge.core.workflow import ToolCall, TextResponse
 
 from tests.conftest import MockClient
 from tests.eval.eval_runner import EvalConfig, RunResult, run_scenario
