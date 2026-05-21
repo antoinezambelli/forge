@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
+from functools import partial
 from typing import Any
 
 import pytest
@@ -11,46 +12,18 @@ from forge.clients.base import ChunkType, StreamChunk
 from forge.context.strategies import TieredCompact
 from forge.core.workflow import LLMResponse, ToolCall, ToolSpec, TextResponse
 
+from tests.conftest import MockClient
 from tests.eval.eval_runner import EvalConfig, RunResult, run_scenario
 from tests.eval.scenarios import compaction_chain_p1, basic_2step
 
-
-class _MockClient:
-    """Minimal client that returns a tool call on each send."""
-
-    api_format: str = "ollama"
-
-    def __init__(self, calls: list[ToolCall]) -> None:
-        self._calls = list(calls)
-        self._idx = 0
-
-    async def send(
-        self,
-        messages: list[dict[str, str]],
-        tools: list[ToolSpec] | None = None,
-        sampling: dict[str, object] | None = None,
-        passthrough: dict[str, object] | None = None,
-        inbound_anthropic_body: dict[str, object] | None = None,
-    ) -> LLMResponse:
-        if self._idx < len(self._calls):
-            tc = self._calls[self._idx]
-            self._idx += 1
-            return [tc]
-        return TextResponse(content="stuck")
-
-    async def send_stream(
-        self,
-        messages: list[dict[str, str]],
-        tools: list[ToolSpec] | None = None,
-        sampling: dict[str, object] | None = None,
-        passthrough: dict[str, object] | None = None,
-        inbound_anthropic_body: dict[str, object] | None = None,
-    ) -> AsyncIterator[StreamChunk]:
-        resp = await self.send(messages, tools)
-        yield StreamChunk(type=ChunkType.FINAL, response=resp)
-
-    async def get_context_length(self) -> int | None:
-        return None
+# The eval-budget tests expect the client to return a "stuck" TextResponse
+# once scripted calls run out (rather than raising) and to stream a single
+# FINAL chunk with no text deltas.
+_MockClient = partial(
+    MockClient,
+    on_exhausted=TextResponse(content="stuck"),
+    stream_mode="final",
+)
 
 
 class TestBudgetOverride:
