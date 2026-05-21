@@ -13,6 +13,7 @@ import threading
 from pathlib import Path
 from typing import Any
 
+from forge.clients.anthropic import AnthropicClient
 from forge.clients.base import LLMClient
 from forge.clients.llamafile import LlamafileClient
 from forge.clients.ollama import OllamaClient
@@ -62,9 +63,11 @@ class ProxyServer:
     ) -> None:
         """
         Args:
-            backend_url: URL of an externally managed backend (external mode).
-            backend: Backend type — "llamaserver" or "ollama" (managed mode).
-            model: Model name (managed mode, required for ollama).
+            backend_url: URL of an externally managed backend (external mode),
+                or Anthropic-compatible endpoint URL (with --backend anthropic).
+            backend: Backend type — "llamaserver", "ollama", "llamafile", or
+                "anthropic" (managed mode).
+            model: Model name (managed mode, required for ollama/anthropic).
             gguf: Path to GGUF file (managed mode, llamaserver/llamafile).
             backend_port: Port for the managed backend (default 8080).
             budget_mode: How to determine context budget.
@@ -79,6 +82,8 @@ class ProxyServer:
         """
         if backend_url is None and backend is None:
             raise ValueError("Provide either backend_url (external) or backend (managed)")
+
+        self._anthropic_base_url = backend_url if backend == "anthropic" else None
 
         self._backend_url = backend_url
         self._backend = backend
@@ -157,7 +162,19 @@ class ProxyServer:
         client: LLMClient
         context_manager: ContextManager
 
-        if self._backend_url is not None:
+        if self._backend == "anthropic":
+            # Anthropic backend — uses AnthropicClient; --backend-url is an
+            # optional override for a llama-server-compatible Anthropic endpoint.
+            assert self._model is not None
+            client = AnthropicClient(
+                model=self._model,
+                base_url=self._anthropic_base_url,
+            )
+            context_manager = ContextManager(
+                strategy=TieredCompact(),
+                budget_tokens=self._budget_tokens or 8192,
+            )
+        elif self._backend_url is not None:
             # External mode — connect to existing backend
             # LlamafileClient expects base_url with /v1 suffix
             base = self._backend_url.rstrip("/")
@@ -225,6 +242,7 @@ class ProxyServer:
             serialize_requests=self._serialize,
             max_retries=self._max_retries,
             rescue_enabled=self._rescue_enabled,
+            anthropic_backend=self._backend == "anthropic",
         )
         await self._http_server.start()
         self._started = True

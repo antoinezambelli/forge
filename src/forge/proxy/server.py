@@ -15,7 +15,7 @@ from typing import Any
 
 from forge.clients.base import LLMClient
 from forge.context.manager import ContextManager
-from forge.proxy.handler import handle_chat_completions
+from forge.proxy.handler import handle_chat_completions, handle_messages
 
 logger = logging.getLogger("forge.proxy")
 
@@ -30,6 +30,7 @@ class _QueueItem:
     body: dict[str, Any]
     future: asyncio.Future = field(default_factory=lambda: asyncio.get_event_loop().create_future())
     cancelled: bool = False
+    handler_func: Any = None
 
 
 class HTTPServer:
@@ -44,6 +45,7 @@ class HTTPServer:
         serialize_requests: bool = True,
         max_retries: int = 3,
         rescue_enabled: bool = True,
+        anthropic_backend: bool = False,
     ) -> None:
         self._client = client
         self._context_manager = context_manager
@@ -51,6 +53,7 @@ class HTTPServer:
         self._port = port
         self._max_retries = max_retries
         self._rescue_enabled = rescue_enabled
+        self._anthropic_backend = anthropic_backend
         self._server: asyncio.Server | None = None
         self._serialize = serialize_requests
         self._queue: asyncio.Queue[_QueueItem] = asyncio.Queue()
@@ -90,7 +93,10 @@ class HTTPServer:
                 if item.cancelled or item.future.cancelled():
                     logger.info("   Skipping cancelled request")
                     continue
-                result = await self._run_handler(item.body)
+                if item.handler_func is not None:
+                    result = await item.handler_func(item.body)
+                else:
+                    result = await self._run_handler(item.body)
                 if not item.future.done():
                     item.future.set_result(result)
             except asyncio.CancelledError:
@@ -145,6 +151,8 @@ class HTTPServer:
                 await self._handle_models(writer)
             elif method == "POST" and path == "/v1/chat/completions":
                 await self._handle_completions(writer, body_bytes)
+            elif method == "POST" and path == "/v1/messages":
+                await self._handle_messages(writer, body_bytes)
             elif method == "OPTIONS":
                 await self._send_cors_preflight(writer)
             else:
@@ -253,6 +261,79 @@ class HTTPServer:
             logger.info("<< JSON 200")
             await self._send_json(writer, 200, json.dumps(result))
 
+    async def _handle_messages(
+        self,
+        writer: asyncio.StreamWriter,
+        body_bytes: bytes,
+    ) -> None:
+        """POST /v1/messages — Anthropic-compatible endpoint."""
+        try:
+            body = json.loads(body_bytes)
+        except json.JSONDecodeError:
+            await self._send_error(writer, 400, "Invalid JSON")
+            return
+
+        is_stream = body.get("stream", False)
+        msg_count = len(body.get("messages", []))
+        tool_count = len(body.get("tools", []))
+        logger.info(
+            "   [anthropic] stream=%s messages=%d tools=%d model=%s",
+            is_stream, msg_count, tool_count, body.get("model", "?"),
+        )
+
+        if self._serialize:
+            item = _QueueItem(body=body, handler_func=self._run_anthropic_handler)
+            queue_depth = self._queue.qsize()
+            if queue_depth > 0:
+                logger.info("   Queued (depth=%d)", queue_depth + 1)
+
+            if is_stream:
+                await self._send_sse_header(writer)
+
+            self._queue.put_nowait(item)
+            result = await self._await_with_disconnect(item, writer)
+        else:
+            if is_stream:
+                await self._send_sse_header(writer)
+            result = await self._run_anthropic_handler(body)
+
+        if result is None:
+            logger.info("<< Client disconnected, discarding result")
+            return
+
+        if isinstance(result, Exception):
+            error_msg = str(result)
+            logger.info("<< ERROR: %s", error_msg[:120])
+            if is_stream:
+                await self._send_sse_body(writer, [{"error": error_msg}])
+            else:
+                await self._send_error(writer, 502, error_msg)
+            return
+
+        if is_stream:
+            logger.info("<< SSE %d events", len(result))
+            await self._send_sse_body(writer, result)
+        else:
+            logger.info("<< JSON 200")
+            await self._send_json(writer, 200, json.dumps(result))
+
+    async def _run_anthropic_handler(
+        self, body: dict[str, Any],
+    ) -> dict[str, Any] | list[dict[str, Any]] | Exception:
+        """Run the Anthropic handler, catching errors."""
+        try:
+            return await handle_messages(
+                body=body,
+                client=self._client,
+                context_manager=self._context_manager,
+                max_retries=self._max_retries,
+                rescue_enabled=self._rescue_enabled,
+                anthropic_backend=self._anthropic_backend,
+            )
+        except Exception as exc:
+            logger.exception("Handler error")
+            return exc
+
     async def _await_with_disconnect(
         self,
         item: _QueueItem,
@@ -286,6 +367,7 @@ class HTTPServer:
                 context_manager=self._context_manager,
                 max_retries=self._max_retries,
                 rescue_enabled=self._rescue_enabled,
+                anthropic_backend=self._anthropic_backend,
             )
         except Exception as exc:
             logger.exception("Handler error")

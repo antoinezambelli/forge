@@ -18,16 +18,17 @@ def main() -> None:
     )
 
     # Mode selection
-    group = parser.add_mutually_exclusive_group(required=True)
-    group.add_argument(
+    parser.add_argument(
         "--backend-url",
-        help="URL of externally managed backend (external mode)",
+        help="URL of externally managed backend (external mode), or Anthropic-compatible endpoint with --backend anthropic",
     )
-    group.add_argument(
+    parser.add_argument(
         "--backend",
-        choices=["llamaserver", "llamafile", "ollama"],
+        choices=["llamaserver", "llamafile", "ollama", "anthropic"],
         help="Backend type (managed mode)",
     )
+    if not any(arg in sys.argv for arg in ("--backend-url", "--backend")):
+        parser.error("Provide either --backend-url or --backend")
 
     # Managed mode options
     parser.add_argument("--model", help="Model name (required for ollama)")

@@ -11,6 +11,8 @@ import logging
 from collections.abc import AsyncIterator
 from typing import Any
 
+import os
+
 import anthropic
 
 from forge.clients.base import ChunkType, StreamChunk
@@ -39,6 +41,7 @@ class AnthropicClient:
         max_retries: int = 3,
         tool_choice: str | None = None,
         recommended_sampling: bool = False,
+        base_url: str | None = None,
     ) -> None:
         self.model = model
         self.max_tokens = max_tokens
@@ -50,11 +53,24 @@ class AnthropicClient:
             log.debug(
                 "AnthropicClient ignores recommended_sampling=True — no sampling kwargs are exposed."
             )
-        self._client = anthropic.AsyncAnthropic(
-            api_key=api_key,
-            timeout=timeout,
-            max_retries=max_retries,
-        )
+        kwargs: dict[str, Any] = {
+            "api_key": api_key,
+            "timeout": timeout,
+            "max_retries": max_retries,
+        }
+        if base_url is not None:
+            kwargs["base_url"] = base_url
+        else:
+            # The Anthropic SDK reads ANTHROPIC_BASE_URL from env. When
+            # the user does not provide an explicit base_url we must
+            # suppress that env var so the SDK hits the real Anthropic
+            # endpoint (not a local override).
+            _saved = os.environ.pop("ANTHROPIC_BASE_URL", None)
+            self._client = anthropic.AsyncAnthropic(**kwargs)
+            if _saved is not None:
+                os.environ["ANTHROPIC_BASE_URL"] = _saved
+            return
+        self._client = anthropic.AsyncAnthropic(**kwargs)
         # Populated after each send()/send_stream() call.
         self.last_usage: dict[str, int] | None = None
 
@@ -238,7 +254,7 @@ class AnthropicClient:
 
     async def send(
         self,
-        messages: list[dict[str, str]],
+        messages: list[dict[str, Any]],
         tools: list[ToolSpec] | None = None,
         sampling: dict[str, Any] | None = None,
     ) -> LLMResponse:
@@ -268,7 +284,7 @@ class AnthropicClient:
 
     async def send_stream(
         self,
-        messages: list[dict[str, str]],
+        messages: list[dict[str, Any]],
         tools: list[ToolSpec] | None = None,
         sampling: dict[str, Any] | None = None,
     ) -> AsyncIterator[StreamChunk]:

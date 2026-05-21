@@ -1,5 +1,6 @@
 """Client adapters for LLM backends."""
 
+from forge.clients.anthropic import AnthropicClient
 from forge.clients.base import ChunkType, LLMClient, StreamChunk
 from forge.clients.llamafile import LlamafileClient
 from forge.clients.ollama import OllamaClient
@@ -10,6 +11,7 @@ from forge.clients.sampling_defaults import (
 )
 
 __all__ = [
+    "AnthropicClient",
     "ChunkType",
     "LLMClient",
     "LlamafileClient",

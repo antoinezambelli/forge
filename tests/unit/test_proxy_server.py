@@ -108,7 +108,16 @@ async def _sse_request(port, body):
         writer.write(request)
         await writer.drain()
 
-        response_data = await asyncio.wait_for(reader.read(65536), timeout=10.0)
+        # Read until connection closes (chunked encoding ends with 0\r\n\r\n)
+        response_data = bytearray()
+        while True:
+            chunk = await asyncio.wait_for(reader.read(65536), timeout=10.0)
+            if not chunk:
+                break
+            response_data.extend(chunk)
+            # Chunked transfer ends with "0\r\n\r\n"
+            if b"0\r\n\r\n" in response_data:
+                break
         response_str = response_data.decode("utf-8", errors="replace")
 
         # Extract SSE data lines from chunked transfer encoding
