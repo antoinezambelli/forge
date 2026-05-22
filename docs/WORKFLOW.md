@@ -49,18 +49,18 @@ flowchart TD
             VALIDATE["ResponseValidator.validate()<br/>rescue + retry + unknown tool"]
             RESCUED{"needs_retry<br/>= False?"}
             RETRY_COUNT{"ErrorTracker<br/>retries_exhausted?"}
-            NUDGE["Emit assistant content + nudge<br/>→ next iteration"]
+            NUDGE["Emit assistant content + retry_nudge (role=user)<br/>→ next iteration"]
             FAIL_RETRY["Raise ToolCallError"]
         end
 
         subgraph ToolPath["ToolCall Batch Path"]
             KNOWN{"ResponseValidator:<br/>all tools known?"}
-            UNKNOWN_NUDGE["Emit TOOL_CALL + unknown_tool_nudge<br/>→ next iteration"]
+            UNKNOWN_TOOL_ERROR["Emit TOOL_CALL + unknown_tool tool-error<br/>(role=tool, per blocked call)<br/>→ next iteration"]
             TERMINAL{"StepEnforcer.check():<br/>premature terminal?"}
-            STEP_NUDGE["Emit TOOL_CALL + escalating step_nudge<br/>(tier 1/2/3)"]
+            STEP_TOOL_ERROR["Emit TOOL_CALL + [StepEnforcementError] tool-error<br/>(role=tool, per blocked call)"]
             STEP_FAIL["Raise StepEnforcementError<br/>(premature_exhausted)"]
             PREREQ{"StepEnforcer.<br/>check_prerequisites()?"}
-            PREREQ_NUDGE["Emit TOOL_CALL + prerequisite_nudge<br/>→ next iteration"]
+            PREREQ_TOOL_ERROR["Emit TOOL_CALL + [PrereqError] tool-error<br/>(role=tool, per blocked call)<br/>→ next iteration"]
             PREREQ_FAIL["Raise PrerequisiteError<br/>(prereq_exhausted)"]
             EMIT["Emit REASONING (if present)<br/>+ TOOL_CALL message"]
             EXEC_BATCH["Execute ALL tools in batch"]
@@ -84,12 +84,12 @@ flowchart TD
         RETRY_COUNT -- "no" --> NUDGE
         RETRY_COUNT -- "yes" --> FAIL_RETRY
 
-        TERMINAL -- "needs_nudge" --> STEP_NUDGE
+        TERMINAL -- "needs_nudge" --> STEP_TOOL_ERROR
         TERMINAL -- "no premature" --> PREREQ
-        STEP_NUDGE -- "premature_exhausted" --> STEP_FAIL
-        PREREQ -- "needs_nudge" --> PREREQ_NUDGE
+        STEP_TOOL_ERROR -- "premature_exhausted" --> STEP_FAIL
+        PREREQ -- "needs_nudge" --> PREREQ_TOOL_ERROR
         PREREQ -- "satisfied" --> EMIT
-        PREREQ_NUDGE -- "prereq_exhausted" --> PREREQ_FAIL
+        PREREQ_TOOL_ERROR -- "prereq_exhausted" --> PREREQ_FAIL
 
         EMIT --> EXEC_BATCH
         EXEC_BATCH --> TOOL_ERROR
@@ -157,9 +157,9 @@ Messages are tagged with `MessageType` metadata that determines their compaction
 | `tool_result` | tool | After tool execution | Truncated P1, dropped P2 |
 | `reasoning` | assistant | Thinking models | Preserved through P2, dropped P3 |
 | `text_response` | assistant | Failed tool call attempt | Preserved through P2, dropped P3 |
-| `step_nudge` | user | Runner step enforcement | Dropped P1 |
-| `prerequisite_nudge` | user | Runner prereq enforcement | Dropped P1 |
-| `retry_nudge` | user | Runner retry logic | Dropped P1 |
+| `step_nudge` | tool | Runner step enforcement (`[StepEnforcementError]` prefix) | Dropped P1 |
+| `prerequisite_nudge` | tool | Runner prereq enforcement (`[PrereqError]` prefix) | Dropped P1 |
+| `retry_nudge` | user | Runner retry logic (bare-text rescue path) | Dropped P1 |
 | `summary` | system | Compaction output | Never cut |
 
 ---
@@ -392,7 +392,6 @@ flowchart TB
         BATCH["batch_eval.py<br/>Multi-config runner"]
         REPORT["report.py<br/>ASCII tables + HTML"]
         ABLATION["ablation.py<br/>Guardrail presets"]
-        BFCL["bfcl/<br/>BFCL v4 benchmark"]
     end
 
     APP --> RUNNER

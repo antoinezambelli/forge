@@ -250,7 +250,7 @@ await server.stop()
 3. The LLM calls `get_weather(city="Paris")` — forge executes it and feeds the result back.
 4. Step enforcement verifies `get_weather` was called (it's in `required_steps`).
 5. The LLM calls `report_weather(...)` — forge executes it, sees it's the `terminal_tool`, and ends the loop.
-6. If any step fails: retry nudges, rescue loops, and error recovery kick in automatically.
+6. If any step fails: retry nudges, rescue loops, and error recovery kick in automatically. Step-enforcement and prerequisite violations surface as tool-error responses on the tool channel (the same wire shape models are trained on for "tool call failed, try again"); bare-text retry nudges still arrive as user messages.
 
 ---
 
@@ -334,14 +334,7 @@ def on_message(self, msg: Message) -> None:
 
 ## Choosing a Backend
 
-| Backend | Best for | Native FC? | Setup |
-|---------|----------|------------|-------|
-| **Ollama** | Easiest setup, model management built-in | Yes | `ollama serve` |
-| **llama-server** | Best performance, full control | Yes (with `--jinja`) | `llama-server -m model.gguf --jinja` |
-| **Llamafile** | Single binary, zero dependencies | No (prompt-injected) | Download and run |
-| **Anthropic** | Frontier baseline, hybrid workflows | Yes | API key only |
-
-See [BACKEND_SETUP.md](BACKEND_SETUP.md) for full installation instructions and [MODEL_GUIDE.md](MODEL_GUIDE.md) for which model to pick.
+See [BACKEND_SETUP.md](BACKEND_SETUP.md) for the supported-backend table, boot commands, and client snippets. [MODEL_GUIDE.md](MODEL_GUIDE.md) covers which model to pick.
 
 ### Sampling Parameters
 
@@ -444,9 +437,9 @@ ToolDef(
 )
 ```
 
-If the model calls a tool without satisfying its prerequisites, the runner blocks the batch, emits a `PREREQUISITE_NUDGE`, and the model retries. After `max_prereq_violations` (default 2) consecutive violations, `PrerequisiteError` is raised.
+If the model calls a tool without satisfying its prerequisites, the runner blocks the batch and emits one tool-error response per blocked tool call (`[PrereqError] ...` on the tool channel, with `PREREQUISITE_NUDGE` message type for compaction prioritization). The model retries off the canonical "tool failed" wire shape rather than a trailing user message — friendlier to OpenAI-tool-trained models. After `max_prereq_violations` (default 2) consecutive violations, `PrerequisiteError` is raised.
 
-Prerequisites are not included in the tool schema — the model discovers constraints via nudge, same as step enforcement.
+Prerequisites are not included in the tool schema — the model discovers constraints via the tool-error reply, same as step enforcement.
 
 ---
 

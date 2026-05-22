@@ -163,8 +163,10 @@ class MessageType(str, Enum):
     TOOL_RESULT = "tool_result"
     REASONING = "reasoning"       # Chain-of-thought from Reasoning variants
     TEXT_RESPONSE = "text_response"  # Failed tool call attempt (free text)
-    STEP_NUDGE = "step_nudge"     # Runner-injected "you must call X first"
-    RETRY_NUDGE = "retry_nudge"   # Runner-injected "invalid format, try again"
+    STEP_NUDGE = "step_nudge"     # Step enforcement — emitted as role=tool tool-error ([StepEnforcementError])
+    PREREQUISITE_NUDGE = "prerequisite_nudge"  # Prereq enforcement — emitted as role=tool tool-error ([PrereqError])
+    RETRY_NUDGE = "retry_nudge"   # Runner-injected "invalid format, try again" — role=user
+    CONTEXT_WARNING = "context_warning"  # Injected by ContextManager when budget thresholds cross
     SUMMARY = "summary"           # Compacted content
 
 
@@ -375,7 +377,7 @@ class CompactStrategy(ABC):
     """
 
     @abstractmethod
-    def compact(self, messages: list[Message], trigger_tokens: int, *, step_hint: str = "") -> tuple[list[Message], int]:
+    def compact(self, messages: list[Message], budget_tokens: int, *, step_hint: str = "") -> tuple[list[Message], int]:
         """Return a compacted copy of the message history and the phase reached.
 
         Returns a tuple of (compacted_messages, phase_reached). The phase int
@@ -383,11 +385,10 @@ class CompactStrategy(ABC):
         compaction was applied, 1+ is implementation-defined. Strategies
         without internal phases should return 1.
 
-        trigger_tokens is the threshold that triggered compaction. For tiered
-        strategies, each phase applies its structural changes, then checks
-        whether the result is under trigger_tokens before escalating to the
-        next phase. This is NOT a target to compact down to — phases remove
-        what they remove structurally.
+        The strategy owns its own threshold logic. It receives the full
+        budget_tokens and decides whether to compact and how aggressively
+        (e.g. TieredCompact's `compact_threshold` and `phase_thresholds`
+        live on the strategy). Return phase 0 if no compaction was needed.
 
         Must preserve (never cut):
         - The system prompt (messages[0])
@@ -418,15 +419,29 @@ class ContextManager:
         self,
         strategy: CompactStrategy,
         budget_tokens: int,
-        compact_threshold: float = 0.75,
         on_compact: Callable[[CompactEvent], None] | None = None,
+        context_thresholds: list[float] | None = None,
+        on_context_threshold: Callable[[int, int, float], str | None] | None = None,
     ):
         """
         Args:
+            strategy: Compaction strategy to use. The strategy owns its own
+                compaction thresholds (e.g. ``TieredCompact(compact_threshold=0.75)``
+                or ``TieredCompact(phase_thresholds=(0.6, 0.75, 0.9))``).
+            budget_tokens: Maximum context budget in tokens.
             on_compact: Callback invoked when compaction fires. Receives a
                 CompactEvent with before/after token counts, phase reached,
                 and which messages were affected. Use for logging, debugging,
                 or surfacing compaction to a UI.
+            context_thresholds: Sorted list of budget fractions (e.g.
+                ``[0.5, 0.65, 0.8]``) at which to fire the context threshold
+                callback. Each threshold fires at most once per session
+                (resets if usage drops below it after compaction).
+            on_context_threshold: Callback invoked when a context threshold
+                is crossed. Receives ``(tokens, budget, pct)`` and returns
+                an optional string to inject as a transient system message
+                (``CONTEXT_WARNING``) before the next inference call. Return
+                None to skip injection.
         """
         ...
 
@@ -749,6 +764,7 @@ class WorkflowRunner:
         on_chunk: Callable[[StreamChunk], Awaitable[None]] | None = None,
         on_message: Callable[[Message], None] | None = None,
         rescue_enabled: bool = True,
+        retry_nudge: Callable[[str], str] | str | None = None,
     ):
         """
         Args:
@@ -777,6 +793,9 @@ class WorkflowRunner:
             rescue_enabled: If False, skip rescue_tool_call() — TextResponse
                 goes straight to retry nudge (or failure if retries=0).
                 Used by ablation configs to measure guardrail impact.
+            retry_nudge: Custom nudge for bare text responses. Pass a string
+                for a static message, or a callable ``(raw_response) -> str``
+                for dynamic nudges. If None, uses the default.
         """
         ...
 
@@ -786,6 +805,7 @@ class WorkflowRunner:
         user_message: str,
         prompt_vars: dict[str, str] | None = None,
         initial_messages: list[Message] | None = None,
+        cancel_event: asyncio.Event | None = None,
     ) -> Any:
         """Execute the workflow and return the terminal tool's result.
 
@@ -800,6 +820,10 @@ class WorkflowRunner:
                 must include the system prompt and new user message in the
                 seed. See README § on_message Callback and Multi-Turn
                 Conversations.
+            cancel_event: Optional asyncio.Event for cooperative cancellation.
+                Checked once per iteration before the inference call. If set,
+                raises WorkflowCancelledError with the full conversation
+                state for the caller to resume, discard, or log.
 
         Raises:
             MaxIterationsError: If max_iterations exceeded without terminal tool.
@@ -807,6 +831,9 @@ class WorkflowRunner:
                 formatting failures (TextResponse or unknown tool name).
             ToolExecutionError: If a tool callable raised and the model failed
                 to self-correct after max_tool_errors consecutive attempts.
+            PrerequisiteError: If max consecutive prerequisite violations exhausted.
+            StepEnforcementError: If max consecutive premature-terminal attempts exhausted.
+            WorkflowCancelledError: If cancel_event was set between iterations.
             StreamError: If streaming mode and FINAL chunk is missing.
         """
         ...
@@ -1150,13 +1177,20 @@ class LlamafileClient:
 
     def __init__(
         self,
-        gguf_path: str | Path,    # canonical identity; self.model = stem
+        gguf_path: str | Path,    # canonical identity; self.model = stem (multi-shard suffix stripped)
         base_url: str = "http://localhost:8080/v1",
         temperature: float | None = None,  # None = let backend default apply
+        top_p: float | None = None,
+        top_k: int | None = None,
+        min_p: float | None = None,
+        repeat_penalty: float | None = None,
+        presence_penalty: float | None = None,
+        chat_template_kwargs: dict[str, Any] | None = None,  # Jinja template vars (e.g. {"enable_thinking": False})
         mode: str = "auto",       # "native", "prompt", or "auto"
         timeout: float = 300.0,
         think: bool | None = None,
         cache_prompt: bool = True,  # Enable llama-server prompt caching
+        slot_id: int | None = None,  # Pin to specific llama-server slot (for SlotWorker setups)
         recommended_sampling: bool = False,  # opt-in to per-model HF-card defaults
     ):
         ...
