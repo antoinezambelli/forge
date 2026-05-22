@@ -525,6 +525,13 @@ MODEL_FAMILIES: dict[str, dict[str, str]] = {
     "granite-4.0-h-tiny-Q4_K_M":            {"family": "granite-4.0-h-tiny", "cross_backend_key": "granite-4.0-h-tiny-q4_K_M"},
     "granite-4.0:h-tiny-q8_0":              {"family": "granite-4.0-h-tiny", "cross_backend_key": "granite-4.0-h-tiny-q8_0"},
     "granite-4.0-h-tiny-Q8_0":              {"family": "granite-4.0-h-tiny", "cross_backend_key": "granite-4.0-h-tiny-q8_0"},
+    # granite 4.1 (8b)
+    "granite4.1:8b-q4_K_M":                 {"family": "granite-4.1-8b", "cross_backend_key": "granite-4.1-8b-q4_K_M"},
+    "granite-4.1-8b-Q4_K_M":                {"family": "granite-4.1-8b", "cross_backend_key": "granite-4.1-8b-q4_K_M"},
+    "granite4.1:8b-q8_0":                   {"family": "granite-4.1-8b", "cross_backend_key": "granite-4.1-8b-q8_0"},
+    "granite-4.1-8b-Q8_0":                  {"family": "granite-4.1-8b", "cross_backend_key": "granite-4.1-8b-q8_0"},
+    # phi-4 (Q4 only in v0.7.0)
+    "phi-4-Q4_K_M":                         {"family": "phi-4", "cross_backend_key": "phi-4-q4_K_M"},
 }
 
 
