@@ -170,10 +170,24 @@ MODEL_SAMPLING_DEFAULTS: dict[str, dict[str, float | int]] = {
     "granite-4.0-h-micro-Q4_K_M":  {"temperature": 0.0, "top_p": 1.0, "top_k": 0},  # https://unsloth.ai/docs/models/tutorials/ibm-granite-4.0 (cites IBM)
     "granite-4.0:h-tiny-q4_K_M":   {"temperature": 0.0, "top_p": 1.0, "top_k": 0},  # https://unsloth.ai/docs/models/tutorials/ibm-granite-4.0 (cites IBM)
     "granite-4.0-h-tiny-Q4_K_M":   {"temperature": 0.0, "top_p": 1.0, "top_k": 0},  # https://unsloth.ai/docs/models/tutorials/ibm-granite-4.0 (cites IBM)
+    # Granite 4.1 — UNCONFIRMED: no card-formal sampling recommendation from any source as of 2026-05-09
+    # (HF model card, unsloth GGUF page, IBM blog, IBM granite-4.1-language-models GitHub repo all
+    # silent on sampling; IBM granite/docs page returned 403; Unsloth tutorial 404). Mirroring Granite
+    # 4.0 IBM convention (greedy decoding) since Granite 4.1 is confirmed non-thinking per the HF blog
+    # ("without relying on long chains of thought") and IBM has been consistent across the family.
+    # Replace with card-direct values if/when IBM publishes formal guidance.
+    "granite4.1:8b-q4_K_M":        {"temperature": 0.0, "top_p": 1.0, "top_k": 0},  # unconfirmed; mirrors granite-4.0 IBM convention
+    "granite-4.1-8b-Q4_K_M":       {"temperature": 0.0, "top_p": 1.0, "top_k": 0},  # unconfirmed; mirrors granite-4.0 IBM convention
+    "granite4.1:8b-q8_0":          {"temperature": 0.0, "top_p": 1.0, "top_k": 0},  # unconfirmed; mirrors granite-4.0 IBM convention
+    "granite-4.1-8b-Q8_0":         {"temperature": 0.0, "top_p": 1.0, "top_k": 0},  # unconfirmed; mirrors granite-4.0 IBM convention
     # Intentionally absent — no formal recommendation from any official source:
     #   llama3.1:*                Meta's HF card, llama.com/docs, and llama-recipes are all silent.
     #   mistral:7b-instruct-v0.3  HF card has no "recommended settings" section; code examples
     #                             use temperature=0.0 (greedy) but note it's demo-only, not a rec.
+    #   phi-4 (base, non-reasoning)  HF card, Phi cookbook, Phi-4 technical report (2412.08905), and
+    #                                Microsoft Foundry all silent on sampling; only T=0.0 demo
+    #                                examples. Forge runs base phi-4 with recommended_sampling=False
+    #                                (see batch_eval.py:_NO_RECOMMENDED_SAMPLING_MODELS).
     # These rows fall through to the unknown-model path (backend defaults).
 }
 
