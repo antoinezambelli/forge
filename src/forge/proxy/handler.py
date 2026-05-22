@@ -33,7 +33,7 @@ logger = logging.getLogger("forge.proxy")
 _SAMPLING_FIELDS = (
     "temperature", "top_p", "top_k", "min_p",
     "repeat_penalty", "presence_penalty", "seed",
-    "chat_template_kwargs",
+    "chat_template_kwargs", "model",
 )
 
 
