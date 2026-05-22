@@ -24,12 +24,16 @@ from forge.tools.respond import RESPOND_TOOL_NAME, respond_spec
 logger = logging.getLogger("forge.proxy")
 
 
-# OpenAI-compatible sampling fields plumbed from inbound body to client.
-# llama-server / Ollama support all of these as top-level body / options
-# fields. Anthropic ignores them.
+# OpenAI-compatible top-level body fields plumbed from inbound body to
+# client. llama-server / Ollama support the sampling fields below as
+# top-level body / options fields. Anthropic ignores them.
+# ``chat_template_kwargs`` is a nested dict of Jinja template variables
+# (e.g. {"reasoning_effort": "high"}) — passed through to the LlamafileClient
+# as part of the ``sampling`` kwarg; OllamaClient drops it (no analog field).
 _SAMPLING_FIELDS = (
     "temperature", "top_p", "top_k", "min_p",
     "repeat_penalty", "presence_penalty", "seed",
+    "chat_template_kwargs",
 )
 
 

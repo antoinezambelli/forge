@@ -159,6 +159,16 @@ Resume is automatic: re-run the same command and it skips completed scenarios.
 
 ## Reports
 
+### Committed datasets
+
+Released datasets are versioned in the repo: `eval_results_vX.Y.Z.jsonl` (LFS-tracked). The current shipped dashboard at `docs/results/dashboard.html` reflects the latest version. To regenerate the dashboard or markdown views against a specific release:
+
+```bash
+python -m tests.eval.report eval_results_v0.7.0.jsonl --html docs/results/dashboard.html --markdown docs/results/
+```
+
+Older datasets (e.g. `eval_results_v0.6.0.jsonl`) remain in the repo for comparison and reproducibility. `batch_eval` writes to `eval_results.jsonl` by default; rename to a versioned filename before committing to the repo.
+
 ### Forge eval report
 
 ```bash

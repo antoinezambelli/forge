@@ -34,11 +34,6 @@ MODELS_DIR_DEFAULT = Path("models")
 # Each entry is just the filename — paired into a BatchConfig below
 # alongside the canonical identity (the file stem, no extension).
 _GGUF_FILES: list[str] = [
-    "Meta-Llama-3.1-8B-Instruct-Q4_K_M.gguf",
-    "Meta-Llama-3.1-8B-Instruct-Q8_0.gguf",
-    "Mistral-Nemo-Instruct-2407-Q4_K_M.gguf",
-    "Mistral-7B-Instruct-v0.3-Q4_K_M.gguf",
-    "Mistral-7B-Instruct-v0.3-Q8_0.gguf",
     "Qwen3-8B-Q4_K_M.gguf",
     "Qwen3-8B-Q8_0.gguf",
     "Qwen3-14B-Q4_K_M.gguf",
@@ -48,23 +43,25 @@ _GGUF_FILES: list[str] = [
     "Ministral-3-8B-Reasoning-2512-Q4_K_M.gguf",
     "Ministral-3-8B-Reasoning-2512-Q8_0.gguf",
     "Ministral-3-14B-Reasoning-2512-Q4_K_M.gguf",
-    # 32GB tier
-    "gemma-4-31B-it-Q4_K_M.gguf",
-    "gemma-4-26B-A4B-it-UD-Q4_K_M.gguf",
-    "gemma-4-26B-A4B-it-Q8_0.gguf",
     "gemma-4-E4B-it-Q4_K_M.gguf",
     "gemma-4-E4B-it-Q8_0.gguf",
-    "Mistral-Small-3.2-24B-Instruct-2506-Q4_K_M.gguf",
-    "Mistral-Small-3.2-24B-Instruct-2506-Q8_0.gguf",
-    "Devstral-Small-2-24B-Instruct-2512-Q4_K_M.gguf",
-    "Devstral-Small-2-24B-Instruct-2512-Q8_0.gguf",
-    "Qwen3.5-27B-Q4_K_M.gguf",
-    "Qwen3.5-35B-A3B-Q4_K_M.gguf",
-    "granite-4.0-h-micro-Q4_K_M.gguf",
-    "granite-4.0-h-micro-Q8_0.gguf",
-    "granite-4.0-h-tiny-Q4_K_M.gguf",
-    "granite-4.0-h-tiny-Q8_0.gguf",
+    "granite-4.1-8b-Q4_K_M.gguf",
+    "granite-4.1-8b-Q8_0.gguf",
+    "phi-4-Q4_K_M.gguf",
 ]
+
+# Models that lack native function-calling support — only run prompt mode.
+# Verified by curl test: model emits text output, no tool_calls field.
+_PROMPT_ONLY_MODELS: set[str] = {
+    "phi-4-Q4_K_M",  # phi-4 base; native FC not in training corpus
+}
+
+# Models with no formal sampling guidance from any authoritative source.
+# Run with recommended_sampling=False so the strict-mode UnsupportedModelError
+# doesn't fire. See sampling_defaults.py "Intentionally absent" comment block.
+_NO_RECOMMENDED_SAMPLING_MODELS: set[str] = {
+    "phi-4-Q4_K_M",
+}
 
 _LLAMAFILE_FILES: list[str] = [
     "Meta-Llama-3.1-8B-Instruct.Q4_K_M.llamafile",
@@ -103,45 +100,35 @@ class BatchConfig:
     gguf_filename: str | None = None  # llamaserver/llamafile only
 
 
-# Ollama configs: 11 instruct models, native FC, stream
+# Ollama configs: 10 instruct models, native FC, stream
 OLLAMA_CONFIGS: list[BatchConfig] = [
     BatchConfig(model=m, backend="ollama", mode="native", think=None)
     for m in [
-        "llama3.1:8b-instruct-q4_K_M",
-        "llama3.1:8b-instruct-q8_0",
-        "mistral-nemo:12b-instruct-2407-q4_K_M",
-        "mistral:7b-instruct-v0.3-q4_K_M",
-        "mistral:7b-instruct-v0.3-q8_0",
         "qwen3:8b-q4_K_M",
         "qwen3:8b-q8_0",
         "qwen3:14b-q4_K_M",
         "ministral-3:8b-instruct-2512-q4_K_M",
         "ministral-3:8b-instruct-2512-q8_0",
         "ministral-3:14b-instruct-2512-q4_K_M",
-        # ── 32GB eval additions ──
-        "gemma4:31b-it-q4_K_M",
-        "gemma4:26b-a4b-it-q4_K_M",
-        # gemma4:26b-a4b-it-q8_0 excluded — spills to CPU on Ollama (28GB weights)
         "gemma4:e4b-it-q4_K_M",
         "gemma4:e4b-it-q8_0",
-        "qwen3.5:27b-q4_K_M",
-        "qwen3.5:35b-a3b-q4_K_M",
-        # Granite 4.0 (IBM) — q4 only on Ollama; matches LS coverage on rig-03
-        "granite-4.0:h-micro-q4_K_M",
-        "granite-4.0:h-tiny-q4_K_M",
+        "granite4.1:8b-q4_K_M",
+        "granite4.1:8b-q8_0",
     ]
 ]
 
-# llama-server configs: each GGUF × 2 modes (native + prompt)
+# llama-server configs: each GGUF × 2 modes (native + prompt), with native
+# skipped for models in _PROMPT_ONLY_MODELS (no native FC training).
 LLAMASERVER_CONFIGS: list[BatchConfig] = []
 for _filename in _GGUF_FILES:
     _stem = Path(_filename).stem
-    LLAMASERVER_CONFIGS.append(
-        BatchConfig(
-            model=_stem, backend="llamaserver", mode="native",
-            think=None, gguf_filename=_filename,
+    if _stem not in _PROMPT_ONLY_MODELS:
+        LLAMASERVER_CONFIGS.append(
+            BatchConfig(
+                model=_stem, backend="llamaserver", mode="native",
+                think=None, gguf_filename=_filename,
+            )
         )
-    )
     LLAMASERVER_CONFIGS.append(
         BatchConfig(
             model=_stem, backend="llamaserver", mode="prompt",
@@ -326,14 +313,12 @@ def _run_result_to_row(
 
 # Extra flags per model for llama-server, keyed by config.model (the GGUF
 # stem for llamaserver configs).
-# Qwen3 models: --reasoning-format auto (server-side <think> tag parsing)
-# Everything else: no extra flags needed.
+# Reasoning models (Qwen3): --reasoning-format auto for server-side <think>
+# tag parsing. Everything else: no extra flags needed.
 _SERVER_EXTRA_FLAGS: dict[str, list[str]] = {
     "Qwen3-8B-Q4_K_M": ["--reasoning-format", "auto"],
     "Qwen3-8B-Q8_0": ["--reasoning-format", "auto"],
     "Qwen3-14B-Q4_K_M": ["--reasoning-format", "auto"],
-    "Qwen3.5-27B-Q4_K_M": ["--reasoning-format", "auto"],
-    "Qwen3.5-35B-A3B-Q4_K_M": ["--reasoning-format", "auto"],
 }
 
 
@@ -485,13 +470,14 @@ def _build_client(config: BatchConfig, models_dir: Path) -> Any:
     ``models_dir / config.gguf_filename``.
     """
     think_val = config.think
+    recommended_sampling = config.model not in _NO_RECOMMENDED_SAMPLING_MODELS
 
     if config.backend == "ollama":
         from forge.clients.ollama import OllamaClient
 
         return OllamaClient(
             model=config.model, think=think_val,
-            recommended_sampling=True,
+            recommended_sampling=recommended_sampling,
         )
 
     elif config.backend == "llamaserver":
@@ -501,7 +487,7 @@ def _build_client(config: BatchConfig, models_dir: Path) -> Any:
         return LlamafileClient(
             gguf_path=str(models_dir / config.gguf_filename),
             mode=config.mode, think=think_val,
-            recommended_sampling=True,
+            recommended_sampling=recommended_sampling,
         )
 
     elif config.backend == "llamafile":
@@ -513,7 +499,7 @@ def _build_client(config: BatchConfig, models_dir: Path) -> Any:
             mode=config.mode,
             think=think_val,
             base_url="http://localhost:8080/v1",
-            recommended_sampling=True,
+            recommended_sampling=recommended_sampling,
         )
 
     elif config.backend == "anthropic":
