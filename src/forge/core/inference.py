@@ -119,6 +119,7 @@ async def run_inference(
     on_chunk: Callable[[StreamChunk], Awaitable[None]] | None = None,
     sampling: dict[str, Any] | None = None,
     passthrough: dict[str, Any] | None = None,
+    inbound_anthropic_body: dict[str, Any] | None = None,
 ) -> InferenceResult | None:
     """Send messages to the LLM with compaction, folding, validation, and retry.
 
@@ -166,6 +167,11 @@ async def run_inference(
         attempt_limit = min(attempt_limit, max_attempts)
     attempts = 0
 
+    # Path-1 verbatim opt-in: drop on any forge mutation (compaction,
+    # context warning, retry) so cache_control is only preserved on the
+    # clean first-attempt call. ADR-015.
+    verbatim_body = inbound_anthropic_body
+
     for _attempt in range(attempt_limit):
         attempts += 1
 
@@ -177,9 +183,12 @@ async def run_inference(
         if compacted is not messages:
             messages.clear()
             messages.extend(compacted)
+            verbatim_body = None  # mutation
 
         # Check context thresholds — inject warning if crossed
         context_warning = context_manager.check_thresholds(messages)
+        if context_warning:
+            verbatim_body = None  # mutation
 
         # Fold and serialize
         api_messages = fold_and_serialize(messages, api_format)
@@ -199,9 +208,17 @@ async def run_inference(
 
         # Send
         if stream:
-            response = await _send_streaming(client, api_messages, tool_specs, on_chunk, sampling, passthrough)
+            response = await _send_streaming(
+                client, api_messages, tool_specs, on_chunk, sampling, passthrough,
+                inbound_anthropic_body=verbatim_body,
+            )
         else:
-            response = await client.send(api_messages, tools=tool_specs, sampling=sampling, passthrough=passthrough)
+            response = await client.send(
+                api_messages, tools=tool_specs, sampling=sampling, passthrough=passthrough,
+                inbound_anthropic_body=verbatim_body,
+            )
+        # Subsequent attempts (retries) are mutations regardless of outcome.
+        verbatim_body = None
 
         # Update context manager with real token count if available.
         _sync_token_count(client, context_manager)
@@ -303,10 +320,14 @@ async def _send_streaming(
     on_chunk: Callable[[StreamChunk], Awaitable[None]] | None = None,
     sampling: dict[str, Any] | None = None,
     passthrough: dict[str, Any] | None = None,
+    inbound_anthropic_body: dict[str, Any] | None = None,
 ) -> LLMResponse:
     """Send via streaming, forwarding chunks to on_chunk callback."""
     response = None
-    async for chunk in client.send_stream(api_messages, tools=tool_specs, sampling=sampling, passthrough=passthrough):
+    async for chunk in client.send_stream(
+        api_messages, tools=tool_specs, sampling=sampling, passthrough=passthrough,
+        inbound_anthropic_body=inbound_anthropic_body,
+    ):
         if on_chunk is not None:
             await on_chunk(chunk)
         if chunk.type == ChunkType.FINAL:

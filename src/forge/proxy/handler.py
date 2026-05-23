@@ -142,11 +142,17 @@ async def handle_chat_completions(
         # shape for the (OpenAI-shape) backend client.
         sampling = None
         passthrough = anthropic_to_openai_passthrough(body) or None
+        # Path-1 cache_control opt-in. The Anthropic client uses this when
+        # the runner hasn't mutated messages (clean first-attempt call);
+        # OpenAI-shape clients (LlamafileClient) accept and ignore. See
+        # ADR-015.
+        inbound_anthropic_body = body
     else:
         messages = openai_to_messages(body.get("messages", []))
         tool_specs = _extract_tool_specs(body.get("tools"))
         sampling = _extract_sampling(body)
         passthrough = _extract_passthrough(body)
+        inbound_anthropic_body = None
 
     # Inject respond tool when tools are present.  The model calls
     # respond(message="...") instead of producing bare text, keeping it
@@ -165,6 +171,7 @@ async def handle_chat_completions(
         api_messages = fold_and_serialize(messages, api_format)
         response = await client.send(
             api_messages, tools=None, sampling=sampling, passthrough=passthrough,
+            inbound_anthropic_body=inbound_anthropic_body,
         )
         text = response.content if isinstance(response, TextResponse) else ""
         return _emit_text(text, model_name, protocol, is_stream)
@@ -184,6 +191,7 @@ async def handle_chat_completions(
             tool_specs=tool_specs,
             sampling=sampling,
             passthrough=passthrough,
+            inbound_anthropic_body=inbound_anthropic_body,
         )
     except ToolCallError as exc:
         # Retries exhausted — the model kept returning text instead of tool

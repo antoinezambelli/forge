@@ -140,6 +140,7 @@ class OllamaClient:
         tools: list[ToolSpec] | None = None,
         sampling: dict[str, Any] | None = None,
         passthrough: dict[str, Any] | None = None,
+        inbound_anthropic_body: dict[str, Any] | None = None,
     ) -> LLMResponse:
         """Send messages via /api/chat and parse the response.
 
@@ -147,6 +148,9 @@ class OllamaClient:
         plumbed — Ollama is not currently a proxy-side external backend
         (forge proxy uses LlamafileClient for external mode). Adding
         Ollama passthrough is a follow-up.
+
+        ``inbound_anthropic_body`` accepted for protocol symmetry, ignored
+        (Ollama is OpenAI-shape only).
         """
         body: dict[str, Any] = {
             "model": self.model,
@@ -206,10 +210,12 @@ class OllamaClient:
         tools: list[ToolSpec] | None = None,
         sampling: dict[str, Any] | None = None,
         passthrough: dict[str, Any] | None = None,
+        inbound_anthropic_body: dict[str, Any] | None = None,
     ) -> AsyncIterator[StreamChunk]:
         """Stream via NDJSON from /api/chat.
 
-        ``passthrough`` accepted for protocol symmetry; see ``send`` notes.
+        ``passthrough`` / ``inbound_anthropic_body`` accepted for protocol
+        symmetry; see ``send`` notes.
         """
         body: dict[str, Any] = {
             "model": self.model,

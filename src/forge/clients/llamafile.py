@@ -265,8 +265,13 @@ class LlamafileClient:
         tools: list[ToolSpec] | None = None,
         sampling: dict[str, Any] | None = None,
         passthrough: dict[str, Any] | None = None,
+        inbound_anthropic_body: dict[str, Any] | None = None,
     ) -> LLMResponse:
-        """Resolve mode on first call with tools, then dispatch."""
+        """Resolve mode on first call with tools, then dispatch.
+
+        ``inbound_anthropic_body`` is accepted for protocol symmetry and
+        silently ignored — LlamafileClient only speaks OpenAI shape.
+        """
         if self.resolved_mode is None:
             return await self._resolve_and_send(messages, tools, sampling, passthrough)
         elif self.resolved_mode == "native":
@@ -280,8 +285,12 @@ class LlamafileClient:
         tools: list[ToolSpec] | None = None,
         sampling: dict[str, Any] | None = None,
         passthrough: dict[str, Any] | None = None,
+        inbound_anthropic_body: dict[str, Any] | None = None,
     ) -> AsyncIterator[StreamChunk]:
-        """Stream via SSE, handling both native FC and prompt-injected paths."""
+        """Stream via SSE, handling both native FC and prompt-injected paths.
+
+        ``inbound_anthropic_body`` accepted for protocol symmetry, ignored.
+        """
         if self.resolved_mode is None:
             # Probe with a non-streaming call to resolve native vs prompt.
             # Result is discarded — the runner will use the streamed response.
