@@ -2,6 +2,12 @@
 
 All notable changes to forge are documented here.
 
+## [Unreleased]
+
+### Added
+- **OpenAI-compatible hosted-provider client (`OpenAICompatClient`).** Adapter for any backend exposing `/v1/chat/completions` with optional bearer auth — covers Cloudflare Workers AI, Fireworks, OpenRouter, OpenAI itself, and similar. Native function calling, SSE streaming, full `LLMClient` protocol surface. Supports `extra_headers` for provider quirks (e.g. OpenRouter's `HTTP-Referer` / `X-Title`) without a per-provider registry. Exported from `forge` and `forge.clients`. #88.
+- **Hosted-providers section in [Backend Setup](docs/BACKEND_SETUP.md)** covering bearer-auth setup, the `get_context_length() → None` contract, and the per-model nature of function-calling support on hosted providers.
+
 ## [0.7.2] — 2026-05-24
 
 vLLM backend support — serve AWQ/GPTQ and other vLLM-hosted models behind forge's guardrails, in both proxy modes and via `WorkflowRunner`.

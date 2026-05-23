@@ -201,6 +201,40 @@ No server to smoke-test — first inference call surfaces auth/network issues.
 
 ---
 
+## Hosted OpenAI-compatible providers
+
+Any backend exposing `/v1/chat/completions` with bearer auth — Cloudflare Workers AI, Fireworks, OpenRouter, Together, OpenAI itself, and similar. The client is provider-agnostic: caller supplies the `base_url` and `api_key`; forge has no per-provider knowledge.
+
+Forge client (Cloudflare Workers AI):
+
+```python
+from forge.clients import OpenAICompatClient
+
+client = OpenAICompatClient(
+    model="@cf/mistralai/mistral-small-3.1-24b-instruct",
+    base_url=f"https://api.cloudflare.com/client/v4/accounts/{ACCOUNT_ID}/ai/v1",
+    api_key=API_TOKEN,
+)
+```
+
+Provider-specific request headers ride on `extra_headers` (e.g. OpenRouter's attribution):
+
+```python
+client = OpenAICompatClient(
+    model="mistralai/mistral-small-3.1-24b-instruct",
+    base_url="https://openrouter.ai/api/v1",
+    api_key=API_KEY,
+    extra_headers={"HTTP-Referer": "https://your-app.example", "X-Title": "Your App"},
+)
+```
+
+Notes:
+- **`get_context_length()` returns `None`.** Hosted providers don't expose `max_model_len`. Pass `budget_tokens` explicitly when constructing the `ContextManager` (or `--budget-tokens` to the proxy).
+- **Native function calling is per-model, not per-provider.** Many hosted providers serve dozens of models; only the ones with a tool-calling chat template will return structured `tool_calls`. Check the provider's per-model capability docs.
+- **Sampling defaults are opt-in.** `recommended_sampling=False` (default) skips the registry lookup, since hosted-provider model identifiers usually aren't in forge's per-model sampling map. Pass explicit `temperature` / `top_p` / etc. as needed.
+
+---
+
 ## Gotcha: reasoning budget on recent llama.cpp builds
 
 llama.cpp builds after April 10 2026 activate a reasoning budget sampler for models with thinking tags (Gemma 4, Qwen 3.5, Ministral Reasoning). The default budget is unlimited, which causes some runs to hang indefinitely or fill the KV cache until the server crashes.
