@@ -286,8 +286,9 @@ class LlamafileClient:
             await self._resolve_and_send(messages, tools, sampling)
         mode = self.resolved_mode
 
+        model_name = (sampling or {}).get("model") or self.model
         body: dict[str, Any] = {
-            "model": self.model,
+            "model": model_name,
             "stream": True,
             "stream_options": {"include_usage": True},
             "cache_prompt": self._cache_prompt,
@@ -468,8 +469,9 @@ class LlamafileClient:
     ) -> LLMResponse:
         """Send using native function calling (OpenAI tools parameter)."""
         merged = _merge_consecutive(messages)
+        model_name = (sampling or {}).get("model") or self.model
         body: dict[str, Any] = {
-            "model": self.model,
+            "model": model_name,
             "messages": merged,
             "cache_prompt": self._cache_prompt,
         }
@@ -534,8 +536,9 @@ class LlamafileClient:
                 "content": tool_prompt + "\n\n" + prepared[0]["content"],
             }
 
+        model_name = (sampling or {}).get("model") or self.model
         body: dict[str, Any] = {
-            "model": self.model,
+            "model": model_name,
             "messages": prepared,
             "cache_prompt": self._cache_prompt,
         }

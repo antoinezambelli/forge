@@ -239,11 +239,11 @@ class TestSamplingPlumbing:
 
         client.send.assert_called_once()
         sampling = client.send.call_args.kwargs["sampling"]
-        assert sampling == {"temperature": 0.5, "top_p": 0.9}
+        assert sampling == {"temperature": 0.5, "top_p": 0.9, "model": "test"}
 
     @pytest.mark.asyncio
     async def test_no_tools_path_no_sampling_fields(self):
-        """No sampling fields in body → sampling=None."""
+        """No sampling fields in body → sampling contains only model."""
         client = _mock_client(TextResponse(content="ok"))
 
         await handle_chat_completions(
@@ -251,7 +251,7 @@ class TestSamplingPlumbing:
         )
 
         sampling = client.send.call_args.kwargs["sampling"]
-        assert sampling is None
+        assert sampling == {"model": "test"}
 
     @pytest.mark.asyncio
     async def test_tools_path_passes_sampling_to_run_inference(self, monkeypatch):
@@ -279,7 +279,7 @@ class TestSamplingPlumbing:
 
         await handle_chat_completions(body, client, _context_manager(), max_retries=1)
 
-        assert captured["sampling"] == {"temperature": 0.3, "seed": 42}
+        assert captured["sampling"] == {"temperature": 0.3, "seed": 42, "model": "test"}
 
     @pytest.mark.asyncio
     async def test_per_call_sampling_does_not_mutate_client(self):
@@ -291,9 +291,9 @@ class TestSamplingPlumbing:
         body1["temperature"] = 0.99
         await handle_chat_completions(body1, client, _context_manager(), max_retries=1)
         first_sampling = client.send.call_args.kwargs["sampling"]
-        assert first_sampling == {"temperature": 0.99}
+        assert first_sampling == {"temperature": 0.99, "model": "test"}
 
         # Second request: no sampling fields.
         await handle_chat_completions(_body(), client, _context_manager(), max_retries=1)
         second_sampling = client.send.call_args.kwargs["sampling"]
-        assert second_sampling is None
+        assert second_sampling == {"model": "test"}

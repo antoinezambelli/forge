@@ -167,7 +167,7 @@ class ProxyServer:
             # GGUF path. "default" is a placeholder identity for the wire
             # model field (llama-server ignores it) and JSONL model field.
             client = LlamafileClient(
-                gguf_path="default",
+                gguf_path=self._model or "default",
                 base_url=base,
                 mode="native",
             )
