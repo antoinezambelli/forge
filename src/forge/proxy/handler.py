@@ -2,9 +2,8 @@
 
 from __future__ import annotations
 
-import json
 import logging
-from typing import Any
+from typing import Any, Literal
 
 from forge.clients.base import LLMClient
 from forge.context.manager import ContextManager
@@ -19,22 +18,35 @@ from forge.proxy.convert import (
     text_response_to_openai,
     text_to_sse_events,
 )
+from forge.proxy.convert_anthropic import (
+    anthropic_to_messages,
+    anthropic_to_openai_passthrough,
+    anthropic_tools_to_specs,
+    tool_calls_to_anthropic,
+    tool_calls_to_anthropic_sse,
+    text_response_to_anthropic,
+    text_to_anthropic_sse,
+)
 from forge.tools.respond import RESPOND_TOOL_NAME, respond_spec
 
 logger = logging.getLogger("forge.proxy")
 
 
-# OpenAI-compatible top-level body fields plumbed from inbound body to
-# client. llama-server / Ollama support the sampling fields below as
-# top-level body / options fields. Anthropic ignores them.
-# ``chat_template_kwargs`` is a nested dict of Jinja template variables
-# (e.g. {"reasoning_effort": "high"}) — passed through to the LlamafileClient
-# as part of the ``sampling`` kwarg; OllamaClient drops it (no analog field).
+# OpenAI-compatible sampling fields plumbed from inbound to the client.
+# llama-server / Ollama accept these as top-level body / options fields.
+# Anthropic ignores them. ``chat_template_kwargs`` is a nested dict of
+# Jinja template variables (e.g. {"reasoning_effort": "high"}) — passed
+# through as part of ``sampling``; clients that don't understand it drop it.
+# Everything else in the inbound body rides through via ``passthrough`` —
+# the client merges it into its outbound body verbatim.
 _SAMPLING_FIELDS = (
     "temperature", "top_p", "top_k", "min_p",
     "repeat_penalty", "presence_penalty", "seed",
-    "chat_template_kwargs", "model",
+    "chat_template_kwargs",
 )
+
+# Body fields forge owns and reasons about — never go into passthrough.
+_FORGE_OWNED = frozenset({"messages", "tools", "stream", "system"})
 
 
 def _extract_sampling(body: dict[str, Any]) -> dict[str, Any] | None:
@@ -45,6 +57,22 @@ def _extract_sampling(body: dict[str, Any]) -> dict[str, Any] | None:
     """
     extracted = {f: body[f] for f in _SAMPLING_FIELDS if f in body}
     return extracted or None
+
+
+def _extract_passthrough(body: dict[str, Any]) -> dict[str, Any] | None:
+    """Pull non-forge-owned, non-sampling fields for the passthrough channel.
+
+    Everything that isn't ``messages``/``tools``/``stream``/``system`` and
+    isn't already in the sampling extraction flows to the outbound body
+    unchanged. Lets the proxy honor user-set ``max_tokens``, ``stop``,
+    ``tool_choice``, ``model``, etc. without forge needing to enumerate
+    every supported field.
+    """
+    extras = {
+        k: v for k, v in body.items()
+        if k not in _FORGE_OWNED and k not in _SAMPLING_FIELDS
+    }
+    return extras or None
 
 
 def _extract_tool_specs(request_tools: list[dict[str, Any]] | None) -> list[ToolSpec]:
@@ -78,11 +106,13 @@ async def handle_chat_completions(
     context_manager: ContextManager,
     max_retries: int = 3,
     rescue_enabled: bool = True,
+    protocol: Literal["openai", "anthropic"] = "openai",
 ) -> dict[str, Any] | list[dict[str, Any]]:
-    """Handle a /v1/chat/completions request.
+    """Handle an inbound completions request.
 
-    Converts inbound OpenAI messages to forge Messages, runs inference
-    with guardrails, and converts the result back to OpenAI format.
+    Converts inbound messages to forge Messages, runs inference with
+    guardrails, and converts the result back to the inbound protocol's
+    shape.
 
     Args:
         body: Parsed JSON request body.
@@ -90,20 +120,33 @@ async def handle_chat_completions(
         context_manager: For context compaction.
         max_retries: Max consecutive retries for bad responses.
         rescue_enabled: Whether to attempt rescue parsing.
+        protocol: Inbound wire format. ``openai`` for
+            ``/v1/chat/completions``; ``anthropic`` for ``/v1/messages``.
 
     Returns:
-        If stream=false: a single OpenAI response dict.
-        If stream=true: a list of SSE chunk dicts.
+        If stream=false: a single response dict (protocol-shaped).
+        If stream=true: a list of SSE event dicts (protocol-shaped).
     """
-    openai_messages = body.get("messages", [])
-    request_tools = body.get("tools")
     is_stream = body.get("stream", False)
     model_name = body.get("model", "forge")
-    sampling = _extract_sampling(body)
 
-    # Convert inbound
-    messages = openai_to_messages(openai_messages)
-    tool_specs = _extract_tool_specs(request_tools)
+    # Inbound parse + sampling/passthrough extraction (protocol-specific)
+    if protocol == "anthropic":
+        messages = anthropic_to_messages(
+            body.get("messages", []),
+            body.get("system"),
+        )
+        tool_specs = anthropic_tools_to_specs(body.get("tools"))
+        # Anthropic inbound's sampling fields don't overlap with the OpenAI
+        # sampling set; the translated passthrough carries them in OpenAI
+        # shape for the (OpenAI-shape) backend client.
+        sampling = None
+        passthrough = anthropic_to_openai_passthrough(body) or None
+    else:
+        messages = openai_to_messages(body.get("messages", []))
+        tool_specs = _extract_tool_specs(body.get("tools"))
+        sampling = _extract_sampling(body)
+        passthrough = _extract_passthrough(body)
 
     # Inject respond tool when tools are present.  The model calls
     # respond(message="...") instead of producing bare text, keeping it
@@ -120,11 +163,11 @@ async def handle_chat_completions(
         logger.info("No tools in request, passing through to backend")
         api_format = getattr(client, "api_format", "ollama")
         api_messages = fold_and_serialize(messages, api_format)
-        response = await client.send(api_messages, tools=None, sampling=sampling)
+        response = await client.send(
+            api_messages, tools=None, sampling=sampling, passthrough=passthrough,
+        )
         text = response.content if isinstance(response, TextResponse) else ""
-        if is_stream:
-            return text_to_sse_events(text, model=model_name)
-        return text_response_to_openai(text, model=model_name)
+        return _emit_text(text, model_name, protocol, is_stream)
 
     # Set up guardrails
     validator = ResponseValidator(tool_names, rescue_enabled=rescue_enabled)
@@ -140,6 +183,7 @@ async def handle_chat_completions(
             error_tracker=error_tracker,
             tool_specs=tool_specs,
             sampling=sampling,
+            passthrough=passthrough,
         )
     except ToolCallError as exc:
         # Retries exhausted — the model kept returning text instead of tool
@@ -147,21 +191,18 @@ async def handle_chat_completions(
         # error. The client's own agentic loop can decide what to do.
         raw = exc.raw_response or ""
         logger.warning("Retries exhausted, passing through text: %.120s", raw)
-        if is_stream:
-            return text_to_sse_events(raw, model=model_name)
-        return text_response_to_openai(raw, model=model_name)
+        return _emit_text(raw, model_name, protocol, is_stream)
 
     # run_inference returns None when max_attempts exhausted
     if result is None:
-        if is_stream:
-            return text_to_sse_events("", model=model_name)
-        return text_response_to_openai("", model=model_name)
+        return _emit_text("", model_name, protocol, is_stream)
 
     tool_calls = result.response
 
     # Strip respond() calls — convert to plain text for the client.
     # If the model called respond(message="..."), the client sees a
-    # normal text response (finish_reason="stop"), not a tool call.
+    # normal text response (stop_reason/finish_reason indicates "stop"),
+    # not a tool call.
     respond_calls = [tc for tc in tool_calls if tc.tool == RESPOND_TOOL_NAME]
     other_calls = [tc for tc in tool_calls if tc.tool != RESPOND_TOOL_NAME]
 
@@ -169,18 +210,44 @@ async def handle_chat_completions(
         # Pure respond — convert to text
         text = respond_calls[0].args.get("message", "")
         logger.info("Stripping respond() call, returning as text")
-        if is_stream:
-            return text_to_sse_events(text, model=model_name)
-        return text_response_to_openai(text, model=model_name)
+        return _emit_text(text, model_name, protocol, is_stream)
 
     if other_calls:
         # Real tool calls (possibly mixed with respond) — return the
         # real tool calls only, drop respond.
-        if is_stream:
-            return tool_calls_to_sse_events(other_calls, model=model_name)
-        return tool_calls_to_openai(other_calls, model=model_name)
+        return _emit_tool_calls(other_calls, model_name, protocol, is_stream)
 
     # Shouldn't happen, but handle empty tool_calls gracefully
+    return _emit_text("", model_name, protocol, is_stream)
+
+
+def _emit_text(
+    text: str,
+    model: str,
+    protocol: str,
+    is_stream: bool,
+) -> dict[str, Any] | list[dict[str, Any]]:
+    """Protocol-aware text response emitter."""
+    if protocol == "anthropic":
+        if is_stream:
+            return text_to_anthropic_sse(text, model=model)
+        return text_response_to_anthropic(text, model=model)
     if is_stream:
-        return text_to_sse_events("", model=model_name)
-    return text_response_to_openai("", model=model_name)
+        return text_to_sse_events(text, model=model)
+    return text_response_to_openai(text, model=model)
+
+
+def _emit_tool_calls(
+    tool_calls: list[ToolCall],
+    model: str,
+    protocol: str,
+    is_stream: bool,
+) -> dict[str, Any] | list[dict[str, Any]]:
+    """Protocol-aware tool-call response emitter."""
+    if protocol == "anthropic":
+        if is_stream:
+            return tool_calls_to_anthropic_sse(tool_calls, model=model)
+        return tool_calls_to_anthropic(tool_calls, model=model)
+    if is_stream:
+        return tool_calls_to_sse_events(tool_calls, model=model)
+    return tool_calls_to_openai(tool_calls, model=model)

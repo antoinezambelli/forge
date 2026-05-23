@@ -220,19 +220,27 @@ class AnthropicClient:
         self,
         messages: list[dict[str, Any]],
         tools: list[ToolSpec] | None,
+        passthrough: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        """Build kwargs dict for messages.create / messages.stream."""
+        """Build kwargs dict for messages.create / messages.stream.
+
+        ``passthrough`` (proxy use) supplies inbound-body fields the proxy
+        didn't deconstruct (``max_tokens``, ``stop_sequences``, ``tool_choice``,
+        ``metadata``, ``thinking``, etc.). Forge-owned fields (``model``,
+        ``messages``, ``system``, ``tools``) overlay it.
+        """
         system, converted = self._convert_messages(messages)
-        kwargs: dict[str, Any] = {
+        kwargs: dict[str, Any] = dict(passthrough or {})
+        kwargs.update({
             "model": self.model,
             "messages": converted,
-            "max_tokens": self.max_tokens,
-        }
+        })
+        kwargs.setdefault("max_tokens", self.max_tokens)
         if system:
             kwargs["system"] = system
         if tools:
             kwargs["tools"] = self._convert_tools(tools)
-            if self._tool_choice:
+            if self._tool_choice and "tool_choice" not in kwargs:
                 kwargs["tool_choice"] = {"type": self._tool_choice}
         return kwargs
 
@@ -241,19 +249,20 @@ class AnthropicClient:
         messages: list[dict[str, str]],
         tools: list[ToolSpec] | None = None,
         sampling: dict[str, Any] | None = None,
+        passthrough: dict[str, Any] | None = None,
     ) -> LLMResponse:
         """Send messages via the Anthropic Messages API.
 
         ``sampling`` is accepted for protocol symmetry but ignored —
         AnthropicClient does not currently expose sampling kwargs through
-        forge.
+        forge. ``passthrough`` merges inbound-body extras into the SDK call.
         """
         if sampling:
             log.debug(
                 "AnthropicClient ignores per-call sampling overrides: %s",
                 sorted(sampling.keys()),
             )
-        kwargs = self._build_kwargs(messages, tools)
+        kwargs = self._build_kwargs(messages, tools, passthrough)
         try:
             response = await self._client.messages.create(**kwargs)
         except anthropic.APIError as exc:
@@ -271,17 +280,19 @@ class AnthropicClient:
         messages: list[dict[str, str]],
         tools: list[ToolSpec] | None = None,
         sampling: dict[str, Any] | None = None,
+        passthrough: dict[str, Any] | None = None,
     ) -> AsyncIterator[StreamChunk]:
         """Stream via the Anthropic Messages API.
 
         ``sampling`` is accepted for protocol symmetry but ignored.
+        ``passthrough`` merges inbound-body extras into the SDK call.
         """
         if sampling:
             log.debug(
                 "AnthropicClient ignores per-call sampling overrides: %s",
                 sorted(sampling.keys()),
             )
-        kwargs = self._build_kwargs(messages, tools)
+        kwargs = self._build_kwargs(messages, tools, passthrough)
 
         accumulated_text = ""
         # Track multiple tool_use blocks by index.

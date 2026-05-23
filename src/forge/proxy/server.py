@@ -28,6 +28,7 @@ class _QueueItem:
     """A request waiting to be processed by the inference worker."""
 
     body: dict[str, Any]
+    protocol: str = "openai"
     future: asyncio.Future = field(default_factory=lambda: asyncio.get_event_loop().create_future())
     cancelled: bool = False
 
@@ -90,7 +91,7 @@ class HTTPServer:
                 if item.cancelled or item.future.cancelled():
                     logger.info("   Skipping cancelled request")
                     continue
-                result = await self._run_handler(item.body)
+                result = await self._run_handler(item.body, item.protocol)
                 if not item.future.done():
                     item.future.set_result(result)
             except asyncio.CancelledError:
@@ -144,7 +145,9 @@ class HTTPServer:
             elif method == "GET" and path == "/v1/models":
                 await self._handle_models(writer)
             elif method == "POST" and path == "/v1/chat/completions":
-                await self._handle_completions(writer, body_bytes)
+                await self._handle_completions(writer, body_bytes, protocol="openai")
+            elif method == "POST" and path == "/v1/messages":
+                await self._handle_completions(writer, body_bytes, protocol="anthropic")
             elif method == "OPTIONS":
                 await self._send_cors_preflight(writer)
             else:
@@ -195,8 +198,9 @@ class HTTPServer:
         self,
         writer: asyncio.StreamWriter,
         body_bytes: bytes,
+        protocol: str = "openai",
     ) -> None:
-        """POST /v1/chat/completions — the main proxy endpoint."""
+        """POST /v1/chat/completions (or /v1/messages) — the main proxy endpoint."""
         try:
             body = json.loads(body_bytes)
         except json.JSONDecodeError:
@@ -207,13 +211,13 @@ class HTTPServer:
         msg_count = len(body.get("messages", []))
         tool_count = len(body.get("tools", []))
         logger.info(
-            "   stream=%s messages=%d tools=%d model=%s",
-            is_stream, msg_count, tool_count, body.get("model", "?"),
+            "   proto=%s stream=%s messages=%d tools=%d model=%s",
+            protocol, is_stream, msg_count, tool_count, body.get("model", "?"),
         )
 
         if self._serialize:
             # Queue the request and wait for the worker to process it
-            item = _QueueItem(body=body)
+            item = _QueueItem(body=body, protocol=protocol)
             queue_depth = self._queue.qsize()
             if queue_depth > 0:
                 logger.info("   Queued (depth=%d)", queue_depth + 1)
@@ -230,7 +234,7 @@ class HTTPServer:
         else:
             if is_stream:
                 await self._send_sse_header(writer)
-            result = await self._run_handler(body)
+            result = await self._run_handler(body, protocol)
 
         if result is None:
             # Client disconnected
@@ -241,14 +245,14 @@ class HTTPServer:
             error_msg = str(result)
             logger.info("<< ERROR: %s", error_msg[:120])
             if is_stream:
-                await self._send_sse_body(writer, [{"error": error_msg}])
+                await self._send_sse_body(writer, [{"error": error_msg}], protocol=protocol)
             else:
                 await self._send_error(writer, 502, error_msg)
             return
 
         if is_stream:
             logger.info("<< SSE %d events", len(result))
-            await self._send_sse_body(writer, result)
+            await self._send_sse_body(writer, result, protocol=protocol)
         else:
             logger.info("<< JSON 200")
             await self._send_json(writer, 200, json.dumps(result))
@@ -276,7 +280,7 @@ class HTTPServer:
         return item.future.result()
 
     async def _run_handler(
-        self, body: dict[str, Any],
+        self, body: dict[str, Any], protocol: str = "openai",
     ) -> dict[str, Any] | list[dict[str, Any]] | Exception:
         """Run the handler, catching errors."""
         try:
@@ -286,6 +290,7 @@ class HTTPServer:
                 context_manager=self._context_manager,
                 max_retries=self._max_retries,
                 rescue_enabled=self._rescue_enabled,
+                protocol=protocol,
             )
         except Exception as exc:
             logger.exception("Handler error")
@@ -322,22 +327,39 @@ class HTTPServer:
         await writer.drain()
 
     async def _send_sse_body(
-        self, writer: asyncio.StreamWriter, events: list[dict[str, Any]],
+        self,
+        writer: asyncio.StreamWriter,
+        events: list[dict[str, Any]],
+        protocol: str = "openai",
     ) -> None:
-        """Send SSE event data and terminator. Headers must already be sent."""
+        """Send SSE event data and terminator. Headers must already be sent.
+
+        OpenAI wire format: ``data: {json}\\n\\n`` per event, terminated by
+        ``data: [DONE]\\n\\n``.
+
+        Anthropic wire format: ``event: <type>\\ndata: {json}\\n\\n`` per
+        event (type read from the event's top-level ``type`` field). No
+        ``[DONE]`` terminator — the ``message_stop`` event ends the stream.
+        """
         for event in events:
             if writer.is_closing():
                 return
-            data = f"data: {json.dumps(event)}\n\n".encode()
-            writer.write(f"{len(data):x}\r\n".encode() + data + b"\r\n")
+            if protocol == "anthropic":
+                event_type = event.get("type", "")
+                payload = f"event: {event_type}\ndata: {json.dumps(event)}\n\n".encode()
+            else:
+                payload = f"data: {json.dumps(event)}\n\n".encode()
+            writer.write(f"{len(payload):x}\r\n".encode() + payload + b"\r\n")
             await writer.drain()
 
-        done = b"data: [DONE]\n\n"
-        writer.write(f"{len(done):x}\r\n".encode() + done + b"\r\n")
+        if protocol == "openai":
+            done = b"data: [DONE]\n\n"
+            writer.write(f"{len(done):x}\r\n".encode() + done + b"\r\n")
+
         # Terminating zero-length chunk
         writer.write(b"0\r\n\r\n")
         await writer.drain()
-        logger.info("<< SSE complete, [DONE] sent")
+        logger.info("<< SSE complete (%s)", protocol)
 
     async def _send_error(
         self, writer: asyncio.StreamWriter, status: int, message: str,

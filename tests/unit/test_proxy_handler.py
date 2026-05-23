@@ -239,11 +239,11 @@ class TestSamplingPlumbing:
 
         client.send.assert_called_once()
         sampling = client.send.call_args.kwargs["sampling"]
-        assert sampling == {"temperature": 0.5, "top_p": 0.9, "model": "test"}
+        assert sampling == {"temperature": 0.5, "top_p": 0.9}
 
     @pytest.mark.asyncio
     async def test_no_tools_path_no_sampling_fields(self):
-        """No sampling fields in body → sampling contains only model."""
+        """No sampling fields in body → sampling=None."""
         client = _mock_client(TextResponse(content="ok"))
 
         await handle_chat_completions(
@@ -251,7 +251,7 @@ class TestSamplingPlumbing:
         )
 
         sampling = client.send.call_args.kwargs["sampling"]
-        assert sampling == {"model": "test"}
+        assert sampling is None
 
     @pytest.mark.asyncio
     async def test_tools_path_passes_sampling_to_run_inference(self, monkeypatch):
@@ -279,7 +279,7 @@ class TestSamplingPlumbing:
 
         await handle_chat_completions(body, client, _context_manager(), max_retries=1)
 
-        assert captured["sampling"] == {"temperature": 0.3, "seed": 42, "model": "test"}
+        assert captured["sampling"] == {"temperature": 0.3, "seed": 42}
 
     @pytest.mark.asyncio
     async def test_per_call_sampling_does_not_mutate_client(self):
@@ -291,9 +291,133 @@ class TestSamplingPlumbing:
         body1["temperature"] = 0.99
         await handle_chat_completions(body1, client, _context_manager(), max_retries=1)
         first_sampling = client.send.call_args.kwargs["sampling"]
-        assert first_sampling == {"temperature": 0.99, "model": "test"}
+        assert first_sampling == {"temperature": 0.99}
 
         # Second request: no sampling fields.
         await handle_chat_completions(_body(), client, _context_manager(), max_retries=1)
         second_sampling = client.send.call_args.kwargs["sampling"]
-        assert second_sampling == {"model": "test"}
+        assert second_sampling is None
+
+    @pytest.mark.asyncio
+    async def test_passthrough_carries_unknown_body_fields(self):
+        """Inbound body fields outside sampling/forge-owned flow through passthrough."""
+        client = _mock_client(TextResponse(content="ok"))
+        body = _body(messages=[{"role": "user", "content": "hi"}])
+        body["max_tokens"] = 256
+        body["tool_choice"] = "auto"
+
+        await handle_chat_completions(body, client, _context_manager(), max_retries=1)
+
+        passthrough = client.send.call_args.kwargs["passthrough"]
+        assert passthrough == {
+            "model": "test",
+            "max_tokens": 256,
+            "tool_choice": "auto",
+        }
+
+
+# ── Anthropic protocol routing ───────────────────────────────
+
+
+class TestAnthropicProtocol:
+    """End-to-end handler tests for the /v1/messages (protocol="anthropic") path."""
+
+    def _anthropic_body(self, messages=None, tools=None, system=None, **extra):
+        body = {
+            "model": "claude-3-5-sonnet",
+            "messages": messages or [{"role": "user", "content": "hi"}],
+            "max_tokens": 256,
+        }
+        if tools is not None:
+            body["tools"] = tools
+        if system is not None:
+            body["system"] = system
+        body.update(extra)
+        return body
+
+    @pytest.mark.asyncio
+    async def test_no_tools_returns_anthropic_shape(self):
+        client = _mock_client(TextResponse(content="hello"))
+        body = self._anthropic_body()
+        result = await handle_chat_completions(
+            body, client, _context_manager(), max_retries=1, protocol="anthropic",
+        )
+        assert result["type"] == "message"
+        assert result["role"] == "assistant"
+        assert result["stop_reason"] == "end_turn"
+        assert result["content"] == [{"type": "text", "text": "hello"}]
+
+    @pytest.mark.asyncio
+    async def test_tool_call_returns_anthropic_shape(self, monkeypatch):
+        from forge.core.inference import InferenceResult
+
+        async def fake_run_inference(**kwargs):
+            return InferenceResult(
+                response=[ToolCall(tool="get_weather", args={"city": "Paris"})],
+                new_messages=[],
+                tool_call_counter=0,
+                attempts=1,
+            )
+        monkeypatch.setattr("forge.proxy.handler.run_inference", fake_run_inference)
+
+        client = _mock_client([ToolCall(tool="get_weather", args={"city": "Paris"})])
+        body = self._anthropic_body(
+            tools=[{
+                "name": "get_weather",
+                "description": "Weather.",
+                "input_schema": {"type": "object", "properties": {"city": {"type": "string"}}},
+            }],
+        )
+        result = await handle_chat_completions(
+            body, client, _context_manager(), max_retries=1, protocol="anthropic",
+        )
+        assert result["type"] == "message"
+        assert result["stop_reason"] == "tool_use"
+        tu_blocks = [b for b in result["content"] if b["type"] == "tool_use"]
+        assert len(tu_blocks) == 1
+        assert tu_blocks[0]["name"] == "get_weather"
+        assert tu_blocks[0]["input"] == {"city": "Paris"}
+
+    @pytest.mark.asyncio
+    async def test_streaming_returns_anthropic_event_sequence(self):
+        client = _mock_client(TextResponse(content="streamed"))
+        body = self._anthropic_body(stream=True)
+        events = await handle_chat_completions(
+            body, client, _context_manager(), max_retries=1, protocol="anthropic",
+        )
+        assert isinstance(events, list)
+        types = [e["type"] for e in events]
+        assert types[0] == "message_start"
+        assert types[-1] == "message_stop"
+
+    @pytest.mark.asyncio
+    async def test_anthropic_passthrough_translates_to_openai_shape(self):
+        """tool_choice and stop_sequences land in passthrough in OpenAI shape."""
+        client = _mock_client(TextResponse(content="ok"))
+        body = self._anthropic_body(
+            stop_sequences=["</done>"],
+            tool_choice={"type": "any"},
+        )
+        await handle_chat_completions(
+            body, client, _context_manager(), max_retries=1, protocol="anthropic",
+        )
+        passthrough = client.send.call_args.kwargs["passthrough"]
+        assert passthrough["stop"] == ["</done>"]
+        assert passthrough["tool_choice"] == "required"
+        assert passthrough["model"] == "claude-3-5-sonnet"
+        assert passthrough["max_tokens"] == 256
+        # Anthropic-only fields with no OpenAI analog don't appear.
+        assert "thinking" not in passthrough
+        assert "metadata" not in passthrough
+
+    @pytest.mark.asyncio
+    async def test_system_top_level_flows_into_messages(self):
+        """Anthropic puts system at top level; forge prepends it as a SYSTEM message."""
+        client = _mock_client(TextResponse(content="ok"))
+        body = self._anthropic_body(system="You are helpful.")
+        await handle_chat_completions(
+            body, client, _context_manager(), max_retries=1, protocol="anthropic",
+        )
+        api_messages = client.send.call_args.args[0]
+        assert api_messages[0]["role"] == "system"
+        assert api_messages[0]["content"] == "You are helpful."

@@ -139,8 +139,15 @@ class OllamaClient:
         messages: list[dict[str, str]],
         tools: list[ToolSpec] | None = None,
         sampling: dict[str, Any] | None = None,
+        passthrough: dict[str, Any] | None = None,
     ) -> LLMResponse:
-        """Send messages via /api/chat and parse the response."""
+        """Send messages via /api/chat and parse the response.
+
+        ``passthrough`` is accepted for protocol symmetry but not yet
+        plumbed — Ollama is not currently a proxy-side external backend
+        (forge proxy uses LlamafileClient for external mode). Adding
+        Ollama passthrough is a follow-up.
+        """
         body: dict[str, Any] = {
             "model": self.model,
             "messages": messages,
@@ -198,8 +205,12 @@ class OllamaClient:
         messages: list[dict[str, str]],
         tools: list[ToolSpec] | None = None,
         sampling: dict[str, Any] | None = None,
+        passthrough: dict[str, Any] | None = None,
     ) -> AsyncIterator[StreamChunk]:
-        """Stream via NDJSON from /api/chat."""
+        """Stream via NDJSON from /api/chat.
+
+        ``passthrough`` accepted for protocol symmetry; see ``send`` notes.
+        """
         body: dict[str, Any] = {
             "model": self.model,
             "messages": messages,

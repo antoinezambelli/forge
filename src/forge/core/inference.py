@@ -118,6 +118,7 @@ async def run_inference(
     stream: bool = False,
     on_chunk: Callable[[StreamChunk], Awaitable[None]] | None = None,
     sampling: dict[str, Any] | None = None,
+    passthrough: dict[str, Any] | None = None,
 ) -> InferenceResult | None:
     """Send messages to the LLM with compaction, folding, validation, and retry.
 
@@ -198,9 +199,9 @@ async def run_inference(
 
         # Send
         if stream:
-            response = await _send_streaming(client, api_messages, tool_specs, on_chunk, sampling)
+            response = await _send_streaming(client, api_messages, tool_specs, on_chunk, sampling, passthrough)
         else:
-            response = await client.send(api_messages, tools=tool_specs, sampling=sampling)
+            response = await client.send(api_messages, tools=tool_specs, sampling=sampling, passthrough=passthrough)
 
         # Update context manager with real token count if available.
         _sync_token_count(client, context_manager)
@@ -301,10 +302,11 @@ async def _send_streaming(
     tool_specs: list[ToolSpec],
     on_chunk: Callable[[StreamChunk], Awaitable[None]] | None = None,
     sampling: dict[str, Any] | None = None,
+    passthrough: dict[str, Any] | None = None,
 ) -> LLMResponse:
     """Send via streaming, forwarding chunks to on_chunk callback."""
     response = None
-    async for chunk in client.send_stream(api_messages, tools=tool_specs, sampling=sampling):
+    async for chunk in client.send_stream(api_messages, tools=tool_specs, sampling=sampling, passthrough=passthrough):
         if on_chunk is not None:
             await on_chunk(chunk)
         if chunk.type == ChunkType.FINAL:

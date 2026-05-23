@@ -89,9 +89,12 @@ class CountingClientWrapper:
         messages: list[dict[str, str]],
         tools: list[ToolSpec] | None = None,
         sampling: dict[str, Any] | None = None,
+        passthrough: dict[str, Any] | None = None,
     ) -> Any:
         self.call_count += 1
-        result = await self._client.send(messages, tools=tools, sampling=sampling)
+        result = await self._client.send(
+            messages, tools=tools, sampling=sampling, passthrough=passthrough,
+        )
         self._collect_usage()
         return result
 
@@ -100,9 +103,12 @@ class CountingClientWrapper:
         messages: list[dict[str, str]],
         tools: list[ToolSpec] | None = None,
         sampling: dict[str, Any] | None = None,
+        passthrough: dict[str, Any] | None = None,
     ) -> AsyncIterator[StreamChunk]:
         self.call_count += 1
-        async for chunk in self._client.send_stream(messages, tools=tools, sampling=sampling):
+        async for chunk in self._client.send_stream(
+            messages, tools=tools, sampling=sampling, passthrough=passthrough,
+        ):
             yield chunk
         self._collect_usage()
 

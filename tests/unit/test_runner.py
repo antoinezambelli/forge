@@ -58,6 +58,7 @@ class MockClient:
         messages: list[dict[str, str]],
         tools: list[ToolSpec] | None = None,
         sampling: dict[str, object] | None = None,
+        passthrough: dict[str, object] | None = None,
     ) -> LLMResponse:
         self.send_calls.append((messages, tools))
         return self._next()
@@ -67,6 +68,7 @@ class MockClient:
         messages: list[dict[str, str]],
         tools: list[ToolSpec] | None = None,
         sampling: dict[str, object] | None = None,
+        passthrough: dict[str, object] | None = None,
     ) -> AsyncIterator[StreamChunk]:
         self.send_stream_calls.append((messages, tools))
         resp = self._next()
@@ -779,10 +781,10 @@ class TestStreaming:
         class NoFinalClient:
             """Mock client whose send_stream yields deltas but no FINAL."""
 
-            async def send(self, messages, tools=None, sampling=None):
+            async def send(self, messages, tools=None, sampling=None, passthrough=None):
                 return [ToolCall(tool="fetch", args={})]
 
-            async def send_stream(self, messages, tools=None, sampling=None):
+            async def send_stream(self, messages, tools=None, sampling=None, passthrough=None):
                 yield StreamChunk(type=ChunkType.TEXT_DELTA, content="partial")
 
             async def get_context_length(self):
