@@ -11,7 +11,7 @@ import asyncio
 import logging
 import threading
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from forge.clients.base import LLMClient
 from forge.clients.llamafile import LlamafileClient
@@ -59,6 +59,7 @@ class ProxyServer:
         serialize: bool | None = None,
         max_retries: int = 3,
         rescue_enabled: bool = True,
+        mode: Literal["native", "prompt"] = "native",
     ) -> None:
         """
         Args:
@@ -76,6 +77,10 @@ class ProxyServer:
                 managed, False for external).
             max_retries: Max consecutive retries for bad LLM responses.
             rescue_enabled: Attempt rescue parsing of text responses.
+            mode: Function-calling mode for OpenAI-compatible backends —
+                "native" uses the backend's native tools API, "prompt"
+                uses forge's prompt-injection fallback for backends
+                without a function-calling template.
         """
         if backend_url is None and backend is None:
             raise ValueError("Provide either backend_url (external) or backend (managed)")
@@ -92,6 +97,7 @@ class ProxyServer:
         self._port = port
         self._max_retries = max_retries
         self._rescue_enabled = rescue_enabled
+        self._mode = mode
 
         # Auto-detect serialization: managed = single GPU = serialize
         if serialize is None:
@@ -169,7 +175,7 @@ class ProxyServer:
             client = LlamafileClient(
                 gguf_path=self._model or "default",
                 base_url=base,
-                mode="native",
+                mode=self._mode,
             )
             if self._budget_tokens is not None:
                 budget = self._budget_tokens
@@ -191,7 +197,7 @@ class ProxyServer:
                 client = LlamafileClient(
                     gguf_path=self._gguf or "default",
                     base_url=f"http://localhost:{self._backend_port}/v1",
-                    mode="native",
+                    mode=self._mode,
                 )
 
             server_mgr = ServerManager(
