@@ -28,6 +28,7 @@ eval_vram*.jsonl
 ablation_progress.log
 ablation_run.log
 llama.log
+scripts/*.log
 
 # OS
 Thumbs.db
