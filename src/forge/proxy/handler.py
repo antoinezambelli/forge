@@ -121,10 +121,16 @@ async def handle_chat_completions(
         api_format = getattr(client, "api_format", "ollama")
         api_messages = fold_and_serialize(messages, api_format)
         response = await client.send(api_messages, tools=None, sampling=sampling)
+        
+        # Capture usage for passthrough path
+        last_usage = getattr(client, "last_usage", None)
+        slot_id = getattr(client, "_slot_id", None) or 0
+        usage = last_usage.get(slot_id) if isinstance(last_usage, dict) else None
+
         text = response.content if isinstance(response, TextResponse) else ""
         if is_stream:
-            return text_to_sse_events(text, model=model_name)
-        return text_response_to_openai(text, model=model_name)
+            return text_to_sse_events(text, model=model_name, usage=usage)
+        return text_response_to_openai(text, model=model_name, usage=usage)
 
     # Set up guardrails
     validator = ResponseValidator(tool_names, rescue_enabled=rescue_enabled)
@@ -147,9 +153,15 @@ async def handle_chat_completions(
         # error. The client's own agentic loop can decide what to do.
         raw = exc.raw_response or ""
         logger.warning("Retries exhausted, passing through text: %.120s", raw)
+        
+        # Try to capture usage even on failure if available
+        last_usage = getattr(client, "last_usage", None)
+        slot_id = getattr(client, "_slot_id", None) or 0
+        usage = last_usage.get(slot_id) if isinstance(last_usage, dict) else None
+
         if is_stream:
-            return text_to_sse_events(raw, model=model_name)
-        return text_response_to_openai(raw, model=model_name)
+            return text_to_sse_events(raw, model=model_name, usage=usage)
+        return text_response_to_openai(raw, model=model_name, usage=usage)
 
     # run_inference returns None when max_attempts exhausted
     if result is None:
@@ -158,6 +170,7 @@ async def handle_chat_completions(
         return text_response_to_openai("", model=model_name)
 
     tool_calls = result.response
+    usage = result.usage
 
     # Strip respond() calls — convert to plain text for the client.
     # If the model called respond(message="..."), the client sees a
@@ -170,17 +183,17 @@ async def handle_chat_completions(
         text = respond_calls[0].args.get("message", "")
         logger.info("Stripping respond() call, returning as text")
         if is_stream:
-            return text_to_sse_events(text, model=model_name)
-        return text_response_to_openai(text, model=model_name)
+            return text_to_sse_events(text, model=model_name, usage=usage)
+        return text_response_to_openai(text, model=model_name, usage=usage)
 
     if other_calls:
         # Real tool calls (possibly mixed with respond) — return the
         # real tool calls only, drop respond.
         if is_stream:
-            return tool_calls_to_sse_events(other_calls, model=model_name)
-        return tool_calls_to_openai(other_calls, model=model_name)
+            return tool_calls_to_sse_events(other_calls, model=model_name, usage=usage)
+        return tool_calls_to_openai(other_calls, model=model_name, usage=usage)
 
     # Shouldn't happen, but handle empty tool_calls gracefully
     if is_stream:
-        return text_to_sse_events("", model=model_name)
-    return text_response_to_openai("", model=model_name)
+        return text_to_sse_events("", model=model_name, usage=usage)
+    return text_response_to_openai("", model=model_name, usage=usage)
