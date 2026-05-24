@@ -81,15 +81,23 @@ def _setup_logging() -> None:
 
 # ── Real-backend helpers ──────────────────────────────────────────────
 
-def _spawn_llama_server(gguf: Path, port: int) -> subprocess.Popen:
+def _spawn_llama_server(
+    gguf: Path, port: int, mode: str = "native", extra_flags: list[str] | None = None,
+) -> subprocess.Popen:
     """Launch llama-server with forge's canonical flags (matches ServerManager)."""
     cmd = [
         LLAMA_SERVER_BIN,
         "-m", str(gguf),
         "-ngl", "999",
         "--port", str(port),
-        "--jinja",
     ]
+    # Native FC needs the chat template's tool-calling (--jinja). Prompt mode
+    # injects the tool surface into the prompt and parses text, so it omits
+    # --jinja — matching ServerManager's mode-conditional behavior.
+    if mode == "native":
+        cmd.append("--jinja")
+    if extra_flags:
+        cmd.extend(extra_flags)
     print(f"[external] launching: {' '.join(cmd)}")
     return subprocess.Popen(
         cmd,
@@ -262,11 +270,85 @@ async def _run_test_anthropic_tool_stream(proxy_base: str) -> None:
         print(f"     [WARN] no tool_use content block in stream — model returned text only")
 
 
+async def _run_test_anthropic_tool_multiturn(proxy_base: str) -> None:
+    """Test 5: Anthropic multi-turn — model must consume a tool_result and answer.
+
+    Turn 1: ask, expect a get_weather tool_use.
+    Turn 2: feed the tool_result back, expect a TEXT answer (end_turn) — NOT a
+    re-call of the same tool. A re-call is the "re-read loop" that real Claude
+    Code surfaced: the model ignores the tool_result and calls the tool again.
+    This is the path the single-turn T3/T4 never exercised.
+    """
+    print("  -- T5 Anthropic multi-turn tool_result (Path 2, convergence)")
+    user_msg = {
+        "role": "user",
+        "content": (
+            "What's the weather in Paris? Use the get_weather tool, then "
+            "tell me the result."
+        ),
+    }
+    async with httpx.AsyncClient(timeout=REQUEST_TIMEOUT) as client:
+        # Turn 1 — expect a tool call.
+        r1 = await client.post(
+            f"{proxy_base}/v1/messages",
+            json={
+                "model": "test", "max_tokens": 512,
+                "messages": [user_msg],
+                "tools": [GET_WEATHER_TOOL_ANTHROPIC],
+                "stream": False,
+            },
+        )
+        assert r1.status_code == 200, f"T5 turn1 status={r1.status_code} {r1.text[:200]}"
+        d1 = r1.json()
+        tool_uses = [b for b in d1["content"] if b.get("type") == "tool_use"]
+        assert tool_uses, f"T5 turn1 produced no tool_use: {d1['content']}"
+        tu = tool_uses[0]
+        print(f"     turn1 tool_use: {tu['name']} id={tu['id']} input={tu.get('input')}")
+
+        # Turn 2 — echo the assistant turn back verbatim, append a tool_result.
+        assistant_msg = {"role": "assistant", "content": d1["content"]}
+        tool_result_msg = {
+            "role": "user",
+            "content": [{
+                "type": "tool_result",
+                "tool_use_id": tu["id"],
+                "content": "Paris: 18°C, sunny, light wind from the west.",
+            }],
+        }
+        r2 = await client.post(
+            f"{proxy_base}/v1/messages",
+            json={
+                "model": "test", "max_tokens": 512,
+                "messages": [user_msg, assistant_msg, tool_result_msg],
+                "tools": [GET_WEATHER_TOOL_ANTHROPIC],
+                "stream": False,
+            },
+        )
+        assert r2.status_code == 200, f"T5 turn2 status={r2.status_code} {r2.text[:200]}"
+        d2 = r2.json()
+        t2_tools = [b for b in d2["content"] if b.get("type") == "tool_use"]
+        t2_text = [b for b in d2["content"] if b.get("type") == "text"]
+        print(f"     turn2 blocks: tool_use={len(t2_tools)} text={len(t2_text)} "
+              f"stop_reason={d2.get('stop_reason')}")
+        if t2_text:
+            print(f"     turn2 text={t2_text[0]['text'][:160]!r}")
+        # Convergence: after the tool_result, the model must answer, not re-call.
+        assert not t2_tools, (
+            f"T5 LOOP REPRODUCED — model re-called {[b['name'] for b in t2_tools]} "
+            f"instead of answering from the tool_result"
+        )
+        assert t2_text and d2.get("stop_reason") == "end_turn", (
+            f"T5 expected a text answer with stop_reason=end_turn, "
+            f"got stop_reason={d2.get('stop_reason')} content={d2['content']}"
+        )
+
+
 TESTS = [
     ("T1 OpenAI text", _run_test_openai_text),
     ("T2 Anthropic text", _run_test_anthropic_text),
     ("T3 Anthropic tool non-stream", _run_test_anthropic_tool_nonstream),
     ("T4 Anthropic tool stream", _run_test_anthropic_tool_stream),
+    ("T5 Anthropic multi-turn tool_result", _run_test_anthropic_tool_multiturn),
 ]
 
 
@@ -289,11 +371,13 @@ async def _run_all_tests(proxy_base: str) -> list[tuple[str, str, str]]:
 
 # ── Phase 1: External mode ───────────────────────────────────────────
 
-async def phase_external(gguf: Path) -> list[tuple[str, str, str]]:
-    print(f"\n===== Phase 1: external mode =====")
+async def phase_external(
+    gguf: Path, mode: str = "native", extra_flags: list[str] | None = None,
+) -> list[tuple[str, str, str]]:
+    print(f"\n===== Phase 1: external mode (fc={mode}) =====")
     print(f"      llama-server on :{EXTERNAL_BACKEND_PORT}, proxy on :{EXTERNAL_PROXY_PORT}")
 
-    llama_proc = _spawn_llama_server(gguf, EXTERNAL_BACKEND_PORT)
+    llama_proc = _spawn_llama_server(gguf, EXTERNAL_BACKEND_PORT, mode, extra_flags)
     try:
         await _wait_llama_ready(EXTERNAL_BACKEND_PORT)
         print(f"[external] llama-server ready")
@@ -302,7 +386,7 @@ async def phase_external(gguf: Path) -> list[tuple[str, str, str]]:
         proxy = ProxyServer(
             backend_url=f"http://127.0.0.1:{EXTERNAL_BACKEND_PORT}",
             port=EXTERNAL_PROXY_PORT,
-            mode="native",
+            mode=mode,
             backend_protocol="openai",
         )
         proxy.start()
@@ -322,8 +406,10 @@ async def phase_external(gguf: Path) -> list[tuple[str, str, str]]:
 
 # ── Phase 2: Managed mode ────────────────────────────────────────────
 
-async def phase_managed(gguf: Path) -> list[tuple[str, str, str]]:
-    print(f"\n===== Phase 2: managed mode =====")
+async def phase_managed(
+    gguf: Path, mode: str = "native", extra_flags: list[str] | None = None,
+) -> list[tuple[str, str, str]]:
+    print(f"\n===== Phase 2: managed mode (fc={mode}) =====")
     print(f"      forge owns llama-server on :{MANAGED_BACKEND_PORT}, proxy on :{MANAGED_PROXY_PORT}")
 
     from forge.proxy import ProxyServer
@@ -335,7 +421,8 @@ async def phase_managed(gguf: Path) -> list[tuple[str, str, str]]:
         backend_port=MANAGED_BACKEND_PORT,
         port=MANAGED_PROXY_PORT,
         budget_mode=BudgetMode.BACKEND,
-        mode="native",
+        mode=mode,
+        extra_flags=extra_flags,
     )
     proxy.start()
     print(f"[managed] proxy ready at {proxy.url}")
@@ -357,6 +444,17 @@ def _print_summary(phase: str, results: list[tuple[str, str, str]]) -> None:
 async def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--gguf", default=DEFAULT_GGUF, help="GGUF model path")
+    parser.add_argument(
+        "--server-flags", default=None,
+        help="Extra llama-server flags as a single string, e.g. "
+             "'--no-mmap -fa 1 --cache-type-k q8_0 --cache-type-v q8_0 -c 32768'. "
+             "Threaded into external spawn and managed ServerManager.",
+    )
+    parser.add_argument(
+        "--mode", choices=["native", "prompt"], default="native",
+        help="Function-calling mode for the proxy + backend (default: native). "
+             "'prompt' exercises forge's prompt-injection FC path.",
+    )
     parser.add_argument("--skip-external", action="store_true")
     parser.add_argument("--skip-managed", action="store_true")
     args = parser.parse_args()
@@ -366,19 +464,24 @@ async def main() -> int:
         print(f"[FATAL] GGUF not found: {gguf}")
         return 2
 
+    extra_flags = args.server_flags.split() if args.server_flags else None
+
     _setup_logging()
     print(f"GGUF: {gguf}")
+    print(f"FC mode: {args.mode}")
+    if extra_flags:
+        print(f"Extra server flags: {extra_flags}")
     print(f"Forge proxy log: {LOG_FILE}")
 
     summaries: list[tuple[str, list[tuple[str, str, str]]]] = []
 
     if not args.skip_external:
-        ext = await phase_external(gguf)
+        ext = await phase_external(gguf, args.mode, extra_flags)
         _print_summary("external", ext)
         summaries.append(("external", ext))
 
     if not args.skip_managed:
-        man = await phase_managed(gguf)
+        man = await phase_managed(gguf, args.mode, extra_flags)
         _print_summary("managed", man)
         summaries.append(("managed", man))
 
