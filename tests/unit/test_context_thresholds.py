@@ -172,6 +172,7 @@ class TestCheckThresholds:
 
     def test_importable_from_forge(self) -> None:
         from forge import default_context_warning
+
         assert callable(default_context_warning)
 
 
@@ -184,6 +185,7 @@ class TestInferenceInjection:
     @pytest.mark.asyncio
     async def test_warning_injected_into_api_messages(self) -> None:
         from unittest.mock import AsyncMock
+
         from forge.core.inference import run_inference
         from forge.core.workflow import ToolCall
         from forge.guardrails import ErrorTracker, ResponseValidator
@@ -205,7 +207,7 @@ class TestInferenceInjection:
         # Mock client — capture what api_messages it receives
         captured_messages = []
 
-        async def mock_send(api_messages, tools=None, sampling=None):
+        async def mock_send(api_messages, tools=None, sampling=None, max_tokens=None):
             captured_messages.extend(api_messages)
             return [ToolCall(tool="done", args={})]
 
@@ -227,13 +229,15 @@ class TestInferenceInjection:
 
         # The injected warning should be the last message (user role)
         warning_msgs = [m for m in captured_messages if "Context usage" in m.get("content", "")]
-        assert len(warning_msgs) > 0, \
+        assert len(warning_msgs) > 0, (
             f"Expected context warning in api_messages, got: {[m['content'][:50] for m in captured_messages]}"
+        )
         assert warning_msgs[0]["role"] == "user"
 
     @pytest.mark.asyncio
     async def test_no_injection_without_threshold_config(self) -> None:
         from unittest.mock import AsyncMock
+
         from forge.core.inference import run_inference
         from forge.core.workflow import ToolCall
         from forge.guardrails import ErrorTracker, ResponseValidator
@@ -248,7 +252,7 @@ class TestInferenceInjection:
 
         captured_messages = []
 
-        async def mock_send(api_messages, tools=None, sampling=None):
+        async def mock_send(api_messages, tools=None, sampling=None, max_tokens=None):
             captured_messages.extend(api_messages)
             return [ToolCall(tool="done", args={})]
 

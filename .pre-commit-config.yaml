@@ -5,3 +5,12 @@ repos:
       - id: ruff
         args: ["--fix"]
       - id: ruff-format
+
+  - repo: local
+    hooks:
+      - id: pii-check
+        name: PII/sensitive data check
+        entry: python3 scripts/check_pii.py
+        language: system
+        stages: [commit]
+        pass_filenames: false

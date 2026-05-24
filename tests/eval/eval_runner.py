@@ -9,24 +9,28 @@ from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass, field
 from typing import Any
 
-from forge.clients.base import ChunkType, LLMClient, StreamChunk
+from forge.clients.base import LLMClient, StreamChunk
 from forge.context.manager import CompactEvent, ContextManager
 from forge.context.strategies import CompactStrategy, NoCompact, SlidingWindowCompact, TieredCompact
 from forge.core.messages import Message, MessageType
 from forge.core.runner import WorkflowRunner
-from forge.core.workflow import ToolCall, ToolDef, ToolSpec, Workflow
+from forge.core.workflow import ToolDef, ToolSpec, Workflow
 from forge.errors import ForgeError, StreamError
 from forge.server import BudgetMode, ServerManager
-
 from tests.eval.ablation import ABLATION_PRESETS, AblationConfig
 from tests.eval.scenarios import ALL_SCENARIOS, EvalScenario
 
 # Scenarios that always use their own hardcoded budget (MANUAL override).
 _COMPACTION_SCENARIOS = {
-    "compaction_stress", "phase2_compaction",
-    "compaction_stress_stateful", "phase2_compaction_stateful",
-    "inventory_audit", "supplier_deep_dive",
-    "compaction_chain_p1", "compaction_chain_p2", "compaction_chain_p3",
+    "compaction_stress",
+    "phase2_compaction",
+    "compaction_stress_stateful",
+    "phase2_compaction_stateful",
+    "inventory_audit",
+    "supplier_deep_dive",
+    "compaction_chain_p1",
+    "compaction_chain_p2",
+    "compaction_chain_p3",
 }
 
 
@@ -89,9 +93,10 @@ class CountingClientWrapper:
         messages: list[dict[str, str]],
         tools: list[ToolSpec] | None = None,
         sampling: dict[str, Any] | None = None,
+        **kwargs,
     ) -> Any:
         self.call_count += 1
-        result = await self._client.send(messages, tools=tools, sampling=sampling)
+        result = await self._client.send(messages, tools=tools, sampling=sampling, **kwargs)
         self._collect_usage()
         return result
 
@@ -100,9 +105,10 @@ class CountingClientWrapper:
         messages: list[dict[str, str]],
         tools: list[ToolSpec] | None = None,
         sampling: dict[str, Any] | None = None,
+        **kwargs,
     ) -> AsyncIterator[StreamChunk]:
         self.call_count += 1
-        async for chunk in self._client.send_stream(messages, tools=tools, sampling=sampling):
+        async for chunk in self._client.send_stream(messages, tools=tools, sampling=sampling, **kwargs):
             yield chunk
         self._collect_usage()
 
@@ -244,6 +250,7 @@ async def run_scenario(
     elif len(callbacks) == 1:
         on_message = callbacks[0]
     else:
+
         def on_message(msg: Message) -> None:
             for cb in callbacks:
                 cb(msg)
@@ -387,9 +394,7 @@ async def run_eval(
             ``client.set_num_ctx()`` per-scenario for Ollama backends.
     """
     if tags:
-        scenarios = [
-            s for s in scenarios if any(t in s.tags for t in tags)
-        ]
+        scenarios = [s for s in scenarios if any(t in s.tags for t in tags)]
     if names:
         scenarios = [s for s in scenarios if s.name in names]
 
@@ -427,8 +432,7 @@ async def run_eval(
         scenario_results: list[RunResult] = []
         for run_idx in range(config.runs_per_scenario):
             print(
-                f"  Running {scenario.name} "
-                f"[{run_idx + 1}/{config.runs_per_scenario}]...",
+                f"  Running {scenario.name} [{run_idx + 1}/{config.runs_per_scenario}]...",
                 flush=True,
             )
             result = await run_scenario(client, scenario, per_scenario_config, ablation=ablation)
@@ -451,8 +455,7 @@ async def run_eval(
                 if cost > 0:
                     cost_str = f", ${cost:.4f}"
             print(
-                f"    {status} — {result.iterations_used} iterations, "
-                f"{result.elapsed_seconds:.1f}s{cost_str}",
+                f"    {status} — {result.iterations_used} iterations, {result.elapsed_seconds:.1f}s{cost_str}",
                 flush=True,
             )
         results[scenario.name] = scenario_results
@@ -515,7 +518,8 @@ async def main() -> None:
         help="Disable message history collection",
     )
     parser.add_argument(
-        "--verbose", "-v",
+        "--verbose",
+        "-v",
         action="store_true",
         help="Print live per-message trace during each run",
     )
@@ -577,6 +581,7 @@ async def main() -> None:
     # Display name for reports / cost lookup. For llamafile this is the GGUF
     # stem (matches what self.model in the client resolves to).
     from pathlib import Path as _Path
+
     display_name = args.model if args.backend != "llamafile" else _Path(args.gguf).stem
 
     # Build client
@@ -586,7 +591,9 @@ async def main() -> None:
 
         think_val = {"true": True, "false": False, "auto": None}[args.think]
         client: LLMClient = OllamaClient(
-            model=args.model, think=think_val, **url_kw,
+            model=args.model,
+            think=think_val,
+            **url_kw,
             recommended_sampling=True,
         )
     elif args.backend == "anthropic":
@@ -598,8 +605,11 @@ async def main() -> None:
 
         think_val = {"true": True, "false": False, "auto": None}[args.think]
         client = LlamafileClient(
-            gguf_path=args.gguf, mode=args.llamafile_mode, think=think_val,
-            cache_prompt=not args.no_cache_prompt, **url_kw,
+            gguf_path=args.gguf,
+            mode=args.llamafile_mode,
+            think=think_val,
+            cache_prompt=not args.no_cache_prompt,
+            **url_kw,
             recommended_sampling=True,
         )
 
@@ -669,9 +679,12 @@ async def main() -> None:
     print()
 
     results = await run_eval(
-        client, ALL_SCENARIOS, config,
+        client,
+        ALL_SCENARIOS,
+        config,
         resolved_budget=resolved_budget,
-        tags=args.tags, names=args.scenario,
+        tags=args.tags,
+        names=args.scenario,
         ablation=ablation,
     )
 
@@ -687,10 +700,7 @@ async def main() -> None:
         from tests.eval.batch_eval import _compute_cost
 
         total_cost = _compute_cost(args.model, total_input, total_output)
-        print(
-            f"Token usage: {total_input:,} input + {total_output:,} output"
-            f" = {total_input + total_output:,} total"
-        )
+        print(f"Token usage: {total_input:,} input + {total_output:,} output = {total_input + total_output:,} total")
         if total_cost > 0:
             n_runs = len(all_runs)
             print(f"Total cost: ${total_cost:.4f} ({n_runs} runs, ${total_cost / n_runs:.4f}/run)")
