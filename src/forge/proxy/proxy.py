@@ -13,7 +13,6 @@ import threading
 from pathlib import Path
 from typing import Any, Literal
 
-from forge.clients.anthropic import AnthropicClient
 from forge.clients.base import LLMClient
 from forge.clients.llamafile import LlamafileClient
 from forge.clients.ollama import OllamaClient
@@ -191,6 +190,17 @@ class ProxyServer:
                 # AnthropicClient handles base_url and SDK retries; forge
                 # guardrails wrap its inference loop the same way they
                 # wrap any other client.
+                # Lazy import: the anthropic SDK is an optional dependency
+                # (forge-guardrails[anthropic]). Only Path 1 needs it, so
+                # Path 2 / local-backend users must not be forced to install
+                # it just to start the proxy.
+                try:
+                    from forge.clients.anthropic import AnthropicClient
+                except ImportError as exc:
+                    raise RuntimeError(
+                        "backend_protocol='anthropic' requires the anthropic SDK. "
+                        "Install it with: pip install 'forge-guardrails[anthropic]'"
+                    ) from exc
                 client = AnthropicClient(
                     model=self._model or "claude",
                     base_url=self._backend_url.rstrip("/"),
