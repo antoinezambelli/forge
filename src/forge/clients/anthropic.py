@@ -13,7 +13,7 @@ from typing import Any
 
 import anthropic
 
-from forge.clients.base import ChunkType, StreamChunk
+from forge.clients.base import ChunkType, StreamChunk, TokenUsage
 from forge.core.workflow import LLMResponse, TextResponse, ToolCall, ToolSpec
 from forge.errors import BackendError
 
@@ -61,8 +61,12 @@ class AnthropicClient:
         if base_url is not None:
             sdk_kwargs["base_url"] = base_url
         self._client = anthropic.AsyncAnthropic(**sdk_kwargs)
-        # Populated after each send()/send_stream() call.
-        self.last_usage: dict[str, int] | None = None
+        # Populated after each send()/send_stream() call. Slot-keyed
+        # ``{slot_id: TokenUsage}`` to match LlamafileClient / OllamaClient so
+        # ``inference._get_usage`` reads every client uniformly. The Anthropic
+        # SDK is per-call (no shared inference slot), so we always use slot 0 —
+        # same convention as OllamaClient.
+        self.last_usage: dict[int, TokenUsage] = {}
 
     # ── Tool schema conversion ───────────────────────────────────
 
@@ -298,8 +302,11 @@ class AnthropicClient:
                 getattr(exc, "status_code", 0), str(exc)
             ) from exc
         self.last_usage = {
-            "input_tokens": response.usage.input_tokens,
-            "output_tokens": response.usage.output_tokens,
+            0: TokenUsage(
+                prompt_tokens=response.usage.input_tokens,
+                completion_tokens=response.usage.output_tokens,
+                total_tokens=response.usage.input_tokens + response.usage.output_tokens,
+            )
         }
         return self._parse_response(response)
 
@@ -375,8 +382,12 @@ class AnthropicClient:
                 # Grab usage from the final accumulated message.
                 final_message = await stream.get_final_message()
                 self.last_usage = {
-                    "input_tokens": final_message.usage.input_tokens,
-                    "output_tokens": final_message.usage.output_tokens,
+                    0: TokenUsage(
+                        prompt_tokens=final_message.usage.input_tokens,
+                        completion_tokens=final_message.usage.output_tokens,
+                        total_tokens=final_message.usage.input_tokens
+                        + final_message.usage.output_tokens,
+                    )
                 }
         except anthropic.APIError as exc:
             raise BackendError(
