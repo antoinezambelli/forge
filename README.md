@@ -16,7 +16,7 @@ Forge takes an 8B local model from single digits to 84% across forge's 26-scenar
 
 **Three ways to use it:**
 
-- **Proxy server** — Drop-in OpenAI-compatible proxy (`python -m forge.proxy`) that sits between any client (opencode, Continue, aider, etc.) and a local model server. Applies guardrails transparently — the client thinks it's talking to a smarter model. Most popular entry point.
+- **Proxy server** — Drop-in proxy (`python -m forge.proxy`) speaking both the OpenAI chat-completions and Anthropic Messages (`/v1/messages`) APIs, sitting between any client and a local model server. Point OpenAI-compatible tools (opencode, Continue, aider) **or Claude Code** at it and forge applies guardrails transparently — the client thinks it's talking to a smarter model. Most popular entry point.
 
 - **WorkflowRunner** — Define tools, pick a backend, run structured agent loops. Forge manages the full lifecycle: system prompts, tool execution, context compaction, and guardrails. **SlotWorker** adds priority-queued access to a shared inference slot with auto-preemption — for multi-agent architectures where specialist workflows share a GPU slot. Best when you're building on forge directly.
 
@@ -126,9 +126,9 @@ For multi-step workflows, multi-turn conversations, and backend auto-management,
 
 ## Proxy Server
 
-Drop-in OpenAI-compatible proxy that sits between any client and a local model server. Point your client at the proxy (e.g. `http://localhost:8081/v1`) and forge applies its guardrails transparently — the client thinks it's talking to a smarter model.
+Drop-in proxy that sits between any client and a local model server, speaking both the OpenAI chat-completions API and the Anthropic Messages API (`/v1/messages`). Point your client at the proxy (e.g. `http://localhost:8081/v1`) and forge applies its guardrails transparently — the client thinks it's talking to a smarter model.
 
-This is the path for **using forge with an existing harness** (opencode, Continue, aider, Cline, anything that speaks the OpenAI chat-completions schema). No Python rewrite.
+This is the path for **using forge with an existing harness** (opencode, Continue, aider, Cline, anything that speaks the OpenAI chat-completions schema — or Claude Code, which speaks the Anthropic Messages API). No Python rewrite.
 
 ```bash
 # External mode — you manage the backend, forge proxies it
@@ -139,6 +139,8 @@ python -m forge.proxy --backend llamaserver --gguf path/to/model.gguf --port 808
 ```
 
 Then configure your client to use `http://localhost:8081/v1` as the API base URL.
+
+**Claude Code:** the proxy also serves the Anthropic Messages API on `POST /v1/messages`, so you can point Claude Code at a forge-guarded local model — set `ANTHROPIC_BASE_URL=http://localhost:8081` and `ANTHROPIC_AUTH_TOKEN=anything` for the `claude` process. See [Using forge with Claude Code](docs/USER_GUIDE.md#using-forge-with-claude-code) for the full setup (native-vs-prompt FC, Anthropic-shape downstreams, `cache_control`).
 
 **Backend compatibility:**
 
