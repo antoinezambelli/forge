@@ -12,6 +12,8 @@ import pytest
 from pydantic import BaseModel, Field
 
 from forge.clients.anthropic import AnthropicClient
+from forge.clients.base import TokenUsage
+from forge.core.inference import _get_usage
 from forge.core.workflow import TextResponse, ToolCall, ToolSpec
 
 
@@ -405,3 +407,37 @@ class TestParseResponse:
         result = AnthropicClient._parse_response(response)
         assert isinstance(result, TextResponse)
         assert result.content == ""
+
+
+# ── Usage reporting (slot-keyed last_usage) ──────────────────────
+
+
+class TestUsageReporting:
+    @pytest.mark.asyncio
+    async def test_send_records_slot_keyed_usage(self) -> None:
+        """send() stores last_usage as {0: TokenUsage} so inference._get_usage
+        reads it the same way it reads LlamafileClient / OllamaClient — without
+        this, proxy path-1 (CC -> forge -> Anthropic/LiteLLM) reports zero usage.
+        """
+        client = AnthropicClient(model="claude-test", api_key="dummy")
+
+        text_block = MagicMock()
+        text_block.type = "text"
+        text_block.text = "hello"
+        response = MagicMock()
+        response.content = [text_block]
+        response.usage.input_tokens = 12
+        response.usage.output_tokens = 7
+
+        async def fake_create(**kwargs):
+            return response
+
+        client._client.messages.create = fake_create
+
+        result = await client.send([{"role": "user", "content": "hi"}])
+
+        assert isinstance(result, TextResponse)
+        expected = TokenUsage(prompt_tokens=12, completion_tokens=7, total_tokens=19)
+        assert client.last_usage == {0: expected}
+        # Cross-client contract: _get_usage resolves slot 0 to the TokenUsage.
+        assert _get_usage(client) == expected

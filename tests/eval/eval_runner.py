@@ -81,17 +81,25 @@ class CountingClientWrapper:
         """Read last_usage from the wrapped client if available."""
         usage = getattr(self._client, "last_usage", None)
         if usage:
-            self.total_input_tokens += usage.get("input_tokens", 0)
-            self.total_output_tokens += usage.get("output_tokens", 0)
+            # Slot-keyed {slot_id: TokenUsage} across all clients (llamaserver,
+            # ollama, anthropic). Sum across slots (usually one).
+            for tu in usage.values():
+                self.total_input_tokens += tu.prompt_tokens
+                self.total_output_tokens += tu.completion_tokens
 
     async def send(
         self,
         messages: list[dict[str, str]],
         tools: list[ToolSpec] | None = None,
         sampling: dict[str, Any] | None = None,
+        passthrough: dict[str, Any] | None = None,
+        inbound_anthropic_body: dict[str, Any] | None = None,
     ) -> Any:
         self.call_count += 1
-        result = await self._client.send(messages, tools=tools, sampling=sampling)
+        result = await self._client.send(
+            messages, tools=tools, sampling=sampling, passthrough=passthrough,
+            inbound_anthropic_body=inbound_anthropic_body,
+        )
         self._collect_usage()
         return result
 
@@ -100,9 +108,14 @@ class CountingClientWrapper:
         messages: list[dict[str, str]],
         tools: list[ToolSpec] | None = None,
         sampling: dict[str, Any] | None = None,
+        passthrough: dict[str, Any] | None = None,
+        inbound_anthropic_body: dict[str, Any] | None = None,
     ) -> AsyncIterator[StreamChunk]:
         self.call_count += 1
-        async for chunk in self._client.send_stream(messages, tools=tools, sampling=sampling):
+        async for chunk in self._client.send_stream(
+            messages, tools=tools, sampling=sampling, passthrough=passthrough,
+            inbound_anthropic_body=inbound_anthropic_body,
+        ):
             yield chunk
         self._collect_usage()
 

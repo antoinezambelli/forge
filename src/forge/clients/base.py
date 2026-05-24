@@ -84,6 +84,8 @@ class LLMClient(Protocol):
         messages: list[dict[str, str]],
         tools: list[ToolSpec] | None = None,
         sampling: dict[str, Any] | None = None,
+        passthrough: dict[str, Any] | None = None,
+        inbound_anthropic_body: dict[str, Any] | None = None,
     ) -> LLMResponse:
         """Send messages and return a parsed response.
 
@@ -101,6 +103,19 @@ class LLMClient(Protocol):
                 ``repeat_penalty``, ``presence_penalty``, ``seed``).
                 Per-call values win over instance state for this call only;
                 the client's instance fields are not mutated.
+            passthrough: Optional dict of inbound body fields forge doesn't
+                own. The client merges these into the outbound body before
+                overlaying its own fields (model, messages, tools, sampling).
+                Used by the proxy to preserve user intent (max_tokens, stop,
+                tool_choice, etc.) without forge having to enumerate every
+                supported field. None = no extras to merge.
+            inbound_anthropic_body: Path-1 only — when set, the AnthropicClient
+                will send this body verbatim (bypassing its deconstruct/rebuild
+                path) to preserve block-level Anthropic fields like
+                ``cache_control``. The runner clears this kwarg on any
+                forge-mutation (retry / compaction / context warning) so
+                only the clean first-attempt call rides verbatim. Other
+                clients accept and ignore. See ADR-015.
         """
         ...
 
@@ -109,6 +124,8 @@ class LLMClient(Protocol):
         messages: list[dict[str, str]],
         tools: list[ToolSpec] | None = None,
         sampling: dict[str, Any] | None = None,
+        passthrough: dict[str, Any] | None = None,
+        inbound_anthropic_body: dict[str, Any] | None = None,
     ) -> AsyncIterator[StreamChunk]:
         """Send messages and yield streaming chunks.
 
@@ -124,6 +141,8 @@ class LLMClient(Protocol):
             tools: Tool specs to include with the request.
             sampling: Optional per-call sampling overrides (see ``send``).
                 Per-call values win over instance state without mutating self.
+            passthrough: Optional inbound-body extras dict (see ``send``).
+            inbound_anthropic_body: Optional path-1 verbatim body (see ``send``).
         """
         ...
 

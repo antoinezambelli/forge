@@ -264,35 +264,46 @@ class LlamafileClient:
         messages: list[dict[str, str]],
         tools: list[ToolSpec] | None = None,
         sampling: dict[str, Any] | None = None,
+        passthrough: dict[str, Any] | None = None,
+        inbound_anthropic_body: dict[str, Any] | None = None,
     ) -> LLMResponse:
-        """Resolve mode on first call with tools, then dispatch."""
+        """Resolve mode on first call with tools, then dispatch.
+
+        ``inbound_anthropic_body`` is accepted for protocol symmetry and
+        silently ignored — LlamafileClient only speaks OpenAI shape.
+        """
         if self.resolved_mode is None:
-            return await self._resolve_and_send(messages, tools, sampling)
+            return await self._resolve_and_send(messages, tools, sampling, passthrough)
         elif self.resolved_mode == "native":
-            return await self._send_native(messages, tools, sampling)
+            return await self._send_native(messages, tools, sampling, passthrough)
         else:
-            return await self._send_prompt(messages, tools, sampling)
+            return await self._send_prompt(messages, tools, sampling, passthrough)
 
     async def send_stream(
         self,
         messages: list[dict[str, str]],
         tools: list[ToolSpec] | None = None,
         sampling: dict[str, Any] | None = None,
+        passthrough: dict[str, Any] | None = None,
+        inbound_anthropic_body: dict[str, Any] | None = None,
     ) -> AsyncIterator[StreamChunk]:
-        """Stream via SSE, handling both native FC and prompt-injected paths."""
+        """Stream via SSE, handling both native FC and prompt-injected paths.
+
+        ``inbound_anthropic_body`` accepted for protocol symmetry, ignored.
+        """
         if self.resolved_mode is None:
             # Probe with a non-streaming call to resolve native vs prompt.
             # Result is discarded — the runner will use the streamed response.
-            await self._resolve_and_send(messages, tools, sampling)
+            await self._resolve_and_send(messages, tools, sampling, passthrough)
         mode = self.resolved_mode
 
-        model_name = (sampling or {}).get("model") or self.model
-        body: dict[str, Any] = {
-            "model": model_name,
+        body: dict[str, Any] = dict(passthrough or {})
+        body.update({
             "stream": True,
             "stream_options": {"include_usage": True},
             "cache_prompt": self._cache_prompt,
-        }
+        })
+        body.setdefault("model", self.model)
         self._apply_slot_id(body)
         self._apply_sampling(body, sampling)
 
@@ -439,6 +450,7 @@ class LlamafileClient:
         messages: list[dict[str, str]],
         tools: list[ToolSpec] | None,
         sampling: dict[str, Any] | None = None,
+        passthrough: dict[str, Any] | None = None,
     ) -> LLMResponse:
         """Auto-resolve mode on first send with tools.
 
@@ -451,30 +463,31 @@ class LlamafileClient:
         if not tools:
             # No tools to test with — send without tools, defer resolution
             self.resolved_mode = "native"
-            return await self._send_native(messages, tools, sampling)
+            return await self._send_native(messages, tools, sampling, passthrough)
 
         try:
-            result = await self._send_native(messages, tools, sampling)
+            result = await self._send_native(messages, tools, sampling, passthrough)
             self.resolved_mode = "native"
             return result
         except (httpx.HTTPStatusError, BackendError):
             self.resolved_mode = "prompt"
-            return await self._send_prompt(messages, tools, sampling)
+            return await self._send_prompt(messages, tools, sampling, passthrough)
 
     async def _send_native(
         self,
         messages: list[dict[str, str]],
         tools: list[ToolSpec] | None,
         sampling: dict[str, Any] | None = None,
+        passthrough: dict[str, Any] | None = None,
     ) -> LLMResponse:
         """Send using native function calling (OpenAI tools parameter)."""
         merged = _merge_consecutive(messages)
-        model_name = (sampling or {}).get("model") or self.model
-        body: dict[str, Any] = {
-            "model": model_name,
+        body: dict[str, Any] = dict(passthrough or {})
+        body.update({
             "messages": merged,
             "cache_prompt": self._cache_prompt,
-        }
+        })
+        body.setdefault("model", self.model)
         self._apply_slot_id(body)
         self._apply_sampling(body, sampling)
         if tools:
@@ -526,6 +539,7 @@ class LlamafileClient:
         messages: list[dict[str, str]],
         tools: list[ToolSpec] | None,
         sampling: dict[str, Any] | None = None,
+        passthrough: dict[str, Any] | None = None,
     ) -> LLMResponse:
         """Send using prompt-injected tool calling."""
         prepared = _merge_consecutive(_downgrade_messages(messages))
@@ -536,12 +550,12 @@ class LlamafileClient:
                 "content": tool_prompt + "\n\n" + prepared[0]["content"],
             }
 
-        model_name = (sampling or {}).get("model") or self.model
-        body: dict[str, Any] = {
-            "model": model_name,
+        body: dict[str, Any] = dict(passthrough or {})
+        body.update({
             "messages": prepared,
             "cache_prompt": self._cache_prompt,
-        }
+        })
+        body.setdefault("model", self.model)
         self._apply_slot_id(body)
         self._apply_sampling(body, sampling)
 

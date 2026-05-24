@@ -41,6 +41,21 @@ def main() -> None:
     )
     parser.add_argument("--budget-tokens", type=int, help="Manual token budget")
     parser.add_argument("--extra-flags", nargs="*", help="Additional backend CLI flags")
+    parser.add_argument(
+        "--mode",
+        choices=["native", "prompt"],
+        default="native",
+        help="Function-calling mode (default: native). Use 'prompt' for "
+             "OpenAI-compatible backends without a function-calling template.",
+    )
+    parser.add_argument(
+        "--backend-protocol",
+        choices=["openai", "anthropic"],
+        default="openai",
+        help="Wire format of the external backend (default: openai). Use "
+             "'anthropic' for Anthropic-shape downstreams (LiteLLM /v1/messages, "
+             "real Anthropic API, self-hosted Anthropic proxy). External mode only.",
+    )
 
     # Proxy options
     parser.add_argument("--host", default="127.0.0.1", help="Proxy listen host (default: 127.0.0.1)")
@@ -82,6 +97,8 @@ def main() -> None:
         serialize=serialize,
         max_retries=args.max_retries,
         rescue_enabled=not args.no_rescue,
+        mode=args.mode,
+        backend_protocol=args.backend_protocol,
     )
 
     def _shutdown(sig: int, _frame: object) -> None:

@@ -46,7 +46,7 @@ result = await runner.run(workflow, "What's the weather in Paris?")
 
 ### Mode 2: Proxy Server (drop-in, zero code changes)
 
-Forge sits between any OpenAI-compatible client and your model server, intercepting requests and applying guardrails transparently. The client doesn't know forge is there.
+Forge sits between any client and your model server, intercepting requests and applying guardrails transparently. It speaks both the OpenAI chat-completions API and the Anthropic Messages API (`/v1/messages`), so OpenAI-compatible tools and Claude Code both work. The client doesn't know forge is there.
 
 ```bash
 # External mode — you manage the backend
@@ -63,9 +63,32 @@ from openai import OpenAI
 client = OpenAI(base_url="http://localhost:8081/v1")
 ```
 
-**Best for:** Adding guardrails to existing tools without modifying them. Works with any tool that speaks the OpenAI-compatible API — no per-client wrappers needed.
+**Best for:** Adding guardrails to existing tools without modifying them. Works with any tool that speaks the OpenAI-compatible API, plus Claude Code via the Anthropic Messages API — no per-client wrappers needed.
 
 **Reliability note:** The proxy automatically injects a synthetic `respond` tool when tools are present in the request. The model calls `respond(message="...")` instead of producing bare text, keeping it in tool-calling mode where forge's full guardrail stack applies. The `respond` call is stripped from the outbound response — the client sees a normal text response and never knows the tool exists. This is essential for small local models (~8B), which cannot be trusted to choose correctly between text and tool calls — eval testing showed that trusting the model's text intent dropped workflow completion from 100% to as low as 4%. Guiding the model to a tool is a must. See [ADR-013](decisions/013-text-response-intent.md) for the full analysis.
+
+#### Using forge with Claude Code
+
+Claude Code speaks the Anthropic Messages API, which the proxy serves on `POST /v1/messages` — so you can point Claude Code at a forge-guarded local model. Start the proxy against any backend, then set two environment variables for the Claude Code process:
+
+```bash
+# Start the proxy (managed mode against a local GGUF; native FC by default)
+python -m forge.proxy --backend llamaserver --gguf path/to/model.gguf --port 8081
+
+# Point Claude Code at it — scope these to the claude process only
+ANTHROPIC_BASE_URL=http://localhost:8081 \
+ANTHROPIC_AUTH_TOKEN=forge \
+claude
+```
+
+`ANTHROPIC_AUTH_TOKEN` can be any non-empty string — forge ignores it. The model name Claude Code sends is also ignored; forge serves whatever backend the proxy was started with.
+
+**Function-calling mode.** `--mode native` (default) uses the backend's chat-template tool-calling and is the smoother default for Claude Code's heavy multi-turn tool use. `--mode prompt` injects the tool surface into the prompt for backends without a tool-calling template; whether a model stays coherent across multi-turn tool results in prompt mode varies by model, so prefer native when the backend supports it.
+
+**Downstream protocol.**
+
+- **Local model (default, `--backend-protocol openai`)** — forge translates Claude Code's Anthropic requests to OpenAI for llama.cpp / Ollama and converts the reply back to Anthropic SSE. Anthropic-only fields with no OpenAI analog (`cache_control`, `thinking`, `document` blocks) are dropped at that boundary; see [ADR-015](decisions/015-cache-control-preservation-path1.md).
+- **Anthropic-shape downstream (`--backend-protocol anthropic`, external mode)** — forge forwards to an Anthropic Messages endpoint (e.g. LiteLLM or the Anthropic API), passing unknown fields through verbatim and preserving `cache_control` on clean turns. This path uses the Anthropic SDK: `pip install forge-guardrails[anthropic]`.
 
 #### Proxy design boundaries
 
