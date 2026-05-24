@@ -165,6 +165,7 @@ async def _run_test_openai_text(proxy_base: str) -> None:
     assert "choices" in data, f"T1 missing 'choices': {data}"
     msg = data["choices"][0]["message"]
     print(f"     content={msg.get('content', '')[:80]!r}")
+    print(f"     usage={data.get('usage')}")
     assert msg["role"] == "assistant"
 
 
@@ -190,6 +191,7 @@ async def _run_test_anthropic_text(proxy_base: str) -> None:
     assert text_blocks, f"T2 no text blocks: {data['content']}"
     print(f"     text={text_blocks[0]['text'][:80]!r}")
     print(f"     stop_reason={data.get('stop_reason')}")
+    print(f"     usage={data.get('usage')}")
 
 
 async def _run_test_anthropic_tool_nonstream(proxy_base: str) -> None:
@@ -231,7 +233,11 @@ async def _run_test_anthropic_tool_nonstream(proxy_base: str) -> None:
     assert block["id"].startswith("toolu_"), f"T3 bad toolu id: {block['id']}"
     assert isinstance(block.get("input"), dict), f"T3 input not dict: {block.get('input')}"
     print(f"     tool_use: name={block['name']} id={block['id']} input={block['input']}")
+    print(f"     usage={data.get('usage')}")
     assert data.get("stop_reason") == "tool_use", f"T3 stop_reason={data.get('stop_reason')}"
+    assert data.get("usage", {}).get("input_tokens", 0) > 0, (
+        f"T3 expected non-zero input_tokens from real backend, got {data.get('usage')}"
+    )
 
 
 async def _run_test_anthropic_tool_stream(proxy_base: str) -> None:
@@ -332,6 +338,7 @@ async def _run_test_anthropic_tool_multiturn(proxy_base: str) -> None:
               f"stop_reason={d2.get('stop_reason')}")
         if t2_text:
             print(f"     turn2 text={t2_text[0]['text'][:160]!r}")
+        print(f"     turn2 usage={d2.get('usage')}")
         # Convergence: after the tool_result, the model must answer, not re-call.
         assert not t2_tools, (
             f"T5 LOOP REPRODUCED — model re-called {[b['name'] for b in t2_tools]} "

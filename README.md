@@ -176,6 +176,25 @@ For the full guardrail surface, use `WorkflowRunner` directly. The proxy trades 
 | `--budget-tokens N` | — | Manual token budget (requires `--budget-mode manual`) |
 | `--serialize` / `--no-serialize` | auto | Force request serialization (single-slot backends) |
 
+### Docker
+
+You can run the forge proxy as a Docker container.
+
+**Build the image:**
+
+```bash
+docker build -t forge-proxy .
+```
+
+**Run the container:**
+
+```bash
+# Connect to an external backend (e.g. vLLM hosted on the same machine)
+docker run -p 8081:8081 forge-proxy --backend-url http://host.docker.internal:8000 --budget-mode manual --budget-tokens 8192
+```
+
+Note: If your backend is running on `localhost` of the host machine, use `http://host.docker.internal:PORT` (on macOS/Windows) or the host's IP address to allow the container to reach it.
+
 ## Backends
 
 | Backend | Best for | Native FC? |

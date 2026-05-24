@@ -29,13 +29,18 @@ _NUDGE_KIND_TO_TYPE: dict[str, MessageType] = {
 }
 
 
-def _sync_token_count(client: LLMClient, context_manager: ContextManager) -> None:
-    """Feed actual token count from the client into the context manager."""
+def _get_usage(client: LLMClient) -> TokenUsage | None:
+    """Extract actual token count from the client."""
     last_usage = getattr(client, "last_usage", None)
     if not isinstance(last_usage, dict):
-        return
+        return None
     slot_id = getattr(client, "_slot_id", None) or 0
-    usage: TokenUsage | None = last_usage.get(slot_id)
+    return last_usage.get(slot_id)
+
+
+def _sync_token_count(client: LLMClient, context_manager: ContextManager) -> None:
+    """Feed actual token count from the client into the context manager."""
+    usage = _get_usage(client)
     if usage is not None:
         context_manager.update_token_count(usage.total_tokens)
 
@@ -49,11 +54,13 @@ class InferenceResult:
         new_messages: Messages generated during this call (assistant text from
             failed attempts, nudges, and the final assistant response). The
             caller should append these to their message history.
+        usage: Token usage for the final successful attempt.
         tool_call_counter: Updated counter for generating unique call IDs.
     """
 
     response: list[ToolCall] | TextResponse
     new_messages: list[Message] = field(default_factory=list)
+    usage: TokenUsage | None = None
     tool_call_counter: int = 0
     attempts: int = 1
 
@@ -233,6 +240,7 @@ async def run_inference(
             return InferenceResult(
                 response=validated,
                 new_messages=new_messages,
+                usage=_get_usage(client),
                 tool_call_counter=tool_call_counter,
                 attempts=attempts,
             )

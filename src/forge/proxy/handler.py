@@ -7,7 +7,7 @@ from typing import Any, Literal
 
 from forge.clients.base import LLMClient
 from forge.context.manager import ContextManager
-from forge.core.inference import fold_and_serialize, run_inference
+from forge.core.inference import _get_usage, fold_and_serialize, run_inference
 from forge.core.workflow import ToolCall, ToolSpec, TextResponse
 from forge.errors import ToolCallError
 from forge.guardrails import ErrorTracker, ResponseValidator
@@ -173,8 +173,9 @@ async def handle_chat_completions(
             api_messages, tools=None, sampling=sampling, passthrough=passthrough,
             inbound_anthropic_body=inbound_anthropic_body,
         )
+        usage = _get_usage(client)
         text = response.content if isinstance(response, TextResponse) else ""
-        return _emit_text(text, model_name, protocol, is_stream)
+        return _emit_text(text, model_name, protocol, is_stream, usage=usage)
 
     # Set up guardrails
     validator = ResponseValidator(tool_names, rescue_enabled=rescue_enabled)
@@ -199,13 +200,15 @@ async def handle_chat_completions(
         # error. The client's own agentic loop can decide what to do.
         raw = exc.raw_response or ""
         logger.warning("Retries exhausted, passing through text: %.120s", raw)
-        return _emit_text(raw, model_name, protocol, is_stream)
+        usage = _get_usage(client)
+        return _emit_text(raw, model_name, protocol, is_stream, usage=usage)
 
     # run_inference returns None when max_attempts exhausted
     if result is None:
         return _emit_text("", model_name, protocol, is_stream)
 
     tool_calls = result.response
+    usage = result.usage
 
     # Strip respond() calls — convert to plain text for the client.
     # If the model called respond(message="..."), the client sees a
@@ -218,15 +221,15 @@ async def handle_chat_completions(
         # Pure respond — convert to text
         text = respond_calls[0].args.get("message", "")
         logger.info("Stripping respond() call, returning as text")
-        return _emit_text(text, model_name, protocol, is_stream)
+        return _emit_text(text, model_name, protocol, is_stream, usage=usage)
 
     if other_calls:
         # Real tool calls (possibly mixed with respond) — return the
         # real tool calls only, drop respond.
-        return _emit_tool_calls(other_calls, model_name, protocol, is_stream)
+        return _emit_tool_calls(other_calls, model_name, protocol, is_stream, usage=usage)
 
     # Shouldn't happen, but handle empty tool_calls gracefully
-    return _emit_text("", model_name, protocol, is_stream)
+    return _emit_text("", model_name, protocol, is_stream, usage=usage)
 
 
 def _emit_text(
@@ -234,15 +237,16 @@ def _emit_text(
     model: str,
     protocol: str,
     is_stream: bool,
+    usage: Any | None = None,
 ) -> dict[str, Any] | list[dict[str, Any]]:
     """Protocol-aware text response emitter."""
     if protocol == "anthropic":
         if is_stream:
-            return text_to_anthropic_sse(text, model=model)
-        return text_response_to_anthropic(text, model=model)
+            return text_to_anthropic_sse(text, model=model, usage=usage)
+        return text_response_to_anthropic(text, model=model, usage=usage)
     if is_stream:
-        return text_to_sse_events(text, model=model)
-    return text_response_to_openai(text, model=model)
+        return text_to_sse_events(text, model=model, usage=usage)
+    return text_response_to_openai(text, model=model, usage=usage)
 
 
 def _emit_tool_calls(
@@ -250,12 +254,13 @@ def _emit_tool_calls(
     model: str,
     protocol: str,
     is_stream: bool,
+    usage: Any | None = None,
 ) -> dict[str, Any] | list[dict[str, Any]]:
     """Protocol-aware tool-call response emitter."""
     if protocol == "anthropic":
         if is_stream:
-            return tool_calls_to_anthropic_sse(tool_calls, model=model)
-        return tool_calls_to_anthropic(tool_calls, model=model)
+            return tool_calls_to_anthropic_sse(tool_calls, model=model, usage=usage)
+        return tool_calls_to_anthropic(tool_calls, model=model, usage=usage)
     if is_stream:
-        return tool_calls_to_sse_events(tool_calls, model=model)
-    return tool_calls_to_openai(tool_calls, model=model)
+        return tool_calls_to_sse_events(tool_calls, model=model, usage=usage)
+    return tool_calls_to_openai(tool_calls, model=model, usage=usage)

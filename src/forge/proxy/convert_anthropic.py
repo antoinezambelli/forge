@@ -219,9 +219,20 @@ def _flatten_text_blocks(blocks: list[dict[str, Any]] | str) -> str:
 
 # ── Outbound: forge response → Anthropic response ────────────────
 
+def _anthropic_usage(usage: Any | None) -> dict[str, int]:
+    """Map a forge TokenUsage to Anthropic's input/output token shape."""
+    if usage is None:
+        return {"input_tokens": 0, "output_tokens": 0}
+    return {
+        "input_tokens": getattr(usage, "prompt_tokens", 0),
+        "output_tokens": getattr(usage, "completion_tokens", 0),
+    }
+
+
 def tool_calls_to_anthropic(
     tool_calls: list[ToolCall],
     model: str = "forge",
+    usage: Any | None = None,
 ) -> dict[str, Any]:
     """Convert forge ToolCalls to an Anthropic Messages API response object."""
     blocks: list[dict[str, Any]] = []
@@ -245,13 +256,14 @@ def tool_calls_to_anthropic(
         "content": blocks,
         "stop_reason": "tool_use",
         "stop_sequence": None,
-        "usage": {"input_tokens": 0, "output_tokens": 0},
+        "usage": _anthropic_usage(usage),
     }
 
 
 def text_response_to_anthropic(
     text: str,
     model: str = "forge",
+    usage: Any | None = None,
 ) -> dict[str, Any]:
     """Convert a text response to an Anthropic Messages API response object."""
     return {
@@ -262,7 +274,7 @@ def text_response_to_anthropic(
         "content": [{"type": "text", "text": text}],
         "stop_reason": "end_turn",
         "stop_sequence": None,
-        "usage": {"input_tokens": 0, "output_tokens": 0},
+        "usage": _anthropic_usage(usage),
     }
 
 
@@ -271,6 +283,7 @@ def text_response_to_anthropic(
 def tool_calls_to_anthropic_sse(
     tool_calls: list[ToolCall],
     model: str = "forge",
+    usage: Any | None = None,
 ) -> list[dict[str, Any]]:
     """Build the Anthropic SSE event sequence for a tool-use response.
 
@@ -278,6 +291,7 @@ def tool_calls_to_anthropic_sse(
     formatter reads that to emit ``event: <type>`` lines. Spec:
     https://platform.claude.com/docs/en/build-with-claude/streaming
     """
+    au = _anthropic_usage(usage)
     msg_id = f"msg_{uuid.uuid4().hex[:24]}"
     events: list[dict[str, Any]] = []
 
@@ -291,7 +305,7 @@ def tool_calls_to_anthropic_sse(
             "content": [],
             "stop_reason": None,
             "stop_sequence": None,
-            "usage": {"input_tokens": 0, "output_tokens": 1},
+            "usage": {"input_tokens": au["input_tokens"], "output_tokens": 1},
         },
     })
 
@@ -340,7 +354,7 @@ def tool_calls_to_anthropic_sse(
     events.append({
         "type": "message_delta",
         "delta": {"stop_reason": "tool_use", "stop_sequence": None},
-        "usage": {"output_tokens": 0},
+        "usage": {"output_tokens": au["output_tokens"]},
     })
     events.append({"type": "message_stop"})
 
@@ -350,8 +364,10 @@ def tool_calls_to_anthropic_sse(
 def text_to_anthropic_sse(
     text: str,
     model: str = "forge",
+    usage: Any | None = None,
 ) -> list[dict[str, Any]]:
     """Build the Anthropic SSE event sequence for a text response."""
+    au = _anthropic_usage(usage)
     msg_id = f"msg_{uuid.uuid4().hex[:24]}"
     return [
         {
@@ -364,7 +380,7 @@ def text_to_anthropic_sse(
                 "content": [],
                 "stop_reason": None,
                 "stop_sequence": None,
-                "usage": {"input_tokens": 0, "output_tokens": 1},
+                "usage": {"input_tokens": au["input_tokens"], "output_tokens": 1},
             },
         },
         {
@@ -381,7 +397,7 @@ def text_to_anthropic_sse(
         {
             "type": "message_delta",
             "delta": {"stop_reason": "end_turn", "stop_sequence": None},
-            "usage": {"output_tokens": 0},
+            "usage": {"output_tokens": au["output_tokens"]},
         },
         {"type": "message_stop"},
     ]
