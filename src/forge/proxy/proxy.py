@@ -11,7 +11,6 @@ import asyncio
 import logging
 import threading
 from pathlib import Path
-from typing import Any
 
 from forge.clients.anthropic import AnthropicClient
 from forge.clients.base import LLMClient
@@ -125,7 +124,9 @@ class ProxyServer:
 
         ready = threading.Event()
         self._thread = threading.Thread(
-            target=self._run_loop, args=(ready,), daemon=True,
+            target=self._run_loop,
+            args=(ready,),
+            daemon=True,
         )
         self._thread.start()
         ready.wait(timeout=120)

@@ -64,7 +64,9 @@ class HTTPServer:
         if self._serialize:
             self._worker_task = asyncio.create_task(self._inference_worker())
         self._server = await asyncio.start_server(
-            self._handle_connection, self._host, self._port,
+            self._handle_connection,
+            self._host,
+            self._port,
         )
         logger.info("Proxy listening on %s:%d", self._host, self._port)
 
@@ -116,7 +118,8 @@ class HTTPServer:
         try:
             # Read request line
             request_line = await asyncio.wait_for(
-                reader.readline(), timeout=30.0,
+                reader.readline(),
+                timeout=30.0,
             )
             if not request_line:
                 return
@@ -128,6 +131,7 @@ class HTTPServer:
                 return
 
             method, path = parts[0], parts[1]
+            pure_path = path.split("?")[0]
             logger.info(">> %s %s", method, path)
 
             # Read headers
@@ -141,24 +145,25 @@ class HTTPServer:
                     await self._send_error(writer, 413, "Request too large")
                     return
                 body_bytes = await asyncio.wait_for(
-                    reader.readexactly(content_length), timeout=60.0,
+                    reader.readexactly(content_length),
+                    timeout=60.0,
                 )
 
-            # Route
-            if method == "GET" and path == "/health":
+            # Route (use pure_path to ignore query strings)
+            if method == "GET" and pure_path == "/health":
                 await self._handle_health(writer)
-            elif method == "GET" and path == "/v1/models":
+            elif method == "GET" and pure_path == "/v1/models":
                 await self._handle_models(writer)
-            elif method == "POST" and path == "/v1/chat/completions":
+            elif method == "POST" and pure_path == "/v1/chat/completions":
                 await self._handle_completions(writer, body_bytes)
-            elif method == "POST" and path == "/v1/messages":
+            elif method == "POST" and pure_path == "/v1/messages":
                 await self._handle_messages(writer, body_bytes)
             elif method == "OPTIONS":
                 await self._send_cors_preflight(writer)
             else:
                 await self._send_error(writer, 404, "Not found")
 
-        except (asyncio.TimeoutError, asyncio.IncompleteReadError, ConnectionError):
+        except (TimeoutError, asyncio.IncompleteReadError, ConnectionError):
             pass
         except Exception:
             logger.exception("Unhandled error in connection handler")
@@ -193,10 +198,12 @@ class HTTPServer:
 
     async def _handle_models(self, writer: asyncio.StreamWriter) -> None:
         """GET /v1/models — returns a minimal model list."""
-        body = json.dumps({
-            "object": "list",
-            "data": [{"id": "forge", "object": "model"}],
-        })
+        body = json.dumps(
+            {
+                "object": "list",
+                "data": [{"id": "forge", "object": "model"}],
+            }
+        )
         await self._send_json(writer, 200, body)
 
     async def _handle_completions(
@@ -216,7 +223,10 @@ class HTTPServer:
         tool_count = len(body.get("tools", []))
         logger.info(
             "   stream=%s messages=%d tools=%d model=%s",
-            is_stream, msg_count, tool_count, body.get("model", "?"),
+            is_stream,
+            msg_count,
+            tool_count,
+            body.get("model", "?"),
         )
 
         if self._serialize:
@@ -278,7 +288,10 @@ class HTTPServer:
         tool_count = len(body.get("tools", []))
         logger.info(
             "   [anthropic] stream=%s messages=%d tools=%d model=%s",
-            is_stream, msg_count, tool_count, body.get("model", "?"),
+            is_stream,
+            msg_count,
+            tool_count,
+            body.get("model", "?"),
         )
 
         if self._serialize:
@@ -318,7 +331,8 @@ class HTTPServer:
             await self._send_json(writer, 200, json.dumps(result))
 
     async def _run_anthropic_handler(
-        self, body: dict[str, Any],
+        self,
+        body: dict[str, Any],
     ) -> dict[str, Any] | list[dict[str, Any]] | Exception:
         """Run the Anthropic handler, catching errors."""
         try:
@@ -350,14 +364,16 @@ class HTTPServer:
                 return None
             try:
                 await asyncio.wait_for(
-                    asyncio.shield(item.future), timeout=1.0,
+                    asyncio.shield(item.future),
+                    timeout=1.0,
                 )
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 continue
         return item.future.result()
 
     async def _run_handler(
-        self, body: dict[str, Any],
+        self,
+        body: dict[str, Any],
     ) -> dict[str, Any] | list[dict[str, Any]] | Exception:
         """Run the handler, catching errors."""
         try:
@@ -374,7 +390,10 @@ class HTTPServer:
             return exc
 
     async def _send_json(
-        self, writer: asyncio.StreamWriter, status: int, body: str,
+        self,
+        writer: asyncio.StreamWriter,
+        status: int,
+        body: str,
     ) -> None:
         """Send a JSON HTTP response."""
         response = (
@@ -404,14 +423,19 @@ class HTTPServer:
         await writer.drain()
 
     async def _send_sse_body(
-        self, writer: asyncio.StreamWriter, events: list[dict[str, Any]],
+        self,
+        writer: asyncio.StreamWriter,
+        events: list[dict[str, Any]],
     ) -> None:
         """Send SSE event data and terminator. Headers must already be sent."""
         for event in events:
             if writer.is_closing():
                 return
-            data = f"data: {json.dumps(event)}\n\n".encode()
-            writer.write(f"{len(data):x}\r\n".encode() + data + b"\r\n")
+            event_type = event.get("type", "")
+            data_line = f"data: {json.dumps(event)}\n"
+            event_line = f"event: {event_type}\n" if event_type else ""
+            body = f"{event_line}{data_line}\n".encode()
+            writer.write(f"{len(body):x}\r\n".encode() + body + b"\r\n")
             await writer.drain()
 
         done = b"data: [DONE]\n\n"
@@ -422,7 +446,10 @@ class HTTPServer:
         logger.info("<< SSE complete, [DONE] sent")
 
     async def _send_error(
-        self, writer: asyncio.StreamWriter, status: int, message: str,
+        self,
+        writer: asyncio.StreamWriter,
+        status: int,
+        message: str,
     ) -> None:
         """Send an error JSON response."""
         body = json.dumps({"error": {"message": message, "type": "proxy_error"}})

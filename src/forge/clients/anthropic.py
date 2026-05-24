@@ -8,10 +8,9 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from collections.abc import AsyncIterator
 from typing import Any
-
-import os
 
 import anthropic
 
@@ -36,7 +35,7 @@ class AnthropicClient:
         self,
         model: str,
         api_key: str | None = None,
-        max_tokens: int = 4096,
+        max_tokens: int = 8192,
         timeout: float = 300.0,
         max_retries: int = 3,
         tool_choice: str | None = None,
@@ -50,9 +49,7 @@ class AnthropicClient:
         # AnthropicClient does not expose sampling kwargs through forge today.
         # The Anthropic SDK manages sampling internally.
         if recommended_sampling:
-            log.debug(
-                "AnthropicClient ignores recommended_sampling=True — no sampling kwargs are exposed."
-            )
+            log.debug("AnthropicClient ignores recommended_sampling=True — no sampling kwargs are exposed.")
         kwargs: dict[str, Any] = {
             "api_key": api_key,
             "timeout": timeout,
@@ -128,19 +125,23 @@ class AnthropicClient:
                         if isinstance(args, str):
                             args = json.loads(args)
                         tc_id = tc.get("id", f"toolu_{len(converted)}")
-                        blocks.append({
-                            "type": "tool_use",
-                            "id": tc_id,
-                            "name": func["name"],
-                            "input": args,
-                        })
+                        blocks.append(
+                            {
+                                "type": "tool_use",
+                                "id": tc_id,
+                                "name": func["name"],
+                                "input": args,
+                            }
+                        )
                         pending_tool_use_ids.append(tc_id)
                     converted.append({"role": "assistant", "content": blocks})
                 else:
-                    converted.append({
-                        "role": "assistant",
-                        "content": msg.get("content", ""),
-                    })
+                    converted.append(
+                        {
+                            "role": "assistant",
+                            "content": msg.get("content", ""),
+                        }
+                    )
                 continue
 
             if role == "tool":
@@ -161,22 +162,26 @@ class AnthropicClient:
                 if pending_tool_use_ids:
                     blocks = []
                     for tc_id in pending_tool_use_ids:
-                        blocks.append({
-                            "type": "tool_result",
-                            "tool_use_id": tc_id,
-                            "content": "Not executed.",
-                            "is_error": True,
-                        })
+                        blocks.append(
+                            {
+                                "type": "tool_result",
+                                "tool_use_id": tc_id,
+                                "content": "Not executed.",
+                                "is_error": True,
+                            }
+                        )
                     pending_tool_use_ids.clear()
                     text = msg.get("content", "")
                     if text:
                         blocks.append({"type": "text", "text": text})
                     converted.append({"role": "user", "content": blocks})
                 else:
-                    converted.append({
-                        "role": "user",
-                        "content": msg.get("content", ""),
-                    })
+                    converted.append(
+                        {
+                            "role": "user",
+                            "content": msg.get("content", ""),
+                        }
+                    )
                 continue
 
         # Merge consecutive same-role messages (Anthropic requires strict
@@ -236,13 +241,14 @@ class AnthropicClient:
         self,
         messages: list[dict[str, Any]],
         tools: list[ToolSpec] | None,
+        max_tokens: int | None = None,
     ) -> dict[str, Any]:
         """Build kwargs dict for messages.create / messages.stream."""
         system, converted = self._convert_messages(messages)
         kwargs: dict[str, Any] = {
             "model": self.model,
             "messages": converted,
-            "max_tokens": self.max_tokens,
+            "max_tokens": max_tokens if max_tokens is not None else self.max_tokens,
         }
         if system:
             kwargs["system"] = system
@@ -257,6 +263,7 @@ class AnthropicClient:
         messages: list[dict[str, Any]],
         tools: list[ToolSpec] | None = None,
         sampling: dict[str, Any] | None = None,
+        max_tokens: int | None = None,
     ) -> LLMResponse:
         """Send messages via the Anthropic Messages API.
 
@@ -269,13 +276,11 @@ class AnthropicClient:
                 "AnthropicClient ignores per-call sampling overrides: %s",
                 sorted(sampling.keys()),
             )
-        kwargs = self._build_kwargs(messages, tools)
+        kwargs = self._build_kwargs(messages, tools, max_tokens=max_tokens)
         try:
             response = await self._client.messages.create(**kwargs)
         except anthropic.APIError as exc:
-            raise BackendError(
-                getattr(exc, "status_code", 0), str(exc)
-            ) from exc
+            raise BackendError(getattr(exc, "status_code", 0), str(exc)) from exc
         self.last_usage = {
             "input_tokens": response.usage.input_tokens,
             "output_tokens": response.usage.output_tokens,
@@ -287,6 +292,7 @@ class AnthropicClient:
         messages: list[dict[str, Any]],
         tools: list[ToolSpec] | None = None,
         sampling: dict[str, Any] | None = None,
+        max_tokens: int | None = None,
     ) -> AsyncIterator[StreamChunk]:
         """Stream via the Anthropic Messages API.
 
@@ -297,7 +303,7 @@ class AnthropicClient:
                 "AnthropicClient ignores per-call sampling overrides: %s",
                 sorted(sampling.keys()),
             )
-        kwargs = self._build_kwargs(messages, tools)
+        kwargs = self._build_kwargs(messages, tools, max_tokens=max_tokens)
 
         accumulated_text = ""
         # Track multiple tool_use blocks by index.
@@ -308,10 +314,12 @@ class AnthropicClient:
                 async for event in stream:
                     if event.type == "content_block_start":
                         if event.content_block.type == "tool_use":
-                            tool_blocks.append({
-                                "name": event.content_block.name,
-                                "args": "",
-                            })
+                            tool_blocks.append(
+                                {
+                                    "name": event.content_block.name,
+                                    "args": "",
+                                }
+                            )
                             _current_tool_idx = len(tool_blocks) - 1
                     elif event.type == "content_block_delta":
                         if event.delta.type == "text_delta":
@@ -342,9 +350,7 @@ class AnthropicClient:
                             ]
                         else:
                             final = TextResponse(content=accumulated_text)
-                        yield StreamChunk(
-                            type=ChunkType.FINAL, response=final
-                        )
+                        yield StreamChunk(type=ChunkType.FINAL, response=final)
                 # Grab usage from the final accumulated message.
                 final_message = await stream.get_final_message()
                 self.last_usage = {
@@ -352,9 +358,7 @@ class AnthropicClient:
                     "output_tokens": final_message.usage.output_tokens,
                 }
         except anthropic.APIError as exc:
-            raise BackendError(
-                getattr(exc, "status_code", 0), str(exc)
-            ) from exc
+            raise BackendError(getattr(exc, "status_code", 0), str(exc)) from exc
 
     async def get_context_length(self) -> int | None:
         """Claude models have 200K context."""

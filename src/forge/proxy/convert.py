@@ -7,10 +7,10 @@ import uuid
 from typing import Any
 
 from forge.core.messages import Message, MessageMeta, MessageRole, MessageType, ToolCallInfo
-from forge.core.workflow import ToolCall, TextResponse
-
+from forge.core.workflow import ToolCall
 
 # ── Inbound: OpenAI request → forge Messages ─────────────────────
+
 
 def openai_to_messages(openai_messages: list[dict[str, Any]]) -> list[Message]:
     """Convert OpenAI chat completions messages to forge Message objects.
@@ -35,14 +35,16 @@ def openai_to_messages(openai_messages: list[dict[str, Any]]) -> list[Message]:
             content = "\n".join(parts)
 
         if role_str == "system":
-            messages.append(Message(
-                MessageRole.SYSTEM,
-                content,
-                MessageMeta(MessageType.SYSTEM_PROMPT),
-            ))
+            messages.append(
+                Message(
+                    MessageRole.SYSTEM,
+                    content,
+                    MessageMeta(MessageType.SYSTEM_PROMPT),
+                )
+            )
 
         elif role_str == "assistant":
-            if "tool_calls" in msg and msg["tool_calls"]:
+            if msg.get("tool_calls"):
                 tc_infos = []
                 for tc in msg["tool_calls"]:
                     func = tc.get("function", {})
@@ -50,47 +52,58 @@ def openai_to_messages(openai_messages: list[dict[str, Any]]) -> list[Message]:
                     if isinstance(args, str):
                         args = json.loads(args)
                     tc_id = tc.get("id", f"call_{uuid.uuid4().hex[:8]}")
-                    tc_infos.append(ToolCallInfo(
-                        name=func.get("name", ""),
-                        args=args,
-                        call_id=tc_id,
-                    ))
-                messages.append(Message(
-                    MessageRole.ASSISTANT,
-                    content,
-                    MessageMeta(MessageType.TOOL_CALL),
-                    tool_calls=tc_infos,
-                ))
+                    tc_infos.append(
+                        ToolCallInfo(
+                            name=func.get("name", ""),
+                            args=args,
+                            call_id=tc_id,
+                        )
+                    )
+                messages.append(
+                    Message(
+                        MessageRole.ASSISTANT,
+                        content,
+                        MessageMeta(MessageType.TOOL_CALL),
+                        tool_calls=tc_infos,
+                    )
+                )
             else:
-                messages.append(Message(
-                    MessageRole.ASSISTANT,
-                    content,
-                    MessageMeta(MessageType.TEXT_RESPONSE),
-                ))
+                messages.append(
+                    Message(
+                        MessageRole.ASSISTANT,
+                        content,
+                        MessageMeta(MessageType.TEXT_RESPONSE),
+                    )
+                )
 
         elif role_str == "tool":
             tool_call_id = msg.get("tool_call_id", "")
             tool_name = msg.get("name", "")
-            messages.append(Message(
-                MessageRole.TOOL,
-                content,
-                MessageMeta(MessageType.TOOL_RESULT),
-                tool_name=tool_name,
-                tool_call_id=tool_call_id,
-            ))
+            messages.append(
+                Message(
+                    MessageRole.TOOL,
+                    content,
+                    MessageMeta(MessageType.TOOL_RESULT),
+                    tool_name=tool_name,
+                    tool_call_id=tool_call_id,
+                )
+            )
 
         else:
             # "user" or anything else
-            messages.append(Message(
-                MessageRole.USER,
-                content,
-                MessageMeta(MessageType.USER_INPUT),
-            ))
+            messages.append(
+                Message(
+                    MessageRole.USER,
+                    content,
+                    MessageMeta(MessageType.USER_INPUT),
+                )
+            )
 
     return messages
 
 
 # ── Outbound: forge response → OpenAI format ─────────────────────
+
 
 def tool_calls_to_openai(
     tool_calls: list[ToolCall],
@@ -98,29 +111,33 @@ def tool_calls_to_openai(
 ) -> dict[str, Any]:
     """Convert forge ToolCalls to an OpenAI chat completions response object."""
     tc_list = []
-    for i, tc in enumerate(tool_calls):
-        tc_list.append({
-            "id": f"call_{uuid.uuid4().hex[:8]}",
-            "type": "function",
-            "function": {
-                "name": tc.tool,
-                "arguments": json.dumps(tc.args),
-            },
-        })
+    for _i, tc in enumerate(tool_calls):
+        tc_list.append(
+            {
+                "id": f"call_{uuid.uuid4().hex[:8]}",
+                "type": "function",
+                "function": {
+                    "name": tc.tool,
+                    "arguments": json.dumps(tc.args),
+                },
+            }
+        )
 
     return {
         "id": f"chatcmpl-{uuid.uuid4().hex[:12]}",
         "object": "chat.completion",
         "model": model,
-        "choices": [{
-            "index": 0,
-            "message": {
-                "role": "assistant",
-                "content": tool_calls[0].reasoning or None,
-                "tool_calls": tc_list,
-            },
-            "finish_reason": "tool_calls",
-        }],
+        "choices": [
+            {
+                "index": 0,
+                "message": {
+                    "role": "assistant",
+                    "content": tool_calls[0].reasoning or None,
+                    "tool_calls": tc_list,
+                },
+                "finish_reason": "tool_calls",
+            }
+        ],
         "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
     }
 
@@ -134,19 +151,22 @@ def text_response_to_openai(
         "id": f"chatcmpl-{uuid.uuid4().hex[:12]}",
         "object": "chat.completion",
         "model": model,
-        "choices": [{
-            "index": 0,
-            "message": {
-                "role": "assistant",
-                "content": text,
-            },
-            "finish_reason": "stop",
-        }],
+        "choices": [
+            {
+                "index": 0,
+                "message": {
+                    "role": "assistant",
+                    "content": text,
+                },
+                "finish_reason": "stop",
+            }
+        ],
         "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
     }
 
 
 # ── SSE streaming helpers ────────────────────────────────────────
+
 
 def tool_calls_to_sse_events(
     tool_calls: list[ToolCall],
@@ -162,53 +182,67 @@ def tool_calls_to_sse_events(
 
     # If there's reasoning, send it as a content delta first
     if tool_calls[0].reasoning:
-        events.append({
-            "id": cmpl_id,
-            "object": "chat.completion.chunk",
-            "model": model,
-            "choices": [{
-                "index": 0,
-                "delta": {"role": "assistant", "content": tool_calls[0].reasoning},
-                "finish_reason": None,
-            }],
-        })
+        events.append(
+            {
+                "id": cmpl_id,
+                "object": "chat.completion.chunk",
+                "model": model,
+                "choices": [
+                    {
+                        "index": 0,
+                        "delta": {"role": "assistant", "content": tool_calls[0].reasoning},
+                        "finish_reason": None,
+                    }
+                ],
+            }
+        )
 
     # Tool call deltas
     for i, tc in enumerate(tool_calls):
         tc_id = f"call_{uuid.uuid4().hex[:8]}"
         # First chunk for this tool: name + start of args
-        events.append({
+        events.append(
+            {
+                "id": cmpl_id,
+                "object": "chat.completion.chunk",
+                "model": model,
+                "choices": [
+                    {
+                        "index": 0,
+                        "delta": {
+                            "tool_calls": [
+                                {
+                                    "index": i,
+                                    "id": tc_id,
+                                    "type": "function",
+                                    "function": {
+                                        "name": tc.tool,
+                                        "arguments": json.dumps(tc.args),
+                                    },
+                                }
+                            ],
+                        },
+                        "finish_reason": None,
+                    }
+                ],
+            }
+        )
+
+    # Final chunk with finish_reason
+    events.append(
+        {
             "id": cmpl_id,
             "object": "chat.completion.chunk",
             "model": model,
-            "choices": [{
-                "index": 0,
-                "delta": {
-                    "tool_calls": [{
-                        "index": i,
-                        "id": tc_id,
-                        "type": "function",
-                        "function": {
-                            "name": tc.tool,
-                            "arguments": json.dumps(tc.args),
-                        },
-                    }],
-                },
-                "finish_reason": None,
-            }],
-        })
-
-    # Final chunk with finish_reason
-    events.append({
-        "id": cmpl_id,
-        "object": "chat.completion.chunk",
-        "model": model,
-        "choices": [{
-            "index": 0,
-            "delta": {},
-            "finish_reason": "tool_calls",
-        }],
-    })
+            "choices": [
+                {
+                    "index": 0,
+                    "delta": {},
+                    "finish_reason": "tool_calls",
+                }
+            ],
+        }
+    )
 
     return events
 
@@ -227,7 +261,7 @@ def text_to_sse_events(
     events: list[dict[str, Any]] = []
 
     if chunk_size > 0 and len(text) > chunk_size:
-        chunks = [text[i:i + chunk_size] for i in range(0, len(text), chunk_size)]
+        chunks = [text[i : i + chunk_size] for i in range(0, len(text), chunk_size)]
     else:
         chunks = [text]
 
@@ -235,28 +269,36 @@ def text_to_sse_events(
         delta: dict[str, Any] = {"content": chunk}
         if i == 0:
             delta["role"] = "assistant"
-        events.append({
+        events.append(
+            {
+                "id": cmpl_id,
+                "object": "chat.completion.chunk",
+                "model": model,
+                "choices": [
+                    {
+                        "index": 0,
+                        "delta": delta,
+                        "finish_reason": None,
+                    }
+                ],
+            }
+        )
+
+    # Final chunk
+    events.append(
+        {
             "id": cmpl_id,
             "object": "chat.completion.chunk",
             "model": model,
-            "choices": [{
-                "index": 0,
-                "delta": delta,
-                "finish_reason": None,
-            }],
-        })
-
-    # Final chunk
-    events.append({
-        "id": cmpl_id,
-        "object": "chat.completion.chunk",
-        "model": model,
-        "choices": [{
-            "index": 0,
-            "delta": {},
-            "finish_reason": "stop",
-        }],
-    })
+            "choices": [
+                {
+                    "index": 0,
+                    "delta": {},
+                    "finish_reason": "stop",
+                }
+            ],
+        }
+    )
 
     return events
 
@@ -307,14 +349,16 @@ def anthropic_to_openai_messages(body: dict[str, Any]) -> list[dict[str, Any]]:
                 for block in content_blocks:
                     if isinstance(block, dict):
                         if block.get("type") == "tool_use":
-                            tool_calls.append({
-                                "id": block.get("id", f"call_{uuid.uuid4().hex[:8]}"),
-                                "type": "function",
-                                "function": {
-                                    "name": block.get("name", ""),
-                                    "arguments": json.dumps(block.get("input", {})),
-                                },
-                            })
+                            tool_calls.append(
+                                {
+                                    "id": block.get("id", f"call_{uuid.uuid4().hex[:8]}"),
+                                    "type": "function",
+                                    "function": {
+                                        "name": block.get("name", ""),
+                                        "arguments": json.dumps(block.get("input", {})),
+                                    },
+                                }
+                            )
                         elif block.get("type") == "text":
                             text_parts.append(block.get("text", ""))
                         elif block.get("type") == "thinking":
@@ -326,24 +370,30 @@ def anthropic_to_openai_messages(body: dict[str, Any]) -> list[dict[str, Any]]:
                     ai_msg["tool_calls"] = tool_calls
                 messages.append(ai_msg)
             else:
-                messages.append({
-                    "role": "assistant",
-                    "content": content_blocks or "",
-                })
+                messages.append(
+                    {
+                        "role": "assistant",
+                        "content": content_blocks or "",
+                    }
+                )
 
         elif role == "user":
             if isinstance(content_blocks, list):
                 # Check if there are tool_result blocks
                 tool_results = [b for b in content_blocks if isinstance(b, dict) and b.get("type") == "tool_result"]
-                text_blocks = [b for b in content_blocks if isinstance(b, dict) and b.get("type") in ("text", "thinking")]
+                text_blocks = [
+                    b for b in content_blocks if isinstance(b, dict) and b.get("type") in ("text", "thinking")
+                ]
 
                 for tr in tool_results:
-                    messages.append({
-                        "role": "tool",
-                        "tool_call_id": tr.get("tool_use_id", ""),
-                        "content": tr.get("content", ""),
-                        "name": tr.get("name", ""),
-                    })
+                    messages.append(
+                        {
+                            "role": "tool",
+                            "tool_call_id": tr.get("tool_use_id", ""),
+                            "content": tr.get("content", ""),
+                            "name": tr.get("name", ""),
+                        }
+                    )
 
                 if text_blocks:
                     text_content = ""
@@ -352,15 +402,19 @@ def anthropic_to_openai_messages(body: dict[str, Any]) -> list[dict[str, Any]]:
                             text_content += f"<think>{tb.get('text', '')}</think>"
                         else:
                             text_content += tb.get("text", "")
-                    messages.append({
-                        "role": "user",
-                        "content": text_content,
-                    })
+                    messages.append(
+                        {
+                            "role": "user",
+                            "content": text_content,
+                        }
+                    )
             else:
-                messages.append({
-                    "role": "user",
-                    "content": content_blocks or "",
-                })
+                messages.append(
+                    {
+                        "role": "user",
+                        "content": content_blocks or "",
+                    }
+                )
 
     return messages
 
@@ -395,12 +449,14 @@ def openai_to_anthropic_messages(messages: list[dict[str, Any]]) -> dict[str, An
                     args = func.get("arguments", "{}")
                     if isinstance(args, str):
                         args = json.loads(args)
-                    blocks.append({
-                        "type": "tool_use",
-                        "id": tc.get("id", f"toolu_{uuid.uuid4().hex[:8]}"),
-                        "name": func.get("name", ""),
-                        "input": args,
-                    })
+                    blocks.append(
+                        {
+                            "type": "tool_use",
+                            "id": tc.get("id", f"toolu_{uuid.uuid4().hex[:8]}"),
+                            "name": func.get("name", ""),
+                            "input": args,
+                        }
+                    )
             anthropic_msgs.append({"role": "assistant", "content": blocks if blocks else ""})
 
         elif role == "tool":
@@ -462,12 +518,14 @@ def openai_to_anthropic_response(openai_resp: dict[str, Any], model: str) -> dic
             args = func.get("arguments", "{}")
             if isinstance(args, str):
                 args = json.loads(args)
-            content_blocks.append({
-                "type": "tool_use",
-                "id": tc.get("id", f"toolu_{uuid.uuid4().hex[:8]}"),
-                "name": func.get("name", ""),
-                "input": args,
-            })
+            content_blocks.append(
+                {
+                    "type": "tool_use",
+                    "id": tc.get("id", f"toolu_{uuid.uuid4().hex[:8]}"),
+                    "name": func.get("name", ""),
+                    "input": args,
+                }
+            )
         # Reasoning/thinking goes as text block before tool_use
         if reasoning:
             content_blocks.insert(0, {"type": "text", "text": reasoning})
@@ -500,8 +558,12 @@ def openai_to_anthropic_sse(openai_events: list[dict[str, Any]], model: str) -> 
     events: list[dict[str, Any]] = []
     # Track tool_use blocks by index for streaming
     tool_indices: dict[int, dict[str, Any]] = {}
-    cmpl_id = openai_events[0].get("id", f"msg_{uuid.uuid4().hex[:12]}") if openai_events else f"msg_{uuid.uuid4().hex[:12]}"
+    cmpl_id = (
+        openai_events[0].get("id", f"msg_{uuid.uuid4().hex[:12]}") if openai_events else f"msg_{uuid.uuid4().hex[:12]}"
+    )
     accumulated_text = ""
+    next_index = 0  # Track next available content block index
+    text_started = False  # Whether content_block_start for text has been emitted
 
     for event in openai_events:
         choices = event.get("choices", [])
@@ -512,20 +574,23 @@ def openai_to_anthropic_sse(openai_events: list[dict[str, Any]], model: str) -> 
             # Text delta
             if "content" in delta and delta["content"] is not None:
                 accumulated_text += delta["content"]
-                events.append({
-                    "type": "content_block_start",
-                    "index": 0,
-                    "content_block": {"type": "text", "text": ""},
-                })
-                events.append({
-                    "type": "content_block_delta",
-                    "index": 0,
-                    "delta": {"type": "text_delta", "text": delta["content"]},
-                })
-                events.append({
-                    "type": "content_block_stop",
-                    "index": 0,
-                })
+                # Only emit content_block_start on the first text delta
+                if not text_started:
+                    events.append(
+                        {
+                            "type": "content_block_start",
+                            "index": next_index,
+                            "content_block": {"type": "text", "text": ""},
+                        }
+                    )
+                    text_started = True
+                events.append(
+                    {
+                        "type": "content_block_delta",
+                        "index": next_index,
+                        "delta": {"type": "text_delta", "text": delta["content"]},
+                    }
+                )
 
             # Tool call deltas
             tool_calls = delta.get("tool_calls", [])
@@ -539,29 +604,54 @@ def openai_to_anthropic_sse(openai_events: list[dict[str, Any]], model: str) -> 
                     if "function" in tc and "arguments" in tc.get("function", {}):
                         tool_indices[idx]["args"] += tc["function"]["arguments"]
 
-            # Final chunk
+            # Final chunk — emit content_block_stop for text and all tool_use blocks
             if finish_reason:
-                # Emit tool_use blocks
-                for tidx, tdata in sorted(tool_indices.items()):
-                    events.append({
-                        "type": "content_block_start",
-                        "index": tidx + 1,
-                        "content_block": {"type": "tool_use", "name": tdata["name"], "id": tdata["id"]},
-                    })
-                    events.append({
-                        "type": "content_block_delta",
-                        "index": tidx + 1,
-                        "delta": {"type": "input_json_delta", "partial_json": tdata["args"]},
-                    })
-                    events.append({
-                        "type": "content_block_stop",
-                        "index": tidx + 1,
-                    })
+                # Close text block if it was started
+                if text_started:
+                    events.append(
+                        {
+                            "type": "content_block_stop",
+                            "index": next_index,
+                        }
+                    )
 
-                events.append({
-                    "type": "message_stop",
-                    "stop_reason": _STOP_REASON_MAP_REV.get(finish_reason, "end_turn"),
-                })
+                # Emit tool_use blocks
+                for _tidx, tdata in sorted(tool_indices.items()):
+                    events.append(
+                        {
+                            "type": "content_block_start",
+                            "index": next_index,
+                            "content_block": {
+                                "type": "tool_use",
+                                "name": tdata["name"],
+                                "id": tdata["id"],
+                                "input": json.loads(tdata["args"])
+                                if isinstance(tdata["args"], str) and tdata["args"]
+                                else tdata["args"],
+                            },
+                        }
+                    )
+                    events.append(
+                        {
+                            "type": "content_block_delta",
+                            "index": next_index,
+                            "delta": {"type": "input_json_delta", "partial_json": tdata["args"]},
+                        }
+                    )
+                    events.append(
+                        {
+                            "type": "content_block_stop",
+                            "index": next_index,
+                        }
+                    )
+                    next_index += 1
+
+                events.append(
+                    {
+                        "type": "message_stop",
+                        "stop_reason": _STOP_REASON_MAP_REV.get(finish_reason, "end_turn"),
+                    }
+                )
 
     # Wrap in Anthropic SSE message format
     wrapped: list[dict[str, Any]] = []
@@ -569,26 +659,29 @@ def openai_to_anthropic_sse(openai_events: list[dict[str, Any]], model: str) -> 
         wrapped.append({**ev, "id": cmpl_id, "model": model})
 
     # Add message_start
-    wrapped.insert(0, {
-        "id": cmpl_id,
-        "type": "message_start",
-        "model": model,
-        "message": {
+    wrapped.insert(
+        0,
+        {
             "id": cmpl_id,
-            "type": "message",
-            "role": "assistant",
+            "type": "message_start",
             "model": model,
-            "content": [],
-            "stop_reason": "end_turn",
-            "stop_sequence": None,
-            "usage": {"input_tokens": 0, "output_tokens": 0},
+            "message": {
+                "id": cmpl_id,
+                "type": "message",
+                "role": "assistant",
+                "model": model,
+                "content": [],
+                "stop_reason": "end_turn",
+                "stop_sequence": None,
+                "usage": {"input_tokens": 0, "output_tokens": 0},
+            },
         },
-    })
-    # Add message_stop at end
-    wrapped.append({
-        "id": cmpl_id,
-        "type": "message_stop",
-    })
+    )
+
+    # Add message_stop if not already emitted (e.g. empty events)
+    has_stop = any(ev.get("type") == "message_stop" for ev in wrapped)
+    if not has_stop:
+        wrapped.append({"id": cmpl_id, "type": "message_stop"})
 
     return wrapped
 
@@ -608,14 +701,16 @@ def anthropic_to_openai_response(anthropic_resp: dict[str, Any], model: str) -> 
     for block in content_blocks:
         if isinstance(block, dict):
             if block.get("type") == "tool_use":
-                tool_calls.append({
-                    "id": block.get("id", f"call_{uuid.uuid4().hex[:8]}"),
-                    "type": "function",
-                    "function": {
-                        "name": block.get("name", ""),
-                        "arguments": json.dumps(block.get("input", {})),
-                    },
-                })
+                tool_calls.append(
+                    {
+                        "id": block.get("id", f"call_{uuid.uuid4().hex[:8]}"),
+                        "type": "function",
+                        "function": {
+                            "name": block.get("name", ""),
+                            "arguments": json.dumps(block.get("input", {})),
+                        },
+                    }
+                )
             elif block.get("type") == "text":
                 text_parts.append(block.get("text", ""))
             elif block.get("type") == "thinking":
@@ -640,11 +735,13 @@ def anthropic_to_openai_response(anthropic_resp: dict[str, Any], model: str) -> 
         "id": anthropic_resp.get("id", f"chatcmpl-{uuid.uuid4().hex[:12]}"),
         "object": "chat.completion",
         "model": model,
-        "choices": [{
-            "index": 0,
-            "message": message,
-            "finish_reason": finish_reason,
-        }],
+        "choices": [
+            {
+                "index": 0,
+                "message": message,
+                "finish_reason": finish_reason,
+            }
+        ],
         "usage": openai_usage,
     }
 
@@ -683,75 +780,97 @@ def anthropic_to_openai_sse(anthropic_events: list[dict[str, Any]], model: str) 
 
             if delta_type == "text_delta":
                 accumulated_text += delta.get("text", "")
-                events.append({
-                    "id": cmpl_id,
-                    "object": "chat.completion.chunk",
-                    "model": model,
-                    "choices": [{
-                        "index": 0,
-                        "delta": {"content": delta.get("text", "")},
-                        "finish_reason": None,
-                    }],
-                })
+                events.append(
+                    {
+                        "id": cmpl_id,
+                        "object": "chat.completion.chunk",
+                        "model": model,
+                        "choices": [
+                            {
+                                "index": 0,
+                                "delta": {"content": delta.get("text", "")},
+                                "finish_reason": None,
+                            }
+                        ],
+                    }
+                )
 
             elif delta_type == "input_json_delta" and idx in tool_blocks:
                 partial = delta.get("partial_json", "")
                 tool_blocks[idx]["args"] += partial
-                events.append({
-                    "id": cmpl_id,
-                    "object": "chat.completion.chunk",
-                    "model": model,
-                    "choices": [{
-                        "index": 0,
-                        "delta": {
-                            "tool_calls": [{
-                                "index": current_tool_idx,
-                                "id": tool_blocks[idx].get("id", ""),
-                                "type": "function",
-                                "function": {"arguments": partial},
-                            }]
-                        },
-                        "finish_reason": None,
-                    }],
-                })
+                events.append(
+                    {
+                        "id": cmpl_id,
+                        "object": "chat.completion.chunk",
+                        "model": model,
+                        "choices": [
+                            {
+                                "index": 0,
+                                "delta": {
+                                    "tool_calls": [
+                                        {
+                                            "index": current_tool_idx,
+                                            "id": tool_blocks[idx].get("id", ""),
+                                            "type": "function",
+                                            "function": {"arguments": partial},
+                                        }
+                                    ]
+                                },
+                                "finish_reason": None,
+                            }
+                        ],
+                    }
+                )
                 current_tool_idx += 1
 
         elif ev_type == "message_stop":
             stop_reason = event.get("stop_reason", "end_turn")
             finish_reason = _STOP_REASON_MAP.get(stop_reason, "stop")
-            events.append({
-                "id": cmpl_id,
-                "object": "chat.completion.chunk",
-                "model": model,
-                "choices": [{
-                    "index": 0,
-                    "delta": {},
-                    "finish_reason": finish_reason,
-                }],
-            })
+            events.append(
+                {
+                    "id": cmpl_id,
+                    "object": "chat.completion.chunk",
+                    "model": model,
+                    "choices": [
+                        {
+                            "index": 0,
+                            "delta": {},
+                            "finish_reason": finish_reason,
+                        }
+                    ],
+                }
+            )
 
     # If we have accumulated text but no SSE events were generated,
     # send the full text as a single chunk
     if not events and accumulated_text:
-        events.append({
-            "id": cmpl_id,
-            "object": "chat.completion.chunk",
-            "model": model,
-            "choices": [{
-                "index": 0,
-                "delta": {"role": "assistant", "content": accumulated_text},
-                "finish_reason": None,
-            }],
-        })
-        events.append({
-            "id": cmpl_id,
-            "object": "chat.completion.chunk",
-            "model": model,
-            "choices": [{
-                "index": 0,
-                "delta": {},
-                "finish_reason": "stop",
-            }],
-        })
+        events.append(
+            {
+                "id": cmpl_id,
+                "object": "chat.completion.chunk",
+                "model": model,
+                "choices": [
+                    {
+                        "index": 0,
+                        "delta": {"role": "assistant", "content": accumulated_text},
+                        "finish_reason": None,
+                    }
+                ],
+            }
+        )
+        events.append(
+            {
+                "id": cmpl_id,
+                "object": "chat.completion.chunk",
+                "model": model,
+                "choices": [
+                    {
+                        "index": 0,
+                        "delta": {},
+                        "finish_reason": "stop",
+                    }
+                ],
+            }
+        )
 
     return events

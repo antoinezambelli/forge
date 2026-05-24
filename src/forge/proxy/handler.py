@@ -2,27 +2,24 @@
 
 from __future__ import annotations
 
-import json
 import logging
 from typing import Any
 
 from forge.clients.base import LLMClient
 from forge.context.manager import ContextManager
 from forge.core.inference import fold_and_serialize, run_inference
-from forge.core.workflow import ToolCall, ToolSpec, TextResponse
+from forge.core.workflow import TextResponse, ToolCall, ToolSpec
 from forge.errors import ToolCallError
 from forge.guardrails import ErrorTracker, ResponseValidator
 from forge.proxy.convert import (
-    openai_to_messages,
-    tool_calls_to_openai,
-    tool_calls_to_sse_events,
-    text_response_to_openai,
-    text_to_sse_events,
     anthropic_to_openai_messages,
     openai_to_anthropic_response,
     openai_to_anthropic_sse,
-    anthropic_to_openai_response,
-    anthropic_to_openai_sse,
+    openai_to_messages,
+    text_response_to_openai,
+    text_to_sse_events,
+    tool_calls_to_openai,
+    tool_calls_to_sse_events,
 )
 from forge.tools.respond import RESPOND_TOOL_NAME, respond_spec
 
@@ -87,9 +84,15 @@ def _format_tool_calls(
             return tool_calls_to_sse_events(tool_calls, model)
         return tool_calls_to_openai(tool_calls, model)
 _SAMPLING_FIELDS = (
-    "temperature", "top_p", "top_k", "min_p",
-    "repeat_penalty", "presence_penalty", "seed",
-    "chat_template_kwargs", "model",
+    "temperature",
+    "top_p",
+    "top_k",
+    "min_p",
+    "repeat_penalty",
+    "presence_penalty",
+    "seed",
+    "chat_template_kwargs",
+    "model",
 )
 
 
@@ -115,11 +118,13 @@ def _extract_tool_specs(request_tools: list[dict[str, Any]] | None) -> list[Tool
         name = func.get("name", "")
         description = func.get("description", "")
         parameters = func.get("parameters", {})
-        specs.append(ToolSpec.from_json_schema(
-            name=name,
-            description=description,
-            schema=parameters,
-        ))
+        specs.append(
+            ToolSpec.from_json_schema(
+                name=name,
+                description=description,
+                schema=parameters,
+            )
+        )
     return specs
 
 
@@ -159,6 +164,7 @@ async def handle_chat_completions(
     is_stream = body.get("stream", False)
     model_name = body.get("model", "forge")
     sampling = _extract_sampling(body)
+    max_tokens = body.get("max_tokens")
 
     # Convert inbound
     messages = openai_to_messages(openai_messages)
@@ -179,9 +185,11 @@ async def handle_chat_completions(
         logger.info("No tools in request, passing through to backend")
         api_format = getattr(client, "api_format", "ollama")
         api_messages = fold_and_serialize(messages, api_format)
-        response = await client.send(api_messages, tools=None, sampling=sampling)
+        response = await client.send(api_messages, tools=None, sampling=sampling, max_tokens=max_tokens)
         text = response.content if isinstance(response, TextResponse) else ""
         return _format_response(text, is_stream, model_name, anthropic_backend)
+
+    logger.info("Guardrails active: tools=%s", tool_names)
 
     # Set up guardrails
     validator = ResponseValidator(tool_names, rescue_enabled=rescue_enabled)
@@ -197,6 +205,7 @@ async def handle_chat_completions(
             error_tracker=error_tracker,
             tool_specs=tool_specs,
             sampling=sampling,
+            max_tokens=max_tokens,
         )
     except ToolCallError as exc:
         # Retries exhausted — the model kept returning text instead of tool
@@ -211,6 +220,7 @@ async def handle_chat_completions(
         return _format_response("", is_stream, model_name, anthropic_backend)
 
     tool_calls = result.response
+    logger.info("Model returned %d tool call(s): %s", len(tool_calls), [tc.tool for tc in tool_calls])
 
     # Strip respond() calls — convert to plain text for the client.
     # If the model called respond(message="..."), the client sees a
@@ -273,14 +283,16 @@ async def handle_messages(
     if anthropic_tools:
         openai_body["tools"] = []
         for tool in anthropic_tools:
-            openai_body["tools"].append({
-                "type": "function",
-                "function": {
-                    "name": tool["name"],
-                    "description": tool.get("description", ""),
-                    "parameters": tool.get("input_schema", {}),
-                },
-            })
+            openai_body["tools"].append(
+                {
+                    "type": "function",
+                    "function": {
+                        "name": tool["name"],
+                        "description": tool.get("description", ""),
+                        "parameters": tool.get("input_schema", {}),
+                    },
+                }
+            )
 
     # Map Anthropic sampling params to OpenAI
     if "temperature" in body:

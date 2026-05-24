@@ -118,6 +118,7 @@ async def run_inference(
     stream: bool = False,
     on_chunk: Callable[[StreamChunk], Awaitable[None]] | None = None,
     sampling: dict[str, Any] | None = None,
+    max_tokens: int | None = None,
 ) -> InferenceResult | None:
     """Send messages to the LLM with compaction, folding, validation, and retry.
 
@@ -163,14 +164,14 @@ async def run_inference(
     attempt_limit = max_retries + 1
     if max_attempts is not None:
         attempt_limit = min(attempt_limit, max_attempts)
-    attempts = 0
-
     for _attempt in range(attempt_limit):
-        attempts += 1
+        attempts = _attempt + 1
 
         # Compact
         compacted = context_manager.maybe_compact(
-            messages, step_index=step_index, step_hint=step_hint,
+            messages,
+            step_index=step_index,
+            step_hint=step_hint,
         )
         # Update the caller's list in-place if compaction changed it
         if compacted is not messages:
@@ -190,17 +191,19 @@ async def run_inference(
         # (TUI, CLI) can display it to the user.
         if context_warning:
             api_messages.append({"role": "user", "content": context_warning})
-            new_messages.append(Message(
-                MessageRole.USER,
-                context_warning,
-                MessageMeta(MessageType.CONTEXT_WARNING, step_index=step_index),
-            ))
+            new_messages.append(
+                Message(
+                    MessageRole.USER,
+                    context_warning,
+                    MessageMeta(MessageType.CONTEXT_WARNING, step_index=step_index),
+                )
+            )
 
         # Send
         if stream:
             response = await _send_streaming(client, api_messages, tool_specs, on_chunk, sampling)
         else:
-            response = await client.send(api_messages, tools=tool_specs, sampling=sampling)
+            response = await client.send(api_messages, tools=tool_specs, sampling=sampling, max_tokens=max_tokens)
 
         # Update context manager with real token count if available.
         _sync_token_count(client, context_manager)
@@ -222,8 +225,8 @@ async def run_inference(
         # Retry path
         error_tracker.record_retry()
         if error_tracker.retries_exhausted:
-            raw = response.content if isinstance(response, TextResponse) else str(
-                [(tc.tool, tc.args) for tc in response]
+            raw = (
+                response.content if isinstance(response, TextResponse) else str([(tc.tool, tc.args) for tc in response])
             )
             raise ToolCallError(
                 f"Retries exhausted after {max_retries} consecutive failed attempts",
@@ -311,7 +314,6 @@ async def _send_streaming(
             response = chunk.response
     if response is None:
         raise StreamError(
-            "Stream ended without FINAL chunk — the client adapter "
-            "may be malformed or the connection was interrupted"
+            "Stream ended without FINAL chunk — the client adapter may be malformed or the connection was interrupted"
         )
     return response
