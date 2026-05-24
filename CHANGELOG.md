@@ -2,6 +2,30 @@
 
 All notable changes to forge are documented here.
 
+## [0.7.1] — 2026-05-24
+
+Proxy hardening: forge now works with Claude Code. First PyPI release to include the Docker, model-pass-through, and token-usage work that landed on `main` after v0.7.0.
+
+### Added
+- **Anthropic Messages API on the proxy (`POST /v1/messages`).** Point Claude Code — or any Anthropic-protocol client — at a forge-guarded model. Two downstream shapes: **Path 2** (default, `--backend-protocol openai`) translates Anthropic ↔ OpenAI for local llama.cpp / Ollama and emits Anthropic SSE back; **Path 1** (`--backend-protocol anthropic`, external mode) forwards to an Anthropic-shape downstream (LiteLLM, the Anthropic API, a self-hosted proxy), passing unknown fields through verbatim. Adds a `base_url` kwarg on `AnthropicClient`. See the new "Using forge with Claude Code" section in the User Guide.
+- **`--mode {native,prompt}` proxy flag** — run prompt-injected function-calling through the proxy for OpenAI-compatible backends that lack a native tool-calling template, not just native FC. Closes #53.
+- **Real token-usage reporting through the proxy** — responses carry actual prompt/completion counts (previously hardcoded zeros), in both OpenAI (`usage.prompt_tokens/...`) and Anthropic (`usage.input_tokens/output_tokens`) shapes, streaming and non-streaming. #81 (thanks @mhajder).
+- **Per-request model-name pass-through for external backends** — the proxy honors the inbound `model` against external OpenAI-compatible backends. #80 (thanks @mhajder).
+- **Dockerfile** for running the proxy as a container. #79 (thanks @mhajder).
+
+### Changed
+- **`last_usage` unified on slot-keyed `{slot_id: TokenUsage}` across all clients.** `AnthropicClient` previously stored a flat `{input_tokens, output_tokens}` dict; it now uses the slot-0 convention `LlamafileClient` / `OllamaClient` already follow, so usage extraction has one contract.
+- **Inbound `model` rides the proxy's passthrough/extras channel** rather than the sampling map — a cleaner replacement for the #80 mechanism that keeps `model` out of `sampling`.
+
+### Fixed
+- **Proxy no longer hard-imports the optional `anthropic` SDK at load.** A plain `forge-guardrails` install (without the `[anthropic]` extra) can now start the proxy for local / OpenAI-shape backends; the SDK is imported lazily and only required for `--backend-protocol anthropic`.
+- **Proxy router tolerates query strings.** Requests like Claude Code's `POST /v1/messages?beta=true` route correctly instead of returning 404.
+- **`eval_runner` token accounting for local backends** — was silently counting zero tokens because it read the flat `last_usage` keys; now reads the slot-keyed `TokenUsage` (fixed by the unification above).
+
+### Known limitations
+- **`cache_control` is not preserved on Path 2.** OpenAI Chat Completions has no analog, so prompt-cache hints are dropped when the downstream is a local OpenAI-shape backend. Path 1 (Anthropic-shape downstream) preserves `cache_control` on clean turns. See ADR-015.
+- **Prompt-mode multi-turn tool convergence is model-dependent.** Some models reliably consume prompt-injected tool results across turns; others re-call the same tool. Native FC is the more robust default for heavy multi-turn tool use (e.g. Claude Code).
+
 ## [0.7.0] — 2026-05-22
 
 ### Added
