@@ -122,8 +122,12 @@ class HTTPServer:
                 await self._send_error(writer, 400, "Bad request")
                 return
 
-            method, path = parts[0], parts[1]
-            logger.info(">> %s %s", method, path)
+            method, raw_path = parts[0], parts[1]
+            logger.info(">> %s %s", method, raw_path)
+            # Strip the query string before routing. Real clients append
+            # query params (e.g. Claude Code POSTs /v1/messages?beta=true);
+            # exact-matching the raw target would 404 every such request.
+            path = raw_path.split("?", 1)[0]
 
             # Read headers
             headers = await self._read_headers(reader)
