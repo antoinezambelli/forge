@@ -17,21 +17,25 @@ def main() -> None:
         description="forge proxy — OpenAI-compatible proxy with guardrails",
     )
 
-    # Mode selection
-    group = parser.add_mutually_exclusive_group(required=True)
-    group.add_argument(
+    # Mode selection. External mode uses --backend-url; managed mode uses
+    # --backend (+ an identity flag). For an external vLLM server, pass both
+    # --backend-url and --backend vllm so the proxy selects the vLLM adapter.
+    # ProxyServer enforces "exactly one of url/backend" and the per-backend rules.
+    parser.add_argument(
         "--backend-url",
-        help="URL of externally managed backend (external mode)",
+        help="URL of an externally managed backend (external mode)",
     )
-    group.add_argument(
+    parser.add_argument(
         "--backend",
-        choices=["llamaserver", "llamafile", "ollama"],
-        help="Backend type (managed mode)",
+        choices=["llamaserver", "llamafile", "ollama", "vllm"],
+        help="Backend type. Required for managed mode; in external mode use "
+             "'vllm' to select the vLLM adapter (default adapter is llama.cpp).",
     )
 
     # Managed mode options
     parser.add_argument("--model", help="Model name (required for ollama)")
     parser.add_argument("--gguf", help="Path to GGUF file (llamaserver/llamafile)")
+    parser.add_argument("--model-path", help="Model directory or HF repo id (vllm, managed mode)")
     parser.add_argument("--backend-port", type=int, default=8080, help="Backend port (default: 8080)")
     parser.add_argument(
         "--budget-mode",
@@ -88,6 +92,7 @@ def main() -> None:
         backend=args.backend,
         model=args.model,
         gguf=args.gguf,
+        model_path=args.model_path,
         backend_port=args.backend_port,
         budget_mode=BudgetMode(args.budget_mode),
         budget_tokens=args.budget_tokens,

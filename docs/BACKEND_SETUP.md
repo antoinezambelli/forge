@@ -135,6 +135,46 @@ Notes:
 
 ---
 
+## vLLM
+
+Upstream: [vLLM docs](https://docs.vllm.ai). vLLM is a separate install (not a forge extra) — follow vLLM's guide for your CUDA/ROCm setup.
+
+Boot with server-side tool parsing for native function calling:
+
+```bash
+vllm serve /path/to/awq-dir \
+  --enable-auto-tool-choice --tool-call-parser hermes \
+  --port 8000
+```
+
+| Flag | Purpose |
+|---|---|
+| `--enable-auto-tool-choice` | **Required for native FC.** Without it, the `tools` parameter 400s. |
+| `--tool-call-parser <name>` | Parser matching the model family (`hermes`, `mistral`, `llama3_json`, …). |
+| `--reasoning-parser <name>` | Splits thinking into a separate `reasoning` field (reasoning models). |
+| `--max-model-len <N>` | Context size (forge reads it back from `/v1/models`). |
+| `--served-model-name <name>` | Alias clients must send in the `model` field (vLLM 404s on a mismatch). |
+
+vLLM parses tool calls and reasoning **server-side** (unlike llama.cpp's `--jinja` chat-template path), so there is no prompt-injection mode — `VLLMClient` is native-only.
+
+Smoke-test the server is up:
+
+```bash
+curl http://localhost:8000/v1/models
+```
+
+Forge client:
+
+```python
+from forge.clients import VLLMClient
+
+client = VLLMClient(model_path="/path/to/awq-dir")  # or a HuggingFace repo id
+```
+
+`model_path` is the canonical identity — a directory of safetensors/config or a HuggingFace repo id; its trailing segment is used for sampling-defaults lookup and the wire `model` field. Unlike llama.cpp, vLLM validates that field against its `--served-model-name`, so in proxy external mode forge auto-discovers the served name from `/v1/models` (pass `--backend vllm`).
+
+---
+
 ## Anthropic
 
 Anthropic is a published optional extra:

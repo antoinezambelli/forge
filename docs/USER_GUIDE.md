@@ -373,7 +373,7 @@ client = LlamafileClient(
 )
 ```
 
-For local-server backends, the GGUF (or llamafile) path is the canonical model identity — its filename stem (e.g. `Qwen3.5-27B-Q4_K_M`) is what forge uses for sampling-defaults lookup, the wire-format `model` field, and JSONL eval rows. Use Ollama-style strings only with `OllamaClient`.
+For local-server backends, the GGUF (or llamafile) path is the canonical model identity — its filename stem (e.g. `Qwen3.5-27B-Q4_K_M`) is what forge uses for sampling-defaults lookup, the wire-format `model` field, and JSONL eval rows. For vLLM the equivalent is `model_path` (a model directory or HF repo id), whose trailing segment serves the same role. Use Ollama-style strings only with `OllamaClient`.
 
 The flag is opt-in. Default behavior (`recommended_sampling=False`) leaves sampling to backend defaults; if forge has opinions about the model, it logs a one-shot INFO message pointing the caller at the flag. With `recommended_sampling=True`, an unknown model raises `UnsupportedModelError`.
 

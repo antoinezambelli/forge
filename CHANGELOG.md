@@ -2,6 +2,23 @@
 
 All notable changes to forge are documented here.
 
+## [0.7.2] — 2026-05-24
+
+vLLM backend support — serve AWQ/GPTQ and other vLLM-hosted models behind forge's guardrails, in both proxy modes and via `WorkflowRunner`.
+
+### Added
+- **vLLM backend (`VLLMClient`).** OpenAI-compatible client for a vLLM server, consuming vLLM's server-side `tool_calls` and `reasoning` (vLLM 0.21) fields. Native function calling only — vLLM parses tools server-side via `--enable-auto-tool-choice --tool-call-parser`, so there is no prompt-injection mode. Exported from `forge` and `forge.clients`.
+- **vLLM in managed + external proxy modes.** `--backend vllm --model-path <dir|hf-repo-id>` launches and manages a vLLM server; `--backend-url <url> --backend vllm` proxies an externally managed one. `setup_backend()` / `ServerManager` gain a `model_path` parameter (the vLLM identity, distinct from `gguf_path`).
+- **vLLM served-model-name discovery in external mode.** vLLM validates the request `model` field against its `--served-model-name` and 404s on a mismatch (unlike llama.cpp, which ignores the field). The proxy discovers the served name from `/v1/models` instead of sending a placeholder. #74 (thanks @srinathh).
+- **vLLM section in [Backend Setup](docs/BACKEND_SETUP.md)** covering the server flags and `VLLMClient` usage.
+
+### Changed
+- **Proxy managed mode now delegates to `setup_backend()`** instead of reimplementing the server-start/budget dance, so every managed backend (including vLLM) shares one path. No public API change — `ProxyServer` and the `forge.proxy` CLI keep their v0.7.1 signatures, with `model_path` / `--model-path` and the `vllm` backend added.
+- **External mode fails fast when a backend reports no context length** and no `--budget-tokens` is set, instead of silently falling back to an 8192-token budget that could truncate context. Anthropic-protocol downstreams are unaffected.
+
+### Known limitations
+- **The vLLM backend is unit-validated but was not exercised against a live vLLM server in this release cycle.** Its client and server-management code carry full unit coverage, and the proxy's protocol translation is verified end-to-end against llama.cpp (the proxy layer is backend-agnostic). `scripts/integration_test_proxy.py --vllm-url <url>` runs the full request battery against a real vLLM server when one is available.
+
 ## [0.7.1] — 2026-05-24
 
 Proxy hardening: forge now works with Claude Code. First PyPI release to include the Docker, model-pass-through, and token-usage work that landed on `main` after v0.7.0.

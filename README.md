@@ -22,7 +22,7 @@ Forge takes an 8B local model from single digits to 84% across forge's 26-scenar
 
 - **Guardrails middleware** — Use forge's reliability stack ([composable middleware](examples/foreign_loop.py)) inside your own orchestration loop. You control the loop; forge validates responses, rescues malformed tool calls, and enforces required steps.
 
-Supports Ollama, llama-server (llama.cpp), Llamafile, and Anthropic as backends.
+Supports Ollama, llama-server (llama.cpp), Llamafile, vLLM, and Anthropic as backends.
 
 ## Requirements
 
@@ -136,6 +136,9 @@ python -m forge.proxy --backend-url http://localhost:8080 --port 8081
 
 # Managed mode — forge starts the backend and the proxy together
 python -m forge.proxy --backend llamaserver --gguf path/to/model.gguf --port 8081
+
+# Managed vLLM — pass a model directory or HF repo id via --model-path
+python -m forge.proxy --backend vllm --model-path /path/to/awq-dir --port 8081
 ```
 
 Then configure your client to use `http://localhost:8081/v1` as the API base URL.
@@ -144,8 +147,8 @@ Then configure your client to use `http://localhost:8081/v1` as the API base URL
 
 **Backend compatibility:**
 
-- **Managed mode** spins up the backend for you. Supported backends: `llamaserver`, `llamafile`, `ollama` (use `--backend <name>` with `--gguf` for the GGUF-based backends, or `--model` for ollama).
-- **External mode** is backend-agnostic — forge talks `POST /v1/chat/completions` to whatever you point `--backend-url` at, as long as it speaks the OpenAI schema. Tool calls must come back in OpenAI `tool_calls` format or in one of forge's rescue-parsed formats (Mistral `[TOOL_CALLS]`, Qwen `<tool_call>` XML, fenced JSON).
+- **Managed mode** spins up the backend for you. Supported backends: `llamaserver`, `llamafile`, `ollama`, `vllm` (use `--backend <name>` with `--gguf` for the GGUF-based backends, `--model-path` for vllm, or `--model` for ollama).
+- **External mode** is backend-agnostic — forge talks `POST /v1/chat/completions` to whatever you point `--backend-url` at, as long as it speaks the OpenAI schema. Tool calls must come back in OpenAI `tool_calls` format or in one of forge's rescue-parsed formats (Mistral `[TOOL_CALLS]`, Qwen `<tool_call>` XML, fenced JSON). For a vLLM server, add `--backend vllm` so the proxy adopts vLLM's `--served-model-name` (vLLM 404s on a mismatched `model` field, unlike llama.cpp).
 
 ### What proxy mode fortifies
 
@@ -190,7 +193,7 @@ docker build -t forge-proxy .
 
 ```bash
 # Connect to an external backend (e.g. vLLM hosted on the same machine)
-docker run -p 8081:8081 forge-proxy --backend-url http://host.docker.internal:8000 --budget-mode manual --budget-tokens 8192
+docker run -p 8081:8081 forge-proxy --backend-url http://host.docker.internal:8000 --backend vllm --budget-mode manual --budget-tokens 8192
 ```
 
 Note: If your backend is running on `localhost` of the host machine, use `http://host.docker.internal:PORT` (on macOS/Windows) or the host's IP address to allow the container to reach it.
@@ -202,6 +205,7 @@ Note: If your backend is running on `localhost` of the host machine, use `http:/
 | **Ollama** | Easiest setup, model management built-in | Yes |
 | **llama-server** | Best performance, full control | Yes (with `--jinja`) |
 | **Llamafile** | Single binary, zero dependencies | No (prompt-injected) |
+| **vLLM** | High-throughput serving, AWQ/GPTQ weights | Yes (server-side parser) |
 | **Anthropic** | Frontier baseline, hybrid workflows | Yes |
 
 See [Backend Setup](docs/BACKEND_SETUP.md) for installation and [Model Guide](docs/MODEL_GUIDE.md) for which model to pick.

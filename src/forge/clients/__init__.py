@@ -3,6 +3,7 @@
 from forge.clients.base import ChunkType, LLMClient, StreamChunk
 from forge.clients.llamafile import LlamafileClient
 from forge.clients.ollama import OllamaClient
+from forge.clients.vllm import VLLMClient
 from forge.clients.sampling_defaults import (
     MODEL_SAMPLING_DEFAULTS,
     apply_sampling_defaults,
@@ -16,6 +17,7 @@ __all__ = [
     "MODEL_SAMPLING_DEFAULTS",
     "OllamaClient",
     "StreamChunk",
+    "VLLMClient",
     "apply_sampling_defaults",
     "get_sampling_defaults",
 ]

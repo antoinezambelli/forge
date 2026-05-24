@@ -11,31 +11,37 @@ import asyncio
 import logging
 import threading
 from pathlib import Path
-from typing import Any, Literal
+from typing import Literal
 
 from forge.clients.base import LLMClient
 from forge.clients.llamafile import LlamafileClient
 from forge.clients.ollama import OllamaClient
+from forge.clients.vllm import VLLMClient
 from forge.context.manager import ContextManager
 from forge.context.strategies import TieredCompact
 from forge.proxy.server import HTTPServer
-from forge.server import BudgetMode, ServerManager
+from forge.server import BudgetMode, ServerManager, setup_backend
 
 logger = logging.getLogger("forge.proxy")
 
 
 class ProxyServer:
-    """OpenAI-compatible proxy that applies forge guardrails transparently.
+    """OpenAI- and Anthropic-compatible proxy that applies forge guardrails transparently.
 
     Managed mode — forge starts the backend::
 
-        proxy = ProxyServer(backend="llamaserver", gguf="model.gguf")
-        proxy.start()   # starts llama-server on :8080 + proxy on :8081
+        ProxyServer(backend="llamaserver", gguf="model.gguf")
+        ProxyServer(backend="vllm", model_path="/path/to/awq-dir")
+        ProxyServer(backend="ollama", model="ministral-3:14b")
+        proxy.start()   # starts the backend on :8080 + proxy on :8081
         proxy.stop()    # stops both
 
     External mode — user manages the backend::
 
-        proxy = ProxyServer(backend_url="http://localhost:8080")
+        ProxyServer(backend_url="http://localhost:8080")                  # llama.cpp (default)
+        ProxyServer(backend_url="http://localhost:8000", backend="vllm")  # vLLM
+        ProxyServer(backend_url="https://api.anthropic.com",
+                    backend_protocol="anthropic")                         # Anthropic-shape
         proxy.start()   # starts proxy on :8081 only
         proxy.stop()
 
@@ -49,6 +55,7 @@ class ProxyServer:
         backend: str | None = None,
         model: str | None = None,
         gguf: str | Path | None = None,
+        model_path: str | Path | None = None,
         backend_port: int = 8080,
         budget_mode: BudgetMode = BudgetMode.BACKEND,
         budget_tokens: int | None = None,
@@ -65,12 +72,18 @@ class ProxyServer:
         """
         Args:
             backend_url: URL of an externally managed backend (external mode).
-            backend: Backend type — "llamaserver" or "ollama" (managed mode).
+            backend: Backend type — "llamaserver", "llamafile", "ollama", or
+                "vllm". Required for managed mode; in external mode it selects
+                the client adapter ("vllm" for a vLLM server, otherwise the
+                OpenAI-compatible llama.cpp adapter).
             model: Model name (managed mode, required for ollama).
             gguf: Path to GGUF file (managed mode, llamaserver/llamafile).
+            model_path: Path to a model directory or HF repo id (managed mode,
+                vllm only).
             backend_port: Port for the managed backend (default 8080).
             budget_mode: How to determine context budget.
-            budget_tokens: Explicit token budget (for MANUAL mode).
+            budget_tokens: Explicit token budget. In external mode this is
+                required if the backend doesn't report its context length.
             extra_flags: Additional CLI flags for the managed backend.
             host: Proxy listen host.
             port: Proxy listen port.
@@ -81,7 +94,8 @@ class ProxyServer:
             mode: Function-calling mode for OpenAI-compatible backends —
                 "native" uses the backend's native tools API, "prompt"
                 uses forge's prompt-injection fallback for backends
-                without a function-calling template.
+                without a function-calling template. Not applicable to vLLM
+                (parses tool calls server-side) or the Anthropic protocol.
             backend_protocol: Wire format of the external backend.
                 ``openai`` (default) for llama.cpp, vLLM, Ollama. ``anthropic``
                 for Anthropic-shape downstreams (the official Anthropic API,
@@ -102,11 +116,31 @@ class ProxyServer:
                 "backend_protocol='anthropic' requires external mode (backend_url=...). "
                 "Managed mode launches local llama.cpp / Ollama, which only speak OpenAI."
             )
+        if backend == "vllm" and backend_protocol == "anthropic":
+            raise ValueError(
+                "backend='vllm' speaks the OpenAI protocol; backend_protocol='anthropic' "
+                "is not applicable."
+            )
+        if backend == "vllm" and mode == "prompt":
+            raise ValueError(
+                "backend='vllm' parses tool calls server-side (native only); "
+                "mode='prompt' is not applicable."
+            )
+        # Managed mode: each backend requires its own identity field. Fail
+        # fast at construction with a clear message (mirrors setup_backend).
+        if backend_url is None:
+            if backend == "ollama" and model is None:
+                raise ValueError("backend='ollama' requires model")
+            if backend in ("llamaserver", "llamafile") and gguf is None:
+                raise ValueError(f"backend={backend!r} requires gguf")
+            if backend == "vllm" and model_path is None:
+                raise ValueError("backend='vllm' requires model_path")
 
         self._backend_url = backend_url
         self._backend = backend
         self._model = model
         self._gguf = gguf
+        self._model_path = model_path
         self._backend_port = backend_port
         self._budget_mode = budget_mode
         self._budget_tokens = budget_tokens
@@ -118,9 +152,10 @@ class ProxyServer:
         self._mode = mode
         self._backend_protocol = backend_protocol
 
-        # Auto-detect serialization: managed = single GPU = serialize
+        # Auto-detect serialization: managed (no external url) = single local
+        # GPU = serialize. External callers manage their own concurrency.
         if serialize is None:
-            self._serialize = backend is not None
+            self._serialize = backend_url is None
         else:
             self._serialize = serialize
 
@@ -179,92 +214,10 @@ class ProxyServer:
 
     async def _async_start(self, ready: threading.Event) -> None:
         """Async startup: backend + HTTP server."""
-        client: LLMClient
-        context_manager: ContextManager
-
         if self._backend_url is not None:
-            # External mode — connect to existing backend.
-            if self._backend_protocol == "anthropic":
-                # Path 1 — downstream speaks Anthropic Messages API
-                # (LiteLLM /v1/messages, real Anthropic, self-hosted proxy).
-                # AnthropicClient handles base_url and SDK retries; forge
-                # guardrails wrap its inference loop the same way they
-                # wrap any other client.
-                # Lazy import: the anthropic SDK is an optional dependency
-                # (forge-guardrails[anthropic]). Only Path 1 needs it, so
-                # Path 2 / local-backend users must not be forced to install
-                # it just to start the proxy.
-                try:
-                    from forge.clients.anthropic import AnthropicClient
-                except ImportError as exc:
-                    raise RuntimeError(
-                        "backend_protocol='anthropic' requires the anthropic SDK. "
-                        "Install it with: pip install 'forge-guardrails[anthropic]'"
-                    ) from exc
-                client = AnthropicClient(
-                    model=self._model or "claude",
-                    base_url=self._backend_url.rstrip("/"),
-                )
-                budget = self._budget_tokens or await client.get_context_length() or 8192
-            else:
-                # Path 2 / default — OpenAI-shape downstream.
-                # LlamafileClient expects base_url with /v1 suffix.
-                base = self._backend_url.rstrip("/")
-                if not base.endswith("/v1"):
-                    base = base + "/v1"
-                # External mode: caller manages the backend, so we don't have a
-                # GGUF path. "default" is a placeholder identity for the wire
-                # model field (llama-server ignores it) and JSONL model field.
-                client = LlamafileClient(
-                    gguf_path=self._model or "default",
-                    base_url=base,
-                    mode=self._mode,
-                )
-                if self._budget_tokens is not None:
-                    budget = self._budget_tokens
-                else:
-                    # Try to auto-detect from backend /props
-                    ctx_len = await client.get_context_length()
-                    budget = ctx_len if ctx_len is not None else 8192
-            context_manager = ContextManager(
-                strategy=TieredCompact(),
-                budget_tokens=budget,
-            )
+            client, context_manager = await self._setup_external()
         else:
-            # Managed mode
-            assert self._backend is not None
-            if self._backend == "ollama":
-                assert self._model is not None
-                client = OllamaClient(model=self._model)
-            else:
-                client = LlamafileClient(
-                    gguf_path=self._gguf or "default",
-                    base_url=f"http://localhost:{self._backend_port}/v1",
-                    mode=self._mode,
-                )
-
-            server_mgr = ServerManager(
-                backend=self._backend,
-                port=self._backend_port,
-            )
-            self._server_manager = server_mgr
-
-            budget = await server_mgr.start_with_budget(
-                model=self._model or "",
-                gguf_path=self._gguf or "",
-                mode="native",
-                budget_mode=self._budget_mode,
-                manual_tokens=self._budget_tokens,
-                extra_flags=self._extra_flags,
-            )
-
-            if self._backend == "ollama" and hasattr(client, "set_num_ctx"):
-                client.set_num_ctx(budget)
-
-            context_manager = ContextManager(
-                strategy=TieredCompact(),
-                budget_tokens=budget,
-            )
+            client, context_manager = await self._setup_managed()
 
         self._http_server = HTTPServer(
             client=client,
@@ -278,6 +231,135 @@ class ProxyServer:
         await self._http_server.start()
         self._started = True
         ready.set()
+
+    async def _setup_external(self) -> tuple[LLMClient, ContextManager]:
+        """External mode: connect to a caller-managed backend."""
+        assert self._backend_url is not None
+
+        if self._backend_protocol == "anthropic":
+            # Path 1 — downstream speaks the Anthropic Messages API
+            # (LiteLLM /v1/messages, real Anthropic, self-hosted proxy).
+            # AnthropicClient handles base_url and SDK retries; forge
+            # guardrails wrap its inference loop like any other client.
+            # Lazy import: the anthropic SDK is an optional dependency
+            # (forge-guardrails[anthropic]). Only Path 1 needs it, so
+            # Path 2 / local-backend users must not be forced to install
+            # it just to start the proxy.
+            try:
+                from forge.clients.anthropic import AnthropicClient
+            except ImportError as exc:
+                raise RuntimeError(
+                    "backend_protocol='anthropic' requires the anthropic SDK. "
+                    "Install it with: pip install 'forge-guardrails[anthropic]'"
+                ) from exc
+            client: LLMClient = AnthropicClient(
+                model=self._model or "claude",
+                base_url=self._backend_url.rstrip("/"),
+            )
+            # Anthropic models report a known context length; keep the legacy
+            # 8192 fallback rather than failing the well-behaved Path-1 case.
+            budget = self._budget_tokens or await client.get_context_length() or 8192
+            context_manager = ContextManager(
+                strategy=TieredCompact(),
+                budget_tokens=budget,
+            )
+            return client, context_manager
+
+        # Path 2 / default — OpenAI-shape downstream (llama.cpp or vLLM).
+        base = self._backend_url.rstrip("/")
+        if not base.endswith("/v1"):
+            base = base + "/v1"
+
+        if self._backend == "vllm":
+            client = VLLMClient(model_path="default", base_url=base)
+            # Unlike llama.cpp, vLLM validates the wire `model` field against
+            # its --served-model-name aliases (404 on mismatch). External mode
+            # has no model path to send, so discover the served identity from
+            # /v1/models instead of shipping the "default" placeholder.
+            served = await client.get_served_model_name()
+            if served:
+                logger.info("Discovered vLLM served model name: %s", served)
+                client.model_path = served
+                client.model = served
+            else:
+                logger.warning(
+                    "Could not discover a served model name from %s/models; "
+                    "sending placeholder 'default' (vLLM will 404 if it "
+                    "validates the model field)",
+                    base,
+                )
+        else:
+            # llamaserver / llamafile / unspecified — OpenAI-compatible adapter.
+            # Caller manages the backend, so we don't have a GGUF path. "default"
+            # is a placeholder identity for the wire model field (llama-server
+            # ignores it) and the JSONL model field.
+            client = LlamafileClient(
+                gguf_path=self._model or "default",
+                base_url=base,
+                mode=self._mode,
+            )
+
+        if self._budget_tokens is not None:
+            budget = self._budget_tokens
+        else:
+            ctx_len = await client.get_context_length()
+            if ctx_len is None:
+                raise RuntimeError(
+                    f"backend at {self._backend_url} did not report a context "
+                    "length; pass budget_tokens explicitly"
+                )
+            budget = ctx_len
+
+        context_manager = ContextManager(
+            strategy=TieredCompact(),
+            budget_tokens=budget,
+        )
+        return client, context_manager
+
+    async def _setup_managed(self) -> tuple[LLMClient, ContextManager]:
+        """Managed mode: forge starts the backend via setup_backend."""
+        assert self._backend is not None
+        client = self._build_managed_client()
+
+        # The backend process is always launched in native mode (--jinja is
+        # harmless and enables the native tools API where available); prompt
+        # mode is a client-side injection concern carried by the client.
+        # Pass each backend only its own identity field — setup_backend
+        # enforces mutual exclusivity.
+        server, context_manager = await setup_backend(
+            backend=self._backend,
+            model=self._model if self._backend == "ollama" else None,
+            gguf_path=self._gguf if self._backend in ("llamaserver", "llamafile") else None,
+            model_path=self._model_path if self._backend == "vllm" else None,
+            mode="native",
+            budget_mode=self._budget_mode,
+            manual_tokens=self._budget_tokens,
+            client=client,
+            port=self._backend_port,
+            extra_flags=self._extra_flags,
+        )
+        self._server_manager = server
+        return client, context_manager
+
+    def _build_managed_client(self) -> LLMClient:
+        """Construct the right client for the managed backend."""
+        base_url = f"http://localhost:{self._backend_port}/v1"
+        if self._backend == "ollama":
+            assert self._model is not None
+            return OllamaClient(model=self._model)
+        if self._backend in ("llamaserver", "llamafile"):
+            return LlamafileClient(
+                gguf_path=self._gguf or "default",
+                base_url=base_url,
+                mode=self._mode,
+            )
+        if self._backend == "vllm":
+            assert self._model_path is not None
+            return VLLMClient(
+                model_path=self._model_path,
+                base_url=base_url,
+            )
+        raise ValueError(f"unsupported backend: {self._backend!r}")
 
     async def _async_stop(self) -> None:
         """Async shutdown."""

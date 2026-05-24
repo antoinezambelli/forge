@@ -23,6 +23,7 @@ from forge.core.slot_worker import SlotWorker
 from forge.clients.base import ChunkType, LLMClient, StreamChunk, TokenUsage
 from forge.clients.llamafile import LlamafileClient
 from forge.clients.ollama import OllamaClient
+from forge.clients.vllm import VLLMClient
 from forge.context import (
     CompactEvent,
     CompactStrategy,
@@ -95,6 +96,7 @@ __all__ = [
     "LLMClient",
     "LlamafileClient",
     "OllamaClient",
+    "VLLMClient",
     "StreamChunk",
     "TokenUsage",
     # Context

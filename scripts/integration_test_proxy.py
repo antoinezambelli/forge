@@ -56,6 +56,8 @@ EXTERNAL_BACKEND_PORT = 18086
 EXTERNAL_PROXY_PORT = 18087
 MANAGED_BACKEND_PORT = 18088
 MANAGED_PROXY_PORT = 18089
+# External vLLM is user-managed (we only own the proxy port here).
+VLLM_PROXY_PORT = 18091
 
 LOG_FILE = Path(__file__).parent / "integration_test_proxy.log"
 
@@ -440,6 +442,38 @@ async def phase_managed(
         print("[managed] proxy + managed llama-server stopped")
 
 
+# ── Phase 3: External vLLM (opt-in) ──────────────────────────────────
+
+async def phase_external_vllm(vllm_url: str) -> list[tuple[str, str, str]]:
+    """Run the T1–T5 battery against a user-managed vLLM server.
+
+    External mode only — vLLM is not spawned/torn down here. The same
+    protocol-translation tests apply (the proxy layer is backend-agnostic);
+    this exercises VLLMClient + served-model-name discovery against a real
+    vLLM server. Start vLLM with ``--enable-auto-tool-choice
+    --tool-call-parser <name>`` (and ``--reasoning-parser`` for thinking
+    models) so the tool tests (T3–T5) have a native tool surface.
+    """
+    print("\n===== Phase 3: external vLLM (fc=native) =====")
+    print(f"      user-managed vLLM at {vllm_url}, proxy on :{VLLM_PROXY_PORT}")
+
+    from forge.proxy import ProxyServer
+    proxy = ProxyServer(
+        backend_url=vllm_url,
+        backend="vllm",
+        port=VLLM_PROXY_PORT,
+        mode="native",
+        backend_protocol="openai",
+    )
+    proxy.start()
+    print(f"[vllm] proxy ready at {proxy.url}")
+    try:
+        return await _run_all_tests(proxy.url)
+    finally:
+        proxy.stop()
+        print("[vllm] proxy stopped (vLLM server left running — user-managed)")
+
+
 # ── Entry point ──────────────────────────────────────────────────────
 
 def _print_summary(phase: str, results: list[tuple[str, str, str]]) -> None:
@@ -464,10 +498,19 @@ async def main() -> int:
     )
     parser.add_argument("--skip-external", action="store_true")
     parser.add_argument("--skip-managed", action="store_true")
+    parser.add_argument(
+        "--vllm-url", default=None,
+        help="Run an extra external-mode phase against a user-managed vLLM "
+             "server at this URL (e.g. http://localhost:8000). Start vLLM with "
+             "--enable-auto-tool-choice --tool-call-parser <name> for the tool "
+             "tests. Skipped if not provided. The --gguf flag is ignored for "
+             "this phase.",
+    )
     args = parser.parse_args()
 
     gguf = Path(args.gguf)
-    if not gguf.exists():
+    needs_gguf = not args.skip_external or not args.skip_managed
+    if needs_gguf and not gguf.exists():
         print(f"[FATAL] GGUF not found: {gguf}")
         return 2
 
@@ -491,6 +534,11 @@ async def main() -> int:
         man = await phase_managed(gguf, args.mode, extra_flags)
         _print_summary("managed", man)
         summaries.append(("managed", man))
+
+    if args.vllm_url:
+        vll = await phase_external_vllm(args.vllm_url)
+        _print_summary("vllm-external", vll)
+        summaries.append(("vllm-external", vll))
 
     print("\n===== Final =====")
     any_fail = False
