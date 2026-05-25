@@ -2,6 +2,79 @@
 
 All notable changes to forge are documented here.
 
+## [0.7.2] — 2026-05-24
+
+vLLM backend support — serve AWQ/GPTQ and other vLLM-hosted models behind forge's guardrails, in both proxy modes and via `WorkflowRunner`.
+
+### Added
+- **vLLM backend (`VLLMClient`).** OpenAI-compatible client for a vLLM server, consuming vLLM's server-side `tool_calls` and `reasoning` (vLLM 0.21) fields. Native function calling only — vLLM parses tools server-side via `--enable-auto-tool-choice --tool-call-parser`, so there is no prompt-injection mode. Exported from `forge` and `forge.clients`.
+- **vLLM in managed + external proxy modes.** `--backend vllm --model-path <dir|hf-repo-id>` launches and manages a vLLM server; `--backend-url <url> --backend vllm` proxies an externally managed one. `setup_backend()` / `ServerManager` gain a `model_path` parameter (the vLLM identity, distinct from `gguf_path`).
+- **vLLM served-model-name discovery in external mode.** vLLM validates the request `model` field against its `--served-model-name` and 404s on a mismatch (unlike llama.cpp, which ignores the field). The proxy discovers the served name from `/v1/models` instead of sending a placeholder. #74 (thanks @srinathh).
+- **vLLM section in [Backend Setup](docs/BACKEND_SETUP.md)** covering the server flags and `VLLMClient` usage.
+
+### Changed
+- **Proxy managed mode now delegates to `setup_backend()`** instead of reimplementing the server-start/budget dance, so every managed backend (including vLLM) shares one path. No public API change — `ProxyServer` and the `forge.proxy` CLI keep their v0.7.1 signatures, with `model_path` / `--model-path` and the `vllm` backend added.
+- **External mode fails fast when a backend reports no context length** and no `--budget-tokens` is set, instead of silently falling back to an 8192-token budget that could truncate context. Anthropic-protocol downstreams are unaffected.
+
+### Known limitations
+- **The vLLM backend is unit-validated but was not exercised against a live vLLM server in this release cycle.** Its client and server-management code carry full unit coverage, and the proxy's protocol translation is verified end-to-end against llama.cpp (the proxy layer is backend-agnostic). `scripts/integration_test_proxy.py --vllm-url <url>` runs the full request battery against a real vLLM server when one is available.
+
+## [0.7.1] — 2026-05-24
+
+Proxy hardening: forge now works with Claude Code. First PyPI release to include the Docker, model-pass-through, and token-usage work that landed on `main` after v0.7.0.
+
+### Added
+- **Anthropic Messages API on the proxy (`POST /v1/messages`).** Point Claude Code — or any Anthropic-protocol client — at a forge-guarded model. Two downstream shapes: **Path 2** (default, `--backend-protocol openai`) translates Anthropic ↔ OpenAI for local llama.cpp / Ollama and emits Anthropic SSE back; **Path 1** (`--backend-protocol anthropic`, external mode) forwards to an Anthropic-shape downstream (LiteLLM, the Anthropic API, a self-hosted proxy), passing unknown fields through verbatim. Adds a `base_url` kwarg on `AnthropicClient`. See the new "Using forge with Claude Code" section in the User Guide.
+- **`--mode {native,prompt}` proxy flag** — run prompt-injected function-calling through the proxy for OpenAI-compatible backends that lack a native tool-calling template, not just native FC. Closes #53.
+- **Real token-usage reporting through the proxy** — responses carry actual prompt/completion counts (previously hardcoded zeros), in both OpenAI (`usage.prompt_tokens/...`) and Anthropic (`usage.input_tokens/output_tokens`) shapes, streaming and non-streaming. #81 (thanks @mhajder).
+- **Per-request model-name pass-through for external backends** — the proxy honors the inbound `model` against external OpenAI-compatible backends. #80 (thanks @mhajder).
+- **Dockerfile** for running the proxy as a container. #79 (thanks @mhajder).
+
+### Changed
+- **`last_usage` unified on slot-keyed `{slot_id: TokenUsage}` across all clients.** `AnthropicClient` previously stored a flat `{input_tokens, output_tokens}` dict; it now uses the slot-0 convention `LlamafileClient` / `OllamaClient` already follow, so usage extraction has one contract.
+- **Inbound `model` rides the proxy's passthrough/extras channel** rather than the sampling map — a cleaner replacement for the #80 mechanism that keeps `model` out of `sampling`.
+
+### Fixed
+- **Proxy no longer hard-imports the optional `anthropic` SDK at load.** A plain `forge-guardrails` install (without the `[anthropic]` extra) can now start the proxy for local / OpenAI-shape backends; the SDK is imported lazily and only required for `--backend-protocol anthropic`.
+- **Proxy router tolerates query strings.** Requests like Claude Code's `POST /v1/messages?beta=true` route correctly instead of returning 404.
+- **`eval_runner` token accounting for local backends** — was silently counting zero tokens because it read the flat `last_usage` keys; now reads the slot-keyed `TokenUsage` (fixed by the unification above).
+
+### Known limitations
+- **`cache_control` is not preserved on Path 2.** OpenAI Chat Completions has no analog, so prompt-cache hints are dropped when the downstream is a local OpenAI-shape backend. Path 1 (Anthropic-shape downstream) preserves `cache_control` on clean turns. See ADR-015.
+- **Prompt-mode multi-turn tool convergence is model-dependent.** Some models reliably consume prompt-injected tool results across turns; others re-call the same tool. Native FC is the more robust default for heavy multi-turn tool use (e.g. Claude Code).
+
+## [0.7.0] — 2026-05-22
+
+### Added
+- **Granite 4.1 8B + Gemma-4-E4B + phi-4** — added to the eval lineup. Granite 4.1 mirrors the IBM greedy-decoding convention pending formal published sampling guidance; phi-4 has no formal sampling recommendation and falls through to backend defaults.
+- **`_PROMPT_ONLY_MODELS` in `batch_eval`** — skips native FC for models lacking training for the OpenAI `tool_calls` schema (currently: phi-4, verified via curl 2026-05-14).
+- **`_NO_RECOMMENDED_SAMPLING_MODELS` in `batch_eval`** — runs `recommended_sampling=False` for models without formal sampling guidance from any official source, so the eval doesn't raise `UnsupportedModelError` on them.
+- **`MODEL_REGISTRY.md`** — new doc enumerating every model forge knows about, classified as Current (in v0.7.0 eval), Retired (cut from current eval), or Unpublished (sampling params staged, no published eval). Sampling values, source links, identity-key conventions.
+- **Versioned eval datasets** — committed dataset files renamed to `eval_results_vX.Y.Z.jsonl`. Prior versions kept in LFS for reproducibility.
+- **`report.py` `--html` + `--markdown` flags surfaced** in README and EVAL_GUIDE examples.
+
+### Changed
+- **Step enforcement + prerequisite violations surface on the tool channel.** Previously, `WorkflowRunner` emitted these as trailing `role="user"` nudges after the assistant `tool_call`. v0.7.0 emits one `role="tool"` message per blocked call with `[StepEnforcementError]` / `[PrereqError]` prefixes — the canonical "tool call failed, try again" wire shape OpenAI-tool-trained models are pretrained on. Surfaced by v4 forge-code dogfooding (gpt-oss-120b reliably exhausted prerequisite-violation budget under the old shape).
+- **Unknown-tool retry on the tool channel.** Same refactor applied to `ResponseValidator` unknown-tool path: `[UnknownToolError]` tool-error reply instead of a user nudge.
+- **Eval lineup refresh** — cut Llama 3.1 8B, Mistral 7B v0.3, Mistral Nemo 12B, Granite 4.0 (h-micro / h-tiny). All scored bare <30% on the v0.6.0 dataset — too weak to be informative, superseded by Ministral-3 / Granite 4.1 / phi-4. Sampling defaults retained in `sampling_defaults.py` for backward compatibility (see MODEL_REGISTRY Retired tier).
+- **Eval dataset** — `eval_results_v0.7.0.jsonl` (96,200 rows, 74 cells; rig-01). Apples-to-apples delta on 21 common configs vs v0.6.0: +0.7pt overall, -1.2pt advanced_reasoning — both within CI. Published-leaderboard floor lifts +16.9pt via composition (weak-model cuts).
+- **Dashboard + markdown views regenerated** against v0.7.0 dataset. Top of leaderboard reshuffled: Ministral-3 14B Reasoning Q4 LS/N now #1 at 84.5% (was Ministral-3 8B Instruct Q8 LS/P at 86.5% in v0.6.0; now #3 at 84.4%).
+- **MODEL_GUIDE rewrite** — trimmed to opinions + rationale (333 → 145 lines). Full leaderboard, OG-18 100% list, hard suite top-5, models-to-avoid tables moved to the dashboard / markdown views. Sampling-parameters and "backend matters" sections retained. Native-vs-prompt heuristic corrected: not workload-driven, sensitivity is per-family.
+- **ARCHITECTURE rebuild** — cut signature restating (1701 → 165 lines); the doc now covers design principles, surface modes, guardrail rationale, compaction priority rationale, respond-tool rationale, sampling opt-in semantics. Source is authoritative for class signatures; WORKFLOW.md owns the diagrams; ADRs own past decisions.
+- **BACKEND_SETUP rewrite** — cut model-pick prose, Windows-specific install steps, Ollama Modelfile tutorial, llamafile distribution explainer, per-backend "run the eval" subsections, VRAM tables (360 → 135 lines). Per-backend section now: boot command + flag table + curl smoke-test + forge client snippet. Added Anthropic section using `pip install "forge-guardrails[anthropic]"`.
+- **README opener** — leads with the contract (any tools, any order; structure opt-in via `required_steps`/`prerequisites`/`terminal_tool`) before the eval pitch. New "What forge isn't" (not an agent orchestrator, not a coding harness) preempts the conflations that surfaced on HN. Three-ways list reordered with proxy first (most popular entry point). Quick Start swapped from Ollama to llama-server.
+
+### Fixed
+- **WorkflowRunner docstring + tree** — added missing `retry_nudge` kwarg, `cancel_event` parameter on `run()`, `PREREQUISITE_NUDGE` + `CONTEXT_WARNING` message types, `MaxIterationsError` / `PrerequisiteError` / `StepEnforcementError` / `WorkflowCancelledError` in Raises lists across docs.
+- **CompactStrategy + ContextManager signatures in docs** — `trigger_tokens` → `budget_tokens` (the strategy owns its own threshold logic now); `compact_threshold` → `context_thresholds` + `on_context_threshold` callbacks.
+- **`LlamafileClient` constructor docs** — added missing sampling kwargs (`top_p`, `top_k`, `min_p`, `repeat_penalty`, `presence_penalty`), `chat_template_kwargs`, `slot_id`.
+- **MODEL_FAMILIES in `report.py`** — added entries for `granite-4.1-8b` (Q4/Q8) and `phi-4-Q4_K_M` so cross-backend rollups in `by-backend.md` group these new models correctly.
+- **WORKFLOW.md agentic-loop flowchart** — node names + edges updated to reflect the tool-error wire shape (`STEP_TOOL_ERROR`, `PREREQ_TOOL_ERROR`, `UNKNOWN_TOOL_ERROR`); compaction-priority table fixed (`step_nudge` and `prerequisite_nudge` are `role=tool`, `retry_nudge` remains `role=user`).
+- **Stale `bfcl/` reference** removed from WORKFLOW.md module diagram (directory was removed pre-v0.7.0; ADR-009 retained as historical artifact).
+
+### Known limitations
+- **Anthropic numbers not re-measured in v0.7.0.** The Anthropic ablation matrix (~$272 to run) was not re-executed for v0.7.0. Numbers cited in any v0.7.0 doc are from the v0.6.0 dataset (`eval_results_v0.6.0.jsonl`). Tool-error-channel changes affect frontier models' wire on guardrail-fire paths too, but expected movement is small.
+
 ## [0.6.0] — 2026-04-29
 
 ### Added

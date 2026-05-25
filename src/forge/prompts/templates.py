@@ -142,6 +142,15 @@ _QWEN_PARAMETER_RE = re.compile(
     re.DOTALL,
 )
 
+# Mistral native bracket-tag tool call format:
+#   [TOOL_CALLS]<tool_name>{<json_args>}
+# with optional whitespace/newline between the name and the opening brace.
+# Emitted by Devstral-Small-2 and Mistral-Small-3.x family in prompt mode
+# when the model falls back to its native serialization. Anchor matches
+# only the [TOOL_CALLS]<name> prefix; the JSON args are extracted via
+# brace-balance scan in _parse_mistral_bracket_tool_calls.
+_MISTRAL_BRACKET_RE = re.compile(r"\[TOOL_CALLS\](\w+)\s*(?=\{)")
+
 
 def _parse_qwen_xml_tool_calls(text: str, available_tools: list[str]) -> list[ToolCall]:
     """Parse Qwen Coder XML-format tool calls from model output.
@@ -178,6 +187,59 @@ def _parse_qwen_xml_tool_calls(text: str, available_tools: list[str]) -> list[To
     return found
 
 
+def _parse_mistral_bracket_tool_calls(text: str, available_tools: list[str]) -> list[ToolCall]:
+    """Parse Mistral native ``[TOOL_CALLS]<name>{<args>}`` tool-call format.
+
+    Devstral-Small-2 and Mistral-Small-3.x emit this shape in prompt mode when
+    they fall back to their training-data tool-call serialization. The args
+    are JSON; extracted via brace-balance scan to handle nested objects /
+    strings that contain literal braces.
+
+    Optional whitespace (including newlines) is permitted between the tool
+    name and the opening ``{``. Multiple bracket-tagged calls in one message
+    are returned as a list.
+    """
+    found: list[ToolCall] = []
+    for m in _MISTRAL_BRACKET_RE.finditer(text):
+        tool_name = m.group(1)
+        if tool_name not in available_tools:
+            continue
+        # Brace-balance scan starting at the opening brace (lookahead-anchored).
+        i = m.end()
+        if i >= len(text) or text[i] != "{":
+            continue
+        depth = 0
+        in_string = False
+        escape = False
+        for j in range(i, len(text)):
+            ch = text[j]
+            if escape:
+                escape = False
+                continue
+            if ch == "\\":
+                escape = True
+                continue
+            if ch == '"':
+                in_string = not in_string
+                continue
+            if in_string:
+                continue
+            if ch == "{":
+                depth += 1
+            elif ch == "}":
+                depth -= 1
+                if depth == 0:
+                    candidate = text[i : j + 1]
+                    try:
+                        args = json.loads(candidate)
+                    except json.JSONDecodeError:
+                        break
+                    if isinstance(args, dict):
+                        found.append(ToolCall(tool=tool_name, args=args))
+                    break
+    return found
+
+
 def rescue_tool_call(text: str, available_tools: list[str]) -> list[ToolCall]:
     """Try to parse ToolCalls from a TextResponse that failed native FC.
 
@@ -189,6 +251,7 @@ def rescue_tool_call(text: str, available_tools: list[str]) -> list[ToolCall]:
     1. Prompt-injected JSON: {"tool": "name", "args": {...}}
     2. Rehearsal syntax: tool_name[ARGS]{...}
     3. Qwen Coder XML: <function=name><parameter=key>value</parameter></function>
+    4. Mistral bracket-tag: [TOOL_CALLS]<name>{<args>}
     """
     # Strip think tags — the tool call may be after or outside thinking blocks
     cleaned = _THINK_TAG_RE.sub("", text).strip()
@@ -214,5 +277,9 @@ def rescue_tool_call(text: str, available_tools: list[str]) -> list[ToolCall]:
     # Strategy 3: Qwen Coder XML — <function=name><parameter=key>value</parameter></function>
     if not found:
         found = _parse_qwen_xml_tool_calls(cleaned, available_tools)
+
+    # Strategy 4: Mistral bracket-tag — [TOOL_CALLS]<name>{<args>}
+    if not found:
+        found = _parse_mistral_bracket_tool_calls(cleaned, available_tools)
 
     return found

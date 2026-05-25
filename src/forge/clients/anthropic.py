@@ -13,7 +13,7 @@ from typing import Any
 
 import anthropic
 
-from forge.clients.base import ChunkType, StreamChunk
+from forge.clients.base import ChunkType, StreamChunk, TokenUsage
 from forge.core.workflow import LLMResponse, TextResponse, ToolCall, ToolSpec
 from forge.errors import BackendError
 
@@ -39,6 +39,7 @@ class AnthropicClient:
         max_retries: int = 3,
         tool_choice: str | None = None,
         recommended_sampling: bool = False,
+        base_url: str | None = None,
     ) -> None:
         self.model = model
         self.max_tokens = max_tokens
@@ -50,13 +51,22 @@ class AnthropicClient:
             log.debug(
                 "AnthropicClient ignores recommended_sampling=True — no sampling kwargs are exposed."
             )
-        self._client = anthropic.AsyncAnthropic(
-            api_key=api_key,
-            timeout=timeout,
-            max_retries=max_retries,
-        )
-        # Populated after each send()/send_stream() call.
-        self.last_usage: dict[str, int] | None = None
+        sdk_kwargs: dict[str, Any] = {
+            "api_key": api_key,
+            "timeout": timeout,
+            "max_retries": max_retries,
+        }
+        # base_url retargets the SDK at an Anthropic-shape downstream
+        # (LiteLLM, a self-hosted proxy, etc.) — proxy path 1.
+        if base_url is not None:
+            sdk_kwargs["base_url"] = base_url
+        self._client = anthropic.AsyncAnthropic(**sdk_kwargs)
+        # Populated after each send()/send_stream() call. Slot-keyed
+        # ``{slot_id: TokenUsage}`` to match LlamafileClient / OllamaClient so
+        # ``inference._get_usage`` reads every client uniformly. The Anthropic
+        # SDK is per-call (no shared inference slot), so we always use slot 0 —
+        # same convention as OllamaClient.
+        self.last_usage: dict[int, TokenUsage] = {}
 
     # ── Tool schema conversion ───────────────────────────────────
 
@@ -220,19 +230,44 @@ class AnthropicClient:
         self,
         messages: list[dict[str, Any]],
         tools: list[ToolSpec] | None,
+        passthrough: dict[str, Any] | None = None,
+        inbound_anthropic_body: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        """Build kwargs dict for messages.create / messages.stream."""
+        """Build kwargs dict for messages.create / messages.stream.
+
+        ``passthrough`` (proxy use) supplies inbound-body fields the proxy
+        didn't deconstruct (``max_tokens``, ``stop_sequences``, ``tool_choice``,
+        ``metadata``, ``thinking``, etc.). Forge-owned fields (``model``,
+        ``messages``, ``system``, ``tools``) overlay it.
+
+        ``inbound_anthropic_body`` (proxy path 1) bypasses the deconstruct/
+        rebuild path: the SDK is called with the original inbound body
+        verbatim, preserving block-level fields like ``cache_control`` that
+        forge.Message doesn't represent. The runner only passes this on the
+        clean first-attempt call (no compaction, no retries) — see ADR-015.
+        """
+        if inbound_anthropic_body is not None:
+            # Verbatim emit. Drop the proxy-internal ``stream`` field; the
+            # SDK call shape (messages.create vs messages.stream) selects
+            # streaming. ``model`` defaults to the inbound value but the
+            # client's configured model wins if the inbound omitted it.
+            kwargs = dict(inbound_anthropic_body)
+            kwargs.pop("stream", None)
+            kwargs.setdefault("model", self.model)
+            return kwargs
+
         system, converted = self._convert_messages(messages)
-        kwargs: dict[str, Any] = {
+        kwargs = dict(passthrough or {})
+        kwargs.update({
             "model": self.model,
             "messages": converted,
-            "max_tokens": self.max_tokens,
-        }
+        })
+        kwargs.setdefault("max_tokens", self.max_tokens)
         if system:
             kwargs["system"] = system
         if tools:
             kwargs["tools"] = self._convert_tools(tools)
-            if self._tool_choice:
+            if self._tool_choice and "tool_choice" not in kwargs:
                 kwargs["tool_choice"] = {"type": self._tool_choice}
         return kwargs
 
@@ -241,19 +276,25 @@ class AnthropicClient:
         messages: list[dict[str, str]],
         tools: list[ToolSpec] | None = None,
         sampling: dict[str, Any] | None = None,
+        passthrough: dict[str, Any] | None = None,
+        inbound_anthropic_body: dict[str, Any] | None = None,
     ) -> LLMResponse:
         """Send messages via the Anthropic Messages API.
 
         ``sampling`` is accepted for protocol symmetry but ignored —
         AnthropicClient does not currently expose sampling kwargs through
-        forge.
+        forge. ``passthrough`` merges inbound-body extras into the SDK call.
+        ``inbound_anthropic_body`` (path 1) triggers verbatim emit — see
+        ADR-015 for the cache_control preservation rationale.
         """
         if sampling:
             log.debug(
                 "AnthropicClient ignores per-call sampling overrides: %s",
                 sorted(sampling.keys()),
             )
-        kwargs = self._build_kwargs(messages, tools)
+        kwargs = self._build_kwargs(
+            messages, tools, passthrough, inbound_anthropic_body,
+        )
         try:
             response = await self._client.messages.create(**kwargs)
         except anthropic.APIError as exc:
@@ -261,8 +302,11 @@ class AnthropicClient:
                 getattr(exc, "status_code", 0), str(exc)
             ) from exc
         self.last_usage = {
-            "input_tokens": response.usage.input_tokens,
-            "output_tokens": response.usage.output_tokens,
+            0: TokenUsage(
+                prompt_tokens=response.usage.input_tokens,
+                completion_tokens=response.usage.output_tokens,
+                total_tokens=response.usage.input_tokens + response.usage.output_tokens,
+            )
         }
         return self._parse_response(response)
 
@@ -271,17 +315,23 @@ class AnthropicClient:
         messages: list[dict[str, str]],
         tools: list[ToolSpec] | None = None,
         sampling: dict[str, Any] | None = None,
+        passthrough: dict[str, Any] | None = None,
+        inbound_anthropic_body: dict[str, Any] | None = None,
     ) -> AsyncIterator[StreamChunk]:
         """Stream via the Anthropic Messages API.
 
         ``sampling`` is accepted for protocol symmetry but ignored.
+        ``passthrough`` merges inbound-body extras into the SDK call.
+        ``inbound_anthropic_body`` (path 1) triggers verbatim emit; see ADR-015.
         """
         if sampling:
             log.debug(
                 "AnthropicClient ignores per-call sampling overrides: %s",
                 sorted(sampling.keys()),
             )
-        kwargs = self._build_kwargs(messages, tools)
+        kwargs = self._build_kwargs(
+            messages, tools, passthrough, inbound_anthropic_body,
+        )
 
         accumulated_text = ""
         # Track multiple tool_use blocks by index.
@@ -332,8 +382,12 @@ class AnthropicClient:
                 # Grab usage from the final accumulated message.
                 final_message = await stream.get_final_message()
                 self.last_usage = {
-                    "input_tokens": final_message.usage.input_tokens,
-                    "output_tokens": final_message.usage.output_tokens,
+                    0: TokenUsage(
+                        prompt_tokens=final_message.usage.input_tokens,
+                        completion_tokens=final_message.usage.output_tokens,
+                        total_tokens=final_message.usage.input_tokens
+                        + final_message.usage.output_tokens,
+                    )
                 }
         except anthropic.APIError as exc:
             raise BackendError(

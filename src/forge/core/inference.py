@@ -29,13 +29,18 @@ _NUDGE_KIND_TO_TYPE: dict[str, MessageType] = {
 }
 
 
-def _sync_token_count(client: LLMClient, context_manager: ContextManager) -> None:
-    """Feed actual token count from the client into the context manager."""
+def _get_usage(client: LLMClient) -> TokenUsage | None:
+    """Extract actual token count from the client."""
     last_usage = getattr(client, "last_usage", None)
     if not isinstance(last_usage, dict):
-        return
+        return None
     slot_id = getattr(client, "_slot_id", None) or 0
-    usage: TokenUsage | None = last_usage.get(slot_id)
+    return last_usage.get(slot_id)
+
+
+def _sync_token_count(client: LLMClient, context_manager: ContextManager) -> None:
+    """Feed actual token count from the client into the context manager."""
+    usage = _get_usage(client)
     if usage is not None:
         context_manager.update_token_count(usage.total_tokens)
 
@@ -49,11 +54,13 @@ class InferenceResult:
         new_messages: Messages generated during this call (assistant text from
             failed attempts, nudges, and the final assistant response). The
             caller should append these to their message history.
+        usage: Token usage for the final successful attempt.
         tool_call_counter: Updated counter for generating unique call IDs.
     """
 
     response: list[ToolCall] | TextResponse
     new_messages: list[Message] = field(default_factory=list)
+    usage: TokenUsage | None = None
     tool_call_counter: int = 0
     attempts: int = 1
 
@@ -118,6 +125,8 @@ async def run_inference(
     stream: bool = False,
     on_chunk: Callable[[StreamChunk], Awaitable[None]] | None = None,
     sampling: dict[str, Any] | None = None,
+    passthrough: dict[str, Any] | None = None,
+    inbound_anthropic_body: dict[str, Any] | None = None,
 ) -> InferenceResult | None:
     """Send messages to the LLM with compaction, folding, validation, and retry.
 
@@ -165,6 +174,11 @@ async def run_inference(
         attempt_limit = min(attempt_limit, max_attempts)
     attempts = 0
 
+    # Path-1 verbatim opt-in: drop on any forge mutation (compaction,
+    # context warning, retry) so cache_control is only preserved on the
+    # clean first-attempt call. ADR-015.
+    verbatim_body = inbound_anthropic_body
+
     for _attempt in range(attempt_limit):
         attempts += 1
 
@@ -176,9 +190,12 @@ async def run_inference(
         if compacted is not messages:
             messages.clear()
             messages.extend(compacted)
+            verbatim_body = None  # mutation
 
         # Check context thresholds — inject warning if crossed
         context_warning = context_manager.check_thresholds(messages)
+        if context_warning:
+            verbatim_body = None  # mutation
 
         # Fold and serialize
         api_messages = fold_and_serialize(messages, api_format)
@@ -198,9 +215,17 @@ async def run_inference(
 
         # Send
         if stream:
-            response = await _send_streaming(client, api_messages, tool_specs, on_chunk, sampling)
+            response = await _send_streaming(
+                client, api_messages, tool_specs, on_chunk, sampling, passthrough,
+                inbound_anthropic_body=verbatim_body,
+            )
         else:
-            response = await client.send(api_messages, tools=tool_specs, sampling=sampling)
+            response = await client.send(
+                api_messages, tools=tool_specs, sampling=sampling, passthrough=passthrough,
+                inbound_anthropic_body=verbatim_body,
+            )
+        # Subsequent attempts (retries) are mutations regardless of outcome.
+        verbatim_body = None
 
         # Update context manager with real token count if available.
         _sync_token_count(client, context_manager)
@@ -215,6 +240,7 @@ async def run_inference(
             return InferenceResult(
                 response=validated,
                 new_messages=new_messages,
+                usage=_get_usage(client),
                 tool_call_counter=tool_call_counter,
                 attempts=attempts,
             )
@@ -230,7 +256,18 @@ async def run_inference(
                 raw_response=raw,
             )
 
-        # Emit the assistant's failed output
+        # Emit the assistant's failed output, then the corrective signal.
+        # Two shapes:
+        #   - Bare text (no tool_call to anchor on): assistant(text) + user nudge.
+        #   - Unknown tool (assistant emitted a tool_call with a bad name): emit
+        #     assistant(tc) + one tool-error result per tc, mirroring step/prereq
+        #     enforcement in runner.py. Tool-error rides the canonical channel
+        #     the model was pretrained on, surviving heavy-context attention
+        #     drop-off and Mistral _merge_consecutive folding far better than a
+        #     trailing user-role nudge.
+        nudge = validation.nudge
+        nudge_type = _NUDGE_KIND_TO_TYPE[nudge.kind]
+
         if isinstance(response, TextResponse):
             msg = Message(
                 MessageRole.ASSISTANT,
@@ -239,8 +276,18 @@ async def run_inference(
             )
             messages.append(msg)
             new_messages.append(msg)
+            # Bare text: no tool_call to attach to, fall back to user nudge.
+            nudge_msg = Message(
+                MessageRole.USER,
+                nudge.content,
+                MessageMeta(nudge_type, step_index=step_index),
+            )
+            messages.append(nudge_msg)
+            new_messages.append(nudge_msg)
         else:
-            # Unknown tool — emit reasoning + tool call messages
+            # Unknown tool — emit reasoning + tool_call, then one tool-error
+            # result per tool_call so the corrective signal rides the canonical
+            # channel.
             tool_calls = response
             if tool_calls[0].reasoning:
                 reasoning_msg = Message(
@@ -259,17 +306,16 @@ async def run_inference(
             )
             messages.append(tc_msg)
             new_messages.append(tc_msg)
-
-        # Emit nudge
-        nudge = validation.nudge
-        nudge_type = _NUDGE_KIND_TO_TYPE[nudge.kind]
-        nudge_msg = Message(
-            MessageRole.USER,
-            nudge.content,
-            MessageMeta(nudge_type, step_index=step_index),
-        )
-        messages.append(nudge_msg)
-        new_messages.append(nudge_msg)
+            for tc_info in tc_infos:
+                err_msg = Message(
+                    MessageRole.TOOL,
+                    f"[UnknownTool] {nudge.content}",
+                    MessageMeta(nudge_type, step_index=step_index),
+                    tool_name=tc_info.name,
+                    tool_call_id=tc_info.call_id,
+                )
+                messages.append(err_msg)
+                new_messages.append(err_msg)
 
     # max_attempts exhausted without valid response — signal to caller
     return None
@@ -281,10 +327,15 @@ async def _send_streaming(
     tool_specs: list[ToolSpec],
     on_chunk: Callable[[StreamChunk], Awaitable[None]] | None = None,
     sampling: dict[str, Any] | None = None,
+    passthrough: dict[str, Any] | None = None,
+    inbound_anthropic_body: dict[str, Any] | None = None,
 ) -> LLMResponse:
     """Send via streaming, forwarding chunks to on_chunk callback."""
     response = None
-    async for chunk in client.send_stream(api_messages, tools=tool_specs, sampling=sampling):
+    async for chunk in client.send_stream(
+        api_messages, tools=tool_specs, sampling=sampling, passthrough=passthrough,
+        inbound_anthropic_body=inbound_anthropic_body,
+    ):
         if on_chunk is not None:
             await on_chunk(chunk)
         if chunk.type == ChunkType.FINAL:
