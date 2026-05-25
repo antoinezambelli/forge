@@ -29,6 +29,8 @@ class _MockClient:
         messages: list[dict[str, str]],
         tools: list[ToolSpec] | None = None,
         sampling: dict[str, object] | None = None,
+        passthrough: dict[str, object] | None = None,
+        inbound_anthropic_body: dict[str, object] | None = None,
     ) -> LLMResponse:
         if self._idx < len(self._calls):
             tc = self._calls[self._idx]
@@ -41,6 +43,8 @@ class _MockClient:
         messages: list[dict[str, str]],
         tools: list[ToolSpec] | None = None,
         sampling: dict[str, object] | None = None,
+        passthrough: dict[str, object] | None = None,
+        inbound_anthropic_body: dict[str, object] | None = None,
     ) -> AsyncIterator[StreamChunk]:
         resp = await self.send(messages, tools)
         yield StreamChunk(type=ChunkType.FINAL, response=resp)
