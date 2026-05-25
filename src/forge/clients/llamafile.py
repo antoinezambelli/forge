@@ -25,6 +25,11 @@ _THINK_TAG_RE = re.compile(
     r"\[THINK\](.*?)\[/THINK\]|<think>(.*?)</think>", re.DOTALL
 )
 
+# Multi-shard GGUF naming convention: "<stem>-00001-of-00003.gguf". The shard
+# index is filesystem layout, not model identity, so strip it for the
+# sampling-defaults registry key.
+_SHARD_SUFFIX_RE = re.compile(r"-\d{5}-of-\d{5}$")
+
 
 def _extract_think_tags(text: str) -> tuple[str, str]:
     """Extract thinking blocks from text.
@@ -136,6 +141,7 @@ class LlamafileClient:
         min_p: float | None = None,
         repeat_penalty: float | None = None,
         presence_penalty: float | None = None,
+        chat_template_kwargs: dict[str, Any] | None = None,
         mode: str = "auto",
         timeout: float = 300.0,
         think: bool | None = None,
@@ -149,7 +155,7 @@ class LlamafileClient:
         # (llama-server ignores it but it flows into eval JSONL rows) and
         # for sampling-defaults lookup.
         self.gguf_path = Path(gguf_path)
-        self.model = self.gguf_path.stem
+        self.model = _SHARD_SUFFIX_RE.sub("", self.gguf_path.stem)
         # Apply per-model recommended sampling defaults. Caller's explicit
         # (non-None) kwargs win over the map field-by-field.
         defaults = apply_sampling_defaults(self.model, strict=recommended_sampling)
@@ -159,6 +165,14 @@ class LlamafileClient:
         self.min_p = min_p if min_p is not None else defaults.get("min_p")
         self.repeat_penalty = repeat_penalty if repeat_penalty is not None else defaults.get("repeat_penalty")
         self.presence_penalty = presence_penalty if presence_penalty is not None else defaults.get("presence_penalty")
+        # chat_template_kwargs is a nested dict of Jinja template variables
+        # (e.g. {"reasoning_effort": "high", "enable_thinking": False}) that
+        # llama-server unpacks into the chat template at render time.
+        # Whole-value replacement at the field level — no nested merge.
+        self.chat_template_kwargs = (
+            chat_template_kwargs if chat_template_kwargs is not None
+            else defaults.get("chat_template_kwargs")
+        )
         self.mode = mode
         self._http = httpx.AsyncClient(timeout=timeout)
         self._think: bool = think if think is not None else True  # auto = capture
@@ -179,9 +193,12 @@ class LlamafileClient:
 
     # Sampling fields recognized in per-call overrides. ``seed`` is
     # accepted only as a per-call override (not an instance field).
+    # ``chat_template_kwargs`` is a nested dict of Jinja template variables
+    # — whole-value replacement at this field level (no nested merge).
     _SAMPLING_FIELDS = (
         "temperature", "top_p", "top_k", "min_p",
         "repeat_penalty", "presence_penalty", "seed",
+        "chat_template_kwargs",
     )
 
     def _apply_sampling(
@@ -247,34 +264,46 @@ class LlamafileClient:
         messages: list[dict[str, str]],
         tools: list[ToolSpec] | None = None,
         sampling: dict[str, Any] | None = None,
+        passthrough: dict[str, Any] | None = None,
+        inbound_anthropic_body: dict[str, Any] | None = None,
     ) -> LLMResponse:
-        """Resolve mode on first call with tools, then dispatch."""
+        """Resolve mode on first call with tools, then dispatch.
+
+        ``inbound_anthropic_body`` is accepted for protocol symmetry and
+        silently ignored — LlamafileClient only speaks OpenAI shape.
+        """
         if self.resolved_mode is None:
-            return await self._resolve_and_send(messages, tools, sampling)
+            return await self._resolve_and_send(messages, tools, sampling, passthrough)
         elif self.resolved_mode == "native":
-            return await self._send_native(messages, tools, sampling)
+            return await self._send_native(messages, tools, sampling, passthrough)
         else:
-            return await self._send_prompt(messages, tools, sampling)
+            return await self._send_prompt(messages, tools, sampling, passthrough)
 
     async def send_stream(
         self,
         messages: list[dict[str, str]],
         tools: list[ToolSpec] | None = None,
         sampling: dict[str, Any] | None = None,
+        passthrough: dict[str, Any] | None = None,
+        inbound_anthropic_body: dict[str, Any] | None = None,
     ) -> AsyncIterator[StreamChunk]:
-        """Stream via SSE, handling both native FC and prompt-injected paths."""
+        """Stream via SSE, handling both native FC and prompt-injected paths.
+
+        ``inbound_anthropic_body`` accepted for protocol symmetry, ignored.
+        """
         if self.resolved_mode is None:
             # Probe with a non-streaming call to resolve native vs prompt.
             # Result is discarded — the runner will use the streamed response.
-            await self._resolve_and_send(messages, tools, sampling)
+            await self._resolve_and_send(messages, tools, sampling, passthrough)
         mode = self.resolved_mode
 
-        body: dict[str, Any] = {
-            "model": self.model,
+        body: dict[str, Any] = dict(passthrough or {})
+        body.update({
             "stream": True,
             "stream_options": {"include_usage": True},
             "cache_prompt": self._cache_prompt,
-        }
+        })
+        body.setdefault("model", self.model)
         self._apply_slot_id(body)
         self._apply_sampling(body, sampling)
 
@@ -423,6 +452,7 @@ class LlamafileClient:
         messages: list[dict[str, str]],
         tools: list[ToolSpec] | None,
         sampling: dict[str, Any] | None = None,
+        passthrough: dict[str, Any] | None = None,
     ) -> LLMResponse:
         """Auto-resolve mode on first send with tools.
 
@@ -435,29 +465,31 @@ class LlamafileClient:
         if not tools:
             # No tools to test with — send without tools, defer resolution
             self.resolved_mode = "native"
-            return await self._send_native(messages, tools, sampling)
+            return await self._send_native(messages, tools, sampling, passthrough)
 
         try:
-            result = await self._send_native(messages, tools, sampling)
+            result = await self._send_native(messages, tools, sampling, passthrough)
             self.resolved_mode = "native"
             return result
         except (httpx.HTTPStatusError, BackendError):
             self.resolved_mode = "prompt"
-            return await self._send_prompt(messages, tools, sampling)
+            return await self._send_prompt(messages, tools, sampling, passthrough)
 
     async def _send_native(
         self,
         messages: list[dict[str, str]],
         tools: list[ToolSpec] | None,
         sampling: dict[str, Any] | None = None,
+        passthrough: dict[str, Any] | None = None,
     ) -> LLMResponse:
         """Send using native function calling (OpenAI tools parameter)."""
         merged = _merge_consecutive(messages)
-        body: dict[str, Any] = {
-            "model": self.model,
+        body: dict[str, Any] = dict(passthrough or {})
+        body.update({
             "messages": merged,
             "cache_prompt": self._cache_prompt,
-        }
+        })
+        body.setdefault("model", self.model)
         self._apply_slot_id(body)
         self._apply_sampling(body, sampling)
         if tools:
@@ -509,6 +541,7 @@ class LlamafileClient:
         messages: list[dict[str, str]],
         tools: list[ToolSpec] | None,
         sampling: dict[str, Any] | None = None,
+        passthrough: dict[str, Any] | None = None,
     ) -> LLMResponse:
         """Send using prompt-injected tool calling."""
         prepared = _merge_consecutive(_downgrade_messages(messages))
@@ -519,11 +552,12 @@ class LlamafileClient:
                 "content": tool_prompt + "\n\n" + prepared[0]["content"],
             }
 
-        body: dict[str, Any] = {
-            "model": self.model,
+        body: dict[str, Any] = dict(passthrough or {})
+        body.update({
             "messages": prepared,
             "cache_prompt": self._cache_prompt,
-        }
+        })
+        body.setdefault("model", self.model)
         self._apply_slot_id(body)
         self._apply_sampling(body, sampling)
 

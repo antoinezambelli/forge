@@ -95,6 +95,7 @@ def openai_to_messages(openai_messages: list[dict[str, Any]]) -> list[Message]:
 def tool_calls_to_openai(
     tool_calls: list[ToolCall],
     model: str = "forge",
+    usage: Any | None = None,
 ) -> dict[str, Any]:
     """Convert forge ToolCalls to an OpenAI chat completions response object."""
     tc_list = []
@@ -108,7 +109,7 @@ def tool_calls_to_openai(
             },
         })
 
-    return {
+    response = {
         "id": f"chatcmpl-{uuid.uuid4().hex[:12]}",
         "object": "chat.completion",
         "model": model,
@@ -124,13 +125,23 @@ def tool_calls_to_openai(
         "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
     }
 
+    if usage:
+        response["usage"] = {
+            "prompt_tokens": getattr(usage, "prompt_tokens", 0),
+            "completion_tokens": getattr(usage, "completion_tokens", 0),
+            "total_tokens": getattr(usage, "total_tokens", 0),
+        }
+
+    return response
+
 
 def text_response_to_openai(
     text: str,
     model: str = "forge",
+    usage: Any | None = None,
 ) -> dict[str, Any]:
     """Convert a text response to an OpenAI chat completions response object."""
-    return {
+    response = {
         "id": f"chatcmpl-{uuid.uuid4().hex[:12]}",
         "object": "chat.completion",
         "model": model,
@@ -145,12 +156,22 @@ def text_response_to_openai(
         "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
     }
 
+    if usage:
+        response["usage"] = {
+            "prompt_tokens": getattr(usage, "prompt_tokens", 0),
+            "completion_tokens": getattr(usage, "completion_tokens", 0),
+            "total_tokens": getattr(usage, "total_tokens", 0),
+        }
+
+    return response
+
 
 # ── SSE streaming helpers ────────────────────────────────────────
 
 def tool_calls_to_sse_events(
     tool_calls: list[ToolCall],
     model: str = "forge",
+    usage: Any | None = None,
 ) -> list[dict[str, Any]]:
     """Convert forge ToolCalls to a sequence of SSE chunk objects.
 
@@ -199,7 +220,7 @@ def tool_calls_to_sse_events(
         })
 
     # Final chunk with finish_reason
-    events.append({
+    final_event = {
         "id": cmpl_id,
         "object": "chat.completion.chunk",
         "model": model,
@@ -208,8 +229,16 @@ def tool_calls_to_sse_events(
             "delta": {},
             "finish_reason": "tool_calls",
         }],
-    })
+    }
 
+    if usage:
+        final_event["usage"] = {
+            "prompt_tokens": getattr(usage, "prompt_tokens", 0),
+            "completion_tokens": getattr(usage, "completion_tokens", 0),
+            "total_tokens": getattr(usage, "total_tokens", 0),
+        }
+
+    events.append(final_event)
     return events
 
 
@@ -217,6 +246,7 @@ def text_to_sse_events(
     text: str,
     model: str = "forge",
     chunk_size: int = 0,
+    usage: Any | None = None,
 ) -> list[dict[str, Any]]:
     """Convert a text response to SSE chunk objects.
 
@@ -247,7 +277,7 @@ def text_to_sse_events(
         })
 
     # Final chunk
-    events.append({
+    final_event = {
         "id": cmpl_id,
         "object": "chat.completion.chunk",
         "model": model,
@@ -256,6 +286,14 @@ def text_to_sse_events(
             "delta": {},
             "finish_reason": "stop",
         }],
-    })
+    }
 
+    if usage:
+        final_event["usage"] = {
+            "prompt_tokens": getattr(usage, "prompt_tokens", 0),
+            "completion_tokens": getattr(usage, "completion_tokens", 0),
+            "total_tokens": getattr(usage, "total_tokens", 0),
+        }
+
+    events.append(final_event)
     return events

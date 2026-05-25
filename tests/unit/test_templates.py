@@ -315,3 +315,98 @@ class TestQwenXmlRescue:
         assert len(result) >= 1
         assert result[0].tool == "fetch"
         assert result[0].args == {"q": "json"}
+
+
+class TestMistralBracketRescue:
+    """Mistral native ``[TOOL_CALLS]<name>{<args>}`` format.
+
+    Emitted by Devstral-Small-2 and Mistral-Small-3.x family in prompt mode.
+    """
+
+    def test_no_separator(self) -> None:
+        text = '[TOOL_CALLS]read{"file_path": "transformer.py"}'
+        result = rescue_tool_call(text, ["read", "edit"])
+        assert len(result) == 1
+        assert result[0].tool == "read"
+        assert result[0].args == {"file_path": "transformer.py"}
+
+    def test_whitespace_separator(self) -> None:
+        text = '[TOOL_CALLS]read {"file_path": "transformer.py"}'
+        result = rescue_tool_call(text, ["read", "edit"])
+        assert len(result) == 1
+        assert result[0].args == {"file_path": "transformer.py"}
+
+    def test_newline_separator(self) -> None:
+        text = '[TOOL_CALLS]read\n{"file_path": "transformer.py"}'
+        result = rescue_tool_call(text, ["read", "edit"])
+        assert len(result) == 1
+        assert result[0].args == {"file_path": "transformer.py"}
+
+    def test_nested_braces_in_args(self) -> None:
+        text = (
+            '[TOOL_CALLS]edit{"file_path": "x.py", '
+            '"old_string": "if x: { print(1) }", '
+            '"new_string": "if x: { print(2) }"}'
+        )
+        result = rescue_tool_call(text, ["read", "edit"])
+        assert len(result) == 1
+        assert result[0].tool == "edit"
+        assert result[0].args["old_string"] == "if x: { print(1) }"
+
+    def test_string_with_escaped_quote(self) -> None:
+        # The brace-balance scan must treat "..." as a string literal and
+        # not count braces inside it. Test with an escaped quote in the value.
+        text = '[TOOL_CALLS]edit{"file_path": "x.py", "old_string": "say \\"hi\\""}'
+        result = rescue_tool_call(text, ["read", "edit"])
+        assert len(result) == 1
+        assert result[0].args["old_string"] == 'say "hi"'
+
+    def test_multiple_calls(self) -> None:
+        text = (
+            '[TOOL_CALLS]read{"file_path": "a.py"}\n'
+            '[TOOL_CALLS]read{"file_path": "b.py"}'
+        )
+        result = rescue_tool_call(text, ["read", "edit"])
+        assert len(result) == 2
+        assert result[0].args["file_path"] == "a.py"
+        assert result[1].args["file_path"] == "b.py"
+
+    def test_unknown_tool_ignored(self) -> None:
+        text = '[TOOL_CALLS]not_a_real_tool{"x": 1}'
+        result = rescue_tool_call(text, ["read", "edit"])
+        assert result == []
+
+    def test_apology_preamble_then_bracket(self) -> None:
+        """Mistral-Small-3.2 mid-conversation pattern: natural-language apology
+        followed by a bracket-tagged tool call."""
+        text = (
+            "I apologize for the confusion earlier. Let me try again.\n"
+            '[TOOL_CALLS]read{"file_path": "transformer.py"}'
+        )
+        result = rescue_tool_call(text, ["read", "edit"])
+        assert len(result) == 1
+        assert result[0].tool == "read"
+
+    def test_malformed_unclosed_brace_falls_through(self) -> None:
+        text = '[TOOL_CALLS]read{"file_path": "never closed'
+        result = rescue_tool_call(text, ["read", "edit"])
+        assert result == []
+
+    def test_json_preferred_over_mistral_bracket(self) -> None:
+        """JSON extraction runs first; bracket parser only fires when JSON empty."""
+        text = (
+            '{"tool": "read", "args": {"file_path": "from_json.py"}}\n'
+            '[TOOL_CALLS]read{"file_path": "from_bracket.py"}'
+        )
+        result = rescue_tool_call(text, ["read", "edit"])
+        assert len(result) == 1
+        assert result[0].args["file_path"] == "from_json.py"
+
+    def test_bracket_with_thinking(self) -> None:
+        text = (
+            "<think>Let me read the file first.</think>\n"
+            '[TOOL_CALLS]read{"file_path": "x.py"}'
+        )
+        result = rescue_tool_call(text, ["read", "edit"])
+        assert len(result) == 1
+        assert result[0].args == {"file_path": "x.py"}

@@ -67,8 +67,17 @@ MODEL_SAMPLING_DEFAULTS: dict[str, dict[str, float | int]] = {
     "qwen3.5:35b-a3b-q4_K_M":             {"temperature": 1.0, "top_p": 0.95, "top_k": 20, "min_p": 0.0, "presence_penalty": 1.5},                         # https://huggingface.co/Qwen/Qwen3.5-35B-A3B
     "Qwen3.5-35B-A3B-Q4_K_M":             {"temperature": 1.0, "top_p": 0.95, "top_k": 20, "min_p": 0.0, "presence_penalty": 1.5},                         # https://huggingface.co/Qwen/Qwen3.5-35B-A3B
     "qwen3.6:35b-a3b-ud-q4_K_M":          {"temperature": 1.0, "top_p": 0.95, "top_k": 20, "min_p": 0.0, "presence_penalty": 1.5},                         # https://huggingface.co/Qwen/Qwen3.6-35B-A3B
+    "Qwen3.6-35B-A3B-UD-Q4_K_M":          {"temperature": 1.0, "top_p": 0.95, "top_k": 20, "min_p": 0.0, "presence_penalty": 1.5},                         # https://huggingface.co/Qwen/Qwen3.6-35B-A3B
     # Qwen3-Coder — non-thinking instruct; card does not mention min_p or presence_penalty
-    "qwen3-coder:30b-a3b-instruct-q4_K_M": {"temperature": 0.7, "top_p": 0.8, "top_k": 20, "repeat_penalty": 1.05},                                          # https://huggingface.co/Qwen/Qwen3-Coder-30B-A3B-Instruct
+    "qwen3-coder:30b-a3b-instruct-q4_K_M":  {"temperature": 0.7, "top_p": 0.8, "top_k": 20, "repeat_penalty": 1.05},                                         # https://huggingface.co/Qwen/Qwen3-Coder-30B-A3B-Instruct
+    "Qwen3-Coder-30B-A3B-Instruct-Q4_K_M":  {"temperature": 0.7, "top_p": 0.8, "top_k": 20, "repeat_penalty": 1.05},                                         # https://huggingface.co/Qwen/Qwen3-Coder-30B-A3B-Instruct
+    # Qwen3-Next 80B-A3B-Instruct — hybrid attention MoE, 80B/3B-active; card lists thinking-mode profile
+    "qwen3-next:80b-a3b-instruct-q4_K_M":   {"temperature": 0.7, "top_p": 0.8,  "top_k": 20, "min_p": 0.0},                                                  # https://huggingface.co/Qwen/Qwen3-Next-80B-A3B-Instruct
+    "Qwen3-Next-80B-A3B-Instruct-Q4_K_M":   {"temperature": 0.7, "top_p": 0.8,  "top_k": 20, "min_p": 0.0},                                                  # https://huggingface.co/Qwen/Qwen3-Next-80B-A3B-Instruct
+    # Qwen3-Coder-Next — coder fine-tune over Qwen3-Next-80B-A3B base; card differs notably from Qwen3-Coder-30B
+    # (no min_p / repeat_penalty / presence_penalty recommendation)
+    "qwen3-coder-next:80b-a3b-q4_K_M":      {"temperature": 1.0, "top_p": 0.95, "top_k": 40},                                                                # https://huggingface.co/Qwen/Qwen3-Coder-Next
+    "Qwen3-Coder-Next-Q4_K_M":              {"temperature": 1.0, "top_p": 0.95, "top_k": 40},                                                                # https://huggingface.co/Qwen/Qwen3-Coder-Next
     # Gemma 4 — card gives one standardized profile for all use cases; no min_p/repeat/presence recommended
     "gemma4:31b-it-q4_K_M":               {"temperature": 1.0, "top_p": 0.95, "top_k": 64},  # https://huggingface.co/google/gemma-4-31b-it
     "gemma-4-31B-it-Q4_K_M":              {"temperature": 1.0, "top_p": 0.95, "top_k": 64},  # https://huggingface.co/google/gemma-4-31b-it
@@ -80,6 +89,52 @@ MODEL_SAMPLING_DEFAULTS: dict[str, dict[str, float | int]] = {
     "gemma-4-E4B-it-Q4_K_M":              {"temperature": 1.0, "top_p": 0.95, "top_k": 64},  # https://huggingface.co/google/gemma-4-e4b-it
     "gemma4:e4b-it-q8_0":                 {"temperature": 1.0, "top_p": 0.95, "top_k": 64},  # https://huggingface.co/google/gemma-4-e4b-it
     "gemma-4-E4B-it-Q8_0":                {"temperature": 1.0, "top_p": 0.95, "top_k": 64},  # https://huggingface.co/google/gemma-4-e4b-it
+    # Mistral Small 4 — card gives T=0.7 for reasoning_effort="high" and "between 0.0 and 0.7" for
+    # reasoning_effort="none" (task-dependent). Picking the high-effort profile (T=0.7 + explicit
+    # reasoning_effort="high" via chat_template_kwargs envelope) as the safer default. top_p/top_k
+    # not specified on the card.
+    "mistral-small-4:119b-2603-q4_K_M":     {"temperature": 0.7, "chat_template_kwargs": {"reasoning_effort": "high"}},                                      # https://huggingface.co/mistralai/Mistral-Small-4-119B-2603
+    "Mistral-Small-4-119B-2603-UD-Q4_K_M":  {"temperature": 0.7, "chat_template_kwargs": {"reasoning_effort": "high"}},                                      # https://huggingface.co/mistralai/Mistral-Small-4-119B-2603
+    # Qwen3.5-122B-A10B — 122B / 10B active MoE. Smoke probe starts in instruct
+    # mode (--reasoning-budget 0 in server flags). Card's "balanced" preset:
+    # T=0.7, top_p=0.8, top_k=20. Bumping to thinking mode is a separate run if
+    # smoke clean. enable_thinking left as template default (true server-side
+    # but reasoning-budget=0 caps it to 0 tokens).
+    "Qwen3.5-122B-A10B-Q4_K_M":             {"temperature": 0.7, "top_p": 0.8, "top_k": 20},                                                                 # https://huggingface.co/Qwen/Qwen3.5-122B-A10B
+    # gpt-oss-120b — OpenAI open-weight MoE (117B total, 5.1B active). Reasoning model with three
+    # discrete levels: "low" / "medium" / "high", controlled via chat_template_kwargs.reasoning_effort
+    # (per llama.cpp guide: `--chat-template-kwargs '{"reasoning_effort": "high"}'`). Defaulting to
+    # "high" — bring down if overthinking observed. Card says T=1.0, top_p=1.0; llama.cpp guide adds
+    # top_k=0, min_p=0.0 (OpenAI's stated default; llama.cpp maintainer notes top_k=0 may add CPU
+    # overhead but we're GPU). CRITICAL: do NOT set repeat_penalty/presence_penalty (guide explicitly
+    # warns to disable repetition penalties) — registry omission == None == field omitted from body.
+    "gpt-oss:120b-q4_K_M":  {"temperature": 1.0, "top_p": 1.0, "top_k": 0, "min_p": 0.0, "chat_template_kwargs": {"reasoning_effort": "medium"}},  # https://huggingface.co/openai/gpt-oss-120b + https://github.com/ggml-org/llama.cpp/discussions/15396
+    "gpt-oss-120b-Q4_K_M":  {"temperature": 1.0, "top_p": 1.0, "top_k": 0, "min_p": 0.0, "chat_template_kwargs": {"reasoning_effort": "medium"}},  # https://huggingface.co/openai/gpt-oss-120b + https://github.com/ggml-org/llama.cpp/discussions/15396
+    # NVIDIA Nemotron-3-Super-120B-A12B — hybrid Mamba-2 + Transformer + MoE. Reasoning model with
+    # three states via chat_template_kwargs.enable_thinking: True (full default), True+low_effort
+    # for lighter think, or False (off). Defaulting to enable_thinking=True (no low_effort) for full
+    # effort, mirroring Mistral-Small-4 decision; bring down if overthinking. Card recommends
+    # T=1.0, top_p=0.95 across all tasks. Coding-agent serving guidance also adds force_nonempty_content
+    # so the model emits something substantive instead of empty <think> blocks. Native tool format is
+    # Qwen3-coder-style (vLLM uses --tool-call-parser qwen3_coder); should work fine through forge's
+    # existing prompt-mode rescue parsers, no new parser needed.
+    "nemotron-3-super:120b-a12b-q4_K_M":            {"temperature": 1.0, "top_p": 0.95, "chat_template_kwargs": {"enable_thinking": True, "low_effort": True, "force_nonempty_content": True}},  # https://huggingface.co/nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-BF16
+    "NVIDIA-Nemotron-3-Super-120B-A12B-UD-Q4_K_M":  {"temperature": 1.0, "top_p": 0.95, "chat_template_kwargs": {"enable_thinking": True, "low_effort": True, "force_nonempty_content": True}},  # https://huggingface.co/nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-BF16
+    # NVIDIA Nemotron-3-Nano-30B-A3B — same hybrid Mamba-2 + Transformer + MoE family as Super, 30B
+    # total / ~3.5B active. Card splits sampling into two presets:
+    #   - "Reasoning":    T=1.0, top_p=1.0   — wider nucleus than Super's 0.95
+    #   - "Tool-calling": T=0.6, top_p=0.95  — deterministic preset (active below)
+    # The "tool-calling" label is misleading: temperature is per-call and global, so the same low-T
+    # preset reins in *all* generation (reasoning, tool emission, prose). 2026-05-05 N=5 probe with
+    # the reasoning preset (T=1.0, top_p=1.0) gave decep% 16.04 driven entirely by F3 (9/15 silent
+    # fails) — model confidently claimed completion while pipeline output diverged from golden.
+    # Switched to the deterministic preset to test whether F3 deception is structural or temperature-
+    # tunable. Native tool format is qwen3_coder XML — irrelevant for forge prompt-mode runs.
+    # force_nonempty_content (Super's empty-<think> fix) is undocumented for Nano; add only if eval
+    # shows empty thinking blocks. Per gpt_oss precedent, repeat_penalty/presence_penalty are
+    # deliberately omitted (LlamafileClient drops missing fields entirely; explicit values would
+    # degrade output for unfiltered models).
+    "Nemotron-3-Nano-30B-A3B-Q4_K_M":               {"temperature": 0.6, "top_p": 0.95, "chat_template_kwargs": {"enable_thinking": True}},  # https://huggingface.co/nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16
     # Mistral Small 3.2 & Devstral Small 2 — cards only specify temperature; top_p/top_k/etc. left to backend defaults
     "mistral-small-3.2:24b-instruct-2506-q4_K_M":  {"temperature": 0.15},  # https://huggingface.co/mistralai/Mistral-Small-3.2-24B-Instruct-2506
     "Mistral-Small-3.2-24B-Instruct-2506-Q4_K_M":  {"temperature": 0.15},  # https://huggingface.co/mistralai/Mistral-Small-3.2-24B-Instruct-2506
@@ -115,10 +170,24 @@ MODEL_SAMPLING_DEFAULTS: dict[str, dict[str, float | int]] = {
     "granite-4.0-h-micro-Q4_K_M":  {"temperature": 0.0, "top_p": 1.0, "top_k": 0},  # https://unsloth.ai/docs/models/tutorials/ibm-granite-4.0 (cites IBM)
     "granite-4.0:h-tiny-q4_K_M":   {"temperature": 0.0, "top_p": 1.0, "top_k": 0},  # https://unsloth.ai/docs/models/tutorials/ibm-granite-4.0 (cites IBM)
     "granite-4.0-h-tiny-Q4_K_M":   {"temperature": 0.0, "top_p": 1.0, "top_k": 0},  # https://unsloth.ai/docs/models/tutorials/ibm-granite-4.0 (cites IBM)
+    # Granite 4.1 — UNCONFIRMED: no card-formal sampling recommendation from any source as of 2026-05-09
+    # (HF model card, unsloth GGUF page, IBM blog, IBM granite-4.1-language-models GitHub repo all
+    # silent on sampling; IBM granite/docs page returned 403; Unsloth tutorial 404). Mirroring Granite
+    # 4.0 IBM convention (greedy decoding) since Granite 4.1 is confirmed non-thinking per the HF blog
+    # ("without relying on long chains of thought") and IBM has been consistent across the family.
+    # Replace with card-direct values if/when IBM publishes formal guidance.
+    "granite4.1:8b-q4_K_M":        {"temperature": 0.0, "top_p": 1.0, "top_k": 0},  # unconfirmed; mirrors granite-4.0 IBM convention
+    "granite-4.1-8b-Q4_K_M":       {"temperature": 0.0, "top_p": 1.0, "top_k": 0},  # unconfirmed; mirrors granite-4.0 IBM convention
+    "granite4.1:8b-q8_0":          {"temperature": 0.0, "top_p": 1.0, "top_k": 0},  # unconfirmed; mirrors granite-4.0 IBM convention
+    "granite-4.1-8b-Q8_0":         {"temperature": 0.0, "top_p": 1.0, "top_k": 0},  # unconfirmed; mirrors granite-4.0 IBM convention
     # Intentionally absent — no formal recommendation from any official source:
     #   llama3.1:*                Meta's HF card, llama.com/docs, and llama-recipes are all silent.
     #   mistral:7b-instruct-v0.3  HF card has no "recommended settings" section; code examples
     #                             use temperature=0.0 (greedy) but note it's demo-only, not a rec.
+    #   phi-4 (base, non-reasoning)  HF card, Phi cookbook, Phi-4 technical report (2412.08905), and
+    #                                Microsoft Foundry all silent on sampling; only T=0.0 demo
+    #                                examples. Forge runs base phi-4 with recommended_sampling=False
+    #                                (see batch_eval.py:_NO_RECOMMENDED_SAMPLING_MODELS).
     # These rows fall through to the unknown-model path (backend defaults).
 }
 

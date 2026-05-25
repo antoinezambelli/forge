@@ -58,6 +58,8 @@ class MockClient:
         messages: list[dict[str, str]],
         tools: list[ToolSpec] | None = None,
         sampling: dict[str, object] | None = None,
+        passthrough: dict[str, object] | None = None,
+        inbound_anthropic_body: dict[str, object] | None = None,
     ) -> LLMResponse:
         self.send_calls.append((messages, tools))
         return self._next()
@@ -67,6 +69,8 @@ class MockClient:
         messages: list[dict[str, str]],
         tools: list[ToolSpec] | None = None,
         sampling: dict[str, object] | None = None,
+        passthrough: dict[str, object] | None = None,
+        inbound_anthropic_body: dict[str, object] | None = None,
     ) -> AsyncIterator[StreamChunk]:
         self.send_stream_calls.append((messages, tools))
         resp = self._next()
@@ -779,10 +783,10 @@ class TestStreaming:
         class NoFinalClient:
             """Mock client whose send_stream yields deltas but no FINAL."""
 
-            async def send(self, messages, tools=None, sampling=None):
+            async def send(self, messages, tools=None, sampling=None, passthrough=None, inbound_anthropic_body=None):
                 return [ToolCall(tool="fetch", args={})]
 
-            async def send_stream(self, messages, tools=None, sampling=None):
+            async def send_stream(self, messages, tools=None, sampling=None, passthrough=None, inbound_anthropic_body=None):
                 yield StreamChunk(type=ChunkType.TEXT_DELTA, content="partial")
 
             async def get_context_length(self):
@@ -900,7 +904,9 @@ class TestMessageStructure:
 
     @pytest.mark.asyncio
     async def test_unknown_tool_emits_assistant_before_nudge(self):
-        """Unknown tool call is recorded as ASSISTANT messages before the nudge."""
+        """Unknown tool call is recorded as ASSISTANT(tc) + TOOL(error) — the
+        corrective signal rides the canonical tool-result channel rather than a
+        trailing user nudge."""
         client = MockClient([
             ToolCall(tool="nonexistent", args={"x": 1}),
             ToolCall(tool="fetch", args={}),
@@ -909,12 +915,13 @@ class TestMessageStructure:
         runner = _make_runner(client)
         await runner.run(_make_workflow(), "go", prompt_vars={"role": "agent"})
 
-        # Second send call should have: system, user, assistant(tool_call), user(nudge)
+        # Second send call should have: system, user, assistant(tool_call), tool(error)
         second_call_msgs = client.send_calls[1][0]
         assert len(second_call_msgs) == 4
         assert second_call_msgs[2]["role"] == "assistant"
         assert second_call_msgs[2]["tool_calls"][0]["function"]["name"] == "nonexistent"
-        assert second_call_msgs[3]["role"] == "user"
+        assert second_call_msgs[3]["role"] == "tool"
+        assert "[UnknownTool]" in second_call_msgs[3]["content"]
         assert "does not exist" in second_call_msgs[3]["content"]
 
     @pytest.mark.asyncio
@@ -928,12 +935,13 @@ class TestMessageStructure:
         runner = _make_runner(client)
         await runner.run(_make_workflow(), "go", prompt_vars={"role": "agent"})
 
-        # Second send call should have: system, user, assistant(tool_call), user(nudge)
+        # Second send call should have: system, user, assistant(tool_call), tool(error)
         second_call_msgs = client.send_calls[1][0]
         assert len(second_call_msgs) == 4
         assert second_call_msgs[2]["role"] == "assistant"
         assert second_call_msgs[2]["tool_calls"][0]["function"]["name"] == "submit"
-        assert second_call_msgs[3]["role"] == "user"
+        assert second_call_msgs[3]["role"] == "tool"
+        assert "[StepEnforcementError]" in second_call_msgs[3]["content"]
         assert "cannot call submit yet" in second_call_msgs[3]["content"].lower()
 
     @pytest.mark.asyncio

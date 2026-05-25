@@ -46,7 +46,7 @@ result = await runner.run(workflow, "What's the weather in Paris?")
 
 ### Mode 2: Proxy Server (drop-in, zero code changes)
 
-Forge sits between any OpenAI-compatible client and your model server, intercepting requests and applying guardrails transparently. The client doesn't know forge is there.
+Forge sits between any client and your model server, intercepting requests and applying guardrails transparently. It speaks both the OpenAI chat-completions API and the Anthropic Messages API (`/v1/messages`), so OpenAI-compatible tools and Claude Code both work. The client doesn't know forge is there.
 
 ```bash
 # External mode — you manage the backend
@@ -63,9 +63,32 @@ from openai import OpenAI
 client = OpenAI(base_url="http://localhost:8081/v1")
 ```
 
-**Best for:** Adding guardrails to existing tools without modifying them. Works with any tool that speaks the OpenAI-compatible API — no per-client wrappers needed.
+**Best for:** Adding guardrails to existing tools without modifying them. Works with any tool that speaks the OpenAI-compatible API, plus Claude Code via the Anthropic Messages API — no per-client wrappers needed.
 
 **Reliability note:** The proxy automatically injects a synthetic `respond` tool when tools are present in the request. The model calls `respond(message="...")` instead of producing bare text, keeping it in tool-calling mode where forge's full guardrail stack applies. The `respond` call is stripped from the outbound response — the client sees a normal text response and never knows the tool exists. This is essential for small local models (~8B), which cannot be trusted to choose correctly between text and tool calls — eval testing showed that trusting the model's text intent dropped workflow completion from 100% to as low as 4%. Guiding the model to a tool is a must. See [ADR-013](decisions/013-text-response-intent.md) for the full analysis.
+
+#### Using forge with Claude Code
+
+Claude Code speaks the Anthropic Messages API, which the proxy serves on `POST /v1/messages` — so you can point Claude Code at a forge-guarded local model. Start the proxy against any backend, then set two environment variables for the Claude Code process:
+
+```bash
+# Start the proxy (managed mode against a local GGUF; native FC by default)
+python -m forge.proxy --backend llamaserver --gguf path/to/model.gguf --port 8081
+
+# Point Claude Code at it — scope these to the claude process only
+ANTHROPIC_BASE_URL=http://localhost:8081 \
+ANTHROPIC_AUTH_TOKEN=forge \
+claude
+```
+
+`ANTHROPIC_AUTH_TOKEN` can be any non-empty string — forge ignores it. The model name Claude Code sends is also ignored; forge serves whatever backend the proxy was started with.
+
+**Function-calling mode.** `--mode native` (default) uses the backend's chat-template tool-calling and is the smoother default for Claude Code's heavy multi-turn tool use. `--mode prompt` injects the tool surface into the prompt for backends without a tool-calling template; whether a model stays coherent across multi-turn tool results in prompt mode varies by model, so prefer native when the backend supports it.
+
+**Downstream protocol.**
+
+- **Local model (default, `--backend-protocol openai`)** — forge translates Claude Code's Anthropic requests to OpenAI for llama.cpp / Ollama and converts the reply back to Anthropic SSE. Anthropic-only fields with no OpenAI analog (`cache_control`, `thinking`, `document` blocks) are dropped at that boundary; see [ADR-015](decisions/015-cache-control-preservation-path1.md).
+- **Anthropic-shape downstream (`--backend-protocol anthropic`, external mode)** — forge forwards to an Anthropic Messages endpoint (e.g. LiteLLM or the Anthropic API), passing unknown fields through verbatim and preserving `cache_control` on clean turns. This path uses the Anthropic SDK: `pip install forge-guardrails[anthropic]`.
 
 #### Proxy design boundaries
 
@@ -250,7 +273,7 @@ await server.stop()
 3. The LLM calls `get_weather(city="Paris")` — forge executes it and feeds the result back.
 4. Step enforcement verifies `get_weather` was called (it's in `required_steps`).
 5. The LLM calls `report_weather(...)` — forge executes it, sees it's the `terminal_tool`, and ends the loop.
-6. If any step fails: retry nudges, rescue loops, and error recovery kick in automatically.
+6. If any step fails: retry nudges, rescue loops, and error recovery kick in automatically. Step-enforcement and prerequisite violations surface as tool-error responses on the tool channel (the same wire shape models are trained on for "tool call failed, try again"); bare-text retry nudges still arrive as user messages.
 
 ---
 
@@ -334,14 +357,7 @@ def on_message(self, msg: Message) -> None:
 
 ## Choosing a Backend
 
-| Backend | Best for | Native FC? | Setup |
-|---------|----------|------------|-------|
-| **Ollama** | Easiest setup, model management built-in | Yes | `ollama serve` |
-| **llama-server** | Best performance, full control | Yes (with `--jinja`) | `llama-server -m model.gguf --jinja` |
-| **Llamafile** | Single binary, zero dependencies | No (prompt-injected) | Download and run |
-| **Anthropic** | Frontier baseline, hybrid workflows | Yes | API key only |
-
-See [BACKEND_SETUP.md](BACKEND_SETUP.md) for full installation instructions and [MODEL_GUIDE.md](MODEL_GUIDE.md) for which model to pick.
+See [BACKEND_SETUP.md](BACKEND_SETUP.md) for the supported-backend table, boot commands, and client snippets. [MODEL_GUIDE.md](MODEL_GUIDE.md) covers which model to pick.
 
 ### Sampling Parameters
 
@@ -357,7 +373,7 @@ client = LlamafileClient(
 )
 ```
 
-For local-server backends, the GGUF (or llamafile) path is the canonical model identity — its filename stem (e.g. `Qwen3.5-27B-Q4_K_M`) is what forge uses for sampling-defaults lookup, the wire-format `model` field, and JSONL eval rows. Use Ollama-style strings only with `OllamaClient`.
+For local-server backends, the GGUF (or llamafile) path is the canonical model identity — its filename stem (e.g. `Qwen3.5-27B-Q4_K_M`) is what forge uses for sampling-defaults lookup, the wire-format `model` field, and JSONL eval rows. For vLLM the equivalent is `model_path` (a model directory or HF repo id), whose trailing segment serves the same role. Use Ollama-style strings only with `OllamaClient`.
 
 The flag is opt-in. Default behavior (`recommended_sampling=False`) leaves sampling to backend defaults; if forge has opinions about the model, it logs a one-shot INFO message pointing the caller at the flag. With `recommended_sampling=True`, an unknown model raises `UnsupportedModelError`.
 
@@ -444,9 +460,9 @@ ToolDef(
 )
 ```
 
-If the model calls a tool without satisfying its prerequisites, the runner blocks the batch, emits a `PREREQUISITE_NUDGE`, and the model retries. After `max_prereq_violations` (default 2) consecutive violations, `PrerequisiteError` is raised.
+If the model calls a tool without satisfying its prerequisites, the runner blocks the batch and emits one tool-error response per blocked tool call (`[PrereqError] ...` on the tool channel, with `PREREQUISITE_NUDGE` message type for compaction prioritization). The model retries off the canonical "tool failed" wire shape rather than a trailing user message — friendlier to OpenAI-tool-trained models. After `max_prereq_violations` (default 2) consecutive violations, `PrerequisiteError` is raised.
 
-Prerequisites are not included in the tool schema — the model discovers constraints via nudge, same as step enforcement.
+Prerequisites are not included in the tool schema — the model discovers constraints via the tool-error reply, same as step enforcement.
 
 ---
 
