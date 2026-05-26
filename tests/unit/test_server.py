@@ -541,10 +541,15 @@ class TestServerManagerStop:
         sm = ServerManager(backend="ollama")
         sm._current_model = "ministral:14b"
 
-        with patch("forge.server.subprocess.run") as mock_run:
+        proc = AsyncMock()
+        with patch(
+            "forge.server.asyncio.create_subprocess_exec",
+            new=AsyncMock(return_value=proc),
+        ) as mock_exec:
             await sm.stop()
 
-        mock_run.assert_called_once_with(["ollama", "stop", "ministral:14b"])
+        mock_exec.assert_called_once_with("ollama", "stop", "ministral:14b")
+        proc.wait.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_stop_ollama_noop_when_no_model(self) -> None:
