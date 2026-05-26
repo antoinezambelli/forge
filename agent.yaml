@@ -1,0 +1,44 @@
+spec_version: "0.1.0"
+name: forge-guardrails
+version: 0.7.2
+description: >
+  A reliability layer for self-hosted LLM tool-calling and multi-step agentic
+  workflows. Forge takes an 8B local model from single-digit pass rates to 84%
+  across a 26-scenario eval suite by applying composable guardrails: rescue
+  parsing, retry-with-error-tracking, response validation, and synthetic-tool
+  injection. Runs as a drop-in OpenAI / Anthropic proxy (no client rewrite
+  needed), as a WorkflowRunner for structured agentic loops, or as composable
+  middleware inside an existing orchestration loop. Supports Ollama,
+  llama-server, Llamafile, vLLM, and Anthropic as backends.
+author: antoinezambelli
+license: MIT
+
+model:
+  preferred: anthropic:claude-sonnet-4-6
+  fallback:
+    - ollama:ministral-3:8b-instruct-2512-q4_K_M
+    - llamacpp:Ministral-3-8B-Instruct-2512-Q8_0
+  constraints:
+    max_tokens: 8192
+
+skills:
+  - proxy-mode          # Drop-in OpenAI / Anthropic API proxy with guardrails
+  - workflow-runner     # Structured agentic loops with WorkflowRunner
+  - guardrails          # Composable middleware for foreign orchestration loops
+  - rescue-parsing      # Normalises malformed tool-call formats from local models
+  - context-management  # Tiered context compaction for long-running sessions
+  - eval-harness        # 26-scenario benchmark suite for model + backend qualification
+
+runtime:
+  max_turns: 50
+  timeout: 600
+
+compliance:
+  risk_tier: standard
+  supervision:
+    human_in_the_loop: none
+    kill_switch: true
+  recordkeeping:
+    audit_logging: false
+  data_governance:
+    pii_handling: passthrough
