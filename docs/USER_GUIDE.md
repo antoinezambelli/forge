@@ -134,6 +134,8 @@ execute(result.tool_calls)
 done = guardrails.record([tc.tool for tc in result.tool_calls])
 ```
 
+The `Guardrails` facade covers validation, retry nudges, and step enforcement. It does **not** enforce tool prerequisites — for those, use the Granular API (`StepEnforcer.check_prerequisites`) shown next.
+
 **Granular API** (individual components for custom control):
 
 ```python
