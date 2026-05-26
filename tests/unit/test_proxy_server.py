@@ -219,6 +219,36 @@ class TestChatCompletions:
             writer.close()
             await writer.wait_closed()
 
+    @pytest.mark.asyncio
+    async def test_invalid_content_length_returns_400(self, server_factory):
+        srv, port = await server_factory(TextResponse(content=""))
+        reader, writer = await asyncio.open_connection("127.0.0.1", port)
+        try:
+            request = (
+                f"POST /v1/chat/completions HTTP/1.1\r\n"
+                f"Host: 127.0.0.1:{port}\r\n"
+                f"Content-Type: application/json\r\n"
+                f"Content-Length: abc\r\n"
+                f"\r\n"
+            ).encode()
+            writer.write(request)
+            await writer.drain()
+            response_data = await asyncio.wait_for(reader.read(65536), timeout=10.0)
+            assert b"400" in response_data
+        finally:
+            writer.close()
+            await writer.wait_closed()
+
+    @pytest.mark.asyncio
+    async def test_non_object_body_returns_400(self, server_factory):
+        srv, port = await server_factory(TextResponse(content=""))
+        # Valid JSON but not an object (array) must be rejected before the
+        # handler calls body.get(...), which would otherwise raise.
+        status, _ = await _http_request(
+            port, "POST", "/v1/chat/completions", body=[1, 2, 3]
+        )
+        assert status == 400
+
 
 # ── SSE Streaming ───────────────────────────────────────────
 
