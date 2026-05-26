@@ -259,7 +259,7 @@ class LlamafileClient:
             if think_text:
                 return think_text
             # Content fallback (instruct model narrating before tool call)
-            return accumulated_content or None
+            return accumulated_content
 
         return None
 
@@ -394,12 +394,14 @@ class LlamafileClient:
                 )
                 result_calls: list[ToolCall] = []
                 bad_args = False
+                bad_raw = ""
                 for idx in sorted(tool_call_parts):
                     part = tool_call_parts[idx]
                     try:
                         args = json.loads(part["args"]) if part["args"] else {}
                     except json.JSONDecodeError:
                         bad_args = True
+                        bad_raw = part["args"]
                         break
                     result_calls.append(ToolCall(
                         tool=part["name"],
@@ -408,7 +410,7 @@ class LlamafileClient:
                     ))
                 if bad_args:
                     final: LLMResponse = TextResponse(
-                        content=accumulated_content or part["args"],
+                        content=accumulated_content or bad_raw,
                     )
                 else:
                     final = result_calls
