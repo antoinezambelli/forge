@@ -161,6 +161,7 @@ class ProxyServer:
 
         self._server_manager: ServerManager | None = None
         self._http_server: HTTPServer | None = None
+        self._client: LLMClient | None = None
         self._loop: asyncio.AbstractEventLoop | None = None
         self._thread: threading.Thread | None = None
         self._started = False
@@ -219,6 +220,7 @@ class ProxyServer:
         else:
             client, context_manager = await self._setup_managed()
 
+        self._client = client
         self._http_server = HTTPServer(
             client=client,
             context_manager=context_manager,
@@ -367,3 +369,5 @@ class ProxyServer:
             await self._http_server.stop()
         if self._server_manager is not None:
             await self._server_manager.stop()
+        if self._client is not None:
+            await self._client.aclose()

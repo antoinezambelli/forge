@@ -99,6 +99,10 @@ class VLLMClient:
         self._think: bool = think
         self.last_usage: dict[int, TokenUsage] = {}
 
+    async def aclose(self) -> None:
+        """Close the underlying httpx connection pool."""
+        await self._http.aclose()
+
     # Sampling fields recognized in per-call overrides. ``seed`` is
     # accepted only as a per-call override (not an instance field).
     # ``chat_template_kwargs`` is a nested dict of Jinja template variables

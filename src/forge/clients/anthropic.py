@@ -68,6 +68,10 @@ class AnthropicClient:
         # same convention as OllamaClient.
         self.last_usage: dict[int, TokenUsage] = {}
 
+    async def aclose(self) -> None:
+        """Close the underlying Anthropic SDK client (and its httpx pool)."""
+        await self._client.close()
+
     # ── Tool schema conversion ───────────────────────────────────
 
     @staticmethod
@@ -120,7 +124,13 @@ class AnthropicClient:
                         func = tc["function"]
                         args = func.get("arguments", "{}")
                         if isinstance(args, str):
-                            args = json.loads(args)
+                            try:
+                                args = json.loads(args)
+                            except json.JSONDecodeError as exc:
+                                raise ValueError(
+                                    f"Malformed JSON in tool_call arguments for "
+                                    f"{func.get('name', '?')!r}: {args!r}"
+                                ) from exc
                         tc_id = tc.get("id", f"toolu_{len(converted)}")
                         blocks.append({
                             "type": "tool_use",

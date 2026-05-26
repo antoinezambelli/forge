@@ -186,6 +186,10 @@ class LlamafileClient:
         else:
             self.resolved_mode = None
 
+    async def aclose(self) -> None:
+        """Close the underlying httpx connection pool."""
+        await self._http.aclose()
+
     def _apply_slot_id(self, body: dict[str, Any]) -> None:
         """Inject slot_id into a request body if configured."""
         if self._slot_id is not None:

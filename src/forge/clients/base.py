@@ -149,3 +149,7 @@ class LLMClient(Protocol):
     async def get_context_length(self) -> int | None:
         """Query the backend for its configured context window size."""
         ...
+
+    async def aclose(self) -> None:
+        """Release held network resources (e.g. the httpx connection pool)."""
+        ...
