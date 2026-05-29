@@ -62,6 +62,15 @@ class TestConstructorValidation:
         with pytest.raises(ValueError, match="requires model_path"):
             ProxyServer(backend="vllm")
 
+    @pytest.mark.parametrize("backend_timeout", [0, -1, float("nan"), float("inf")])
+    def test_backend_timeout_must_be_finite_and_positive(
+        self, backend_timeout: float,
+    ) -> None:
+        with pytest.raises(
+            ValueError, match="backend_timeout must be a finite value greater than 0",
+        ):
+            ProxyServer(backend_url="http://x:8000", backend_timeout=backend_timeout)
+
     def test_managed_ok(self) -> None:
         ProxyServer(backend="llamaserver", gguf="m.gguf")
         ProxyServer(backend="llamafile", gguf="m.gguf")
@@ -74,6 +83,11 @@ class TestConstructorValidation:
         assert proxy._backend is None
         proxy2 = ProxyServer(backend_url="http://x:8000", backend="vllm")
         assert proxy2._backend == "vllm"
+
+    def test_backend_timeout_default_and_override(self) -> None:
+        assert ProxyServer(backend_url="http://x:8000")._backend_timeout == 300.0
+        proxy = ProxyServer(backend_url="http://x:8000", backend_timeout=1800.0)
+        assert proxy._backend_timeout == 1800.0
 
     # Serialize auto-detection: managed (no url) serializes, external does not.
     def test_serialize_auto_managed_true(self) -> None:
@@ -92,10 +106,15 @@ class TestSetupExternal:
 
     @pytest.mark.asyncio
     async def test_llamaserver_uses_llamafile_client(self) -> None:
-        proxy = ProxyServer(backend_url="http://localhost:8080", budget_tokens=8192)
+        proxy = ProxyServer(
+            backend_url="http://localhost:8080",
+            budget_tokens=8192,
+            backend_timeout=1800.0,
+        )
         client, ctx = await proxy._setup_external()
         assert isinstance(client, LlamafileClient)
         assert client.base_url == "http://localhost:8080/v1"
+        assert client._http.timeout.read == 1800.0
         assert ctx.budget_tokens == 8192
 
     @pytest.mark.asyncio
@@ -109,7 +128,10 @@ class TestSetupExternal:
     @pytest.mark.asyncio
     async def test_vllm_uses_vllm_client(self) -> None:
         proxy = ProxyServer(
-            backend_url="http://localhost:8000", backend="vllm", budget_tokens=8192,
+            backend_url="http://localhost:8000",
+            backend="vllm",
+            budget_tokens=8192,
+            backend_timeout=1800.0,
         )
         with patch.object(
             VLLMClient, "get_served_model_name", new_callable=AsyncMock, return_value=None,
@@ -117,6 +139,7 @@ class TestSetupExternal:
             client, ctx = await proxy._setup_external()
         assert isinstance(client, VLLMClient)
         assert client.base_url == "http://localhost:8000/v1"
+        assert client._http.timeout.read == 1800.0
         assert ctx.budget_tokens == 8192
 
     @pytest.mark.asyncio
@@ -186,6 +209,7 @@ class TestSetupManaged:
             backend_port=8080,
             budget_mode=BudgetMode.FORGE_FAST,
             extra_flags=["-ngl", "99"],
+            backend_timeout=1800.0,
         )
         mock_ctx = ContextManager.__new__(ContextManager)
         mock_ctx.budget_tokens = 16384
@@ -199,6 +223,7 @@ class TestSetupManaged:
 
         assert isinstance(client, LlamafileClient)
         assert client.base_url == "http://localhost:8080/v1"
+        assert client._http.timeout.read == 1800.0
         kwargs = mock_setup.await_args.kwargs
         assert kwargs["backend"] == "llamaserver"
         assert kwargs["gguf_path"] == "/models/x.gguf"
@@ -217,6 +242,7 @@ class TestSetupManaged:
         proxy = ProxyServer(
             backend="vllm", model_path="/models/awq", backend_port=8000,
             budget_tokens=113000, budget_mode=BudgetMode.MANUAL,
+            backend_timeout=1800.0,
         )
         mock_ctx = ContextManager.__new__(ContextManager)
         mock_ctx.budget_tokens = 113000
@@ -228,6 +254,7 @@ class TestSetupManaged:
 
         assert isinstance(client, VLLMClient)
         assert client.base_url == "http://localhost:8000/v1"
+        assert client._http.timeout.read == 1800.0
         kwargs = mock_setup.await_args.kwargs
         assert kwargs["backend"] == "vllm"
         assert kwargs["model_path"] == "/models/awq"
@@ -238,7 +265,11 @@ class TestSetupManaged:
 
     @pytest.mark.asyncio
     async def test_ollama_wiring(self) -> None:
-        proxy = ProxyServer(backend="ollama", model="ministral-3:14b")
+        proxy = ProxyServer(
+            backend="ollama",
+            model="ministral-3:14b",
+            backend_timeout=1800.0,
+        )
         mock_ctx = ContextManager.__new__(ContextManager)
         mock_ctx.budget_tokens = 4096
         with patch(
@@ -247,6 +278,7 @@ class TestSetupManaged:
         ) as mock_setup:
             client, _ = await proxy._setup_managed()
         assert isinstance(client, OllamaClient)
+        assert client._http.timeout.read == 1800.0
         kwargs = mock_setup.await_args.kwargs
         assert kwargs["backend"] == "ollama"
         assert kwargs["model"] == "ministral-3:14b"

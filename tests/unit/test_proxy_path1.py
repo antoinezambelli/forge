@@ -12,7 +12,7 @@ See ADR-015 for the cache_control preservation rationale.
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -54,6 +54,28 @@ class TestProxyServerValidation:
             backend_url="http://localhost:8080",
         )
         assert proxy._backend_protocol == "openai"
+
+    @pytest.mark.asyncio
+    async def test_anthropic_external_receives_backend_timeout(self):
+        proxy = ProxyServer(
+            backend_url="http://localhost:8080",
+            backend_protocol="anthropic",
+            backend_timeout=1800.0,
+        )
+        with patch("forge.clients.anthropic.AnthropicClient") as mock_client_cls:
+            mock_client = MagicMock()
+            mock_client.get_context_length = AsyncMock(return_value=200000)
+            mock_client_cls.return_value = mock_client
+
+            client, ctx = await proxy._setup_external()
+
+        assert client is mock_client
+        assert ctx.budget_tokens == 200000
+        mock_client_cls.assert_called_once_with(
+            model="claude",
+            base_url="http://localhost:8080",
+            timeout=1800.0,
+        )
 
 
 # ── AnthropicClient verbatim path ────────────────────────────

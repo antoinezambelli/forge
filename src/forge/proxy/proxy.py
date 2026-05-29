@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 import threading
 from pathlib import Path
 from typing import Literal
@@ -68,6 +69,7 @@ class ProxyServer:
         rescue_enabled: bool = True,
         mode: Literal["native", "prompt"] = "native",
         backend_protocol: Literal["openai", "anthropic"] = "openai",
+        backend_timeout: float = 300.0,
     ) -> None:
         """
         Args:
@@ -101,6 +103,8 @@ class ProxyServer:
                 for Anthropic-shape downstreams (the official Anthropic API,
                 LiteLLM's /v1/messages, a self-hosted Anthropic proxy).
                 Only meaningful in external mode; ignored in managed mode.
+            backend_timeout: Timeout in seconds for requests from the proxy to
+                the downstream backend.
         """
         if backend_url is None and backend is None:
             raise ValueError("Provide either backend_url (external) or backend (managed)")
@@ -126,6 +130,8 @@ class ProxyServer:
                 "backend='vllm' parses tool calls server-side (native only); "
                 "mode='prompt' is not applicable."
             )
+        if not math.isfinite(backend_timeout) or backend_timeout <= 0:
+            raise ValueError("backend_timeout must be a finite value greater than 0")
         # Managed mode: each backend requires its own identity field. Fail
         # fast at construction with a clear message (mirrors setup_backend).
         if backend_url is None:
@@ -151,6 +157,7 @@ class ProxyServer:
         self._rescue_enabled = rescue_enabled
         self._mode = mode
         self._backend_protocol = backend_protocol
+        self._backend_timeout = backend_timeout
 
         # Auto-detect serialization: managed (no external url) = single local
         # GPU = serialize. External callers manage their own concurrency.
@@ -257,6 +264,7 @@ class ProxyServer:
             client: LLMClient = AnthropicClient(
                 model=self._model or "claude",
                 base_url=self._backend_url.rstrip("/"),
+                timeout=self._backend_timeout,
             )
             # Anthropic models report a known context length; keep the legacy
             # 8192 fallback rather than failing the well-behaved Path-1 case.
@@ -273,7 +281,11 @@ class ProxyServer:
             base = base + "/v1"
 
         if self._backend == "vllm":
-            client = VLLMClient(model_path="default", base_url=base)
+            client = VLLMClient(
+                model_path="default",
+                base_url=base,
+                timeout=self._backend_timeout,
+            )
             # Unlike llama.cpp, vLLM validates the wire `model` field against
             # its --served-model-name aliases (404 on mismatch). External mode
             # has no model path to send, so discover the served identity from
@@ -299,6 +311,7 @@ class ProxyServer:
                 gguf_path=self._model or "default",
                 base_url=base,
                 mode=self._mode,
+                timeout=self._backend_timeout,
             )
 
         if self._budget_tokens is not None:
@@ -348,18 +361,23 @@ class ProxyServer:
         base_url = f"http://localhost:{self._backend_port}/v1"
         if self._backend == "ollama":
             assert self._model is not None
-            return OllamaClient(model=self._model)
+            return OllamaClient(
+                model=self._model,
+                timeout=self._backend_timeout,
+            )
         if self._backend in ("llamaserver", "llamafile"):
             return LlamafileClient(
                 gguf_path=self._gguf or "default",
                 base_url=base_url,
                 mode=self._mode,
+                timeout=self._backend_timeout,
             )
         if self._backend == "vllm":
             assert self._model_path is not None
             return VLLMClient(
                 model_path=self._model_path,
                 base_url=base_url,
+                timeout=self._backend_timeout,
             )
         raise ValueError(f"unsupported backend: {self._backend!r}")
 

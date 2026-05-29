@@ -67,6 +67,12 @@ def main() -> None:
     parser.add_argument("--serialize", action="store_true", default=None, help="Force request serialization")
     parser.add_argument("--no-serialize", action="store_true", help="Disable request serialization")
     parser.add_argument("--max-retries", type=int, default=3, help="Max retries per request (default: 3)")
+    parser.add_argument(
+        "--backend-timeout",
+        type=float,
+        default=300.0,
+        help="Backend response timeout in seconds (default: 300)",
+    )
     parser.add_argument("--no-rescue", action="store_true", help="Disable rescue parsing")
     parser.add_argument("--verbose", "-v", action="store_true", help="Verbose logging")
 
@@ -104,6 +110,7 @@ def main() -> None:
         rescue_enabled=not args.no_rescue,
         mode=args.mode,
         backend_protocol=args.backend_protocol,
+        backend_timeout=args.backend_timeout,
     )
 
     def _shutdown(sig: int, _frame: object) -> None:
