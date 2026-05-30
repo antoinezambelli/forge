@@ -108,7 +108,12 @@ class TestSend:
         assert result.content == ""
 
     @pytest.mark.asyncio
-    async def test_malformed_tool_args_fall_back_to_empty(self) -> None:
+    async def test_malformed_tool_args_return_text_response(self) -> None:
+        # Fail-loud: malformed argument JSON must NOT become an executable
+        # empty-args tool call. It returns a TextResponse so the runner's
+        # rescue-parse + retry/nudge loop can drive a correction. With no
+        # assistant text present, the raw malformed args are surfaced so the
+        # rescue parser still has the original JSON to work with.
         client = _make_client()
         client._http.post.return_value = _mock_response({
             "choices": [{
@@ -121,8 +126,69 @@ class TestSend:
             }]
         })
         result = await client.send([{"role": "user", "content": "test"}])
+        assert isinstance(result, TextResponse)
+        assert result.content == "{not json"
+
+    @pytest.mark.asyncio
+    async def test_malformed_tool_args_surface_assistant_text(self) -> None:
+        # When the assistant also produced text alongside the malformed
+        # tool-call args, the TextResponse carries that text (the more useful
+        # signal for rescue), not the raw broken JSON.
+        client = _make_client()
+        client._http.post.return_value = _mock_response({
+            "choices": [{
+                "message": {
+                    "role": "assistant",
+                    "content": "Let me look that up.",
+                    "tool_calls": [{
+                        "function": {"name": "get_pricing", "arguments": "{not json"},
+                    }],
+                }
+            }]
+        })
+        result = await client.send([{"role": "user", "content": "test"}])
+        assert isinstance(result, TextResponse)
+        assert result.content == "Let me look that up."
+
+    @pytest.mark.asyncio
+    async def test_one_malformed_among_several_bails_whole_batch(self) -> None:
+        # Fail-loud for parallel tool calls: if ANY call's args are malformed,
+        # the entire response becomes a TextResponse — we never execute the
+        # valid sibling calls alongside a broken one (no partial execution).
+        client = _make_client()
+        client._http.post.return_value = _mock_response({
+            "choices": [{
+                "message": {
+                    "role": "assistant",
+                    "tool_calls": [
+                        {"function": {"name": "get_pricing", "arguments": '{"part": "A"}'}},
+                        {"function": {"name": "get_pricing", "arguments": "{broken"}},
+                    ],
+                }
+            }]
+        })
+        result = await client.send([{"role": "user", "content": "test"}])
+        assert isinstance(result, TextResponse)
+        assert result.content == "{broken"
+
+    @pytest.mark.asyncio
+    async def test_dict_tool_args_accepted(self) -> None:
+        # A provider that returns already-parsed (non-string) arguments is
+        # non-compliant but unambiguous — accept the dict rather than failing.
+        client = _make_client()
+        client._http.post.return_value = _mock_response({
+            "choices": [{
+                "message": {
+                    "role": "assistant",
+                    "tool_calls": [{
+                        "function": {"name": "get_pricing", "arguments": {"part": "X123"}},
+                    }],
+                }
+            }]
+        })
+        result = await client.send([{"role": "user", "content": "test"}])
         assert isinstance(result, list)
-        assert result[0].args == {}
+        assert result[0].args == {"part": "X123"}
 
     @pytest.mark.asyncio
     async def test_formats_tools_in_request(self) -> None:
@@ -270,6 +336,54 @@ class TestSendStream:
         assert isinstance(finals[0].response, list)
         assert finals[0].response[0].tool == "get_pricing"
         assert finals[0].response[0].args == {"part": "X"}
+
+    @pytest.mark.asyncio
+    async def test_stream_malformed_tool_args_return_text_response(self) -> None:
+        # Streaming counterpart of the non-streaming fail-loud case: arg
+        # fragments that never assemble into valid JSON must end as a
+        # TextResponse final, not a {}-args tool call. With no streamed text,
+        # the raw assembled args are surfaced for rescue.
+        client = _make_client()
+        lines = [
+            'data: ' + json.dumps({"choices": [{"delta": {"tool_calls": [
+                {"index": 0, "function": {"name": "get_pricing", "arguments": "{not"}}
+            ]}}]}),
+            'data: ' + json.dumps({"choices": [{"delta": {"tool_calls": [
+                {"index": 0, "function": {"arguments": " json"}}
+            ]}}]}),
+            'data: [DONE]',
+        ]
+        client._http.stream.return_value = _MockStreamResponse(lines)
+
+        chunks = [c async for c in client.send_stream(
+            [{"role": "user", "content": "test"}], tools=[_make_spec()]
+        )]
+        finals = [c for c in chunks if c.type == ChunkType.FINAL]
+        assert len(finals) == 1
+        assert isinstance(finals[0].response, TextResponse)
+        assert finals[0].response.content == "{not json"
+
+    @pytest.mark.asyncio
+    async def test_stream_non_string_arg_fragment_not_dropped(self) -> None:
+        # A non-compliant provider that streams the whole arguments object as a
+        # single non-string fragment must not be silently skipped (which would
+        # leave empty args). It is serialized into the buffer and recovered.
+        client = _make_client()
+        lines = [
+            'data: ' + json.dumps({"choices": [{"delta": {"tool_calls": [
+                {"index": 0, "function": {"name": "get_pricing", "arguments": {"part": "X9"}}}
+            ]}}]}),
+            'data: [DONE]',
+        ]
+        client._http.stream.return_value = _MockStreamResponse(lines)
+
+        chunks = [c async for c in client.send_stream(
+            [{"role": "user", "content": "test"}], tools=[_make_spec()]
+        )]
+        finals = [c for c in chunks if c.type == ChunkType.FINAL]
+        assert len(finals) == 1
+        assert isinstance(finals[0].response, list)
+        assert finals[0].response[0].args == {"part": "X9"}
 
     @pytest.mark.asyncio
     async def test_stream_http_error_raises(self) -> None:

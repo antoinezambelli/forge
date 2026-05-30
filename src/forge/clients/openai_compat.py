@@ -148,16 +148,34 @@ class OpenAICompatClient:
         )
 
     @staticmethod
-    def _parse_tool_calls(tool_calls: list[dict[str, Any]]) -> list[ToolCall]:
-        """Parse OpenAI tool_calls — arguments are JSON strings."""
+    def _parse_tool_calls(
+        tool_calls: list[dict[str, Any]], fallback_content: str = ""
+    ) -> LLMResponse:
+        """Parse OpenAI ``tool_calls`` into ``ToolCall`` objects.
+
+        Tool-call ``arguments`` arrive as JSON strings. Forge is fail-loud:
+        malformed argument JSON must NOT be coerced into executable empty args,
+        or a provider/model can emit invalid arguments and Forge proceeds with
+        ``fn(**{})`` — exactly the quiet false success the library avoids.
+        Instead we return a ``TextResponse``, which routes the response back
+        into the validator's rescue-parse + retry/nudge loop, matching
+        ``LlamafileClient`` (see ``llamafile.py`` ``_send_native``).
+
+        ``fallback_content`` is the assistant message text to surface for the
+        rescue attempt; we fall back to the raw malformed args when there is no
+        text, so the rescue parser still has the original JSON to work with.
+        """
         parsed: list[ToolCall] = []
         for tc in tool_calls:
             fn = tc.get("function", {})
             raw_args = fn.get("arguments") or "{}"
-            try:
-                args = json.loads(raw_args) if isinstance(raw_args, str) else raw_args
-            except json.JSONDecodeError:
-                args = {}
+            if isinstance(raw_args, str):
+                try:
+                    args = json.loads(raw_args)
+                except json.JSONDecodeError:
+                    return TextResponse(content=fallback_content or raw_args)
+            else:
+                args = raw_args
             parsed.append(ToolCall(tool=fn.get("name", ""), args=args))
         return parsed
 
@@ -193,7 +211,7 @@ class OpenAICompatClient:
         msg = data["choices"][0]["message"]
         tool_calls = msg.get("tool_calls")
         if tool_calls:
-            return self._parse_tool_calls(tool_calls)
+            return self._parse_tool_calls(tool_calls, fallback_content=msg.get("content") or "")
         return TextResponse(content=msg.get("content") or "")
 
     # ── streaming ────────────────────────────────────────────────────
@@ -255,20 +273,29 @@ class OpenAICompatClient:
                     fn = tc.get("function", {})
                     if fn.get("name"):
                         slot["function"]["name"] += str(fn["name"])
-                    # OpenAI streaming sends `arguments` as string fragments
-                    # that we concatenate into the final JSON string. Anything
-                    # non-string would be a non-compliant provider; drop it
-                    # rather than json.dumps a partial object into the buffer.
+                    # OpenAI streaming sends `arguments` as JSON-string
+                    # fragments we concatenate into the final JSON string. A
+                    # non-string fragment is a non-compliant provider; serialize
+                    # it into the buffer rather than silently dropping it.
+                    # Dropping leaves a gap in the assembled JSON that may parse
+                    # into wrong-but-valid args (a quiet false success); folding
+                    # it in instead means the single parse at stream end either
+                    # recovers a whole-object fragment or fails loud into the
+                    # TextResponse/retry path below, matching LlamafileClient.
                     args_frag = fn.get("arguments")
-                    if isinstance(args_frag, str):
-                        slot["function"]["arguments"] += args_frag
+                    if args_frag is not None:
+                        slot["function"]["arguments"] += (
+                            args_frag if isinstance(args_frag, str) else json.dumps(args_frag)
+                        )
 
         if usage:
             self._record_usage({"usage": usage})
 
         if tool_calls:
             ordered = [tool_calls[i] for i in sorted(tool_calls)]
-            final: LLMResponse = self._parse_tool_calls(ordered)
+            final: LLMResponse = self._parse_tool_calls(
+                ordered, fallback_content=accumulated_content
+            )
         else:
             final = TextResponse(content=accumulated_content)
         yield StreamChunk(type=ChunkType.FINAL, response=final)
