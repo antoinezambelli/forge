@@ -341,6 +341,27 @@ class TestSamplingPlumbing:
         }
 
 
+    @pytest.mark.asyncio
+    async def test_stream_options_excluded_from_passthrough(self):
+        """stream_options must not leak into passthrough.
+
+        Forge controls streaming independently — when it makes non-streaming
+        calls to the backend, a leaked stream_options causes validation
+        errors on strict backends (e.g. vLLM rejects stream_options when
+        stream is not True).
+        """
+        client = _mock_client(TextResponse(content="ok"))
+        body = _body(messages=[{"role": "user", "content": "hi"}])
+        body["stream"] = True
+        body["stream_options"] = {"include_usage": True}
+        body["max_tokens"] = 256
+
+        await handle_chat_completions(body, client, _context_manager(), max_retries=1)
+
+        passthrough = client.send.call_args.kwargs["passthrough"]
+        assert "stream_options" not in passthrough
+        assert passthrough == {"model": "test", "max_tokens": 256}
+
 # ── Anthropic protocol routing ───────────────────────────────
 
 

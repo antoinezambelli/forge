@@ -46,7 +46,7 @@ _SAMPLING_FIELDS = (
 )
 
 # Body fields forge owns and reasons about — never go into passthrough.
-_FORGE_OWNED = frozenset({"messages", "tools", "stream", "system"})
+_FORGE_OWNED = frozenset({"messages", "tools", "stream", "stream_options", "system"})
 
 
 def _extract_sampling(body: dict[str, Any]) -> dict[str, Any] | None:
