@@ -288,6 +288,7 @@ class AnthropicClient:
         sampling: dict[str, Any] | None = None,
         passthrough: dict[str, Any] | None = None,
         inbound_anthropic_body: dict[str, Any] | None = None,
+        raw_openai_tools: list[dict[str, Any]] | None = None,
     ) -> LLMResponse:
         """Send messages via the Anthropic Messages API.
 
@@ -296,6 +297,8 @@ class AnthropicClient:
         forge. ``passthrough`` merges inbound-body extras into the SDK call.
         ``inbound_anthropic_body`` (path 1) triggers verbatim emit — see
         ADR-015 for the cache_control preservation rationale.
+        ``raw_openai_tools`` accepted for protocol symmetry, ignored
+        (Anthropic uses its own tool conversion).
         """
         if sampling:
             log.debug(
@@ -327,12 +330,14 @@ class AnthropicClient:
         sampling: dict[str, Any] | None = None,
         passthrough: dict[str, Any] | None = None,
         inbound_anthropic_body: dict[str, Any] | None = None,
+        raw_openai_tools: list[dict[str, Any]] | None = None,
     ) -> AsyncIterator[StreamChunk]:
         """Stream via the Anthropic Messages API.
 
         ``sampling`` is accepted for protocol symmetry but ignored.
         ``passthrough`` merges inbound-body extras into the SDK call.
         ``inbound_anthropic_body`` (path 1) triggers verbatim emit; see ADR-015.
+        ``raw_openai_tools`` accepted for protocol symmetry, ignored.
         """
         if sampling:
             log.debug(

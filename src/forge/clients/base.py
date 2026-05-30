@@ -9,6 +9,12 @@ from typing import Any, Protocol, runtime_checkable
 
 from forge.core.workflow import LLMResponse, ToolCall, TextResponse, ToolSpec
 
+# Verbatim OpenAI-shape payloads forwarded by the proxy. The proxy hands the
+# client the user's original ``tools`` array so the backend sees the exact
+# schema the client authored, instead of forge's reconstructed ToolSpec.
+RawOpenAITools = list[dict[str, Any]]
+RawOpenAIMessages = list[dict[str, Any]]
+
 
 @dataclass(frozen=True)
 class TokenUsage:
@@ -86,6 +92,7 @@ class LLMClient(Protocol):
         sampling: dict[str, Any] | None = None,
         passthrough: dict[str, Any] | None = None,
         inbound_anthropic_body: dict[str, Any] | None = None,
+        raw_openai_tools: RawOpenAITools | None = None,
     ) -> LLMResponse:
         """Send messages and return a parsed response.
 
@@ -116,6 +123,11 @@ class LLMClient(Protocol):
                 forge-mutation (retry / compaction / context warning) so
                 only the clean first-attempt call rides verbatim. Other
                 clients accept and ignore. See ADR-015.
+            raw_openai_tools: Proxy-only — the client's verbatim OpenAI
+                ``tools`` array. When set, LlamafileClient's native path sends
+                it as-is instead of re-emitting ``format_tool(spec)``, so the
+                backend sees the original schema (no name/schema drift). Other
+                clients accept and ignore.
         """
         ...
 
@@ -126,6 +138,7 @@ class LLMClient(Protocol):
         sampling: dict[str, Any] | None = None,
         passthrough: dict[str, Any] | None = None,
         inbound_anthropic_body: dict[str, Any] | None = None,
+        raw_openai_tools: RawOpenAITools | None = None,
     ) -> AsyncIterator[StreamChunk]:
         """Send messages and yield streaming chunks.
 
@@ -143,6 +156,7 @@ class LLMClient(Protocol):
                 Per-call values win over instance state without mutating self.
             passthrough: Optional inbound-body extras dict (see ``send``).
             inbound_anthropic_body: Optional path-1 verbatim body (see ``send``).
+            raw_openai_tools: Optional verbatim OpenAI tools array (see ``send``).
         """
         ...
 

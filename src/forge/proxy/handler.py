@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import logging
+from copy import deepcopy
 from typing import Any, Literal
 
-from forge.clients.base import LLMClient
+from forge.clients.base import LLMClient, format_tool
 from forge.context.manager import ContextManager
 from forge.core.inference import _get_usage, fold_and_serialize, run_inference
 from forge.core.workflow import ToolCall, ToolSpec, TextResponse
@@ -100,12 +101,27 @@ def _extract_tool_names(tool_specs: list[ToolSpec]) -> list[str]:
     return [s.name for s in tool_specs]
 
 
+def _raw_openai_tools(request_tools: Any) -> list[dict[str, Any]] | None:
+    """Return a detached deep copy of the inbound OpenAI tools array."""
+    if not isinstance(request_tools, list) or not request_tools:
+        return None
+    return [deepcopy(tool) for tool in request_tools if isinstance(tool, dict)]
+
+
+def _raw_openai_messages(request_messages: Any) -> list[dict[str, Any]] | None:
+    """Return a detached deep copy of the inbound OpenAI messages array."""
+    if not isinstance(request_messages, list) or not request_messages:
+        return None
+    return [deepcopy(msg) for msg in request_messages if isinstance(msg, dict)]
+
+
 async def handle_chat_completions(
     body: dict[str, Any],
     client: LLMClient,
     context_manager: ContextManager,
     max_retries: int = 3,
     rescue_enabled: bool = True,
+    inject_respond_tool: bool = False,
     protocol: Literal["openai", "anthropic"] = "openai",
 ) -> dict[str, Any] | list[dict[str, Any]]:
     """Handle an inbound completions request.
@@ -120,6 +136,11 @@ async def handle_chat_completions(
         context_manager: For context compaction.
         max_retries: Max consecutive retries for bad responses.
         rescue_enabled: Whether to attempt rescue parsing.
+        inject_respond_tool: When True and the client request supplies tools,
+            inject forge's synthetic respond() tool so the model stays in
+            tool-calling mode (the call is stripped from the outbound
+            response). Default False — the proxy forwards the client's tools
+            untouched unless explicitly opted in.
         protocol: Inbound wire format. ``openai`` for
             ``/v1/chat/completions``; ``anthropic`` for ``/v1/messages``.
 
@@ -148,18 +169,38 @@ async def handle_chat_completions(
         # ADR-015.
         inbound_anthropic_body = body
     else:
-        messages = openai_to_messages(body.get("messages", []))
-        tool_specs = _extract_tool_specs(body.get("tools"))
+        request_messages = body.get("messages", [])
+        request_tools = body.get("tools")
+        messages = openai_to_messages(request_messages)
+        tool_specs = _extract_tool_specs(request_tools)
         sampling = _extract_sampling(body)
         passthrough = _extract_passthrough(body)
         inbound_anthropic_body = None
+        # Detached verbatim copies of the client's OpenAI tools/messages.
+        # Forwarded to the native backend on the clean first attempt so it
+        # sees the exact schema/transcript the client authored, bypassing the
+        # lossy ToolSpec round-trip. tool_specs stays as forge's validation
+        # sidecar. (Anthropic protocol converts shapes itself → None.)
+        raw_tools_for_backend = _raw_openai_tools(request_tools)
+        raw_messages_for_backend = _raw_openai_messages(request_messages)
 
-    # Inject respond tool when tools are present.  The model calls
-    # respond(message="...") instead of producing bare text, keeping it
-    # in tool-calling mode where guardrails apply.  The respond call is
+    if protocol == "anthropic":
+        raw_tools_for_backend = None
+        raw_messages_for_backend = None
+
+    # Optionally inject the respond tool (default off). When on, the model
+    # calls respond(message="...") instead of producing bare text, keeping it
+    # in tool-calling mode where guardrails apply. The respond call is
     # stripped from the outbound response — the client never sees it.
-    if tool_specs and not any(s.name == RESPOND_TOOL_NAME for s in tool_specs):
-        tool_specs.append(respond_spec())
+    if (
+        inject_respond_tool
+        and tool_specs
+        and not any(s.name == RESPOND_TOOL_NAME for s in tool_specs)
+    ):
+        respond = respond_spec()
+        tool_specs.append(respond)
+        if raw_tools_for_backend is not None:
+            raw_tools_for_backend.append(format_tool(respond))
 
     tool_names = _extract_tool_names(tool_specs)
 
@@ -168,7 +209,7 @@ async def handle_chat_completions(
     if not tool_specs:
         logger.info("No tools in request, passing through to backend")
         api_format = getattr(client, "api_format", "ollama")
-        api_messages = fold_and_serialize(messages, api_format)
+        api_messages = raw_messages_for_backend or fold_and_serialize(messages, api_format)
         response = await client.send(
             api_messages, tools=None, sampling=sampling, passthrough=passthrough,
             inbound_anthropic_body=inbound_anthropic_body,
@@ -193,6 +234,8 @@ async def handle_chat_completions(
             sampling=sampling,
             passthrough=passthrough,
             inbound_anthropic_body=inbound_anthropic_body,
+            raw_openai_messages=raw_messages_for_backend,
+            raw_openai_tools=raw_tools_for_backend,
         )
     except ToolCallError as exc:
         # Retries exhausted — the model kept returning text instead of tool

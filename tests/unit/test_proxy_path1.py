@@ -25,14 +25,6 @@ from forge.proxy.proxy import ProxyServer
 
 
 class TestProxyServerValidation:
-    def test_anthropic_with_prompt_mode_rejected(self):
-        with pytest.raises(ValueError, match="mode='prompt'"):
-            ProxyServer(
-                backend_url="http://localhost:8080",
-                backend_protocol="anthropic",
-                mode="prompt",
-            )
-
     def test_anthropic_in_managed_mode_rejected(self):
         with pytest.raises(ValueError, match="external mode"):
             ProxyServer(

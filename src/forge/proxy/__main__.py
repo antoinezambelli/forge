@@ -46,13 +46,6 @@ def main() -> None:
     parser.add_argument("--budget-tokens", type=int, help="Manual token budget")
     parser.add_argument("--extra-flags", nargs="*", help="Additional backend CLI flags")
     parser.add_argument(
-        "--mode",
-        choices=["native", "prompt"],
-        default="native",
-        help="Function-calling mode (default: native). Use 'prompt' for "
-             "OpenAI-compatible backends without a function-calling template.",
-    )
-    parser.add_argument(
         "--backend-protocol",
         choices=["openai", "anthropic"],
         default="openai",
@@ -74,6 +67,12 @@ def main() -> None:
         help="Backend response timeout in seconds (default: 300)",
     )
     parser.add_argument("--no-rescue", action="store_true", help="Disable rescue parsing")
+    parser.add_argument(
+        "--inject-respond-tool",
+        action="store_true",
+        help="Inject forge's synthetic respond() tool when the client sends "
+             "tools (keeps small models in tool-calling mode). Default off.",
+    )
     parser.add_argument("--verbose", "-v", action="store_true", help="Verbose logging")
 
     args = parser.parse_args()
@@ -108,7 +107,7 @@ def main() -> None:
         serialize=serialize,
         max_retries=args.max_retries,
         rescue_enabled=not args.no_rescue,
-        mode=args.mode,
+        inject_respond_tool=args.inject_respond_tool,
         backend_protocol=args.backend_protocol,
         backend_timeout=args.backend_timeout,
     )

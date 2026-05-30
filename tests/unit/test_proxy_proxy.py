@@ -21,7 +21,7 @@ from forge.server import BudgetMode
 
 
 class TestConstructorValidation:
-    """__init__ validation: mode/protocol guards and managed identity rules."""
+    """__init__ validation: protocol guards and managed identity rules."""
 
     def test_neither_url_nor_backend_rejected(self) -> None:
         with pytest.raises(ValueError, match="Provide either backend_url"):
@@ -31,19 +31,9 @@ class TestConstructorValidation:
         with pytest.raises(ValueError, match="requires external mode"):
             ProxyServer(backend="llamaserver", gguf="m.gguf", backend_protocol="anthropic")
 
-    def test_anthropic_rejects_prompt_mode(self) -> None:
-        with pytest.raises(ValueError, match="mode='prompt' is not supported"):
-            ProxyServer(
-                backend_url="http://x", backend_protocol="anthropic", mode="prompt",
-            )
-
     def test_vllm_rejects_anthropic_protocol(self) -> None:
         with pytest.raises(ValueError, match="speaks the OpenAI protocol"):
             ProxyServer(backend_url="http://x:8000", backend="vllm", backend_protocol="anthropic")
-
-    def test_vllm_rejects_prompt_mode(self) -> None:
-        with pytest.raises(ValueError, match="parses tool calls server-side"):
-            ProxyServer(backend="vllm", model_path="/m", mode="prompt")
 
     # Managed identity rules
     def test_managed_ollama_requires_model(self) -> None:
@@ -288,9 +278,10 @@ class TestSetupManaged:
         assert kwargs["client"] is client
 
     @pytest.mark.asyncio
-    async def test_managed_llamafile_carries_client_mode(self) -> None:
-        # prompt mode is a client-side concern; the server still starts native.
-        proxy = ProxyServer(backend="llamafile", gguf="/m/x.gguf", mode="prompt")
+    async def test_managed_llamafile_client_is_native(self) -> None:
+        # The proxy is native-only: the managed LlamafileClient is built in
+        # native mode and the backend process is launched native too.
+        proxy = ProxyServer(backend="llamafile", gguf="/m/x.gguf")
         mock_ctx = ContextManager.__new__(ContextManager)
         mock_ctx.budget_tokens = 8192
         with patch(
@@ -299,7 +290,7 @@ class TestSetupManaged:
         ) as mock_setup:
             client, _ = await proxy._setup_managed()
         assert isinstance(client, LlamafileClient)
-        assert client.mode == "prompt"
+        assert client.mode == "native"
         assert mock_setup.await_args.kwargs["mode"] == "native"
 
 

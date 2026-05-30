@@ -67,7 +67,7 @@ class ProxyServer:
         serialize: bool | None = None,
         max_retries: int = 3,
         rescue_enabled: bool = True,
-        mode: Literal["native", "prompt"] = "native",
+        inject_respond_tool: bool = False,
         backend_protocol: Literal["openai", "anthropic"] = "openai",
         backend_timeout: float = 300.0,
     ) -> None:
@@ -93,11 +93,11 @@ class ProxyServer:
                 managed, False for external).
             max_retries: Max consecutive retries for bad LLM responses.
             rescue_enabled: Attempt rescue parsing of text responses.
-            mode: Function-calling mode for OpenAI-compatible backends —
-                "native" uses the backend's native tools API, "prompt"
-                uses forge's prompt-injection fallback for backends
-                without a function-calling template. Not applicable to vLLM
-                (parses tool calls server-side) or the Anthropic protocol.
+            inject_respond_tool: When True, inject forge's synthetic respond()
+                tool into requests that already carry tools (keeps the model in
+                tool-calling mode). Default False. The proxy is native-only and
+                forwards the client's tools verbatim; prompt-injection mode is a
+                non-proxy WorkflowRunner feature.
             backend_protocol: Wire format of the external backend.
                 ``openai`` (default) for llama.cpp, vLLM, Ollama. ``anthropic``
                 for Anthropic-shape downstreams (the official Anthropic API,
@@ -108,13 +108,6 @@ class ProxyServer:
         """
         if backend_url is None and backend is None:
             raise ValueError("Provide either backend_url (external) or backend (managed)")
-        if backend_protocol == "anthropic" and mode == "prompt":
-            raise ValueError(
-                "mode='prompt' is not supported with backend_protocol='anthropic' — "
-                "Anthropic protocol has native tool calling; the prompt-injection "
-                "fallback only applies to OpenAI-shape backends without a function-"
-                "calling template."
-            )
         if backend_protocol == "anthropic" and backend_url is None:
             raise ValueError(
                 "backend_protocol='anthropic' requires external mode (backend_url=...). "
@@ -124,11 +117,6 @@ class ProxyServer:
             raise ValueError(
                 "backend='vllm' speaks the OpenAI protocol; backend_protocol='anthropic' "
                 "is not applicable."
-            )
-        if backend == "vllm" and mode == "prompt":
-            raise ValueError(
-                "backend='vllm' parses tool calls server-side (native only); "
-                "mode='prompt' is not applicable."
             )
         if not math.isfinite(backend_timeout) or backend_timeout <= 0:
             raise ValueError("backend_timeout must be a finite value greater than 0")
@@ -155,7 +143,7 @@ class ProxyServer:
         self._port = port
         self._max_retries = max_retries
         self._rescue_enabled = rescue_enabled
-        self._mode = mode
+        self._inject_respond_tool = inject_respond_tool
         self._backend_protocol = backend_protocol
         self._backend_timeout = backend_timeout
 
@@ -236,6 +224,7 @@ class ProxyServer:
             serialize_requests=self._serialize,
             max_retries=self._max_retries,
             rescue_enabled=self._rescue_enabled,
+            inject_respond_tool=self._inject_respond_tool,
         )
         await self._http_server.start()
         self._started = True
@@ -310,7 +299,7 @@ class ProxyServer:
             client = LlamafileClient(
                 gguf_path=self._model or "default",
                 base_url=base,
-                mode=self._mode,
+                mode="native",
                 timeout=self._backend_timeout,
             )
 
@@ -336,11 +325,11 @@ class ProxyServer:
         assert self._backend is not None
         client = self._build_managed_client()
 
-        # The backend process is always launched in native mode (--jinja is
-        # harmless and enables the native tools API where available); prompt
-        # mode is a client-side injection concern carried by the client.
-        # Pass each backend only its own identity field — setup_backend
-        # enforces mutual exclusivity.
+        # The backend process is launched in native mode (--jinja enables the
+        # native tools API). The proxy is native-only — it forwards the
+        # client's tools verbatim and never prompt-injects (prompt mode is a
+        # non-proxy WorkflowRunner feature). Pass each backend only its own
+        # identity field — setup_backend enforces mutual exclusivity.
         server, context_manager = await setup_backend(
             backend=self._backend,
             model=self._model if self._backend == "ollama" else None,
@@ -369,7 +358,7 @@ class ProxyServer:
             return LlamafileClient(
                 gguf_path=self._gguf or "default",
                 base_url=base_url,
-                mode=self._mode,
+                mode="native",
                 timeout=self._backend_timeout,
             )
         if self._backend == "vllm":

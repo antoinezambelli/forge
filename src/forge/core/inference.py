@@ -13,7 +13,14 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import Any
 
-from forge.clients.base import ChunkType, LLMClient, StreamChunk, TokenUsage
+from forge.clients.base import (
+    ChunkType,
+    LLMClient,
+    RawOpenAIMessages,
+    RawOpenAITools,
+    StreamChunk,
+    TokenUsage,
+)
 from forge.context.manager import ContextManager
 from forge.core.messages import Message, MessageMeta, MessageRole, MessageType, ToolCallInfo
 from forge.core.workflow import LLMResponse, TextResponse, ToolCall, ToolSpec
@@ -127,6 +134,8 @@ async def run_inference(
     sampling: dict[str, Any] | None = None,
     passthrough: dict[str, Any] | None = None,
     inbound_anthropic_body: dict[str, Any] | None = None,
+    raw_openai_messages: RawOpenAIMessages | None = None,
+    raw_openai_tools: RawOpenAITools | None = None,
 ) -> InferenceResult | None:
     """Send messages to the LLM with compaction, folding, validation, and retry.
 
@@ -197,8 +206,21 @@ async def run_inference(
         if context_warning:
             verbatim_body = None  # mutation
 
-        # Fold and serialize
-        api_messages = fold_and_serialize(messages, api_format)
+        # Fold and serialize. Proxy callers may supply the client's raw OpenAI
+        # transcript; on the clean first attempt (no compaction, no warning) we
+        # forward it verbatim so the backend sees the client-authored shape
+        # instead of forge's parsed/re-emitted form. Any forge mutation
+        # (compaction / context warning / retry) falls back to folding.
+        use_raw_messages = (
+            raw_openai_messages is not None
+            and _attempt == 0
+            and compacted is messages
+            and not context_warning
+        )
+        if use_raw_messages:
+            api_messages = raw_openai_messages
+        else:
+            api_messages = fold_and_serialize(messages, api_format)
 
         # Inject context warning as transient user message (not persisted
         # in conversation history). Uses "user" role because mid-conversation
@@ -213,16 +235,27 @@ async def run_inference(
                 MessageMeta(MessageType.CONTEXT_WARNING, step_index=step_index),
             ))
 
+        # Forward raw tools only on the clean first attempt — on retries forge
+        # has appended nudge/tool-error messages, so the parsed tool_specs path
+        # (format_tool) is the correct serialization. Pass the kwarg only when
+        # set so non-proxy callers (and their client doubles) keep the original
+        # call signature.
+        raw_tools_kwarg: dict[str, Any] = {}
+        if raw_openai_tools is not None and _attempt == 0:
+            raw_tools_kwarg["raw_openai_tools"] = raw_openai_tools
+
         # Send
         if stream:
             response = await _send_streaming(
                 client, api_messages, tool_specs, on_chunk, sampling, passthrough,
                 inbound_anthropic_body=verbatim_body,
+                **raw_tools_kwarg,
             )
         else:
             response = await client.send(
                 api_messages, tools=tool_specs, sampling=sampling, passthrough=passthrough,
                 inbound_anthropic_body=verbatim_body,
+                **raw_tools_kwarg,
             )
         # Subsequent attempts (retries) are mutations regardless of outcome.
         verbatim_body = None
@@ -329,12 +362,17 @@ async def _send_streaming(
     sampling: dict[str, Any] | None = None,
     passthrough: dict[str, Any] | None = None,
     inbound_anthropic_body: dict[str, Any] | None = None,
+    raw_openai_tools: RawOpenAITools | None = None,
 ) -> LLMResponse:
     """Send via streaming, forwarding chunks to on_chunk callback."""
     response = None
+    raw_tools_kwarg: dict[str, Any] = {}
+    if raw_openai_tools is not None:
+        raw_tools_kwarg["raw_openai_tools"] = raw_openai_tools
     async for chunk in client.send_stream(
         api_messages, tools=tool_specs, sampling=sampling, passthrough=passthrough,
         inbound_anthropic_body=inbound_anthropic_body,
+        **raw_tools_kwarg,
     ):
         if on_chunk is not None:
             await on_chunk(chunk)

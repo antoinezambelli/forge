@@ -165,8 +165,16 @@ class VLLMClient:
         messages: list[dict[str, str]],
         tools: list[ToolSpec] | None = None,
         sampling: dict[str, Any] | None = None,
+        passthrough: dict[str, Any] | None = None,
+        inbound_anthropic_body: dict[str, Any] | None = None,
+        raw_openai_tools: list[dict[str, Any]] | None = None,
     ) -> LLMResponse:
-        """Send messages via /v1/chat/completions and parse the response."""
+        """Send messages via /v1/chat/completions and parse the response.
+
+        ``passthrough`` / ``inbound_anthropic_body`` / ``raw_openai_tools`` are
+        accepted for protocol symmetry and ignored — vLLM parses tools and
+        reasoning server-side and is native-only.
+        """
         body: dict[str, Any] = {
             "model": self.model_path,
             "messages": messages,
@@ -213,8 +221,15 @@ class VLLMClient:
         messages: list[dict[str, str]],
         tools: list[ToolSpec] | None = None,
         sampling: dict[str, Any] | None = None,
+        passthrough: dict[str, Any] | None = None,
+        inbound_anthropic_body: dict[str, Any] | None = None,
+        raw_openai_tools: list[dict[str, Any]] | None = None,
     ) -> AsyncIterator[StreamChunk]:
-        """Stream via SSE from /v1/chat/completions."""
+        """Stream via SSE from /v1/chat/completions.
+
+        ``passthrough`` / ``inbound_anthropic_body`` / ``raw_openai_tools``
+        accepted for protocol symmetry and ignored (see ``send``).
+        """
         body: dict[str, Any] = {
             "model": self.model_path,
             "messages": messages,

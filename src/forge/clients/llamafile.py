@@ -10,7 +10,7 @@ from typing import Any
 
 import httpx
 
-from forge.clients.base import ChunkType, StreamChunk, TokenUsage, format_tool
+from forge.clients.base import ChunkType, RawOpenAITools, StreamChunk, TokenUsage, format_tool
 from forge.clients.sampling_defaults import apply_sampling_defaults
 from forge.core.workflow import LLMResponse, TextResponse, ToolCall, ToolSpec
 from forge.errors import BackendError, ContextDiscoveryError
@@ -270,16 +270,25 @@ class LlamafileClient:
         sampling: dict[str, Any] | None = None,
         passthrough: dict[str, Any] | None = None,
         inbound_anthropic_body: dict[str, Any] | None = None,
+        raw_openai_tools: RawOpenAITools | None = None,
     ) -> LLMResponse:
         """Resolve mode on first call with tools, then dispatch.
 
         ``inbound_anthropic_body`` is accepted for protocol symmetry and
         silently ignored — LlamafileClient only speaks OpenAI shape.
+
+        ``raw_openai_tools`` (proxy use) is forwarded verbatim as the
+        backend's ``tools`` array on the native path; the prompt path
+        accepts and ignores it (it keeps forge's prompt-injection format).
         """
         if self.resolved_mode is None:
-            return await self._resolve_and_send(messages, tools, sampling, passthrough)
+            return await self._resolve_and_send(
+                messages, tools, sampling, passthrough, raw_openai_tools,
+            )
         elif self.resolved_mode == "native":
-            return await self._send_native(messages, tools, sampling, passthrough)
+            return await self._send_native(
+                messages, tools, sampling, passthrough, raw_openai_tools,
+            )
         else:
             return await self._send_prompt(messages, tools, sampling, passthrough)
 
@@ -290,15 +299,20 @@ class LlamafileClient:
         sampling: dict[str, Any] | None = None,
         passthrough: dict[str, Any] | None = None,
         inbound_anthropic_body: dict[str, Any] | None = None,
+        raw_openai_tools: RawOpenAITools | None = None,
     ) -> AsyncIterator[StreamChunk]:
         """Stream via SSE, handling both native FC and prompt-injected paths.
 
         ``inbound_anthropic_body`` accepted for protocol symmetry, ignored.
+        ``raw_openai_tools`` (proxy use) is forwarded verbatim on the native
+        path; ignored on the prompt path.
         """
         if self.resolved_mode is None:
             # Probe with a non-streaming call to resolve native vs prompt.
             # Result is discarded — the runner will use the streamed response.
-            await self._resolve_and_send(messages, tools, sampling, passthrough)
+            await self._resolve_and_send(
+                messages, tools, sampling, passthrough, raw_openai_tools,
+            )
         mode = self.resolved_mode
 
         body: dict[str, Any] = dict(passthrough or {})
@@ -315,8 +329,12 @@ class LlamafileClient:
             prepared = _merge_consecutive(messages)
         else:
             prepared = _merge_consecutive(_downgrade_messages(messages))
-        if mode == "native" and tools:
-            body["tools"] = [format_tool(t) for t in tools]
+        if mode == "native" and (raw_openai_tools is not None or tools):
+            body["tools"] = (
+                raw_openai_tools
+                if raw_openai_tools is not None
+                else [format_tool(t) for t in tools]
+            )
             body["messages"] = prepared
         elif mode == "prompt" and tools:
             tool_prompt = build_tool_prompt(tools)
@@ -457,6 +475,7 @@ class LlamafileClient:
         tools: list[ToolSpec] | None,
         sampling: dict[str, Any] | None = None,
         passthrough: dict[str, Any] | None = None,
+        raw_openai_tools: RawOpenAITools | None = None,
     ) -> LLMResponse:
         """Auto-resolve mode on first send with tools.
 
@@ -469,10 +488,14 @@ class LlamafileClient:
         if not tools:
             # No tools to test with — send without tools, defer resolution
             self.resolved_mode = "native"
-            return await self._send_native(messages, tools, sampling, passthrough)
+            return await self._send_native(
+                messages, tools, sampling, passthrough, raw_openai_tools,
+            )
 
         try:
-            result = await self._send_native(messages, tools, sampling, passthrough)
+            result = await self._send_native(
+                messages, tools, sampling, passthrough, raw_openai_tools,
+            )
             self.resolved_mode = "native"
             return result
         except (httpx.HTTPStatusError, BackendError):
@@ -485,8 +508,14 @@ class LlamafileClient:
         tools: list[ToolSpec] | None,
         sampling: dict[str, Any] | None = None,
         passthrough: dict[str, Any] | None = None,
+        raw_openai_tools: RawOpenAITools | None = None,
     ) -> LLMResponse:
-        """Send using native function calling (OpenAI tools parameter)."""
+        """Send using native function calling (OpenAI tools parameter).
+
+        When ``raw_openai_tools`` is supplied (proxy native passthrough), it is
+        sent as the ``tools`` array verbatim so the backend sees the client's
+        original schema instead of forge's re-emitted ``format_tool(spec)``.
+        """
         merged = _merge_consecutive(messages)
         body: dict[str, Any] = dict(passthrough or {})
         body.update({
@@ -496,7 +525,9 @@ class LlamafileClient:
         body.setdefault("model", self.model)
         self._apply_slot_id(body)
         self._apply_sampling(body, sampling)
-        if tools:
+        if raw_openai_tools is not None:
+            body["tools"] = raw_openai_tools
+        elif tools:
             body["tools"] = [format_tool(t) for t in tools]
 
         resp = await self._http.post(
