@@ -60,23 +60,12 @@ class VLLMClient:
         recommended_sampling: bool = False,
     ) -> None:
         self.base_url = base_url
-        # model_path is the canonical identity. vLLM accepts either a local
-        # directory containing safetensors + config or a HuggingFace repo id
-        # (e.g. "google/gemma-4-26B-A4B-it"). We pass it through as-is in
-        # the wire-format "model" field and as the sampling-defaults lookup
-        # key (using the path stem for directory paths so registry lookups
-        # match the existing GGUF-stem convention).
-        self.model_path = str(model_path)
-        path_obj = Path(self.model_path)
-        # If model_path is a filesystem path, use the directory name as the
-        # registry lookup key. If it's an HF repo id (no leading slash, has
-        # a "/"), use the trailing segment. Otherwise the full string.
-        if path_obj.is_absolute() or path_obj.exists():
-            self.model = path_obj.name
-        elif "/" in self.model_path:
-            self.model = self.model_path.split("/")[-1]
-        else:
-            self.model = self.model_path
+        # model_path is the canonical identity, sent verbatim in the wire
+        # "model" field. self.model is the derived registry-lookup key. Both
+        # are set together so the (model_path, model) invariant holds — see
+        # _set_model_identity. Must run before apply_sampling_defaults below,
+        # which reads self.model.
+        self._set_model_identity(model_path)
 
         # Apply per-model recommended sampling defaults. Caller's explicit
         # (non-None) kwargs win over the map field-by-field.
@@ -102,6 +91,35 @@ class VLLMClient:
     async def aclose(self) -> None:
         """Close the underlying httpx connection pool."""
         await self._http.aclose()
+
+    @staticmethod
+    def _derive_model_field(model_path: str) -> str:
+        """Derive the sampling-registry lookup key from the canonical path.
+
+        vLLM accepts either a local directory (safetensors + config) or an HF
+        repo id (e.g. "google/gemma-4-26B-A4B-it"). The lookup key uses the
+        path stem so registry lookups match the existing GGUF-stem convention:
+        a filesystem path → its directory name; an HF repo id (has "/") → its
+        trailing segment; anything else → the string unchanged.
+        """
+        path_obj = Path(model_path)
+        if path_obj.is_absolute() or path_obj.exists():
+            return path_obj.name
+        if "/" in model_path:
+            return model_path.split("/")[-1]
+        return model_path
+
+    def _set_model_identity(self, model_path: str | Path) -> None:
+        """Set both identity fields atomically from one canonical path.
+
+        ``model_path`` is the wire "model" field (sent verbatim); ``model`` is
+        the derived registry key. Used by ``__init__`` and by the proxy's
+        external-mode served-name adoption, so the ``(model_path, model)``
+        invariant holds the same way in both — instead of mutating the two
+        fields separately after served-name discovery.
+        """
+        self.model_path = str(model_path)
+        self.model = self._derive_model_field(self.model_path)
 
     # Sampling fields recognized in per-call overrides. ``seed`` is
     # accepted only as a per-call override (not an instance field).

@@ -314,8 +314,7 @@ class ProxyServer:
             served = await client.get_served_model_name()
             if served:
                 logger.info("Discovered vLLM served model name: %s", served)
-                client.model_path = served
-                client.model = served
+                client._set_model_identity(served)
             else:
                 logger.warning(
                     "Could not discover a served model name from %s/models; "
