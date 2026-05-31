@@ -5,5 +5,5 @@
 *.toml text eol=lf
 *.yml text eol=lf
 *.yaml text eol=lf
-eval_results.jsonl filter=lfs diff=lfs merge=lfs -text
-eval_results_rig*.jsonl filter=lfs diff=lfs merge=lfs -text
+# Eval result dumps (any variant: bare, rig-tagged, version-tagged) go to LFS.
+eval_results*.jsonl filter=lfs diff=lfs merge=lfs -text
