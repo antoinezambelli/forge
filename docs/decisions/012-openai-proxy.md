@@ -104,15 +104,28 @@ The proxy fully buffers each response from the backend before deciding what to d
 4. **Client disconnect handling** -- detect TCP drop, cancel in-flight backend request, release inference lock.
 5. **Testing** -- unit tests for extraction, integration tests with mock backend, smoke test with real llama-server.
 
-### Revision: native-only + transparent passthrough
+### Revision: native-first, with opt-in prompt capability
 
-The proxy is **native-tool-call-only**. It targets backends that speak the
-native OpenAI tools API (llama.cpp with a tool-calling chat template / `--jinja`,
-vLLM, Ollama, Anthropic). There is no `--mode` flag and no prompt-injection
-fallback in the proxy — prompt-injection mode (`build_tool_prompt`,
-`_downgrade_messages`, the `mode="auto"` HTTP-error fallback) is a non-proxy
-**WorkflowRunner / direct-client** feature only, retained because it still wins
-for some models in full-guardrail workflow evals.
+The proxy is **native-first**. By default (`--backend-capability native`) it
+targets backends that speak the native OpenAI tools API (llama.cpp with a
+tool-calling chat template / `--jinja`, vLLM, Ollama, Anthropic) and forwards
+the client's request verbatim (below).
+
+Prompt-injection is available as an **explicit opt-in**
+(`--backend-capability prompt`, llama.cpp/llamafile only) for non-FC backends —
+it reuses the WorkflowRunner's prompt path (`build_tool_prompt`,
+`_downgrade_messages`, `extract_tool_call`) so there is **one** prompt
+implementation, not a proxy-specific fork. The capability is **declared once at
+construction and frozen** — there is deliberately **no `mode="auto"` runtime
+probe** (the old auto/HTTP-error fallback that mutated state mid-request was the
+root of the original tangle; it is not reintroduced). In prompt capability the
+verbatim passthrough is suppressed (`native_passthrough=False`): tools are
+serialized into the prompt, so a raw native transcript would be meaningless.
+
+History: this revision originally cut prompt mode from the proxy entirely
+("native-only"). Prompt was then re-added as the opt-in capability above —
+native-first is a cleaner story than a backwards-incompatible drop, and non-FC
+backends (e.g. llamafile) stay usable through the proxy.
 
 Rationale: the proxy is a transparent layer for an external agent that already
 speaks native FC to a native-FC backend. A traced capture showed the native

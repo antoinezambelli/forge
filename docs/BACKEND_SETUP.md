@@ -75,7 +75,7 @@ llamafile --server --nobrowser -m path/to/model.gguf --port 8080 -ngl 999
 
 llamafile does **not** support native function calling — forge's `LlamafileClient` falls back to prompt-injected mode automatically (`mode="auto"`), or you can force it with `mode="prompt"`.
 
-> **Proxy note:** prompt-injection mode is a **direct-client / WorkflowRunner** feature. The OpenAI-compatible **proxy is native-only** — it forwards the client's tools verbatim and does not prompt-inject (see ADR-012). Put an FC-capable backend (llama.cpp with `--jinja`, vLLM, Ollama, Anthropic) behind the proxy; a non-FC backend like llamafile will degrade to passing text through.
+> **Proxy note:** the OpenAI-compatible proxy is **native-first**. By default (`--backend-capability native`) it forwards the client's tools verbatim to an FC-capable backend (llama.cpp with `--jinja`, vLLM, Ollama, Anthropic) — the recommended setup. For a non-FC llama.cpp/llamafile backend, opt into prompt-injection with `--backend-capability prompt` (strips tools into the prompt, parses the JSON call back; reuses the same prompt path as the WorkflowRunner). The choice is frozen at startup — there is no runtime auto-detect in the proxy. See ADR-012.
 
 Smoke-test:
 

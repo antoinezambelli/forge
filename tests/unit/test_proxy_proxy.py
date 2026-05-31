@@ -294,6 +294,85 @@ class TestSetupManaged:
         assert mock_setup.await_args.kwargs["mode"] == "native"
 
 
+class TestBackendCapability:
+    """backend_capability selects the tool-calling protocol, declared once at
+    construction and frozen. native (default) = verbatim passthrough; prompt =
+    opt-in prompt-injection for non-FC llama.cpp/llamafile backends."""
+
+    def test_default_is_native(self) -> None:
+        assert ProxyServer(backend_url="http://x:8080")._backend_capability == "native"
+
+    def test_prompt_stored(self) -> None:
+        proxy = ProxyServer(backend_url="http://x:8080", backend_capability="prompt")
+        assert proxy._backend_capability == "prompt"
+
+    # Guards: prompt is a llama.cpp/llamafile capability only.
+    def test_prompt_rejects_vllm(self) -> None:
+        with pytest.raises(ValueError, match="only supported for"):
+            ProxyServer(backend_url="http://x:8000", backend="vllm", backend_capability="prompt")
+
+    def test_prompt_rejects_ollama(self) -> None:
+        with pytest.raises(ValueError, match="only supported for"):
+            ProxyServer(backend="ollama", model="m", backend_capability="prompt")
+
+    def test_prompt_rejects_anthropic_protocol(self) -> None:
+        with pytest.raises(ValueError, match="not supported with the anthropic"):
+            ProxyServer(
+                backend_url="http://x:8080",
+                backend_protocol="anthropic",
+                backend_capability="prompt",
+            )
+
+    def test_prompt_allowed_for_external_llamacpp(self) -> None:
+        # backend=None (external) defaults to the llama.cpp adapter → prompt ok.
+        ProxyServer(backend_url="http://x:8080", backend_capability="prompt")
+        ProxyServer(backend="llamafile", gguf="m.gguf", backend_capability="prompt")
+
+    @pytest.mark.asyncio
+    async def test_external_default_builds_native_client(self) -> None:
+        proxy = ProxyServer(backend_url="http://localhost:8080", budget_tokens=8192)
+        client, _ = await proxy._setup_external()
+        assert isinstance(client, LlamafileClient)
+        assert client.mode == "native"
+
+    @pytest.mark.asyncio
+    async def test_external_prompt_builds_prompt_client(self) -> None:
+        proxy = ProxyServer(
+            backend_url="http://localhost:8080",
+            backend_capability="prompt",
+            budget_tokens=8192,
+        )
+        client, _ = await proxy._setup_external()
+        assert isinstance(client, LlamafileClient)
+        assert client.mode == "prompt"
+
+    @pytest.mark.asyncio
+    async def test_managed_prompt_client_is_prompt_but_launch_native(self) -> None:
+        # The managed LlamafileClient runs in prompt mode, but the backend
+        # process is still launched native (--jinja present, just unused).
+        proxy = ProxyServer(
+            backend="llamafile", gguf="/m/x.gguf", backend_capability="prompt",
+        )
+        mock_ctx = ContextManager.__new__(ContextManager)
+        mock_ctx.budget_tokens = 8192
+        with patch(
+            "forge.proxy.proxy.setup_backend",
+            new_callable=AsyncMock, return_value=(MagicMock(), mock_ctx),
+        ) as mock_setup:
+            client, _ = await proxy._setup_managed()
+        assert isinstance(client, LlamafileClient)
+        assert client.mode == "prompt"
+        assert mock_setup.await_args.kwargs["mode"] == "native"
+
+    def test_native_passthrough_forwarded_to_http_server(self) -> None:
+        # native → native_passthrough True; prompt → False.
+        assert (ProxyServer(backend_url="http://x")._backend_capability == "native")
+        assert (
+            ProxyServer(backend_url="http://x", backend_capability="prompt")
+            ._backend_capability == "prompt"
+        )
+
+
 class TestLifecycle:
     """start()/stop() thread + state management."""
 

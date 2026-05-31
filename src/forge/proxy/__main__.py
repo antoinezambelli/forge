@@ -68,6 +68,17 @@ def main() -> None:
     )
     parser.add_argument("--no-rescue", action="store_true", help="Disable rescue parsing")
     parser.add_argument(
+        "--backend-capability",
+        choices=["native", "prompt"],
+        default="native",
+        help="Tool-calling protocol for the backend (default: native). "
+             "'native' forwards the client's tools verbatim to a "
+             "function-calling-capable backend. 'prompt' opts into "
+             "prompt-injection for non-FC llama.cpp/llamafile backends "
+             "(strips tools into the prompt, parses the JSON call back). "
+             "Frozen at startup — never probed or switched mid-stream.",
+    )
+    parser.add_argument(
         "--inject-respond-tool",
         action="store_true",
         help="Inject forge's synthetic respond() tool when the client sends "
@@ -107,6 +118,7 @@ def main() -> None:
         serialize=serialize,
         max_retries=args.max_retries,
         rescue_enabled=not args.no_rescue,
+        backend_capability=args.backend_capability,
         inject_respond_tool=args.inject_respond_tool,
         backend_protocol=args.backend_protocol,
         backend_timeout=args.backend_timeout,

@@ -121,6 +121,7 @@ async def handle_chat_completions(
     context_manager: ContextManager,
     max_retries: int = 3,
     rescue_enabled: bool = True,
+    native_passthrough: bool = True,
     inject_respond_tool: bool = False,
     protocol: Literal["openai", "anthropic"] = "openai",
 ) -> dict[str, Any] | list[dict[str, Any]]:
@@ -136,6 +137,13 @@ async def handle_chat_completions(
         context_manager: For context compaction.
         max_retries: Max consecutive retries for bad responses.
         rescue_enabled: Whether to attempt rescue parsing.
+        native_passthrough: When True (default, native capability), forward the
+            client's verbatim OpenAI tools/messages to the backend on the clean
+            first attempt (transparent passthrough). When False (prompt
+            capability), suppress the raw passthrough so the request folds
+            normally and the client's prompt path injects the tool prompt and
+            downgrades tool history — the raw passthrough is meaningless when
+            tools are serialized into the prompt text.
         inject_respond_tool: When True and the client request supplies tools,
             inject forge's synthetic respond() tool so the model stays in
             tool-calling mode (the call is stripped from the outbound
@@ -181,8 +189,18 @@ async def handle_chat_completions(
         # sees the exact schema/transcript the client authored, bypassing the
         # lossy ToolSpec round-trip. tool_specs stays as forge's validation
         # sidecar. (Anthropic protocol converts shapes itself → None.)
-        raw_tools_for_backend = _raw_openai_tools(request_tools)
-        raw_messages_for_backend = _raw_openai_messages(request_messages)
+        #
+        # In prompt capability (native_passthrough=False) we suppress the raw
+        # passthrough: the request folds normally and the client's prompt path
+        # (LlamafileClient._send_prompt) strips the tools into the prompt and
+        # downgrades tool history. A verbatim native transcript is meaningless
+        # once tools are injected as prompt text.
+        if native_passthrough:
+            raw_tools_for_backend = _raw_openai_tools(request_tools)
+            raw_messages_for_backend = _raw_openai_messages(request_messages)
+        else:
+            raw_tools_for_backend = None
+            raw_messages_for_backend = None
 
     if protocol == "anthropic":
         raw_tools_for_backend = None

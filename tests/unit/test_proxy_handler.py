@@ -549,3 +549,49 @@ class TestNativePassthrough:
         sent = client.send.call_args.kwargs["raw_openai_tools"]
         names = [t["function"]["name"] for t in sent]
         assert names == ["search", "respond"]
+
+
+# ── Prompt capability handoff ───────────────────────────────
+
+
+class TestPromptCapabilityHandoff:
+    """In prompt capability (native_passthrough=False) the handler suppresses
+    the verbatim passthrough so the request folds normally and the client's
+    prompt path injects the tools. (The injection itself is covered by the
+    LlamafileClient prompt-mode tests.)"""
+
+    @pytest.mark.asyncio
+    async def test_prompt_mode_suppresses_raw_tools(self):
+        client = _mock_client([ToolCall(tool="search", args={"q": "x"})])
+        await handle_chat_completions(
+            _body(tools=[_tool_def("search")]), client, _context_manager(),
+            native_passthrough=False,
+        )
+        # No verbatim tools forwarded — the client's prompt path injects them.
+        assert "raw_openai_tools" not in client.send.call_args.kwargs
+        # tool_specs (the source for build_tool_prompt) are still passed.
+        assert client.send.call_args.kwargs["tools"][0].name == "search"
+
+    @pytest.mark.asyncio
+    async def test_prompt_mode_folds_messages_not_verbatim(self):
+        client = _mock_client([ToolCall(tool="search", args={"q": "x"})])
+        # A non-standard key would survive verbatim passthrough but is dropped
+        # by fold_and_serialize — proving the raw transcript was NOT forwarded.
+        messages = [{"role": "user", "content": "hi", "name": "u1"}]
+        await handle_chat_completions(
+            _body(messages=messages, tools=[_tool_def("search")]),
+            client, _context_manager(), native_passthrough=False,
+        )
+        sent_messages = client.send.call_args.args[0]
+        assert sent_messages != messages
+        assert "name" not in sent_messages[0]
+
+    @pytest.mark.asyncio
+    async def test_native_default_still_forwards_raw(self):
+        # Sanity: default (native) path is unaffected by the new param.
+        client = _mock_client([ToolCall(tool="search", args={"q": "x"})])
+        tools = [_tool_def("search")]
+        await handle_chat_completions(
+            _body(tools=tools), client, _context_manager(),
+        )
+        assert client.send.call_args.kwargs["raw_openai_tools"] == tools

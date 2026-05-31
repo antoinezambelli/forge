@@ -49,6 +49,7 @@ class HTTPServer:
         serialize_requests: bool = True,
         max_retries: int = 3,
         rescue_enabled: bool = True,
+        native_passthrough: bool = True,
         inject_respond_tool: bool = False,
     ) -> None:
         self._client = client
@@ -57,6 +58,7 @@ class HTTPServer:
         self._port = port
         self._max_retries = max_retries
         self._rescue_enabled = rescue_enabled
+        self._native_passthrough = native_passthrough
         self._inject_respond_tool = inject_respond_tool
         self._server: asyncio.Server | None = None
         self._serialize = serialize_requests
@@ -308,6 +310,7 @@ class HTTPServer:
                 context_manager=self._context_manager,
                 max_retries=self._max_retries,
                 rescue_enabled=self._rescue_enabled,
+                native_passthrough=self._native_passthrough,
                 inject_respond_tool=self._inject_respond_tool,
                 protocol=protocol,
             )
