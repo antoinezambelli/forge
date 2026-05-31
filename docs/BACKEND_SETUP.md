@@ -1,12 +1,14 @@
 # Backend Setup
 
-How to point forge at a backend. Forge supports four:
+How to point forge at a backend. Forge supports six:
 
 | Backend | Forge client | Native FC | Default port | Best for |
 |---|---|---|---|---|
 | llama-server | `LlamafileClient` | Yes (with `--jinja`) | 8080 | Recommended — top-10 eval configs |
 | llamafile | `LlamafileClient` | No (prompt-injected fallback) | 8080 | Single binary, zero setup |
 | Ollama | `OllamaClient` | Yes | 11434 | Easiest model management |
+| vLLM | `VLLMClient` | Yes (server-side parser) | 8000 | AWQ/GPTQ, high-throughput serving |
+| OpenAI-compatible | `OpenAICompatClient` | Per-model | (caller URL) | Hosted providers (Cloudflare, OpenRouter, …) |
 | Anthropic | `AnthropicClient` | Yes | (API) | Frontier baseline |
 
 Install instructions for each backend live with the upstream project. Below is what forge expects once a backend is running.
