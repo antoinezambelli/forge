@@ -369,133 +369,6 @@ class TestLlamafilePromptSend:
         assert sent_messages[3]["content"] == "fetch_result"
 
 
-# ── auto mode ────────────────────────────────────────────────────
-
-
-class TestLlamafileAutoMode:
-    @pytest.mark.asyncio
-    async def test_auto_resolves_native_on_tool_call(self) -> None:
-        client = _make_client("auto")
-        assert client.resolved_mode is None
-        client._http.post.return_value = _mock_response(
-            _openai_tool_call_response()
-        )
-        result = await client.send(
-            [{"role": "user", "content": "test"}], tools=[_make_spec()]
-        )
-        assert isinstance(result, list)
-        assert client.resolved_mode == "native"
-
-    @pytest.mark.asyncio
-    async def test_auto_stays_native_on_text_response(self) -> None:
-        """TextResponse with tools provided means FC is supported but the
-        model chose not to call a tool. Should resolve to native, not
-        fall back to prompt mode."""
-        client = _make_client("auto")
-
-        client._http.post.return_value = _mock_response(
-            _openai_text_response("Let me think about this...")
-        )
-
-        result = await client.send(
-            [{"role": "system", "content": "sys"}, {"role": "user", "content": "test"}],
-            tools=[_make_spec()],
-        )
-        assert client.resolved_mode == "native"
-        assert isinstance(result, TextResponse)
-        assert result.content == "Let me think about this..."
-
-    @pytest.mark.asyncio
-    async def test_auto_falls_back_on_http_error(self) -> None:
-        client = _make_client("auto")
-
-        # First call (native attempt) raises HTTP error
-        error_resp = _mock_response({}, status_code=400)
-        prompt_resp = _mock_response(
-            _openai_text_response('{"tool": "get_pricing", "args": {}}')
-        )
-        client._http.post.side_effect = [error_resp, prompt_resp]
-
-        result = await client.send(
-            [{"role": "system", "content": "sys"}, {"role": "user", "content": "test"}],
-            tools=[_make_spec()],
-        )
-        assert client.resolved_mode == "prompt"
-        assert isinstance(result, list)
-
-    @pytest.mark.asyncio
-    async def test_auto_without_tools_defaults_native(self) -> None:
-        client = _make_client("auto")
-        client._http.post.return_value = _mock_response(
-            _openai_text_response("hello")
-        )
-        result = await client.send([{"role": "user", "content": "hi"}])
-        assert isinstance(result, TextResponse)
-        assert client.resolved_mode == "native"
-
-    @pytest.mark.asyncio
-    async def test_send_stream_auto_resolves_native(self) -> None:
-        """send_stream() probes mode before streaming when resolved_mode is None."""
-        client = _make_client("auto")
-        assert client.resolved_mode is None
-
-        # Probe call resolves to native
-        client._http.post.return_value = _mock_response(
-            _openai_tool_call_response()
-        )
-        # Streaming call returns a tool call
-        sse_lines = [
-            f'data: {json.dumps({"choices": [{"delta": {"tool_calls": [{"index": 0, "function": {"name": "get_pricing", "arguments": ""}}]}}]})}',
-            f'data: {json.dumps({"choices": [{"delta": {"tool_calls": [{"index": 0, "function": {"arguments": "{\"part\": \"X\"}"}}]}}]})}',
-            "data: [DONE]",
-        ]
-        client._http.stream.return_value = _MockSSEStreamResponse(sse_lines)
-
-        chunks = []
-        async for chunk in client.send_stream(
-            [{"role": "system", "content": "sys"}, {"role": "user", "content": "test"}],
-            tools=[_make_spec()],
-        ):
-            chunks.append(chunk)
-
-        assert client.resolved_mode == "native"
-        finals = [c for c in chunks if c.type == ChunkType.FINAL]
-        assert len(finals) == 1
-        assert isinstance(finals[0].response, list)
-
-    @pytest.mark.asyncio
-    async def test_send_stream_auto_falls_back_to_prompt(self) -> None:
-        """send_stream() falls back to prompt mode when native probe fails."""
-        client = _make_client("auto")
-        assert client.resolved_mode is None
-
-        # Probe: native fails with HTTP error, prompt fallback succeeds
-        error_resp = _mock_response({}, status_code=400)
-        prompt_resp = _mock_response(
-            _openai_text_response('{"tool": "get_pricing", "args": {"part": "X"}}')
-        )
-        client._http.post.side_effect = [error_resp, prompt_resp]
-
-        # Streaming call (now in prompt mode) returns extracted tool call
-        sse_lines = [
-            f'data: {json.dumps({"choices": [{"delta": {"content": "{\"tool\": \"get_pricing\", \"args\": {\"part\": \"Y\"}}"}, "finish_reason": "stop"}]})}',
-        ]
-        client._http.stream.return_value = _MockSSEStreamResponse(sse_lines)
-
-        chunks = []
-        async for chunk in client.send_stream(
-            [{"role": "system", "content": "sys"}, {"role": "user", "content": "test"}],
-            tools=[_make_spec()],
-        ):
-            chunks.append(chunk)
-
-        assert client.resolved_mode == "prompt"
-        finals = [c for c in chunks if c.type == ChunkType.FINAL]
-        assert len(finals) == 1
-        assert isinstance(finals[0].response, list)
-        assert finals[0].response[0].tool == "get_pricing"
-
-
 # ── get_context_length ───────────────────────────────────────────
 
 
@@ -678,21 +551,22 @@ class TestLlamafileSendStream:
         assert final.response[0].reasoning is None
 
 
-# ── resolved_mode ────────────────────────────────────────────────
+# ── mode ─────────────────────────────────────────────────────────
 
 
-class TestResolvedMode:
-    def test_native_mode_set_immediately(self) -> None:
-        client = LlamafileClient(gguf_path="test", mode="native")
-        assert client.resolved_mode == "native"
+class TestMode:
+    def test_native_is_default(self) -> None:
+        client = LlamafileClient(gguf_path="test")
+        assert client.mode == "native"
 
-    def test_prompt_mode_set_immediately(self) -> None:
+    def test_prompt_mode(self) -> None:
         client = LlamafileClient(gguf_path="test", mode="prompt")
-        assert client.resolved_mode == "prompt"
+        assert client.mode == "prompt"
 
-    def test_auto_mode_unset(self) -> None:
-        client = LlamafileClient(gguf_path="test", mode="auto")
-        assert client.resolved_mode is None
+    def test_auto_mode_rejected(self) -> None:
+        # Runtime auto-detection was removed — capability is declared-and-frozen.
+        with pytest.raises(ValueError, match="mode must be 'native' or 'prompt'"):
+            LlamafileClient(gguf_path="test", mode="auto")
 
 
 # ── _apply_sampling ──────────────────────────────────────────────

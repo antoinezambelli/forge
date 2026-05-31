@@ -507,8 +507,8 @@ async def main() -> None:
     parser.add_argument("--scenario", nargs="*", help="Run specific scenario(s) by name")
     parser.add_argument(
         "--llamafile-mode",
-        choices=["native", "prompt", "auto"],
-        default="auto",
+        choices=["native", "prompt"],
+        default="native",
     )
     parser.add_argument(
         "--budget-mode",

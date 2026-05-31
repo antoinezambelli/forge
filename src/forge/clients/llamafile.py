@@ -121,12 +121,23 @@ def _downgrade_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 
 class LlamafileClient:
-    """OpenAI-compatible client for Llamafile.
+    """OpenAI-compatible client for Llamafile / llama.cpp.
 
-    mode="native" uses the tools parameter (requires Llamafile with FC support).
-    mode="prompt" injects tool descriptions into the prompt and extracts JSON.
-    mode="auto" tries native first, falls back to prompt on failure — with
-        an explicit warning log and resolved_mode set for caller inspection.
+    The capability is declared once at construction and frozen — there is no
+    runtime auto-detection. ``mode`` is one of:
+
+    - ``"native"`` (default): forwards tools via the ``tools`` parameter
+      (requires a backend with native function calling — llama.cpp ``--jinja``).
+    - ``"prompt"``: injects tool descriptions into the prompt and parses the
+      JSON tool call back out; for backends without native FC.
+
+    Native-first is the default because function-calling support across local
+    models has matured to the point where it is the more reliable path.
+    Prompt-injection remains fully supported as an explicit opt-in: it is the
+    theoretically correct fallback when a backend can't do native FC, but be
+    aware that on more complex, multi-step interactions models tend to struggle
+    to drive the prompt-injected protocol reliably. Choose ``"prompt"`` only
+    when the backend leaves no alternative.
     """
 
     api_format: str = "openai"
@@ -142,13 +153,20 @@ class LlamafileClient:
         repeat_penalty: float | None = None,
         presence_penalty: float | None = None,
         chat_template_kwargs: dict[str, Any] | None = None,
-        mode: str = "auto",
+        mode: str = "native",
         timeout: float = 300.0,
         think: bool | None = None,
         cache_prompt: bool = True,
         slot_id: int | None = None,
         recommended_sampling: bool = False,
     ) -> None:
+        if mode not in ("native", "prompt"):
+            raise ValueError(
+                f"mode must be 'native' or 'prompt', got {mode!r}. "
+                "Runtime auto-detection was removed — declare the backend "
+                "capability explicitly (native-first; 'prompt' for non-FC "
+                "backends)."
+            )
         self.base_url = base_url
         # gguf_path is the canonical identity. self.model is the stem (no
         # .gguf / .llamafile suffix) — used for the wire-format model field
@@ -175,16 +193,11 @@ class LlamafileClient:
         )
         self.mode = mode
         self._http = httpx.AsyncClient(timeout=timeout)
-        self._think: bool = think if think is not None else True  # auto = capture
+        self._think: bool = think if think is not None else True  # think=None → capture
         self._cache_prompt = cache_prompt
         self._slot_id = slot_id
 
         self.last_usage: dict[int, TokenUsage] = {}
-
-        if mode in ("native", "prompt"):
-            self.resolved_mode: str | None = mode
-        else:
-            self.resolved_mode = None
 
     async def aclose(self) -> None:
         """Close the underlying httpx connection pool."""
@@ -272,7 +285,7 @@ class LlamafileClient:
         inbound_anthropic_body: dict[str, Any] | None = None,
         raw_openai_tools: RawOpenAITools | None = None,
     ) -> LLMResponse:
-        """Resolve mode on first call with tools, then dispatch.
+        """Dispatch to the native or prompt-injected path per the declared mode.
 
         ``inbound_anthropic_body`` is accepted for protocol symmetry and
         silently ignored — LlamafileClient only speaks OpenAI shape.
@@ -281,16 +294,11 @@ class LlamafileClient:
         backend's ``tools`` array on the native path; the prompt path
         accepts and ignores it (it keeps forge's prompt-injection format).
         """
-        if self.resolved_mode is None:
-            return await self._resolve_and_send(
-                messages, tools, sampling, passthrough, raw_openai_tools,
-            )
-        elif self.resolved_mode == "native":
+        if self.mode == "native":
             return await self._send_native(
                 messages, tools, sampling, passthrough, raw_openai_tools,
             )
-        else:
-            return await self._send_prompt(messages, tools, sampling, passthrough)
+        return await self._send_prompt(messages, tools, sampling, passthrough)
 
     async def send_stream(
         self,
@@ -307,13 +315,7 @@ class LlamafileClient:
         ``raw_openai_tools`` (proxy use) is forwarded verbatim on the native
         path; ignored on the prompt path.
         """
-        if self.resolved_mode is None:
-            # Probe with a non-streaming call to resolve native vs prompt.
-            # Result is discarded — the runner will use the streamed response.
-            await self._resolve_and_send(
-                messages, tools, sampling, passthrough, raw_openai_tools,
-            )
-        mode = self.resolved_mode
+        mode = self.mode
 
         body: dict[str, Any] = dict(passthrough or {})
         body.update({
@@ -468,39 +470,6 @@ class LlamafileClient:
             return int(n_ctx) if n_ctx is not None else None
         except (ValueError, KeyError, TypeError) as exc:
             raise ContextDiscoveryError(exc) from exc
-
-    async def _resolve_and_send(
-        self,
-        messages: list[dict[str, str]],
-        tools: list[ToolSpec] | None,
-        sampling: dict[str, Any] | None = None,
-        passthrough: dict[str, Any] | None = None,
-        raw_openai_tools: RawOpenAITools | None = None,
-    ) -> LLMResponse:
-        """Auto-resolve mode on first send with tools.
-
-        Only falls back to prompt-injected mode on an HTTP error (backend
-        doesn't support the tools parameter). A TextResponse with tools
-        provided is not a fallback signal — it means native FC is supported
-        but the model chose not to call a tool. The runner's retry logic
-        handles that case.
-        """
-        if not tools:
-            # No tools to test with — send without tools, defer resolution
-            self.resolved_mode = "native"
-            return await self._send_native(
-                messages, tools, sampling, passthrough, raw_openai_tools,
-            )
-
-        try:
-            result = await self._send_native(
-                messages, tools, sampling, passthrough, raw_openai_tools,
-            )
-            self.resolved_mode = "native"
-            return result
-        except (httpx.HTTPStatusError, BackendError):
-            self.resolved_mode = "prompt"
-            return await self._send_prompt(messages, tools, sampling, passthrough)
 
     async def _send_native(
         self,
