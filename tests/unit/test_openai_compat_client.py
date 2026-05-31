@@ -98,6 +98,16 @@ class TestSend:
         assert result.content == "I need more info"
 
     @pytest.mark.asyncio
+    async def test_missing_choices_raises_backend_error(self) -> None:
+        # A broken provider envelope (200 with no choices) is a contract
+        # violation, not a model mistake — fail loud and consistent rather
+        # than KeyError/IndexError on data["choices"][0].
+        client = _make_client()
+        client._http.post.return_value = _mock_response({"object": "error"})
+        with pytest.raises(BackendError, match="response has no choices"):
+            await client.send([{"role": "user", "content": "test"}])
+
+    @pytest.mark.asyncio
     async def test_null_content_returns_empty_text(self) -> None:
         client = _make_client()
         client._http.post.return_value = _mock_response({

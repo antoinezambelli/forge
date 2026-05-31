@@ -222,15 +222,11 @@ class VLLMClient:
 
         tool_calls = message.get("tool_calls") or []
         if tool_calls:
-            reasoning = self._resolve_reasoning(message)
-            return [
-                ToolCall(
-                    tool=tc["function"]["name"],
-                    args=self._parse_tool_args(tc["function"].get("arguments", {})),
-                    reasoning=reasoning if i == 0 else None,
-                )
-                for i, tc in enumerate(tool_calls)
-            ]
+            return self._parse_tool_calls(
+                tool_calls,
+                reasoning=self._resolve_reasoning(message),
+                fallback_content=message.get("content") or "",
+            )
 
         return TextResponse(content=message.get("content") or "")
 
@@ -318,37 +314,75 @@ class VLLMClient:
                         type=ChunkType.TEXT_DELTA, content=content,
                     )
 
-        # Build the final response
+        # Build the final response. Reassemble the accumulated deltas into the
+        # OpenAI tool-call shape and route through the same parser as send(), so
+        # streaming and non-streaming agree on malformed-args handling: a fully
+        # accumulated but unparseable arguments string yields a retry-driving
+        # TextResponse, not an exception.
         if tool_call_parts:
-            reasoning = self._resolve_reasoning(
-                accumulated_reasoning, accumulated_content,
-            )
-            final: LLMResponse = [
-                ToolCall(
-                    tool=part["name"],
-                    args=self._parse_tool_args(part["args"]),
-                    reasoning=reasoning if i == 0 else None,
-                )
-                for i, part in enumerate(
-                    tool_call_parts[k] for k in sorted(tool_call_parts)
-                )
+            reassembled = [
+                {"function": {"name": part["name"], "arguments": part["args"]}}
+                for part in (tool_call_parts[k] for k in sorted(tool_call_parts))
             ]
+            final: LLMResponse = self._parse_tool_calls(
+                reassembled,
+                reasoning=self._resolve_reasoning(
+                    accumulated_reasoning, accumulated_content,
+                ),
+                fallback_content=accumulated_content,
+            )
         else:
             final = TextResponse(content=accumulated_content)
         yield StreamChunk(type=ChunkType.FINAL, response=final)
 
     @staticmethod
-    def _parse_tool_args(raw: Any) -> dict[str, Any]:
-        """Tool args from vLLM arrive as JSON-encoded string in the
-        OpenAI native format. Decode to dict.
+    def _parse_tool_calls(
+        tool_calls: list[dict[str, Any]],
+        reasoning: str | None,
+        fallback_content: str,
+    ) -> LLMResponse:
+        """Parse vLLM ``tool_calls`` into ``ToolCall`` objects (or TextResponse).
+
+        Mirrors ``OpenAICompatClient`` / ``LlamafileClient`` so every
+        OpenAI-shape client behaves the same. Tool-call ``arguments`` arrive as
+        a JSON string (vLLM's native format) or an already-decoded dict.
+        Forge is fail-loud on the right axis:
+
+        - **Malformed argument JSON** is NOT coerced into empty args (that would
+          let a model silently proceed with wrong arguments). We return a
+          ``TextResponse``, routing the raw output back through the inference
+          loop so the rescue/retry path can recover — matching llamafile.
+        - An **unexpected args type** (neither str nor dict) is a provider
+          contract violation, not a model mistake → ``BackendError``.
+
+        Defensive ``.get`` on ``function`` / ``name`` keeps a broken tool-call
+        entry from raising ``KeyError``. Used by both send() and send_stream()
+        for parity (the stream path reassembles deltas into this shape first).
         """
-        if isinstance(raw, dict):
-            return raw
-        if isinstance(raw, str):
-            if not raw:
-                return {}
-            return json.loads(raw)
-        raise BackendError(500, f"unexpected tool args shape: {type(raw).__name__}")
+        parsed: list[ToolCall] = []
+        for i, tc in enumerate(tool_calls):
+            fn = tc.get("function", {})
+            raw_args = fn.get("arguments", {})
+            if isinstance(raw_args, str):
+                if not raw_args:
+                    args: dict[str, Any] = {}
+                else:
+                    try:
+                        args = json.loads(raw_args)
+                    except json.JSONDecodeError:
+                        return TextResponse(content=fallback_content or raw_args)
+            elif isinstance(raw_args, dict):
+                args = raw_args
+            else:
+                raise BackendError(
+                    500, f"unexpected tool args shape: {type(raw_args).__name__}",
+                )
+            parsed.append(ToolCall(
+                tool=fn.get("name", ""),
+                args=args,
+                reasoning=reasoning if i == 0 else None,
+            ))
+        return parsed
 
     async def get_context_length(self) -> int | None:
         """Query the vLLM /v1/models endpoint for max_model_len.

@@ -540,8 +540,10 @@ class LlamafileClient:
         data = resp.json()
         self._record_usage(data)
 
-        top_choice = data["choices"][0]
-        choice = top_choice["message"]
+        choices = data.get("choices") or []
+        if not choices:
+            raise BackendError(500, f"response has no choices: {data}")
+        choice = choices[0].get("message", {})
         raw_tool_calls = choice.get("tool_calls")
         if raw_tool_calls:
             reasoning = self._resolve_reasoning(
@@ -550,7 +552,7 @@ class LlamafileClient:
             )
             result_calls: list[ToolCall] = []
             for i, tc_entry in enumerate(raw_tool_calls):
-                tc_func = tc_entry["function"]
+                tc_func = tc_entry.get("function", {})
                 args = tc_func.get("arguments", "{}")
                 if isinstance(args, str):
                     try:
@@ -558,7 +560,7 @@ class LlamafileClient:
                     except json.JSONDecodeError:
                         return TextResponse(content=choice.get("content", args))
                 result_calls.append(ToolCall(
-                    tool=tc_func["name"],
+                    tool=tc_func.get("name", ""),
                     args=args,
                     reasoning=reasoning if i == 0 else None,
                 ))

@@ -327,6 +327,31 @@ class TestSendStream:
         assert result[0].args == {"city": "Paris"}
 
     @pytest.mark.asyncio
+    async def test_malformed_accumulated_args_finalize_as_text_response(self) -> None:
+        # Streaming/non-streaming parity: once all fragments are accumulated,
+        # an unparseable arguments string must yield a retry-driving
+        # TextResponse (same as send()), not raise out of the stream.
+        client = _make_client()
+        client._http.stream.return_value = _MockStreamResponse([
+            _sse({"choices": [{"delta": {
+                "tool_calls": [{
+                    "index": 0,
+                    "function": {"name": "get_weather", "arguments": '{"city": '}
+                }],
+            }}]}),
+            _sse({"choices": [{"delta": {"content": "let me try again"}}]}),
+            "data: [DONE]",
+        ])
+        chunks = []
+        async for chunk in client.send_stream(
+            [{"role": "user", "content": "x"}], tools=[_make_spec()],
+        ):
+            chunks.append(chunk)
+        finals = [c for c in chunks if c.type == ChunkType.FINAL]
+        assert len(finals) == 1
+        assert isinstance(finals[0].response, TextResponse)
+
+    @pytest.mark.asyncio
     async def test_accumulates_reasoning_across_deltas(self) -> None:
         client = _make_client(think=True)
         client._http.stream.return_value = _MockStreamResponse([
@@ -473,16 +498,57 @@ class TestSendStreamEdgeCases:
         assert usage.completion_tokens == 3
 
 
-class TestParseToolArgs:
+class TestParseToolCalls:
+    @staticmethod
+    def _call(arguments: object) -> object:
+        return VLLMClient._parse_tool_calls(
+            [{"function": {"name": "lookup", "arguments": arguments}}],
+            reasoning=None,
+            fallback_content="raw model text",
+        )
+
+    def test_string_args_decoded(self) -> None:
+        """vLLM's native format — arguments arrive as a JSON string."""
+        assert self._call('{"city": "Paris"}') == [
+            ToolCall(tool="lookup", args={"city": "Paris"}),
+        ]
+
     def test_dict_passed_through(self) -> None:
         """Some downstream wrappers send dict args directly — pass through."""
-        assert VLLMClient._parse_tool_args({"city": "Paris"}) == {"city": "Paris"}
+        assert self._call({"city": "Paris"}) == [
+            ToolCall(tool="lookup", args={"city": "Paris"}),
+        ]
 
     def test_empty_string_returns_empty_dict(self) -> None:
         """No-arg tool calls — empty string args is valid."""
-        assert VLLMClient._parse_tool_args("") == {}
+        assert self._call("") == [ToolCall(tool="lookup", args={})]
+
+    def test_malformed_json_returns_textresponse(self) -> None:
+        """Matches llamafile/openai_compat: malformed args drive a retry via
+        TextResponse, never silent {} or an exception."""
+        assert self._call('{"city": ') == TextResponse(content="raw model text")
 
     def test_unexpected_type_raises(self) -> None:
-        """Unknown shape (list, int, etc.) — fail loud."""
+        """Unknown shape (list, int, etc.) — provider contract violation."""
         with pytest.raises(BackendError, match="unexpected tool args shape"):
-            VLLMClient._parse_tool_args(123)  # type: ignore[arg-type]
+            self._call(123)
+
+    def test_missing_function_is_defensive(self) -> None:
+        """A broken tool-call entry (no "function") must not KeyError."""
+        assert VLLMClient._parse_tool_calls(
+            [{}], reasoning=None, fallback_content="",
+        ) == [ToolCall(tool="", args={})]
+
+    def test_reasoning_attached_to_first_call_only(self) -> None:
+        result = VLLMClient._parse_tool_calls(
+            [
+                {"function": {"name": "a", "arguments": "{}"}},
+                {"function": {"name": "b", "arguments": "{}"}},
+            ],
+            reasoning="because",
+            fallback_content="",
+        )
+        assert result == [
+            ToolCall(tool="a", args={}, reasoning="because"),
+            ToolCall(tool="b", args={}, reasoning=None),
+        ]

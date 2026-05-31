@@ -208,7 +208,10 @@ class OpenAICompatClient:
         data = resp.json()
         self._record_usage(data)
 
-        msg = data["choices"][0]["message"]
+        choices = data.get("choices") or []
+        if not choices:
+            raise BackendError(500, f"response has no choices: {data}")
+        msg = choices[0].get("message", {})
         tool_calls = msg.get("tool_calls")
         if tool_calls:
             return self._parse_tool_calls(tool_calls, fallback_content=msg.get("content") or "")

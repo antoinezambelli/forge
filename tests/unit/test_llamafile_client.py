@@ -9,6 +9,7 @@ import httpx
 
 from forge.clients.llamafile import LlamafileClient, _extract_think_tags, _merge_consecutive
 from forge.core.workflow import TextResponse, ToolCall, ToolSpec
+from forge.errors import BackendError
 from pydantic import BaseModel, Field
 from forge.clients.base import ChunkType
 
@@ -115,6 +116,15 @@ class TestLlamafileNativeSend:
         result = await client.send([{"role": "user", "content": "test"}])
         assert isinstance(result, TextResponse)
         assert result.content == "I need more info"
+
+    @pytest.mark.asyncio
+    async def test_missing_choices_raises_backend_error(self) -> None:
+        # Broken provider envelope (200, no choices) → fail loud and consistent
+        # rather than KeyError/IndexError on data["choices"][0].
+        client = _make_client("native")
+        client._http.post.return_value = _mock_response({"object": "error"})
+        with pytest.raises(BackendError, match="response has no choices"):
+            await client.send([{"role": "user", "content": "test"}])
 
     @pytest.mark.asyncio
     async def test_arguments_parsed_from_string(self) -> None:

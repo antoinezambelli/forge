@@ -198,10 +198,14 @@ class OllamaClient:
             reasoning = self._resolve_reasoning(
                 msg.get("thinking", ""), msg.get("content", ""),
             )
+            # Ollama returns tool-call arguments already decoded as a dict
+            # (unlike vLLM/llama.cpp, which send a JSON string) — no json.loads
+            # needed. Defensive .get on function/name so a broken tool-call
+            # entry degrades to empty rather than raising KeyError.
             return [
                 ToolCall(
-                    tool=tc["function"]["name"],
-                    args=tc["function"].get("arguments", {}),
+                    tool=tc.get("function", {}).get("name", ""),
+                    args=tc.get("function", {}).get("arguments", {}),
                     reasoning=reasoning if i == 0 else None,
                 )
                 for i, tc in enumerate(tool_calls)
@@ -304,8 +308,8 @@ class OllamaClient:
                         )
                         final: LLMResponse = [
                             ToolCall(
-                                tool=tc["function"]["name"],
-                                args=tc["function"].get("arguments", {}),
+                                tool=tc.get("function", {}).get("name", ""),
+                                args=tc.get("function", {}).get("arguments", {}),
                                 reasoning=reasoning if i == 0 else None,
                             )
                             for i, tc in enumerate(tool_calls)
