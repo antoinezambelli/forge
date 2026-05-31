@@ -211,7 +211,11 @@ class ProxyServer:
         if not self._started:
             raise RuntimeError("Proxy failed to start")
 
-        logger.info("Proxy ready at %s", self.url)
+        logger.info(
+            "Proxy ready at %s (backend_timeout=%.1fs)",
+            self.url,
+            self._backend_timeout,
+        )
 
     def stop(self) -> None:
         """Stop the proxy (and managed backend if applicable)."""
