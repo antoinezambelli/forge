@@ -49,6 +49,15 @@ dev = [
 [tool.hatch.build.targets.wheel]
 packages = ["src/forge"]
 
+[tool.hatch.build.targets.sdist]
+# Without scoping, hatchling sweeps the whole tree into the sdist — pulling in
+# the LFS eval datasets (~112 MB) and the eval dashboard's node_modules (~97 MB,
+# incl. platform .exe/.node binaries). Ship only what builds + tests from source.
+exclude = [
+    "eval_results*.jsonl",
+    "tests/eval/dashboard/node_modules",
+]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 markers = [
