@@ -83,7 +83,7 @@ claude
 
 `ANTHROPIC_AUTH_TOKEN` can be any non-empty string — forge ignores it. The model name Claude Code sends is also ignored; forge serves whatever backend the proxy was started with.
 
-**Function-calling mode.** `--mode native` (default) uses the backend's chat-template tool-calling and is the smoother default for Claude Code's heavy multi-turn tool use. `--mode prompt` injects the tool surface into the prompt for backends without a tool-calling template; whether a model stays coherent across multi-turn tool results in prompt mode varies by model, so prefer native when the backend supports it.
+**Function-calling capability.** `--backend-capability native` (default) uses the backend's chat-template tool-calling and is the smoother default for Claude Code's heavy multi-turn tool use. `--backend-capability prompt` injects the tool surface into the prompt for llama.cpp/llamafile backends without a tool-calling template; whether a model stays coherent across multi-turn tool results in prompt mode varies by model — and tends to degrade on more complex, multi-step interactions — so prefer native whenever the backend supports it. The capability is declared at startup and frozen.
 
 **Downstream protocol.**
 

@@ -2,6 +2,33 @@
 
 All notable changes to forge are documented here.
 
+## [0.7.3] — 2026-06-01
+
+Native-first proxy. With native function calling now well-supported across modern local models, the proxy defaults to — and is optimized for — native tool calling, forwarding the client's OpenAI `tools` / `messages` to the backend verbatim. Prompt-injection remains available as an explicit opt-in for llama.cpp / llamafile backends that lack a function-calling template, but it is no longer the default path. This release also folds in the OpenAI-compatible client and several proxy / eval fixes that landed on `main` since 0.7.2.
+
+### Added
+- **`OpenAICompatClient`** for arbitrary OpenAI-compatible endpoints. #89 (thanks @lucasgerads).
+- **`--backend-timeout` proxy option** — configurable backend response timeout (default 300s). #91.
+- **`--backend-capability {native,prompt}` proxy flag** — `native` (default) forwards the client's tools / messages verbatim to a function-calling-capable backend; `prompt` opts into prompt-injection for non-FC llama.cpp / llamafile backends. Declared once at startup and frozen — never probed or switched mid-stream.
+- Effective `backend_timeout` logged at proxy startup.
+
+### Changed
+- **BREAKING — `--mode {native,prompt}` renamed to `--backend-capability {native,prompt}`** (and `ProxyServer(mode=…)` → `ProxyServer(backend_capability=…)`). `--mode` collided with the proxy's managed / external deployment mode; the new name states what it controls — the backend's tool-calling protocol — and reflects that the choice is declared once and frozen, never probed at runtime. There is **no deprecation alias** (`--mode` was introduced in 0.7.1). Migration: `--mode native` → drop it (native is the default) or `--backend-capability native`; `--mode prompt` → `--backend-capability prompt`.
+- **Native function calling is now transparent passthrough** — the proxy forwards the client's OpenAI tool / message payloads to the backend verbatim instead of round-tripping them through forge's internal `ToolSpec` representation, which dropped schema detail.
+- **vLLM model identity** consolidated to a single source of truth (the wire `model_path` and the registry `model` key are now set together). #75.
+- The `prompt` capability is now **rejected loudly** for ollama / vllm / anthropic backends — previously it was silently ignored for ollama.
+- `stream_options` is excluded from proxy passthrough. #94 (thanks @alexandergunnarson).
+
+### Fixed
+- **Consistent malformed-tool-call / unexpected-response handling** across the OpenAI-shape clients — malformed model tool args drive a retry (`TextResponse`) instead of degrading silently or raising inconsistently, and non-streaming responses are guarded so a broken provider envelope fails loud.
+- `Guardrails.record()` no longer drops tool args for prerequisite tracking. #72 (thanks @hobostay).
+- Deprecated asyncio API replaced; proxy server input validation added. #71 (thanks @hobostay).
+- Proxy input hardening, non-blocking Ollama stop, client shutdown, and loud arg decode. #86.
+- Dead code and a fragile variable reference cleaned up in `LlamafileClient`. #73 (thanks @hobostay).
+
+### Removed
+- Runtime `auto` function-calling mode in `LlamafileClient` — the proxy never used it, and its mid-request probe-and-switch behavior is replaced by the declared-and-frozen `--backend-capability`.
+
 ## [0.7.2] — 2026-05-24
 
 vLLM backend support — serve AWQ/GPTQ and other vLLM-hosted models behind forge's guardrails, in both proxy modes and via `WorkflowRunner`.
