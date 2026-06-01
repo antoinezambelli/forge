@@ -57,9 +57,12 @@ class OllamaClient:
     ) -> None:
         self.base_url = base_url
         self.model = model
+        # sampling_key is the registry-lookup key. For Ollama the wire "model"
+        # field and the lookup key are the same string (the model tag).
+        self.sampling_key = self.model
         # Apply per-model recommended sampling defaults. Caller's explicit
         # (non-None) kwargs win over the map field-by-field.
-        defaults = apply_sampling_defaults(model, strict=recommended_sampling)
+        defaults = apply_sampling_defaults(self.sampling_key, strict=recommended_sampling)
         self.temperature = temperature if temperature is not None else defaults.get("temperature")
         self.top_p = top_p if top_p is not None else defaults.get("top_p")
         self.top_k = top_k if top_k is not None else defaults.get("top_k")
