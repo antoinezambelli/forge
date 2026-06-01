@@ -181,6 +181,17 @@ async def test_openai() -> None:
             health = await client.get("http://127.0.0.1:18081/health")
             assert health.status_code == 200, f"health: {health.status_code}"
 
+            # /v1/models reports the client's real identity, not a hardcoded
+            # stub. External llama.cpp mode with no --model → the "default"
+            # placeholder (forge genuinely doesn't know the served name).
+            models = await client.get("http://127.0.0.1:18081/v1/models")
+            assert models.status_code == 200, f"models: {models.status_code}"
+            mdata = models.json()
+            assert mdata["object"] == "list", mdata
+            assert mdata["data"][0]["id"] == "default", mdata["data"]
+            assert mdata["data"][0]["id"] != "forge", "regressed to hardcoded stub"
+            print("[ok] /v1/models reports client identity (default placeholder)")
+
             resp = await client.post(
                 "http://127.0.0.1:18081/v1/chat/completions",
                 json={
@@ -366,6 +377,14 @@ async def test_path1_anthropic_passthrough() -> None:
 
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
+            # /v1/models surfaces the configured model identity (not "forge").
+            # This proxy was constructed with model="claude-mock".
+            models = await client.get("http://127.0.0.1:18085/v1/models")
+            assert models.status_code == 200, f"models: {models.status_code}"
+            mdata = models.json()
+            assert mdata["data"][0]["id"] == "claude-mock", mdata["data"]
+            print("[ok] /v1/models reports configured model 'claude-mock'")
+
             cache_marker = {"type": "ephemeral"}
             resp = await client.post(
                 "http://127.0.0.1:18085/v1/messages",

@@ -19,6 +19,7 @@ def _mock_client(response):
     """Create a mock LLMClient that returns the given response."""
     client = AsyncMock()
     client.api_format = "ollama"
+    client.model = "mock-model"
     client.send = AsyncMock(return_value=response)
     return client
 
@@ -143,7 +144,7 @@ class TestHealthAndModels:
         assert status == 200
         data = json.loads(body)
         assert data["object"] == "list"
-        assert len(data["data"]) > 0
+        assert data["data"][0]["id"] == "mock-model"
 
     @pytest.mark.asyncio
     async def test_not_found(self, server_factory):

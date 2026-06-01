@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Any, Protocol, runtime_checkable
 
-from forge.core.workflow import LLMResponse, ToolCall, TextResponse, ToolSpec
+from forge.core.workflow import LLMResponse, ToolSpec
 
 # Verbatim OpenAI-shape payloads forwarded by the proxy. The proxy hands the
 # client the user's original ``tools`` array so the backend sees the exact
@@ -84,6 +84,11 @@ class LLMClient(Protocol):
 
     api_format: str
     """Wire format for Message.to_api_dict(): 'ollama' or 'openai'."""
+
+    model: str
+    """The backend model identity, sent verbatim as the wire "model" field
+    (the served-model-name, gguf stem, or model tag depending on backend).
+    Distinct from any sampling-registry lookup key a client also derives."""
 
     async def send(
         self,

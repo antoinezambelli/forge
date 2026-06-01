@@ -203,10 +203,10 @@ class HTTPServer:
         await self._send_json(writer, 200, body)
 
     async def _handle_models(self, writer: asyncio.StreamWriter) -> None:
-        """GET /v1/models — returns a minimal model list."""
+        """GET /v1/models — report the backend model the proxy is fronting."""
         body = json.dumps({
             "object": "list",
-            "data": [{"id": "forge", "object": "model"}],
+            "data": [{"id": self._client.model, "object": "model"}],
         })
         await self._send_json(writer, 200, body)
 
