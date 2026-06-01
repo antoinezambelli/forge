@@ -420,8 +420,14 @@ async def _recover_server(
     gguf_path: str,
     extra_flags: list[str] | None,
     crash_count: int,
+    budget_mode: BudgetMode,
+    manual_tokens: int | None,
 ) -> bool:
     """Attempt to restart the server after a crash.
+
+    Restarts through the prod ``start_with_budget`` path so the recovered
+    server is launched with the same budget (e.g. ``-c manual_tokens`` for
+    MANUAL mode) as the original.
 
     Returns True if recovery succeeded, False if circuit breaker tripped.
     """
@@ -447,10 +453,12 @@ async def _recover_server(
     # GGUF path for non-Ollama (matches run_batch and setup_backend).
     cache_identity = config.model if config.backend == "ollama" else gguf_path
     try:
-        await server.start(
+        await server.start_with_budget(
             model=cache_identity,
             gguf_path=gguf_path,
             mode=config.mode,
+            budget_mode=budget_mode,
+            manual_tokens=manual_tokens,
             extra_flags=extra_flags,
         )
         print("  [!] Server restarted successfully.", flush=True)
@@ -751,10 +759,15 @@ async def run_batch(
             extra_flags = _get_server_flags(config.model, config.mode)
             cache_identity = config.model if config.backend == "ollama" else gguf_path
             try:
-                await server.start(
+                # Prod path: launches with the budget-appropriate context
+                # (e.g. -c manual_tokens for MANUAL) and returns the resolved
+                # budget, instead of starting raw and reading back full ctx.
+                resolved_budget = await server.start_with_budget(
                     model=cache_identity,
                     gguf_path=gguf_path,
                     mode=config.mode,
+                    budget_mode=budget_mode,
+                    manual_tokens=manual_tokens,
                     extra_flags=extra_flags if extra_flags else None,
                 )
             except RuntimeError:
@@ -763,20 +776,19 @@ async def run_batch(
                     server, config, gguf_path,
                     extra_flags if extra_flags else None,
                     crash_count=1,
+                    budget_mode=budget_mode, manual_tokens=manual_tokens,
                 )
                 if not recovered:
                     print(f"  SKIP (server failed to start)", flush=True)
                     total_skipped += total_scenarios
                     continue
+                resolved_budget = await server.resolve_budget(budget_mode, manual_tokens)
 
             prev_backend = config.backend
             prev_server = server
 
             # Build client
             client = _build_client(config, models_dir)
-
-            # Resolve budget through prod ServerManager path
-            resolved_budget = await server.resolve_budget(budget_mode, manual_tokens)
             if hasattr(client, "set_num_ctx"):
                 client.set_num_ctx(resolved_budget)
 
@@ -844,6 +856,7 @@ async def run_batch(
                             server, config, gguf_path,
                             extra_flags if extra_flags else None,
                             crash_count,
+                            budget_mode=budget_mode, manual_tokens=manual_tokens,
                         )
                         if not recovered:
                             print(
