@@ -90,19 +90,21 @@ def _text_response(content: str = "hi", reasoning: str | None = None) -> dict:
 
 
 class TestConstructor:
-    def test_directory_path_derives_model_from_dirname(self) -> None:
+    def test_directory_path_derives_sampling_key_from_dirname(self) -> None:
         c = VLLMClient(model_path="/models/gemma-4-26B-A4B-it-AWQ-4bit")
-        assert c.model == "gemma-4-26B-A4B-it-AWQ-4bit"
-        assert c.model_path == "/models/gemma-4-26B-A4B-it-AWQ-4bit"
+        # model is the wire id (the path verbatim); sampling_key is the stem.
+        assert c.model == "/models/gemma-4-26B-A4B-it-AWQ-4bit"
+        assert c.sampling_key == "gemma-4-26B-A4B-it-AWQ-4bit"
 
-    def test_hf_repo_id_derives_model_from_trailing_segment(self) -> None:
+    def test_hf_repo_id_derives_sampling_key_from_trailing_segment(self) -> None:
         c = VLLMClient(model_path="google/gemma-4-26B-A4B-it")
-        assert c.model == "gemma-4-26B-A4B-it"
-        assert c.model_path == "google/gemma-4-26B-A4B-it"
+        assert c.model == "google/gemma-4-26B-A4B-it"
+        assert c.sampling_key == "gemma-4-26B-A4B-it"
 
     def test_single_token_model_path(self) -> None:
         c = VLLMClient(model_path="some-local-name")
         assert c.model == "some-local-name"
+        assert c.sampling_key == "some-local-name"
 
     def test_api_format_is_openai(self) -> None:
         c = VLLMClient(model_path="/models/x")

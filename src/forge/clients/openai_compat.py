@@ -59,6 +59,9 @@ class OpenAICompatClient:
     ) -> None:
         self.base_url = base_url.rstrip("/")
         self.model = model
+        # sampling_key is the registry-lookup key. For OpenAI-compat backends
+        # the wire "model" field and the lookup key are the same string.
+        self.sampling_key = self.model
 
         # Apply per-model recommended sampling defaults. Caller's explicit
         # (non-None) kwargs win over the map field-by-field. With
@@ -66,7 +69,7 @@ class OpenAICompatClient:
         # apply_sampling_defaults returns an empty dict silently — which
         # is the common case for hosted providers whose model identifiers
         # aren't in forge's registry.
-        defaults = apply_sampling_defaults(self.model, strict=recommended_sampling)
+        defaults = apply_sampling_defaults(self.sampling_key, strict=recommended_sampling)
         self.temperature = temperature if temperature is not None else defaults.get("temperature")
         self.top_p = top_p if top_p is not None else defaults.get("top_p")
         self.top_k = top_k if top_k is not None else defaults.get("top_k")

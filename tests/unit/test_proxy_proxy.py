@@ -142,14 +142,14 @@ class TestSetupExternal:
             new_callable=AsyncMock, return_value="my-awq-model",
         ):
             client, _ = await proxy._setup_external()
-        assert client.model_path == "my-awq-model"
         assert client.model == "my-awq-model"
+        assert client.sampling_key == "my-awq-model"
 
     @pytest.mark.asyncio
     async def test_vllm_served_repo_id_keeps_wire_path_derives_registry_key(self) -> None:
         # An HF-repo-id served name must reach the wire verbatim (vLLM validates
-        # it), while the registry key is the derived stem — the (model_path,
-        # model) invariant, applied to served-name adoption.
+        # it), while the registry key is the derived stem — the (model,
+        # sampling_key) invariant, applied to served-name adoption.
         proxy = ProxyServer(
             backend_url="http://localhost:8000", backend="vllm", budget_tokens=8192,
         )
@@ -158,8 +158,8 @@ class TestSetupExternal:
             new_callable=AsyncMock, return_value="google/gemma-4-26B-A4B-it",
         ):
             client, _ = await proxy._setup_external()
-        assert client.model_path == "google/gemma-4-26B-A4B-it"
-        assert client.model == "gemma-4-26B-A4B-it"
+        assert client.model == "google/gemma-4-26B-A4B-it"
+        assert client.sampling_key == "gemma-4-26B-A4B-it"
 
     @pytest.mark.asyncio
     async def test_vllm_keeps_placeholder_when_discovery_fails(self) -> None:
@@ -170,7 +170,7 @@ class TestSetupExternal:
             VLLMClient, "get_served_model_name", new_callable=AsyncMock, return_value=None,
         ):
             client, _ = await proxy._setup_external()
-        assert client.model_path == "default"
+        assert client.model == "default"
 
     @pytest.mark.asyncio
     async def test_url_v1_suffix_preserved(self) -> None:

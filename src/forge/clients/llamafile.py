@@ -168,15 +168,17 @@ class LlamafileClient:
                 "backends)."
             )
         self.base_url = base_url
-        # gguf_path is the canonical identity. self.model is the stem (no
-        # .gguf / .llamafile suffix) — used for the wire-format model field
-        # (llama-server ignores it but it flows into eval JSONL rows) and
-        # for sampling-defaults lookup.
+        # gguf_path is the source path. self.model is the stem (no
+        # .gguf / .llamafile suffix) used as the wire "model" field
+        # (llama-server ignores it but it flows into eval JSONL rows).
+        # sampling_key is the registry-lookup key; for llamafile it equals
+        # the stem, so the wire id and the lookup key are the same string.
         self.gguf_path = Path(gguf_path)
         self.model = _SHARD_SUFFIX_RE.sub("", self.gguf_path.stem)
+        self.sampling_key = self.model
         # Apply per-model recommended sampling defaults. Caller's explicit
         # (non-None) kwargs win over the map field-by-field.
-        defaults = apply_sampling_defaults(self.model, strict=recommended_sampling)
+        defaults = apply_sampling_defaults(self.sampling_key, strict=recommended_sampling)
         self.temperature = temperature if temperature is not None else defaults.get("temperature")
         self.top_p = top_p if top_p is not None else defaults.get("top_p")
         self.top_k = top_k if top_k is not None else defaults.get("top_k")

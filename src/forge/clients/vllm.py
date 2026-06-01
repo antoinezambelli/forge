@@ -60,16 +60,18 @@ class VLLMClient:
         recommended_sampling: bool = False,
     ) -> None:
         self.base_url = base_url
-        # model_path is the canonical identity, sent verbatim in the wire
-        # "model" field. self.model is the derived registry-lookup key. Both
-        # are set together so the (model_path, model) invariant holds — see
-        # _set_model_identity. Must run before apply_sampling_defaults below,
-        # which reads self.model.
+        # Two identity roles, set together (see _set_model_identity):
+        #   self.model        — the wire "model" field, sent verbatim. For vLLM
+        #                       this is the model path / HF repo id (or the
+        #                       served-model-name once discovered in external
+        #                       mode), which vLLM validates the request against.
+        #   self.sampling_key — the derived registry-lookup key for
+        #                       apply_sampling_defaults below (must be set first).
         self._set_model_identity(model_path)
 
         # Apply per-model recommended sampling defaults. Caller's explicit
         # (non-None) kwargs win over the map field-by-field.
-        defaults = apply_sampling_defaults(self.model, strict=recommended_sampling)
+        defaults = apply_sampling_defaults(self.sampling_key, strict=recommended_sampling)
         self.temperature = temperature if temperature is not None else defaults.get("temperature")
         self.top_p = top_p if top_p is not None else defaults.get("top_p")
         self.top_k = top_k if top_k is not None else defaults.get("top_k")
@@ -93,33 +95,34 @@ class VLLMClient:
         await self._http.aclose()
 
     @staticmethod
-    def _derive_model_field(model_path: str) -> str:
-        """Derive the sampling-registry lookup key from the canonical path.
+    def _derive_sampling_key(wire_id: str) -> str:
+        """Derive the sampling-registry lookup key from the wire model id.
 
-        vLLM accepts either a local directory (safetensors + config) or an HF
-        repo id (e.g. "google/gemma-4-26B-A4B-it"). The lookup key uses the
-        path stem so registry lookups match the existing GGUF-stem convention:
+        vLLM's wire id is either a local directory (safetensors + config) or an
+        HF repo id (e.g. "google/gemma-4-26B-A4B-it"). The lookup key uses the
+        stem so registry lookups match the existing GGUF-stem convention:
         a filesystem path → its directory name; an HF repo id (has "/") → its
         trailing segment; anything else → the string unchanged.
         """
-        path_obj = Path(model_path)
+        path_obj = Path(wire_id)
         if path_obj.is_absolute() or path_obj.exists():
             return path_obj.name
-        if "/" in model_path:
-            return model_path.split("/")[-1]
-        return model_path
+        if "/" in wire_id:
+            return wire_id.split("/")[-1]
+        return wire_id
 
-    def _set_model_identity(self, model_path: str | Path) -> None:
-        """Set both identity fields atomically from one canonical path.
+    def _set_model_identity(self, wire_id: str | Path) -> None:
+        """Set both identity fields atomically from one wire id.
 
-        ``model_path`` is the wire "model" field (sent verbatim); ``model`` is
-        the derived registry key. Used by ``__init__`` and by the proxy's
-        external-mode served-name adoption, so the ``(model_path, model)``
-        invariant holds the same way in both — instead of mutating the two
-        fields separately after served-name discovery.
+        ``model`` is the wire "model" field (sent verbatim); ``sampling_key``
+        is the derived registry-lookup key. Used by ``__init__`` and by the
+        proxy's external-mode served-name adoption, so the
+        ``(model, sampling_key)`` invariant holds the same way in both —
+        instead of mutating the two fields separately after served-name
+        discovery.
         """
-        self.model_path = str(model_path)
-        self.model = self._derive_model_field(self.model_path)
+        self.model = str(wire_id)
+        self.sampling_key = self._derive_sampling_key(self.model)
 
     # Sampling fields recognized in per-call overrides. ``seed`` is
     # accepted only as a per-call override (not an instance field).
@@ -194,7 +197,7 @@ class VLLMClient:
         reasoning server-side and is native-only.
         """
         body: dict[str, Any] = {
-            "model": self.model_path,
+            "model": self.model,
             "messages": messages,
             "stream": False,
         }
@@ -245,7 +248,7 @@ class VLLMClient:
         accepted for protocol symmetry and ignored (see ``send``).
         """
         body: dict[str, Any] = {
-            "model": self.model_path,
+            "model": self.model,
             "messages": messages,
             "stream": True,
             "stream_options": {"include_usage": True},
