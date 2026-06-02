@@ -47,7 +47,22 @@ async def test_raw_used_on_first_attempt_folded_on_retry():
         MessageRole.USER, "folded-form",
         MessageMeta(MessageType.USER_INPUT),
     )]
-    raw_messages = [{"role": "user", "content": "VERBATIM", "name": "u1"}]
+    raw_messages = [
+        {
+            "role": "assistant",
+            "content": None,
+            "reasoning_content": "old",
+            "tool_calls": [],
+            "name": "a1",
+        },
+        {
+            "role": "assistant",
+            "content": None,
+            "reasoning_content": "latest",
+            "tool_calls": [],
+            "name": "a2",
+        },
+    ]
     raw_tools = [{"type": "function", "function": {"name": "search", "parameters": {}}}]
 
     result = await run_inference(
@@ -59,6 +74,7 @@ async def test_raw_used_on_first_attempt_folded_on_retry():
         tool_specs=[_search_spec()],
         raw_openai_messages=raw_messages,
         raw_openai_tools=raw_tools,
+        reasoning_replay="full",
     )
 
     assert result is not None
@@ -98,3 +114,48 @@ async def test_no_raw_falls_back_to_fold():
     call = client.send.call_args
     assert call.args[0][0]["content"] == "hello"
     assert "raw_openai_tools" not in call.kwargs
+
+
+@pytest.mark.asyncio
+async def test_non_full_reasoning_replay_filters_raw_reasoning_but_keeps_raw_shape():
+    client = _client([ToolCall(tool="search", args={})])
+    messages = [Message(
+        MessageRole.USER, "folded-form",
+        MessageMeta(MessageType.USER_INPUT),
+    )]
+    raw_messages = [
+        {
+            "role": "assistant",
+            "content": None,
+            "reasoning_content": "old",
+            "tool_calls": [],
+            "name": "a1",
+        },
+        {
+            "role": "assistant",
+            "content": None,
+            "reasoning_content": "latest",
+            "tool_calls": [],
+            "name": "a2",
+        },
+    ]
+    raw_tools = [{"type": "function", "function": {"name": "search", "parameters": {}}}]
+
+    await run_inference(
+        messages=messages,
+        client=client,
+        context_manager=_ctx(),
+        validator=ResponseValidator(["search"], rescue_enabled=True),
+        error_tracker=ErrorTracker(max_retries=1),
+        tool_specs=[_search_spec()],
+        raw_openai_messages=raw_messages,
+        raw_openai_tools=raw_tools,
+        reasoning_replay="keep-last",
+    )
+
+    call = client.send.call_args
+    assert call.args[0][0]["name"] == "a1"
+    assert "reasoning_content" not in call.args[0][0]
+    assert call.args[0][1]["name"] == "a2"
+    assert call.args[0][1]["reasoning_content"] == "latest"
+    assert call.kwargs["raw_openai_tools"] == raw_tools

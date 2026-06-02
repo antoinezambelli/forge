@@ -85,6 +85,8 @@ claude
 
 **Function-calling capability.** `--backend-capability native` (default) uses the backend's chat-template tool-calling and is the smoother default for Claude Code's heavy multi-turn tool use. `--backend-capability prompt` injects the tool surface into the prompt for llama.cpp/llamafile backends without a tool-calling template; whether a model stays coherent across multi-turn tool results in prompt mode varies by model — and tends to degrade on more complex, multi-step interactions — so prefer native whenever the backend supports it. The capability is declared at startup and frozen.
 
+**Reasoning replay.** Reasoning-capable backends may return hidden reasoning alongside tool calls. Forge captures that reasoning for observability, then controls how much is replayed to the backend on later turns with `--reasoning-replay {full,keep-last,none}`. The default is `keep-last`: only the latest captured reasoning block is replayed. `full` preserves the historical behavior and replays every captured reasoning block. `none` keeps reasoning out of backend-facing history. In OpenAI-compatible proxy responses, `keep-last` exposes current reasoning as `reasoning_content` instead of normal assistant `content` so clients that preserve reasoning fields can replay only the latest block without turning it into plain text. Anthropic proxy responses only emit reasoning text under `full`; Forge does not synthesize signed Anthropic thinking blocks, so default Anthropic proxy responses do not expose replayable reasoning.
+
 **Downstream protocol.**
 
 - **Local model (default, `--backend-protocol openai`)** — forge translates Claude Code's Anthropic requests to OpenAI for llama.cpp / Ollama and converts the reply back to Anthropic SSE. Anthropic-only fields with no OpenAI analog (`cache_control`, `thinking`, `document` blocks) are dropped at that boundary; see [ADR-015](decisions/015-cache-control-preservation-path1.md).
@@ -282,6 +284,8 @@ await server.stop()
 ## Multi-Turn Conversations
 
 `WorkflowRunner` accepts an optional `on_message` callback that fires each time a `Message` is appended to the conversation during `run()`. This is the primary observability hook — use it for logging, eval metric collection, or building conversation history for multi-turn flows.
+
+`WorkflowRunner(reasoning_replay=...)` uses the same policy as the proxy: `keep-last` by default, `full` for the historical replay-all behavior, and `none` to avoid replaying captured reasoning to the backend. The policy affects backend-facing serialization only; `MessageType.REASONING` entries still appear in `on_message` and internal history unless context compaction removes them.
 
 - **Single-turn (default):** `on_message` fires for every message the runner creates — system prompt, user input, assistant responses, tool results, nudges.
 - **Multi-turn (`initial_messages`):** `run()` accepts an optional `initial_messages` parameter that seeds the conversation with prior history. `on_message` fires **only for new messages created during this turn**, not for the replayed history.

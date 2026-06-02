@@ -250,10 +250,17 @@ class TestToolCallsToAnthropic:
         assert tu_blocks[0]["input"] == {"city": "Paris"}
         assert tu_blocks[0]["id"].startswith("toolu_")
 
-    def test_reasoning_emitted_as_text_block(self):
+    def test_default_omits_reasoning_text_block(self):
         result = tool_calls_to_anthropic([
             ToolCall(tool="search", args={"q": "x"}, reasoning="Let me search."),
         ])
+        text_blocks = [b for b in result["content"] if b["type"] == "text"]
+        assert text_blocks == []
+
+    def test_full_reasoning_replay_emits_reasoning_as_text_block(self):
+        result = tool_calls_to_anthropic([
+            ToolCall(tool="search", args={"q": "x"}, reasoning="Let me search."),
+        ], reasoning_replay="full")
         text_blocks = [b for b in result["content"] if b["type"] == "text"]
         assert text_blocks and text_blocks[0]["text"] == "Let me search."
 
@@ -298,10 +305,17 @@ class TestToolCallsToAnthropicSSE:
         delta = next(e for e in events if e["type"] == "message_delta")
         assert delta["delta"]["stop_reason"] == "tool_use"
 
-    def test_reasoning_block_precedes_tool_use(self):
+    def test_default_omits_reasoning_stream_block(self):
         events = tool_calls_to_anthropic_sse([
             ToolCall(tool="search", args={"q": "x"}, reasoning="Hmm."),
         ])
+        starts = [e for e in events if e["type"] == "content_block_start"]
+        assert starts[0]["content_block"]["type"] == "tool_use"
+
+    def test_full_reasoning_replay_streams_text_block_before_tool_use(self):
+        events = tool_calls_to_anthropic_sse([
+            ToolCall(tool="search", args={"q": "x"}, reasoning="Hmm."),
+        ], reasoning_replay="full")
         # First content_block_start should be type=text (reasoning), then tool_use
         starts = [e for e in events if e["type"] == "content_block_start"]
         assert starts[0]["content_block"]["type"] == "text"

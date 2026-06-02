@@ -11,6 +11,7 @@ import uuid
 from typing import Any
 
 from forge.core.messages import Message, MessageMeta, MessageRole, MessageType, ToolCallInfo
+from forge.core.reasoning import DEFAULT_REASONING_REPLAY, ReasoningReplay, validate_reasoning_replay
 from forge.core.workflow import ToolCall, ToolSpec
 
 
@@ -233,11 +234,13 @@ def tool_calls_to_anthropic(
     tool_calls: list[ToolCall],
     model: str = "forge",
     usage: Any | None = None,
+    reasoning_replay: ReasoningReplay = DEFAULT_REASONING_REPLAY,
 ) -> dict[str, Any]:
     """Convert forge ToolCalls to an Anthropic Messages API response object."""
+    reasoning_replay = validate_reasoning_replay(reasoning_replay)
     blocks: list[dict[str, Any]] = []
 
-    if tool_calls and tool_calls[0].reasoning:
+    if tool_calls and tool_calls[0].reasoning and reasoning_replay == "full":
         blocks.append({"type": "text", "text": tool_calls[0].reasoning})
 
     for tc in tool_calls:
@@ -284,6 +287,7 @@ def tool_calls_to_anthropic_sse(
     tool_calls: list[ToolCall],
     model: str = "forge",
     usage: Any | None = None,
+    reasoning_replay: ReasoningReplay = DEFAULT_REASONING_REPLAY,
 ) -> list[dict[str, Any]]:
     """Build the Anthropic SSE event sequence for a tool-use response.
 
@@ -291,6 +295,7 @@ def tool_calls_to_anthropic_sse(
     formatter reads that to emit ``event: <type>`` lines. Spec:
     https://platform.claude.com/docs/en/build-with-claude/streaming
     """
+    reasoning_replay = validate_reasoning_replay(reasoning_replay)
     au = _anthropic_usage(usage)
     msg_id = f"msg_{uuid.uuid4().hex[:24]}"
     events: list[dict[str, Any]] = []
@@ -313,7 +318,7 @@ def tool_calls_to_anthropic_sse(
 
     # Reasoning text first, if present.
     reasoning = tool_calls[0].reasoning if tool_calls else None
-    if reasoning:
+    if reasoning and reasoning_replay == "full":
         events.append({
             "type": "content_block_start",
             "index": block_idx,

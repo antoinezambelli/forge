@@ -23,6 +23,12 @@ from forge.clients.base import (
 )
 from forge.context.manager import ContextManager
 from forge.core.messages import Message, MessageMeta, MessageRole, MessageType, ToolCallInfo
+from forge.core.reasoning import (
+    DEFAULT_REASONING_REPLAY,
+    ReasoningReplay,
+    filter_openai_reasoning_messages,
+    validate_reasoning_replay,
+)
 from forge.core.workflow import LLMResponse, TextResponse, ToolCall, ToolSpec
 from forge.errors import StreamError, ToolCallError
 from forge.guardrails import ErrorTracker, ResponseValidator
@@ -77,19 +83,32 @@ class InferenceResult:
 def fold_and_serialize(
     messages: list[Message],
     api_format: str,
+    reasoning_replay: ReasoningReplay = DEFAULT_REASONING_REPLAY,
 ) -> list[dict[str, Any]]:
     """Reasoning-fold and serialize forge Messages to API dicts.
 
-    Folds REASONING messages into the following TOOL_CALL message's content
-    field so the wire format has one assistant message with both content and
-    tool_calls (valid OpenAI format). Internal Message list stays separate
-    for compaction.
+    ``full`` folds every REASONING message into the following TOOL_CALL
+    message's content field, preserving the historical wire behavior.
+    ``keep-last`` folds only the most recent REASONING message in the
+    serialized history. ``none`` skips all REASONING messages on the wire.
+    Internal Message history stays separate for compaction and observability.
     """
+    reasoning_replay = validate_reasoning_replay(reasoning_replay)
     api_messages: list[dict[str, Any]] = []
     pending_reasoning: str | None = None
+    last_reasoning_index: int | None = None
 
-    for m in messages:
+    if reasoning_replay == "keep-last":
+        for i, m in enumerate(messages):
+            if m.metadata.type == MessageType.REASONING and m.role == MessageRole.ASSISTANT:
+                last_reasoning_index = i
+
+    for i, m in enumerate(messages):
         if m.metadata.type == MessageType.REASONING and m.role == MessageRole.ASSISTANT:
+            if reasoning_replay == "none":
+                continue
+            if reasoning_replay == "keep-last" and i != last_reasoning_index:
+                continue
             pending_reasoning = m.content
             continue
         d = m.to_api_dict(format=api_format)
@@ -105,6 +124,29 @@ def fold_and_serialize(
         api_messages.append({"role": "assistant", "content": pending_reasoning})
 
     return api_messages
+
+
+def prepare_backend_messages(
+    messages: list[Message],
+    api_format: str,
+    reasoning_replay: ReasoningReplay = DEFAULT_REASONING_REPLAY,
+    raw_openai_messages: RawOpenAIMessages | None = None,
+    use_raw_messages: bool = False,
+) -> list[dict[str, Any]]:
+    """Prepare backend-facing messages from raw OpenAI or forge history.
+
+    This is the single backend replay-policy choke point. Raw OpenAI messages
+    preserve client-authored shape while filtering only reasoning fields; forge
+    history is folded with the same reasoning replay policy.
+    """
+    reasoning_replay = validate_reasoning_replay(reasoning_replay)
+    if use_raw_messages and raw_openai_messages is not None:
+        return filter_openai_reasoning_messages(
+            raw_openai_messages, reasoning_replay=reasoning_replay,
+        )
+    return fold_and_serialize(
+        messages, api_format, reasoning_replay=reasoning_replay,
+    )
 
 
 def _build_tool_call_infos(
@@ -138,6 +180,7 @@ async def run_inference(
     inbound_anthropic_body: dict[str, Any] | None = None,
     raw_openai_messages: RawOpenAIMessages | None = None,
     raw_openai_tools: RawOpenAITools | None = None,
+    reasoning_replay: ReasoningReplay = DEFAULT_REASONING_REPLAY,
 ) -> InferenceResult | None:
     """Send messages to the LLM with compaction, folding, validation, and retry.
 
@@ -177,6 +220,7 @@ async def run_inference(
         ToolCallError: If retry budget (max_retries) is exhausted.
         StreamError: If streaming ends without a FINAL chunk.
     """
+    reasoning_replay = validate_reasoning_replay(reasoning_replay)
     api_format = getattr(client, "api_format", "ollama")
     new_messages: list[Message] = []
     max_retries = error_tracker.max_retries
@@ -219,10 +263,13 @@ async def run_inference(
             and compacted is messages
             and not context_warning
         )
-        if use_raw_messages:
-            api_messages = raw_openai_messages
-        else:
-            api_messages = fold_and_serialize(messages, api_format)
+        api_messages = prepare_backend_messages(
+            messages,
+            api_format,
+            reasoning_replay=reasoning_replay,
+            raw_openai_messages=raw_openai_messages,
+            use_raw_messages=use_raw_messages,
+        )
 
         # Inject context warning as transient user message (not persisted
         # in conversation history). Uses "user" role because mid-conversation

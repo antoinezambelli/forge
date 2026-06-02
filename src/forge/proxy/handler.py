@@ -8,7 +8,12 @@ from typing import Any, Literal
 
 from forge.clients.base import LLMClient, format_tool
 from forge.context.manager import ContextManager
-from forge.core.inference import _get_usage, fold_and_serialize, run_inference
+from forge.core.inference import _get_usage, prepare_backend_messages, run_inference
+from forge.core.reasoning import (
+    DEFAULT_REASONING_REPLAY,
+    ReasoningReplay,
+    validate_reasoning_replay,
+)
 from forge.core.workflow import ToolCall, ToolSpec, TextResponse
 from forge.errors import ToolCallError
 from forge.guardrails import ErrorTracker, ResponseValidator
@@ -125,6 +130,7 @@ async def handle_chat_completions(
     native_passthrough: bool = True,
     inject_respond_tool: bool = False,
     protocol: Literal["openai", "anthropic"] = "openai",
+    reasoning_replay: ReasoningReplay = DEFAULT_REASONING_REPLAY,
 ) -> dict[str, Any] | list[dict[str, Any]]:
     """Handle an inbound completions request.
 
@@ -153,11 +159,14 @@ async def handle_chat_completions(
             untouched unless explicitly opted in.
         protocol: Inbound wire format. ``openai`` for
             ``/v1/chat/completions``; ``anthropic`` for ``/v1/messages``.
+        reasoning_replay: How much captured reasoning to replay to the
+            backend and expose to clients.
 
     Returns:
         If stream=false: a single response dict (protocol-shaped).
         If stream=true: a list of SSE event dicts (protocol-shaped).
     """
+    reasoning_replay = validate_reasoning_replay(reasoning_replay)
     is_stream = body.get("stream", False)
     model_name = body.get("model", "forge")
 
@@ -229,7 +238,13 @@ async def handle_chat_completions(
     if not tool_specs:
         logger.info("No tools in request, passing through to backend")
         api_format = getattr(client, "api_format", "ollama")
-        api_messages = raw_messages_for_backend or fold_and_serialize(messages, api_format)
+        api_messages = prepare_backend_messages(
+            messages,
+            api_format,
+            reasoning_replay=reasoning_replay,
+            raw_openai_messages=raw_messages_for_backend,
+            use_raw_messages=raw_messages_for_backend is not None,
+        )
         response = await client.send(
             api_messages, tools=None, sampling=sampling, passthrough=passthrough,
             inbound_anthropic_body=inbound_anthropic_body,
@@ -256,6 +271,7 @@ async def handle_chat_completions(
             inbound_anthropic_body=inbound_anthropic_body,
             raw_openai_messages=raw_messages_for_backend,
             raw_openai_tools=raw_tools_for_backend,
+            reasoning_replay=reasoning_replay,
         )
     except ToolCallError as exc:
         # Retries exhausted — the model kept returning text instead of tool
@@ -289,7 +305,10 @@ async def handle_chat_completions(
     if other_calls:
         # Real tool calls (possibly mixed with respond) — return the
         # real tool calls only, drop respond.
-        return _emit_tool_calls(other_calls, model_name, protocol, is_stream, usage=usage)
+        return _emit_tool_calls(
+            other_calls, model_name, protocol, is_stream, usage=usage,
+            reasoning_replay=reasoning_replay,
+        )
 
     # Shouldn't happen, but handle empty tool_calls gracefully
     return _emit_text("", model_name, protocol, is_stream, usage=usage)
@@ -318,12 +337,22 @@ def _emit_tool_calls(
     protocol: str,
     is_stream: bool,
     usage: Any | None = None,
+    reasoning_replay: ReasoningReplay = DEFAULT_REASONING_REPLAY,
 ) -> dict[str, Any] | list[dict[str, Any]]:
     """Protocol-aware tool-call response emitter."""
     if protocol == "anthropic":
         if is_stream:
-            return tool_calls_to_anthropic_sse(tool_calls, model=model, usage=usage)
-        return tool_calls_to_anthropic(tool_calls, model=model, usage=usage)
+            return tool_calls_to_anthropic_sse(
+                tool_calls, model=model, usage=usage,
+                reasoning_replay=reasoning_replay,
+            )
+        return tool_calls_to_anthropic(
+            tool_calls, model=model, usage=usage, reasoning_replay=reasoning_replay,
+        )
     if is_stream:
-        return tool_calls_to_sse_events(tool_calls, model=model, usage=usage)
-    return tool_calls_to_openai(tool_calls, model=model, usage=usage)
+        return tool_calls_to_sse_events(
+            tool_calls, model=model, usage=usage, reasoning_replay=reasoning_replay,
+        )
+    return tool_calls_to_openai(
+        tool_calls, model=model, usage=usage, reasoning_replay=reasoning_replay,
+    )

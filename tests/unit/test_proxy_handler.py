@@ -493,8 +493,39 @@ class TestAnthropicProtocol:
 
 
 class TestNativePassthrough:
-    """The proxy forwards the client's OpenAI tools/messages verbatim on the
-    clean first attempt, bypassing the lossy ToolSpec round-trip."""
+    """Native proxy passthrough keeps raw tools by default; raw messages
+    are forwarded only when full reasoning replay preserves old behavior."""
+
+    @pytest.mark.asyncio
+    async def test_default_reasoning_replay_filters_raw_reasoning_only(self):
+        client = _mock_client([ToolCall(tool="search", args={"q": "x"})])
+        messages = [
+            {
+                "role": "assistant",
+                "content": None,
+                "reasoning_content": "old",
+                "tool_calls": [],
+                "name": "a1",
+                "vendor": {"kept": True},
+            },
+            {
+                "role": "assistant",
+                "content": None,
+                "reasoning_content": "latest",
+                "tool_calls": [],
+                "name": "a2",
+            },
+        ]
+        await handle_chat_completions(
+            _body(messages=messages, tools=[_tool_def("search")]),
+            client, _context_manager(),
+        )
+        sent_messages = client.send.call_args.args[0]
+        assert sent_messages[0]["name"] == "a1"
+        assert sent_messages[0]["vendor"] == {"kept": True}
+        assert "reasoning_content" not in sent_messages[0]
+        assert sent_messages[1]["name"] == "a2"
+        assert sent_messages[1]["reasoning_content"] == "latest"
 
     @pytest.mark.asyncio
     async def test_raw_tools_forwarded_verbatim(self):
@@ -525,7 +556,7 @@ class TestNativePassthrough:
         messages = [{"role": "user", "content": "hi", "name": "u1"}]
         await handle_chat_completions(
             _body(messages=messages, tools=[_tool_def("search")]),
-            client, _context_manager(),
+            client, _context_manager(), reasoning_replay="full",
         )
         sent_messages = client.send.call_args.args[0]
         assert sent_messages == messages

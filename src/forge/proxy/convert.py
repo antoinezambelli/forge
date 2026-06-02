@@ -7,6 +7,7 @@ import uuid
 from typing import Any
 
 from forge.core.messages import Message, MessageMeta, MessageRole, MessageType, ToolCallInfo
+from forge.core.reasoning import DEFAULT_REASONING_REPLAY, ReasoningReplay, validate_reasoning_replay
 from forge.core.workflow import ToolCall, TextResponse
 
 
@@ -42,6 +43,17 @@ def openai_to_messages(openai_messages: list[dict[str, Any]]) -> list[Message]:
             ))
 
         elif role_str == "assistant":
+            reasoning = (
+                msg.get("reasoning_content")
+                or msg.get("reasoning")
+                or msg.get("reasoning_text")
+            )
+            if reasoning:
+                messages.append(Message(
+                    MessageRole.ASSISTANT,
+                    str(reasoning),
+                    MessageMeta(MessageType.REASONING),
+                ))
             if "tool_calls" in msg and msg["tool_calls"]:
                 tc_infos = []
                 for tc in msg["tool_calls"]:
@@ -61,7 +73,7 @@ def openai_to_messages(openai_messages: list[dict[str, Any]]) -> list[Message]:
                     MessageMeta(MessageType.TOOL_CALL),
                     tool_calls=tc_infos,
                 ))
-            else:
+            elif content:
                 messages.append(Message(
                     MessageRole.ASSISTANT,
                     content,
@@ -96,8 +108,10 @@ def tool_calls_to_openai(
     tool_calls: list[ToolCall],
     model: str = "forge",
     usage: Any | None = None,
+    reasoning_replay: ReasoningReplay = DEFAULT_REASONING_REPLAY,
 ) -> dict[str, Any]:
     """Convert forge ToolCalls to an OpenAI chat completions response object."""
+    reasoning_replay = validate_reasoning_replay(reasoning_replay)
     tc_list = []
     for i, tc in enumerate(tool_calls):
         tc_list.append({
@@ -109,17 +123,22 @@ def tool_calls_to_openai(
             },
         })
 
+    reasoning = tool_calls[0].reasoning if tool_calls else None
+    message: dict[str, Any] = {
+        "role": "assistant",
+        "content": reasoning if reasoning_replay == "full" else None,
+        "tool_calls": tc_list,
+    }
+    if reasoning and reasoning_replay == "keep-last":
+        message["reasoning_content"] = reasoning
+
     response = {
         "id": f"chatcmpl-{uuid.uuid4().hex[:12]}",
         "object": "chat.completion",
         "model": model,
         "choices": [{
             "index": 0,
-            "message": {
-                "role": "assistant",
-                "content": tool_calls[0].reasoning or None,
-                "tool_calls": tc_list,
-            },
+            "message": message,
             "finish_reason": "tool_calls",
         }],
         "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
@@ -172,24 +191,31 @@ def tool_calls_to_sse_events(
     tool_calls: list[ToolCall],
     model: str = "forge",
     usage: Any | None = None,
+    reasoning_replay: ReasoningReplay = DEFAULT_REASONING_REPLAY,
 ) -> list[dict[str, Any]]:
     """Convert forge ToolCalls to a sequence of SSE chunk objects.
 
     Returns the complete list of chunk dicts ready to be formatted as
     SSE data lines. The caller handles the actual SSE wire format.
     """
+    reasoning_replay = validate_reasoning_replay(reasoning_replay)
     cmpl_id = f"chatcmpl-{uuid.uuid4().hex[:12]}"
     events: list[dict[str, Any]] = []
 
-    # If there's reasoning, send it as a content delta first
-    if tool_calls[0].reasoning:
+    reasoning = tool_calls[0].reasoning if tool_calls else None
+    if reasoning and reasoning_replay != "none":
+        delta: dict[str, Any] = {"role": "assistant"}
+        if reasoning_replay == "full":
+            delta["content"] = reasoning
+        else:
+            delta["reasoning_content"] = reasoning
         events.append({
             "id": cmpl_id,
             "object": "chat.completion.chunk",
             "model": model,
             "choices": [{
                 "index": 0,
-                "delta": {"role": "assistant", "content": tool_calls[0].reasoning},
+                "delta": delta,
                 "finish_reason": None,
             }],
         })

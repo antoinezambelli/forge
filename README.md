@@ -128,7 +128,7 @@ For multi-step workflows, multi-turn conversations, and backend auto-management,
 
 Drop-in proxy that sits between any client and a local model server, speaking both the OpenAI chat-completions API and the Anthropic Messages API (`/v1/messages`). Point your client at the proxy (e.g. `http://localhost:8081/v1`) and forge applies its guardrails transparently — the client thinks it's talking to a smarter model.
 
-This is the path for **using forge with an existing harness** (opencode, Continue, aider, Cline, anything that speaks the OpenAI chat-completions schema — or Claude Code, which speaks the Anthropic Messages API). No Python rewrite.
+This is the path for **using forge with an existing harness** (opencode, Continue, aider, Cline, anything that speaks the OpenAI chat-completions schema — or Claude Code, which speaks the Anthropic Messages API). No Python rewrite. Reasoning replay defaults to `keep-last`, so Forge captures reasoning for observability and replays only the latest available reasoning block to the backend on later turns; use `--reasoning-replay full` for the historical replay-all behavior or `--reasoning-replay none` to keep captured reasoning out of backend-facing history.
 
 ```bash
 # External mode — you manage the backend, forge proxies it

@@ -17,7 +17,13 @@ from forge.core.workflow import (
     Workflow,
 )
 from forge.core.steps import StepTracker
-from forge.core.inference import InferenceResult, fold_and_serialize, run_inference
+from forge.core.inference import (
+    InferenceResult,
+    fold_and_serialize,
+    prepare_backend_messages,
+    run_inference,
+)
+from forge.core.reasoning import DEFAULT_REASONING_REPLAY, REASONING_REPLAY_CHOICES, ReasoningReplay
 from forge.core.runner import WorkflowRunner
 from forge.core.slot_worker import SlotWorker
 from forge.clients.base import ChunkType, LLMClient, StreamChunk, TokenUsage
@@ -87,7 +93,11 @@ __all__ = [
     # Inference (front half — shared by runner and proxy)
     "InferenceResult",
     "fold_and_serialize",
+    "prepare_backend_messages",
     "run_inference",
+    "DEFAULT_REASONING_REPLAY",
+    "REASONING_REPLAY_CHOICES",
+    "ReasoningReplay",
     # Runner
     "WorkflowRunner",
     # Slot worker
