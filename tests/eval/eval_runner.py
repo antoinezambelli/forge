@@ -13,6 +13,7 @@ from forge.clients.base import ChunkType, LLMClient, StreamChunk
 from forge.context.manager import CompactEvent, ContextManager
 from forge.context.strategies import CompactStrategy, NoCompact, SlidingWindowCompact, TieredCompact
 from forge.core.messages import Message, MessageType
+from forge.core.reasoning import DEFAULT_REASONING_REPLAY, REASONING_REPLAY_CHOICES, ReasoningReplay
 from forge.core.runner import WorkflowRunner
 from forge.core.workflow import ToolCall, ToolDef, ToolSpec, Workflow
 from forge.errors import ForgeError, StreamError
@@ -63,6 +64,7 @@ class EvalConfig:
     verbose: bool = False
     budget_override: int | None = None
     stream_retries: int = 2
+    reasoning_replay: ReasoningReplay = DEFAULT_REASONING_REPLAY
 
 
 class CountingClientWrapper:
@@ -279,6 +281,7 @@ async def run_scenario(
         stream=config.stream,
         on_message=on_message,
         rescue_enabled=rescue_enabled,
+        reasoning_replay=config.reasoning_replay,
     )
 
     start = time.monotonic()
@@ -435,6 +438,7 @@ async def run_eval(
             verbose=config.verbose,
             budget_override=scenario_budget,
             stream_retries=config.stream_retries,
+            reasoning_replay=config.reasoning_replay,
         )
 
         scenario_results: list[RunResult] = []
@@ -549,6 +553,13 @@ async def main() -> None:
         help="Ablation preset: selectively disable guardrails (default: reforged = all enabled)",
     )
     parser.add_argument(
+        "--reasoning-replay",
+        choices=list(REASONING_REPLAY_CHOICES),
+        default=DEFAULT_REASONING_REPLAY,
+        help="How much captured reasoning to replay to the backend each turn: "
+        "full (legacy: replay all), keep-last (default: only most recent), none (drop all).",
+    )
+    parser.add_argument(
         "--tool-choice",
         choices=["auto", "any"],
         default=None,
@@ -654,6 +665,7 @@ async def main() -> None:
             budget_override=resolved_budget,
             compact_strategy=cli_strategy,
             strategy_overrides={},
+            reasoning_replay=args.reasoning_replay,
         )
     else:
         config = EvalConfig(
@@ -665,6 +677,7 @@ async def main() -> None:
             strategy_overrides={
                 "compaction": TieredCompact(keep_recent=2),
             },
+            reasoning_replay=args.reasoning_replay,
         )
 
     ablation = ABLATION_PRESETS[args.ablation]
@@ -677,6 +690,7 @@ async def main() -> None:
     print(f"Resolved budget: {resolved_budget} tokens")
     print(f"Compact strategy: {strategy_label}")
     print(f"Ablation: {ablation.name}")
+    print(f"Reasoning replay: {args.reasoning_replay}")
     print(f"Tags filter: {args.tags or 'all'}")
     print(f"Scenario filter: {args.scenario or 'all'}")
     print()

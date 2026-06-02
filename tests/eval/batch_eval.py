@@ -19,6 +19,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from forge.core.reasoning import DEFAULT_REASONING_REPLAY, REASONING_REPLAY_CHOICES, ReasoningReplay
 from forge.server import BudgetMode, ServerManager
 
 from tests.eval.ablation import ABLATION_PRESETS, AblationConfig
@@ -215,15 +216,39 @@ def _config_key(model: str, backend: str, mode: str) -> str:
     return f"{model}|{backend}|{mode}"
 
 
+def _run_key(
+    model: str,
+    backend: str,
+    mode: str,
+    ablation_name: str,
+    tool_choice: str,
+    reasoning_replay: str,
+    scenario: str,
+) -> str:
+    """Canonical per-run resume key.
+
+    Single source of truth for the resume/dedup dimensions so the counting
+    pass and every run-loop lookup stay in lockstep. reasoning_replay is part
+    of the key: distinct policies (none/keep-last/full) on the same
+    model+scenario are independent runs and must not collide.
+    """
+    return (
+        f"{model}|{backend}|{mode}"
+        f"|{ablation_name}|{tool_choice}|{reasoning_replay}|{scenario}"
+    )
+
+
 def _count_completed_runs(
     jsonl_path: Path,
     ablation_name: str = "reforged",
 ) -> dict[str, int]:
-    """Scan JSONL and count completed runs per (model, backend, mode, ablation, tool_choice, scenario).
+    """Scan JSONL and count completed runs per resume key (see ``_run_key``).
 
-    Returns dict mapping "model|backend|mode|ablation|tool_choice|scenario" → count.
-    Records without an ablation field are treated as "reforged".
-    Records without a tool_choice field are treated as "auto".
+    Returns dict mapping the canonical run key → count. Records without an
+    ablation field are treated as "reforged", without tool_choice as "auto",
+    and without reasoning_replay as the default policy (keep-last) — so
+    pre-knob dumps resume cleanly under the default and are re-run under a
+    different policy.
     """
     counts: dict[str, int] = {}
     if not jsonl_path.exists():
@@ -241,9 +266,10 @@ def _count_completed_runs(
             if row_ablation != ablation_name:
                 continue
             row_tc = row.get("tool_choice", "auto")
-            key = (
-                f"{row['model']}|{row['backend']}|{row['mode']}"
-                f"|{row_ablation}|{row_tc}|{row['scenario']}"
+            row_rr = row.get("reasoning_replay", DEFAULT_REASONING_REPLAY)
+            key = _run_key(
+                row["model"], row["backend"], row["mode"],
+                row_ablation, row_tc, row_rr, row["scenario"],
             )
             counts[key] = counts.get(key, 0) + 1
     return counts
@@ -256,6 +282,7 @@ def _run_result_to_row(
     run_idx: int,
     budget_tokens: int | None = None,
     ablation_name: str = "reforged",
+    reasoning_replay: str = DEFAULT_REASONING_REPLAY,
 ) -> dict[str, Any]:
     """Convert a RunResult into a flat dict for JSONL output."""
     row: dict[str, Any] = {
@@ -264,6 +291,7 @@ def _run_result_to_row(
         "mode": config.mode,
         "ablation": ablation_name,
         "tool_choice": config.tool_choice or "auto",
+        "reasoning_replay": reasoning_replay,
         "scenario": result.scenario_name,
         "run": run_idx,
         "completeness": result.completeness,
@@ -563,6 +591,7 @@ async def run_batch(
     tags: list[str] | None = None,
     scenario_names: list[str] | None = None,
     ablation: AblationConfig | None = None,
+    reasoning_replay: ReasoningReplay = DEFAULT_REASONING_REPLAY,
 ) -> None:
     """Run all configs × scenarios, appending each result to JSONL.
 
@@ -602,9 +631,9 @@ async def run_batch(
             )
             if scenario.name in _COMPACTION_SCENARIOS and skip_compaction:
                 continue
-            key = (
-                f"{config.model}|{config.backend}|{config.mode}"
-                f"|{ablation_name}|{tc_label_pre}|{scenario.name}"
+            key = _run_key(
+                config.model, config.backend, config.mode,
+                ablation_name, tc_label_pre, reasoning_replay, scenario.name,
             )
             existing = completed_counts.get(key, 0)
             total_expected += max(0, runs_per_scenario - existing)
@@ -642,9 +671,9 @@ async def run_batch(
                     if scenario.name in _COMPACTION_SCENARIOS and skip_compaction:
                         print(f"  {scenario.name}: SKIP (compaction N/A)")
                         continue
-                    key = (
-                        f"{config.model}|{config.backend}|{config.mode}"
-                        f"|{ablation_name}|{tc_label}|{scenario.name}"
+                    key = _run_key(
+                        config.model, config.backend, config.mode,
+                        ablation_name, tc_label, reasoning_replay, scenario.name,
                     )
                     existing = completed_counts.get(key, 0)
                     remaining = max(0, runs_per_scenario - existing)
@@ -674,9 +703,9 @@ async def run_batch(
                         total_skipped += 1
                         continue
 
-                    key = (
-                        f"{config.model}|{config.backend}|{config.mode}"
-                        f"|{ablation_name}|{tc_label}|{scenario.name}"
+                    key = _run_key(
+                        config.model, config.backend, config.mode,
+                        ablation_name, tc_label, reasoning_replay, scenario.name,
                     )
                     existing = completed_counts.get(key, 0)
                     remaining = max(0, runs_per_scenario - existing)
@@ -693,6 +722,7 @@ async def run_batch(
                         keep_message_history=True,
                         verbose=verbose,
                         budget_override=scenario_budget,
+                        reasoning_replay=reasoning_replay,
                     )
 
                     eta = _format_eta(total_ran, total_expected, batch_start)
@@ -732,9 +762,9 @@ async def run_batch(
                 )
                 if scenario.name in _COMPACTION_SCENARIOS and skip_compaction:
                     continue
-                key_check = (
-                    f"{config.model}|{config.backend}|{config.mode}"
-                    f"|{ablation_name}|{tc_label}|{scenario.name}"
+                key_check = _run_key(
+                    config.model, config.backend, config.mode,
+                    ablation_name, tc_label, reasoning_replay, scenario.name,
                 )
                 if completed_counts.get(key_check, 0) < runs_per_scenario:
                     has_work = True
@@ -816,9 +846,9 @@ async def run_batch(
                     total_skipped += 1
                     continue
 
-                key = (
-                    f"{config.model}|{config.backend}|{config.mode}"
-                    f"|{ablation_name}|{tc_label}|{scenario.name}"
+                key = _run_key(
+                    config.model, config.backend, config.mode,
+                    ablation_name, tc_label, reasoning_replay, scenario.name,
                 )
                 existing = completed_counts.get(key, 0)
                 remaining = max(0, runs_per_scenario - existing)
@@ -843,6 +873,7 @@ async def run_batch(
                     verbose=verbose,
                     budget_override=scenario_budget,
                     strategy_overrides={"compaction": TieredCompact(keep_recent=2)},
+                    reasoning_replay=reasoning_replay,
                 )
 
                 eta = _format_eta(total_ran, total_expected, batch_start)
@@ -900,6 +931,7 @@ async def run_batch(
                         result, config, scenario, run_idx + 1,
                         budget_tokens=scenario_budget,
                         ablation_name=ablation_name,
+                        reasoning_replay=reasoning_replay,
                     )
                     with output_path.open("a") as f:
                         f.write(json.dumps(row) + "\n")
@@ -971,6 +1003,14 @@ async def main() -> None:
         help="Ablation preset: selectively disable guardrails (default: reforged = all enabled)",
     )
     parser.add_argument(
+        "--reasoning-replay",
+        choices=list(REASONING_REPLAY_CHOICES),
+        default=DEFAULT_REASONING_REPLAY,
+        help="How much captured reasoning to replay to the backend each turn: "
+        "full (legacy), keep-last (default), none. Part of the resume key, so "
+        "distinct policies for the same model/scenario are independent runs.",
+    )
+    parser.add_argument(
         "--model",
         type=str,
         default=None,
@@ -1009,6 +1049,7 @@ async def main() -> None:
     print(f"  Config set:    {args.config} ({len(configs)} configs)")
     print(f"  Budget mode:   {budget_mode.value}")
     print(f"  Ablation:      {ablation.name}")
+    print(f"  Reasoning replay: {args.reasoning_replay}")
     if args.scenario:
         print(f"  Scenarios:     {', '.join(args.scenario)}")
     elif args.tags:
@@ -1033,6 +1074,7 @@ async def main() -> None:
         tags=args.tags,
         scenario_names=args.scenario,
         ablation=ablation,
+        reasoning_replay=args.reasoning_replay,
     )
 
 
