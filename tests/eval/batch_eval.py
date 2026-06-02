@@ -24,7 +24,7 @@ from forge.server import BudgetMode, ServerManager
 
 from tests.eval.ablation import ABLATION_PRESETS, AblationConfig
 from tests.eval.eval_runner import EvalConfig, RunResult, run_scenario
-from tests.eval.metrics import analyze_history, compute_metrics
+from tests.eval.metrics import analyze_history, compute_metrics, count_wire_reasoning
 from tests.eval.scenarios import ALL_SCENARIOS, EvalScenario
 
 # ── GGUF paths ──────────────────────────────────────────────────
@@ -313,11 +313,20 @@ def _run_result_to_row(
         row["step_nudges"] = stats.step_nudges
         row["tool_errors"] = stats.tool_errors
         row["reasoning_msgs"] = stats.reasoning_messages
+        # On-wire reasoning that survives the replay policy (independent
+        # validation of the knob): none->0, keep-last->{0,1}, full->[0,total].
+        # reasoning_wire_total is the denominator (non-empty reasoning blocks),
+        # so reasoning_wire / reasoning_wire_total is the actual replay rate.
+        wire_survived, wire_total = count_wire_reasoning(result.messages, reasoning_replay)
+        row["reasoning_wire"] = wire_survived
+        row["reasoning_wire_total"] = wire_total
     else:
         row["retry_nudges"] = None
         row["step_nudges"] = None
         row["tool_errors"] = None
         row["reasoning_msgs"] = None
+        row["reasoning_wire"] = None
+        row["reasoning_wire_total"] = None
 
     # Correctness
     row["accuracy"] = result.accuracy

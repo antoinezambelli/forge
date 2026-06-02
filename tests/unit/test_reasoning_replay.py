@@ -6,6 +6,8 @@ from forge.core.inference import fold_and_serialize, prepare_backend_messages
 from forge.core.messages import Message, MessageMeta, MessageRole, MessageType, ToolCallInfo
 from forge.core.reasoning import filter_openai_reasoning_messages, validate_reasoning_replay
 
+from tests.eval.metrics import count_wire_reasoning
+
 
 def _reasoning(text: str) -> Message:
     return Message(MessageRole.ASSISTANT, text, MessageMeta(MessageType.REASONING))
@@ -134,3 +136,33 @@ def test_prepare_backend_messages_folds_forge_history_without_raw_messages():
     )
 
     assert [m["content"] for m in result] == ["", "second"]
+
+
+# ── Eval-side on-wire reasoning counter (validates the knob end to end) ──
+
+def _wire_transcript() -> list[Message]:
+    return [
+        _reasoning("first"), _tool_call("a"),
+        _reasoning("second"), _tool_call("b"),
+    ]
+
+
+def test_count_wire_reasoning_full_keeps_all():
+    survived, total = count_wire_reasoning(_wire_transcript(), "full")
+    assert (survived, total) == (2, 2)
+
+
+def test_count_wire_reasoning_keep_last_keeps_one():
+    survived, total = count_wire_reasoning(_wire_transcript(), "keep-last")
+    assert (survived, total) == (1, 2)
+
+
+def test_count_wire_reasoning_none_strips_all():
+    # The core claim: none puts zero reasoning on the wire.
+    survived, total = count_wire_reasoning(_wire_transcript(), "none")
+    assert (survived, total) == (0, 2)
+
+
+def test_count_wire_reasoning_no_reasoning_is_zero_zero():
+    survived, total = count_wire_reasoning([_tool_call("a"), _tool_call("b")], "full")
+    assert (survived, total) == (0, 0)
