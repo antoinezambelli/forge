@@ -22,6 +22,9 @@ interface SidebarProps {
   onScopeChange: (scope: ScenarioScope) => void;
   suiteScope: SuiteScope;
   onSuiteChange: (suite: SuiteScope) => void;
+  showRetired: boolean;
+  onShowRetiredChange: (on: boolean) => void;
+  hasRetired: boolean;
   filteredCount: number;
   totalCount: number;
   totalRuns: number;
@@ -40,6 +43,9 @@ export function Sidebar({
   onScopeChange,
   suiteScope,
   onSuiteChange,
+  showRetired,
+  onShowRetiredChange,
+  hasRetired,
   filteredCount,
   totalCount,
   totalRuns,
@@ -130,6 +136,18 @@ export function Sidebar({
           </fieldset>
         );
       })}
+
+      {hasRetired && (
+        <label className="flex items-center gap-1.5 text-xs py-0.5 mt-2 cursor-pointer text-zinc-500 hover:text-zinc-300">
+          <input
+            type="checkbox"
+            checked={showRetired}
+            onChange={(e) => onShowRetiredChange(e.target.checked)}
+            className="w-3.5 h-3.5 rounded border-zinc-600 bg-zinc-800 accent-emerald-500"
+          />
+          <span>Show retired models</span>
+        </label>
+      )}
 
       <p className="text-[0.6rem] text-zinc-600 mt-4">{timestamp}</p>
     </nav>

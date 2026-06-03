@@ -6,6 +6,8 @@ Usage:
     python -m tests.eval.report eval_tight.jsonl  # single-scenario budget files
     python -m tests.eval.report eval_results.jsonl --html docs/results/dashboard.html
     python -m tests.eval.report eval_results.jsonl --markdown docs/results/
+    # Multiple generations — newest gen wins per config (see dedup_latest_gen):
+    python -m tests.eval.report eval_results_v*.jsonl --html docs/results/dashboard.html
 
 Only shows model/backend/mode combos that have fully completed all scenarios.
 Scenarios are derived from the data — works for both full 8-scenario batch
@@ -170,6 +172,44 @@ def load_jsonl(path: Path) -> list[dict]:
     return rows
 
 
+def _config_tuple(row: dict) -> tuple[str, str, str, str, str]:
+    """The identity a config is deduped on — mirrors ConfigKey's fields."""
+    return (
+        row["model"],
+        row["backend"],
+        row["mode"],
+        row.get("ablation", "reforged"),
+        row.get("tool_choice", "auto"),
+    )
+
+
+def dedup_latest_gen(rows: list[dict]) -> list[dict]:
+    """Keep only the highest-``gen`` rows for each config.
+
+    Eval generations (the ``gen`` field, injected per-row) let a single
+    dashboard fold multiple eval waves run against different code states.
+    When the same config appears in more than one generation — e.g. a model
+    re-swept in a newer suite — the newest generation wins and the older
+    rows are dropped. Configs that only ever ran in an older generation
+    (e.g. the Anthropic ablation, or Retired models) are carried forward at
+    that older gen and surface with a superscript badge.
+
+    Rows with no ``gen`` field count as gen 0, so a lone legacy file with no
+    generations renders exactly as before (everything at gen 0, no badges).
+
+    Note: dedup is whole-config, not per-scenario — a partial re-run would
+    shadow the older gen's other scenarios. Not a concern today (re-swept
+    configs are full-suite), but worth knowing before partial re-runs land.
+    """
+    max_gen: dict[tuple, int] = {}
+    for r in rows:
+        k = _config_tuple(r)
+        g = r.get("gen", 0)
+        if g > max_gen.get(k, -1):
+            max_gen[k] = g
+    return [r for r in rows if r.get("gen", 0) == max_gen[_config_tuple(r)]]
+
+
 def group_rows(
     rows: list[dict],
 ) -> dict[ConfigKey, dict[str, list[dict]]]:
@@ -215,6 +255,8 @@ class ConfigMetrics:
     complete: bool  # all scenarios have full run count
     stream_retries: int = 0  # total stream retries across all runs
     validate_errors: int = 0  # runs where validate() raised an exception
+    gen: int = 0  # eval generation (max across this config's rows)
+    retired: bool = False  # family is in the Retired tier; hidden by default
 
 
 def _detect_scenarios(rows: list[dict]) -> list[str]:
@@ -369,6 +411,15 @@ def compute_config_metrics(
     accuracy = total_correct / total_validated if total_validated > 0 else None
     score = total_correct / total_runs if total_runs > 0 else 0.0
 
+    # Generation: max gen across this config's rows (all equal post-dedup).
+    gen = 0
+    for runs in scenario_runs.values():
+        for r in runs:
+            g = r.get("gen", 0)
+            if g > gen:
+                gen = g
+    retired = extract_family(key.model) in RETIRED_FAMILIES
+
     return ConfigMetrics(
         key=key,
         runs_per_scenario=max_runs,
@@ -395,6 +446,8 @@ def compute_config_metrics(
         complete=all_complete,
         stream_retries=total_stream_retries,
         validate_errors=total_validate_errors,
+        gen=gen,
+        retired=retired,
     )
 
 
@@ -516,6 +569,13 @@ MODEL_FAMILIES: dict[str, dict[str, str]] = {
     "Qwen3.5-35B-A3B-Q4_K_M":               {"family": "qwen3.5-35b-a3b", "cross_backend_key": "qwen3.5-35b-a3b-q4_K_M"},
     "qwen3.5:27b-q4_K_M":                   {"family": "qwen3.5-27b", "cross_backend_key": "qwen3.5-27b-q4_K_M"},
     "qwen3.5:35b-a3b-q4_K_M":               {"family": "qwen3.5-35b-a3b", "cross_backend_key": "qwen3.5-35b-a3b-q4_K_M"},
+    # qwen3.6 (UD dropped from cross_backend_key — it's a quant variant, cf. gemma A4B UD)
+    "Qwen3.6-27B-Q4_K_M":                   {"family": "qwen3.6-27b", "cross_backend_key": "qwen3.6-27b-q4_K_M"},
+    "Qwen3.6-35B-A3B-UD-Q4_K_M":            {"family": "qwen3.6-35b-a3b", "cross_backend_key": "qwen3.6-35b-a3b-q4_K_M"},
+    "qwen3.6:27b-q4_K_M":                   {"family": "qwen3.6-27b", "cross_backend_key": "qwen3.6-27b-q4_K_M"},
+    "qwen3.6:35b-a3b-q4_K_M":               {"family": "qwen3.6-35b-a3b", "cross_backend_key": "qwen3.6-35b-a3b-q4_K_M"},
+    # nemotron 3 nano (30b a3b, llama-server only)
+    "Nemotron-3-Nano-30B-A3B-Q4_K_M":       {"family": "nemotron-3-nano", "cross_backend_key": "nemotron-3-nano-30b-a3b-q4_K_M"},
     # granite 4.0 (h-micro / h-tiny)
     "granite-4.0:h-micro-q4_K_M":           {"family": "granite-4.0-h-micro", "cross_backend_key": "granite-4.0-h-micro-q4_K_M"},
     "granite-4.0-h-micro-Q4_K_M":           {"family": "granite-4.0-h-micro", "cross_backend_key": "granite-4.0-h-micro-q4_K_M"},
@@ -589,6 +649,71 @@ def extract_quant(model: str) -> str:
     return "n/a"
 
 
+# ── Eval generations & deprecation ────────────────────────────
+
+# An eval generation is a comparability epoch, NOT a release version. It is
+# bumped only when a change is judged eval-material; many releases can share
+# one gen, and one gen can span several eval waves / dataset files. The gen
+# is injected per-row into the dataset (see dedup_latest_gen). This table is
+# the human-readable legend: what each gen means and the commit to reproduce
+# it. gen 0 = the v0.4.0 paper suite (intentionally not backported).
+GEN_INFO: dict[int, dict[str, str]] = {
+    1: {"commit": "2b05dc4", "date": "2026-05-08",
+        "note": "v0.6.0 suite — incl. Anthropic ablation"},
+    2: {"commit": "655e1f6", "date": "2026-05-22",
+        "note": "v0.7.0 lineup refresh (8–14B) + 32GB tier debut (v0.7.4)"},
+}
+
+# Coarse families in the "Retired" tier of docs/MODEL_REGISTRY.md. Retired
+# configs are carried forward by latest-gen dedup but hidden by default —
+# shown only via the dashboard's toggle / --include-retired. Keyed by family
+# (extract_family) so every quant of a retired model is caught. Keep in sync
+# with the Retired table in the doc.
+RETIRED_FAMILIES: frozenset[str] = frozenset({
+    "llama3.1",
+    "mistral-v0.3",
+    "mistral-nemo",
+    "granite-4.0-h-micro",
+    "granite-4.0-h-tiny",
+})
+
+_SUPERSCRIPT = str.maketrans("0123456789", "⁰¹²³⁴⁵⁶⁷⁸⁹")
+
+
+def _gen_badge(gen: int) -> str:
+    """Superscript form of a gen number, e.g. 1 -> '¹', 12 -> '¹²'."""
+    return str(gen).translate(_SUPERSCRIPT)
+
+
+def _display_label(m: "ConfigMetrics", max_gen: int) -> str:
+    """short_label, with a superscript gen badge when the row is lagging.
+
+    A row is badged only when its gen is behind the newest gen on the board
+    (``m.gen < max_gen``). So a single-gen board shows no badges, and when
+    provenance is mixed only the older rows get ink — current rows stay clean.
+    """
+    base = m.key.short_label
+    gen = getattr(m, "gen", 0)
+    if max_gen and gen < max_gen:
+        return f"{base}{_gen_badge(gen)}"
+    return base
+
+
+def _gen_legend_lines(metrics_list: list["ConfigMetrics"], max_gen: int) -> list[str]:
+    """Legend mapping each badged (lagging) gen to its commit/date/note."""
+    badged = sorted({m.gen for m in metrics_list if max_gen and m.gen < max_gen})
+    if not badged:
+        return []
+    lines = ["", "Eval generations (older runs carried forward, superscript-tagged):"]
+    for g in badged:
+        info = GEN_INFO.get(g, {})
+        lines.append(
+            f"  {_gen_badge(g)} gen {g} — {info.get('note', '?')} "
+            f"(commit {info.get('commit', '?')}, {info.get('date', '?')})"
+        )
+    return lines
+
+
 def _sort_metrics(metrics_list: list[ConfigMetrics]) -> list[ConfigMetrics]:
     """Sort by score desc → completeness desc → efficiency desc → speed asc."""
     return sorted(metrics_list, key=lambda m: (
@@ -622,8 +747,13 @@ def render_table_string(
     scenarios: list[str] | None = None,
     include_legend: bool = True,
     presorted: bool = False,
+    max_gen: int = 0,
 ) -> str:
-    """Render ASCII table as a string (reused by print_table and markdown views)."""
+    """Render ASCII table as a string (reused by print_table and markdown views).
+
+    ``max_gen`` is the newest generation on the board; rows behind it get a
+    superscript badge. Pass 0 (default) to disable badging.
+    """
     if not metrics_list:
         return "No fully completed configs found.\n"
 
@@ -633,8 +763,9 @@ def render_table_string(
     if not presorted:
         metrics_list = _sort_metrics(metrics_list)
 
-    # Column widths
-    label_w = max(len(m.key.short_label) for m in metrics_list)
+    # Column widths (labels include any gen badge)
+    labels = {id(m): _display_label(m, max_gen) for m in metrics_list}
+    label_w = max(len(lbl) for lbl in labels.values())
     label_w = max(label_w, 10)
 
     # Build scenario column headers (width adapts to abbreviation length)
@@ -682,7 +813,7 @@ def render_table_string(
                 sc_strs.append(f"{'—':>{sc_w}}")
 
         row = (
-            f"{m.key.short_label:<{label_w}}  "
+            f"{labels[id(m)]:<{label_w}}  "
             f"{scr_str:>7}  "
             f"{acc_str:>7}  "
             f"{cmp_str:>7}  "
@@ -698,6 +829,7 @@ def render_table_string(
 
     if include_legend:
         lines.extend(_legend_lines(scenarios))
+        lines.extend(_gen_legend_lines(metrics_list, max_gen))
 
     lines.append("")
     return "\n".join(lines)
@@ -706,11 +838,12 @@ def render_table_string(
 def print_table(
     metrics_list: list[ConfigMetrics],
     scenarios: list[str] | None = None,
+    max_gen: int = 0,
 ) -> None:
     if not metrics_list:
         print("No fully completed configs found.")
         return
-    print(f"\n{render_table_string(metrics_list, scenarios)}")
+    print(f"\n{render_table_string(metrics_list, scenarios, max_gen=max_gen)}")
 
 
 # ── List view (phone-friendly) ──────────────────────────────────
@@ -811,6 +944,8 @@ def _metrics_to_json_row(m: ConfigMetrics, scenarios: list[str]) -> dict:
         "ablation": m.key.ablation,
         "family": extract_family(m.key.model),
         "quant": extract_quant(m.key.model),
+        "gen": m.gen,
+        "retired": m.retired,
         "score": round(m.score * 100, 1),
         "accuracy": round(m.accuracy * 100, 1) if m.accuracy is not None else None,
         "completeness": round(m.completeness * 100, 1),
@@ -881,6 +1016,7 @@ def write_html(
     metrics_list: list[ConfigMetrics],
     scenarios: list[str],
     output_path: Path,
+    max_gen: int = 0,
 ) -> None:
     """Build React dashboard, inject data, write self-contained HTML."""
     import datetime
@@ -900,6 +1036,8 @@ def write_html(
         "scenarios": scenarios,
         "scenarioAbbrev": sc_abbrev,
         "scenarioSuite": sc_suite,
+        "maxGen": max_gen,
+        "genInfo": {str(g): info for g, info in GEN_INFO.items()},
         "timestamp": datetime.datetime.now().strftime("%Y-%m-%d %H:%M"),
     })
 
@@ -935,6 +1073,8 @@ def write_markdown_views(
     all_metrics: list[ConfigMetrics],
     scenarios: list[str],
     output_dir: Path,
+    max_gen: int = 0,
+    include_retired: bool = False,
 ) -> None:
     """Write pre-filtered markdown view files mirroring the dashboard's three screens.
 
@@ -957,18 +1097,27 @@ def write_markdown_views(
     reforged_dir = raw_dir / "reforged"
     reforged_dir.mkdir(parents=True, exist_ok=True)
     timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
-    legend = "\n".join(_legend_lines(scenarios))
 
     written: list[tuple[str, str]] = []  # (relpath-from-raw, description)
 
     complete = [m for m in all_metrics if m.complete]
+    # Retired models are carried forward by dedup but hidden from the static
+    # markdown views by default (no toggle possible in markdown). The HTML
+    # dashboard keeps them and gates them behind a checkbox instead.
+    if not include_retired:
+        complete = [m for m in complete if not m.retired]
     reforged_only = [m for m in complete if m.key.ablation == "reforged"]
+
+    # Shared legend: scenario key + (when provenance is mixed) the gen legend.
+    legend = "\n".join(
+        _legend_lines(scenarios) + _gen_legend_lines(complete, max_gen)
+    )
 
     def _flat_view(relpath: str, title: str, description: str, metrics: list[ConfigMetrics], sc: list[str] | None = None) -> None:
         if not metrics:
             return
         sc = sc or scenarios
-        table = render_table_string(metrics, sc, include_legend=False)
+        table = render_table_string(metrics, sc, include_legend=False, max_gen=max_gen)
         content = f"# {title}\n\n```\n{table}```\n\n{legend}\n\n*Generated {timestamp}*\n"
         (raw_dir / relpath).write_text(content, encoding="utf-8")
         written.append((relpath, description))
@@ -983,7 +1132,7 @@ def write_markdown_views(
             return
         parts: list[str] = [f"# {title}\n"]
         for heading, group in groups_sorted:
-            table = render_table_string(group, scenarios, include_legend=False, presorted=True)
+            table = render_table_string(group, scenarios, include_legend=False, presorted=True, max_gen=max_gen)
             parts.append(f"## {heading}\n\n```\n{table}```\n")
         parts.append(legend)
         parts.append(f"\n*Generated {timestamp}*\n")
@@ -1139,7 +1288,9 @@ def main() -> None:
 
     parser = argparse.ArgumentParser(description="Forge eval report")
     parser.add_argument(
-        "jsonl", nargs="?", default="eval_results.jsonl", help="JSONL input"
+        "jsonl", nargs="*", default=["eval_results.jsonl"],
+        help="JSONL input file(s). Multiple files are merged; when a config "
+        "appears in more than one, the newest eval generation (gen field) wins.",
     )
     parser.add_argument(
         "--list-only", action="store_true", help="Skip table, list view only"
@@ -1175,17 +1326,28 @@ def main() -> None:
         "--markdown", metavar="DIR",
         help="Write pre-filtered markdown views to DIR",
     )
+    parser.add_argument(
+        "--include-retired", action="store_true",
+        help="Include Retired-tier models in the text/markdown views "
+        "(hidden by default; the HTML dashboard always carries them).",
+    )
     args = parser.parse_args()
 
-    path = Path(args.jsonl)
-    if not path.exists():
-        print(f"File not found: {path}", file=sys.stderr)
+    paths = [Path(p) for p in args.jsonl]
+    missing = [str(p) for p in paths if not p.exists()]
+    if missing:
+        print(f"File(s) not found: {', '.join(missing)}", file=sys.stderr)
         sys.exit(1)
 
-    rows = load_jsonl(path)
+    rows: list[dict] = []
+    for p in paths:
+        rows.extend(load_jsonl(p))
     if not rows:
-        print("No data in JSONL file.")
+        print("No data in JSONL file(s).")
         sys.exit(0)
+
+    # Fold multiple eval generations: newest gen wins per config.
+    rows = dedup_latest_gen(rows)
 
     # Filter by ablation preset if requested
     if args.ablation:
@@ -1251,18 +1413,31 @@ def main() -> None:
         print("Use --progress to see current status, or --include-partial.")
         sys.exit(0)
 
-    if display_metrics:
-        if not args.list_only:
-            print_table(display_metrics, scenarios=scenarios)
-        print_list(display_metrics)
+    # Newest generation on the board — drives the lagging-row gen badges.
+    max_gen = max((m.gen for m in display_metrics), default=0)
 
-    # HTML dashboard (complete configs only, same as ASCII table)
+    # Text/markdown views hide Retired models by default (no toggle in plain
+    # text); the HTML dashboard keeps them and gates them behind a checkbox.
+    text_metrics = display_metrics if args.include_retired else [
+        m for m in display_metrics if not m.retired
+    ]
+
+    if text_metrics:
+        if not args.list_only:
+            print_table(text_metrics, scenarios=scenarios, max_gen=max_gen)
+        print_list(text_metrics)
+
+    # HTML dashboard (complete configs only, same as ASCII table). Retired
+    # rows are carried in the blob; the React app filters them by default.
     if args.html:
-        write_html(display_metrics, scenarios, Path(args.html))
+        write_html(display_metrics, scenarios, Path(args.html), max_gen=max_gen)
 
     # Markdown views (uses all metrics — write_markdown_views filters internally)
     if args.markdown:
-        write_markdown_views(all_metrics, scenarios, Path(args.markdown))
+        write_markdown_views(
+            all_metrics, scenarios, Path(args.markdown),
+            max_gen=max_gen, include_retired=args.include_retired,
+        )
 
 
 if __name__ == "__main__":

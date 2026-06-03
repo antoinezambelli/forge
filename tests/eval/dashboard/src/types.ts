@@ -7,6 +7,10 @@ export interface ConfigRow {
   ablation: string;
   family: string;
   quant: string;
+  /** Eval generation this row's data came from (see report.py dedup_latest_gen). */
+  gen: number;
+  /** Family is in the Retired tier — carried forward but hidden by default. */
+  retired: boolean;
   score: number;
   accuracy: number | null;
   completeness: number;
@@ -37,6 +41,11 @@ export interface DashboardData {
   scenarioAbbrev: Record<string, string>;
   /** scenario name -> suite ("og18" | "advanced_reasoning"). */
   scenarioSuite: Record<string, string>;
+  /** Newest generation on the board; rows behind it get a superscript badge.
+   *  Optional for backward compatibility with pre-generation data blobs. */
+  maxGen?: number;
+  /** gen number (as string key) -> provenance for the legend/tooltip. */
+  genInfo?: Record<string, { commit: string; date: string; note: string }>;
   timestamp: string;
 }
 

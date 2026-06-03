@@ -34,6 +34,7 @@ function App() {
   const [activeView, setActiveView] = useState<ViewId>("all");
   const [scenarioScope, setScenarioScope] = useState<ScenarioScope>("all");
   const [suiteScope, setSuiteScope] = useState<SuiteScope>("all");
+  const [showRetired, setShowRetired] = useState<boolean>(false);
 
   useEffect(() => {
     loadData().then((d) => {
@@ -42,17 +43,30 @@ function App() {
     });
   }, []);
 
+  // Retired-tier models are carried forward by report.py's dedup but hidden
+  // unless the sidebar toggle is on. Drives both the table and the sidebar's
+  // filter-dimension lists so hidden families don't surface as filter options.
+  const visibleRows = useMemo(() => {
+    if (!data) return [];
+    return showRetired ? data.rows : data.rows.filter((r) => !r.retired);
+  }, [data, showRetired]);
+
+  const hasRetired = useMemo(
+    () => (data ? data.rows.some((r) => r.retired) : false),
+    [data],
+  );
+
   const filtered = useMemo(() => {
     if (!data || !filters) return [];
     // Screen drives row set first (which ablations are visible), then
     // the sidebar filter dimensions narrow further.
-    const byScreen = filterByScreen(data.rows, activeScreen);
+    const byScreen = filterByScreen(visibleRows, activeScreen);
     return byScreen.filter((row) =>
       FILTER_DIMENSIONS.every(
         (dim) => !filters[dim] || filters[dim].has(row[dim]),
       ),
     );
-  }, [data, filters, activeScreen]);
+  }, [data, filters, activeScreen, visibleRows]);
 
   // Apply scenario scope (statefulness) and suite scope — filters scenario
   // columns and recomputes score from the intersected scenario set.
@@ -131,6 +145,11 @@ function App() {
     setChecked([]);
   }, []);
 
+  const handleShowRetiredChange = useCallback((on: boolean) => {
+    setShowRetired(on);
+    setChecked([]);
+  }, []);
+
   const handleSort = useCallback(
     (col: string) => {
       setSort((prev) =>
@@ -171,7 +190,7 @@ function App() {
   return (
     <div className="flex min-h-screen">
       <Sidebar
-        rows={data.rows}
+        rows={visibleRows}
         filters={filters}
         onFilterChange={handleFilterChange}
         activeScreen={activeScreen}
@@ -182,8 +201,11 @@ function App() {
         onScopeChange={handleScopeChange}
         suiteScope={suiteScope}
         onSuiteChange={handleSuiteChange}
+        showRetired={showRetired}
+        onShowRetiredChange={handleShowRetiredChange}
+        hasRetired={hasRetired}
         filteredCount={filtered.length}
-        totalCount={filterByScreen(data.rows, activeScreen).length}
+        totalCount={filterByScreen(visibleRows, activeScreen).length}
         totalRuns={totalRuns}
         timestamp={data.timestamp}
       />
@@ -198,6 +220,8 @@ function App() {
           checked={checked}
           onCompareToggle={handleCompareToggle}
           groups={groups}
+          maxGen={data.maxGen ?? 0}
+          genInfo={data.genInfo}
         />
 
         {checked.length === 2 && (

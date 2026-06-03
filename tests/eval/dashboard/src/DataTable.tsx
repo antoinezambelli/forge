@@ -1,7 +1,7 @@
 import { Fragment } from "react";
 import type { ConfigRow, SortState } from "./types";
 import type { RowGroup } from "./utils";
-import { heatClass, fmtPct } from "./utils";
+import { heatClass, fmtPct, genBadge } from "./utils";
 
 interface Column {
   key: string;
@@ -18,6 +18,9 @@ interface DataTableProps {
   checked: number[];
   onCompareToggle: (idx: number, on: boolean) => void;
   groups: RowGroup[];
+  /** Newest generation on the board; rows behind it get a superscript badge. */
+  maxGen: number;
+  genInfo?: Record<string, { commit: string; date: string; note: string }>;
 }
 
 const METRIC_COLS: Column[] = [
@@ -48,6 +51,8 @@ export function DataTable({
   checked,
   onCompareToggle,
   groups,
+  maxGen,
+  genInfo,
 }: DataTableProps) {
   // Pre-compute group separator positions (row index → group label)
   const groupStartAt = new Map<number, string>();
@@ -112,7 +117,7 @@ export function DataTable({
               <tr
                 className={`border-b border-zinc-900 hover:bg-zinc-900/50 transition-colors ${
                   isChecked ? "bg-zinc-800/40" : ""
-                }`}
+                } ${row.retired ? "opacity-60" : ""}`}
               >
                 <td className="p-1.5 text-center">
                   <input
@@ -124,6 +129,24 @@ export function DataTable({
                 </td>
                 <td className="p-1.5 font-mono sticky left-0 bg-zinc-950 z-10">
                   {row.label}
+                  {maxGen > 0 && row.gen < maxGen && (
+                    <sup
+                      className="ml-0.5 text-zinc-500"
+                      title={(() => {
+                        const info = genInfo?.[String(row.gen)];
+                        return info
+                          ? `gen ${row.gen}: ${info.note} (commit ${info.commit}, ${info.date})`
+                          : `gen ${row.gen}`;
+                      })()}
+                    >
+                      {genBadge(row.gen)}
+                    </sup>
+                  )}
+                  {row.retired && (
+                    <span className="ml-1.5 align-middle text-[0.55rem] uppercase tracking-wider text-zinc-500 border border-zinc-700 rounded px-1">
+                      retired
+                    </span>
+                  )}
                 </td>
                 {/* Score */}
                 <td className={`p-1.5 text-right tabular-nums ${heatClass(row.score)}`}>

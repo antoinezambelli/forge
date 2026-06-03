@@ -50,6 +50,19 @@ export function fmtPct(v: number | null, decimals: number = 0): string {
   return `${v.toFixed(decimals)}%`;
 }
 
+const SUPERSCRIPT_DIGITS: Record<string, string> = {
+  "0": "\u2070", "1": "\u00b9", "2": "\u00b2", "3": "\u00b3", "4": "\u2074",
+  "5": "\u2075", "6": "\u2076", "7": "\u2077", "8": "\u2078", "9": "\u2079",
+};
+
+/** Superscript form of a gen number, e.g. 1 -> "\u00b9", 12 -> "\u00b9\u00b2". */
+export function genBadge(gen: number): string {
+  return String(gen)
+    .split("")
+    .map((c) => SUPERSCRIPT_DIGITS[c] ?? c)
+    .join("");
+}
+
 /** Filter scenarios by scope (statefulness) and suite (og18 / advanced_reasoning),
  * then recompute row aggregates from the filtered scenario set.
  *
