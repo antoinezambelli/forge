@@ -13,7 +13,7 @@ from typing import Any
 
 import anthropic
 
-from forge.clients.base import ChunkType, StreamChunk, TokenUsage
+from forge.clients.base import ChunkType, StreamChunk, TokenUsage, decode_tool_args
 from forge.core.workflow import LLMResponse, TextResponse, ToolCall, ToolSpec
 from forge.errors import BackendError
 
@@ -384,7 +384,7 @@ class AnthropicClient:
                             final: LLMResponse = [
                                 ToolCall(
                                     tool=tb["name"],
-                                    args=json.loads(tb["args"]) if tb["args"] else {},
+                                    args=decode_tool_args(tb["args"]),
                                     reasoning=reasoning if i == 0 else None,
                                 )
                                 for i, tb in enumerate(tool_blocks)

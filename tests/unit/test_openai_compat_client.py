@@ -118,12 +118,11 @@ class TestSend:
         assert result.content == ""
 
     @pytest.mark.asyncio
-    async def test_malformed_tool_args_return_text_response(self) -> None:
+    async def test_malformed_tool_args_kept_as_raw_args(self) -> None:
         # Fail-loud: malformed argument JSON must NOT become an executable
-        # empty-args tool call. It returns a TextResponse so the runner's
-        # rescue-parse + retry/nudge loop can drive a correction. With no
-        # assistant text present, the raw malformed args are surfaced so the
-        # rescue parser still has the original JSON to work with.
+        # empty-args tool call. The raw (non-dict) string rides through on the
+        # ToolCall so ResponseValidator routes it to the tool-error channel
+        # rather than collapsing to a retry-nudge TextResponse.
         client = _make_client()
         client._http.post.return_value = _mock_response({
             "choices": [{
@@ -136,14 +135,15 @@ class TestSend:
             }]
         })
         result = await client.send([{"role": "user", "content": "test"}])
-        assert isinstance(result, TextResponse)
-        assert result.content == "{not json"
+        assert isinstance(result, list)
+        assert result[0].tool == "get_pricing"
+        assert result[0].args == "{not json"
 
     @pytest.mark.asyncio
-    async def test_malformed_tool_args_surface_assistant_text(self) -> None:
-        # When the assistant also produced text alongside the malformed
-        # tool-call args, the TextResponse carries that text (the more useful
-        # signal for rescue), not the raw broken JSON.
+    async def test_malformed_tool_args_kept_even_with_assistant_text(self) -> None:
+        # tool_calls present means we parse tool calls: a malformed call rides
+        # through as a bad-args ToolCall regardless of any sibling assistant
+        # text (the text is not consulted), so the validator can correct it.
         client = _make_client()
         client._http.post.return_value = _mock_response({
             "choices": [{
@@ -157,14 +157,14 @@ class TestSend:
             }]
         })
         result = await client.send([{"role": "user", "content": "test"}])
-        assert isinstance(result, TextResponse)
-        assert result.content == "Let me look that up."
+        assert isinstance(result, list)
+        assert result[0].args == "{not json"
 
     @pytest.mark.asyncio
-    async def test_one_malformed_among_several_bails_whole_batch(self) -> None:
-        # Fail-loud for parallel tool calls: if ANY call's args are malformed,
-        # the entire response becomes a TextResponse — we never execute the
-        # valid sibling calls alongside a broken one (no partial execution).
+    async def test_malformed_among_several_kept_per_call(self) -> None:
+        # Parallel tool calls: a malformed sibling no longer collapses the whole
+        # batch to text. Each call is parsed independently — the good one keeps
+        # its dict args, the bad one keeps raw (non-dict) args for the validator.
         client = _make_client()
         client._http.post.return_value = _mock_response({
             "choices": [{
@@ -178,8 +178,9 @@ class TestSend:
             }]
         })
         result = await client.send([{"role": "user", "content": "test"}])
-        assert isinstance(result, TextResponse)
-        assert result.content == "{broken"
+        assert isinstance(result, list)
+        assert result[0].args == {"part": "A"}
+        assert result[1].args == "{broken"
 
     @pytest.mark.asyncio
     async def test_dict_tool_args_accepted(self) -> None:
@@ -348,11 +349,10 @@ class TestSendStream:
         assert finals[0].response[0].args == {"part": "X"}
 
     @pytest.mark.asyncio
-    async def test_stream_malformed_tool_args_return_text_response(self) -> None:
-        # Streaming counterpart of the non-streaming fail-loud case: arg
-        # fragments that never assemble into valid JSON must end as a
-        # TextResponse final, not a {}-args tool call. With no streamed text,
-        # the raw assembled args are surfaced for rescue.
+    async def test_stream_malformed_tool_args_kept_as_raw_args(self) -> None:
+        # Streaming counterpart: arg fragments that never assemble into valid
+        # JSON ("{not" + " json") ride through as raw (non-dict) args on the
+        # ToolCall — not a TextResponse final, and not a {}-args call.
         client = _make_client()
         lines = [
             'data: ' + json.dumps({"choices": [{"delta": {"tool_calls": [
@@ -370,8 +370,10 @@ class TestSendStream:
         )]
         finals = [c for c in chunks if c.type == ChunkType.FINAL]
         assert len(finals) == 1
-        assert isinstance(finals[0].response, TextResponse)
-        assert finals[0].response.content == "{not json"
+        result = finals[0].response
+        assert isinstance(result, list)
+        assert result[0].tool == "get_pricing"
+        assert result[0].args == "{not json"
 
     @pytest.mark.asyncio
     async def test_stream_non_string_arg_fragment_not_dropped(self) -> None:

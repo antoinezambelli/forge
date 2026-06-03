@@ -10,7 +10,14 @@ from typing import Any
 
 import httpx
 
-from forge.clients.base import ChunkType, RawOpenAITools, StreamChunk, TokenUsage, format_tool
+from forge.clients.base import (
+    ChunkType,
+    RawOpenAITools,
+    StreamChunk,
+    TokenUsage,
+    decode_tool_args,
+    format_tool,
+)
 from forge.clients.sampling_defaults import apply_sampling_defaults
 from forge.core.workflow import LLMResponse, TextResponse, ToolCall, ToolSpec
 from forge.errors import BackendError, ContextDiscoveryError
@@ -415,27 +422,14 @@ class LlamafileClient:
                     accumulated_reasoning, accumulated_content
                 )
                 result_calls: list[ToolCall] = []
-                bad_args = False
-                bad_raw = ""
                 for idx in sorted(tool_call_parts):
                     part = tool_call_parts[idx]
-                    try:
-                        args = json.loads(part["args"]) if part["args"] else {}
-                    except json.JSONDecodeError:
-                        bad_args = True
-                        bad_raw = part["args"]
-                        break
                     result_calls.append(ToolCall(
                         tool=part["name"],
-                        args=args,
+                        args=decode_tool_args(part["args"]),
                         reasoning=reasoning if idx == 0 else None,
                     ))
-                if bad_args:
-                    final: LLMResponse = TextResponse(
-                        content=accumulated_content or bad_raw,
-                    )
-                else:
-                    final = result_calls
+                final: LLMResponse = result_calls
             elif mode == "prompt" and tools:
                 think_text, cleaned = _extract_think_tags(
                     accumulated_content
@@ -524,15 +518,9 @@ class LlamafileClient:
             result_calls: list[ToolCall] = []
             for i, tc_entry in enumerate(raw_tool_calls):
                 tc_func = tc_entry.get("function", {})
-                args = tc_func.get("arguments", "{}")
-                if isinstance(args, str):
-                    try:
-                        args = json.loads(args)
-                    except json.JSONDecodeError:
-                        return TextResponse(content=choice.get("content", args))
                 result_calls.append(ToolCall(
                     tool=tc_func.get("name", ""),
-                    args=args,
+                    args=decode_tool_args(tc_func.get("arguments")),
                     reasoning=reasoning if i == 0 else None,
                 ))
             return result_calls

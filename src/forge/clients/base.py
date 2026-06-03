@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from enum import Enum
@@ -43,6 +44,31 @@ def format_tool(spec: ToolSpec) -> dict[str, Any]:
             "parameters": spec.get_json_schema(),
         },
     }
+
+
+def decode_tool_args(raw: Any) -> Any:
+    """Decode a tool-call ``arguments`` payload, fail-loud.
+
+    JSON-string args are parsed; on malformed JSON the raw string is returned
+    unchanged (a non-dict). ``ResponseValidator``'s args-shape check then routes
+    it through the tool-error channel instead of crashing the parser or coercing
+    to ``{}`` — so a structural arg failure rides the same lane as a runtime
+    tool error rather than a trailing retry nudge.
+
+    Non-string payloads (an already-decoded dict from Ollama / the Anthropic
+    SDK, or any other shape) pass through untouched for the validator to judge.
+    A missing or empty payload is a no-arg call (``{}``).
+    """
+    if raw is None:
+        return {}
+    if not isinstance(raw, str):
+        return raw
+    if not raw:
+        return {}
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError:
+        return raw
 
 
 class ChunkType(str, Enum):

@@ -18,7 +18,7 @@ from typing import Any
 
 import httpx
 
-from forge.clients.base import ChunkType, StreamChunk, TokenUsage, format_tool
+from forge.clients.base import ChunkType, StreamChunk, TokenUsage, decode_tool_args, format_tool
 from forge.clients.sampling_defaults import apply_sampling_defaults
 from forge.core.workflow import LLMResponse, TextResponse, ToolCall, ToolSpec
 from forge.errors import BackendError
@@ -151,36 +151,25 @@ class OpenAICompatClient:
         )
 
     @staticmethod
-    def _parse_tool_calls(
-        tool_calls: list[dict[str, Any]], fallback_content: str = ""
-    ) -> LLMResponse:
+    def _parse_tool_calls(tool_calls: list[dict[str, Any]]) -> LLMResponse:
         """Parse OpenAI ``tool_calls`` into ``ToolCall`` objects.
 
         Tool-call ``arguments`` arrive as JSON strings. Forge is fail-loud:
         malformed argument JSON must NOT be coerced into executable empty args,
         or a provider/model can emit invalid arguments and Forge proceeds with
         ``fn(**{})`` — exactly the quiet false success the library avoids.
-        Instead we return a ``TextResponse``, which routes the response back
-        into the validator's rescue-parse + retry/nudge loop, matching
-        ``LlamafileClient`` (see ``llamafile.py`` ``_send_native``).
-
-        ``fallback_content`` is the assistant message text to surface for the
-        rescue attempt; we fall back to the raw malformed args when there is no
-        text, so the rescue parser still has the original JSON to work with.
+        Instead ``decode_tool_args`` keeps the raw (non-dict) args on the
+        ``ToolCall``; ``ResponseValidator``'s args-shape check then routes it
+        through the tool-error channel, so the model self-corrects on the
+        canonical tool-result channel rather than a trailing retry nudge.
         """
-        parsed: list[ToolCall] = []
-        for tc in tool_calls:
-            fn = tc.get("function", {})
-            raw_args = fn.get("arguments") or "{}"
-            if isinstance(raw_args, str):
-                try:
-                    args = json.loads(raw_args)
-                except json.JSONDecodeError:
-                    return TextResponse(content=fallback_content or raw_args)
-            else:
-                args = raw_args
-            parsed.append(ToolCall(tool=fn.get("name", ""), args=args))
-        return parsed
+        return [
+            ToolCall(
+                tool=tc.get("function", {}).get("name", ""),
+                args=decode_tool_args(tc.get("function", {}).get("arguments")),
+            )
+            for tc in tool_calls
+        ]
 
     # ── send ─────────────────────────────────────────────────────────
 
@@ -217,7 +206,7 @@ class OpenAICompatClient:
         msg = choices[0].get("message", {})
         tool_calls = msg.get("tool_calls")
         if tool_calls:
-            return self._parse_tool_calls(tool_calls, fallback_content=msg.get("content") or "")
+            return self._parse_tool_calls(tool_calls)
         return TextResponse(content=msg.get("content") or "")
 
     # ── streaming ────────────────────────────────────────────────────
@@ -299,9 +288,7 @@ class OpenAICompatClient:
 
         if tool_calls:
             ordered = [tool_calls[i] for i in sorted(tool_calls)]
-            final: LLMResponse = self._parse_tool_calls(
-                ordered, fallback_content=accumulated_content
-            )
+            final: LLMResponse = self._parse_tool_calls(ordered)
         else:
             final = TextResponse(content=accumulated_content)
         yield StreamChunk(type=ChunkType.FINAL, response=final)

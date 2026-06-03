@@ -25,7 +25,7 @@ from typing import Any
 
 import httpx
 
-from forge.clients.base import ChunkType, StreamChunk, TokenUsage, format_tool
+from forge.clients.base import ChunkType, StreamChunk, TokenUsage, decode_tool_args, format_tool
 from forge.clients.sampling_defaults import apply_sampling_defaults
 from forge.core.workflow import LLMResponse, TextResponse, ToolCall, ToolSpec
 from forge.errors import BackendError
@@ -228,7 +228,6 @@ class VLLMClient:
             return self._parse_tool_calls(
                 tool_calls,
                 reasoning=self._resolve_reasoning(message),
-                fallback_content=message.get("content") or "",
             )
 
         return TextResponse(content=message.get("content") or "")
@@ -332,7 +331,6 @@ class VLLMClient:
                 reasoning=self._resolve_reasoning(
                     accumulated_reasoning, accumulated_content,
                 ),
-                fallback_content=accumulated_content,
             )
         else:
             final = TextResponse(content=accumulated_content)
@@ -342,50 +340,29 @@ class VLLMClient:
     def _parse_tool_calls(
         tool_calls: list[dict[str, Any]],
         reasoning: str | None,
-        fallback_content: str,
     ) -> LLMResponse:
-        """Parse vLLM ``tool_calls`` into ``ToolCall`` objects (or TextResponse).
+        """Parse vLLM ``tool_calls`` into ``ToolCall`` objects.
 
         Mirrors ``OpenAICompatClient`` / ``LlamafileClient`` so every
         OpenAI-shape client behaves the same. Tool-call ``arguments`` arrive as
         a JSON string (vLLM's native format) or an already-decoded dict.
-        Forge is fail-loud on the right axis:
-
-        - **Malformed argument JSON** is NOT coerced into empty args (that would
-          let a model silently proceed with wrong arguments). We return a
-          ``TextResponse``, routing the raw output back through the inference
-          loop so the rescue/retry path can recover — matching llamafile.
-        - An **unexpected args type** (neither str nor dict) is a provider
-          contract violation, not a model mistake → ``BackendError``.
+        ``decode_tool_args`` is fail-loud: malformed JSON (or any non-dict
+        shape) is NOT coerced into empty args — the raw value is kept so
+        ``ResponseValidator`` routes it through the tool-error channel instead
+        of crashing or letting the model proceed with wrong arguments.
 
         Defensive ``.get`` on ``function`` / ``name`` keeps a broken tool-call
         entry from raising ``KeyError``. Used by both send() and send_stream()
         for parity (the stream path reassembles deltas into this shape first).
         """
-        parsed: list[ToolCall] = []
-        for i, tc in enumerate(tool_calls):
-            fn = tc.get("function", {})
-            raw_args = fn.get("arguments", {})
-            if isinstance(raw_args, str):
-                if not raw_args:
-                    args: dict[str, Any] = {}
-                else:
-                    try:
-                        args = json.loads(raw_args)
-                    except json.JSONDecodeError:
-                        return TextResponse(content=fallback_content or raw_args)
-            elif isinstance(raw_args, dict):
-                args = raw_args
-            else:
-                raise BackendError(
-                    500, f"unexpected tool args shape: {type(raw_args).__name__}",
-                )
-            parsed.append(ToolCall(
-                tool=fn.get("name", ""),
-                args=args,
+        return [
+            ToolCall(
+                tool=tc.get("function", {}).get("name", ""),
+                args=decode_tool_args(tc.get("function", {}).get("arguments")),
                 reasoning=reasoning if i == 0 else None,
-            ))
-        return parsed
+            )
+            for i, tc in enumerate(tool_calls)
+        ]
 
     async def get_context_length(self) -> int | None:
         """Query the vLLM /v1/models endpoint for max_model_len.

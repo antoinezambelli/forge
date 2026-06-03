@@ -329,10 +329,11 @@ class TestSendStream:
         assert result[0].args == {"city": "Paris"}
 
     @pytest.mark.asyncio
-    async def test_malformed_accumulated_args_finalize_as_text_response(self) -> None:
+    async def test_malformed_accumulated_args_kept_as_raw_args(self) -> None:
         # Streaming/non-streaming parity: once all fragments are accumulated,
-        # an unparseable arguments string must yield a retry-driving
-        # TextResponse (same as send()), not raise out of the stream.
+        # an unparseable arguments string rides through on the ToolCall as raw
+        # (non-dict) args so ResponseValidator routes it to the tool-error
+        # channel — it must not raise out of the stream.
         client = _make_client()
         client._http.stream.return_value = _MockStreamResponse([
             _sse({"choices": [{"delta": {
@@ -351,7 +352,10 @@ class TestSendStream:
             chunks.append(chunk)
         finals = [c for c in chunks if c.type == ChunkType.FINAL]
         assert len(finals) == 1
-        assert isinstance(finals[0].response, TextResponse)
+        result = finals[0].response
+        assert isinstance(result, list)
+        assert result[0].tool == "get_weather"
+        assert result[0].args == '{"city": '
 
     @pytest.mark.asyncio
     async def test_accumulates_reasoning_across_deltas(self) -> None:
@@ -506,7 +510,6 @@ class TestParseToolCalls:
         return VLLMClient._parse_tool_calls(
             [{"function": {"name": "lookup", "arguments": arguments}}],
             reasoning=None,
-            fallback_content="raw model text",
         )
 
     def test_string_args_decoded(self) -> None:
@@ -525,20 +528,23 @@ class TestParseToolCalls:
         """No-arg tool calls — empty string args is valid."""
         assert self._call("") == [ToolCall(tool="lookup", args={})]
 
-    def test_malformed_json_returns_textresponse(self) -> None:
-        """Matches llamafile/openai_compat: malformed args drive a retry via
-        TextResponse, never silent {} or an exception."""
-        assert self._call('{"city": ') == TextResponse(content="raw model text")
+    def test_malformed_json_kept_as_raw_args(self) -> None:
+        """Malformed args are NOT coerced to {} or collapsed to a TextResponse:
+        the raw (non-dict) string rides through on the ToolCall so
+        ResponseValidator routes it to the tool-error channel."""
+        assert self._call('{"city": ') == [
+            ToolCall(tool="lookup", args='{"city": '),
+        ]
 
-    def test_unexpected_type_raises(self) -> None:
-        """Unknown shape (list, int, etc.) — provider contract violation."""
-        with pytest.raises(BackendError, match="unexpected tool args shape"):
-            self._call(123)
+    def test_unexpected_type_kept_as_raw_args(self) -> None:
+        """Unknown shape (list, int, etc.) is a non-dict — kept for the
+        validator's args-shape check, not raised as a BackendError."""
+        assert self._call(123) == [ToolCall(tool="lookup", args=123)]
 
     def test_missing_function_is_defensive(self) -> None:
         """A broken tool-call entry (no "function") must not KeyError."""
         assert VLLMClient._parse_tool_calls(
-            [{}], reasoning=None, fallback_content="",
+            [{}], reasoning=None,
         ) == [ToolCall(tool="", args={})]
 
     def test_reasoning_attached_to_first_call_only(self) -> None:
@@ -548,7 +554,6 @@ class TestParseToolCalls:
                 {"function": {"name": "b", "arguments": "{}"}},
             ],
             reasoning="because",
-            fallback_content="",
         )
         assert result == [
             ToolCall(tool="a", args={}, reasoning="because"),
