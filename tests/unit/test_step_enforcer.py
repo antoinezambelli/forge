@@ -281,6 +281,15 @@ class TestPrerequisiteCheckArgMatched:
         result = self.enforcer.check_prerequisites(calls)
         assert result.needs_nudge is True
 
+    def test_non_dict_args_blocks_without_crash(self):
+        # Malformed (non-dict) args can't satisfy an arg-match. ResponseValidator
+        # normally rejects them before dispatch, but a granular caller may reach
+        # here directly — it must block, not crash on ``args.get``.
+        self.enforcer.record("read_file", {"path": "foo.py"})
+        calls = [ToolCall(tool="edit_file", args="not a dict")]  # type: ignore[arg-type]
+        result = self.enforcer.check_prerequisites(calls)
+        assert result.needs_nudge is True
+
     def test_multiple_files_tracked_independently(self):
         self.enforcer.record("read_file", {"path": "a.py"})
         self.enforcer.record("read_file", {"path": "b.py"})

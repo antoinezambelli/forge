@@ -77,6 +77,13 @@ class StepTracker:
                 # Arg-matched: a prior call with the same arg value satisfies it
                 prereq_tool = prereq["tool"]
                 match_arg = prereq["match_arg"]
+                # Defensive: malformed (non-dict) args can't satisfy an
+                # arg-match. ResponseValidator rejects them before dispatch, but
+                # a granular caller may reach here directly — treat as
+                # unsatisfied rather than crashing on ``.get``.
+                if not isinstance(args, dict):
+                    missing.append(prereq_tool)
+                    continue
                 required_value = args.get(match_arg)
                 if prereq_tool not in self.executed_tools:
                     missing.append(prereq_tool)
