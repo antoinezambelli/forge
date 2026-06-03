@@ -48,6 +48,13 @@ _GGUF_FILES: list[str] = [
     "granite-4.1-8b-Q4_K_M.gguf",
     "granite-4.1-8b-Q8_0.gguf",
     "phi-4-Q4_K_M.gguf",
+    # 32GB tier (rig-02 v0.7.1 eval — the configs that ran)
+    "Mistral-Small-3.2-24B-Instruct-2506-Q4_K_M.gguf",
+    "Qwen3.5-27B-Q4_K_M.gguf",
+    "Qwen3.5-35B-A3B-Q4_K_M.gguf",
+    "Qwen3.6-27B-Q4_K_M.gguf",
+    "Qwen3.6-35B-A3B-UD-Q4_K_M.gguf",
+    "Nemotron-3-Nano-30B-A3B-Q4_K_M.gguf",
 ]
 
 # Models that lack native function-calling support — only run prompt mode.
@@ -319,6 +326,11 @@ _SERVER_EXTRA_FLAGS: dict[str, list[str]] = {
     "Qwen3-8B-Q4_K_M": ["--reasoning-format", "auto"],
     "Qwen3-8B-Q8_0": ["--reasoning-format", "auto"],
     "Qwen3-14B-Q4_K_M": ["--reasoning-format", "auto"],
+    "Qwen3.5-27B-Q4_K_M": ["--reasoning-format", "auto"],
+    "Qwen3.5-35B-A3B-Q4_K_M": ["--reasoning-format", "auto"],
+    "Qwen3.6-27B-Q4_K_M": ["--reasoning-format", "auto"],
+    "Qwen3.6-35B-A3B-UD-Q4_K_M": ["--reasoning-format", "auto"],
+    "Nemotron-3-Nano-30B-A3B-Q4_K_M": ["--reasoning-format", "auto"],
 }
 
 
