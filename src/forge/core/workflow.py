@@ -174,7 +174,7 @@ class ToolCall:
     """
 
     tool: str
-    args: dict[str, Any]
+    args: Any  # may be a non-dict when malformed; ResponseValidator rejects shape
     reasoning: str | None = None
 
 

@@ -319,8 +319,9 @@ class VLLMClient:
         # Build the final response. Reassemble the accumulated deltas into the
         # OpenAI tool-call shape and route through the same parser as send(), so
         # streaming and non-streaming agree on malformed-args handling: a fully
-        # accumulated but unparseable arguments string yields a retry-driving
-        # TextResponse, not an exception.
+        # accumulated but unparseable arguments string rides through as raw
+        # (non-dict) args on the ToolCall — which ResponseValidator routes to
+        # the tool-error channel — not an exception.
         if tool_call_parts:
             reassembled = [
                 {"function": {"name": part["name"], "arguments": part["args"]}}

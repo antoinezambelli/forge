@@ -140,6 +140,22 @@ class TestLlamafileNativeSend:
         assert result[0].args == {"part": "X", "qty": 100}
 
     @pytest.mark.asyncio
+    async def test_malformed_args_kept_as_raw(self) -> None:
+        """Malformed argument JSON is NOT coerced to {} or collapsed to a
+        TextResponse: the raw (non-dict) string rides through on the ToolCall
+        so ResponseValidator routes it to the tool-error channel."""
+        client = _make_client("native")
+        client._http.post.return_value = _mock_response(
+            _openai_tool_call_response("get_pricing", "{not json")
+        )
+        result = await client.send(
+            [{"role": "user", "content": "test"}], tools=[_make_spec()]
+        )
+        assert isinstance(result, list)
+        assert result[0].tool == "get_pricing"
+        assert result[0].args == "{not json"
+
+    @pytest.mark.asyncio
     async def test_captures_reasoning_with_tool_call(self) -> None:
         """When content accompanies tool_calls, it is captured as reasoning."""
         client = _make_client("native")

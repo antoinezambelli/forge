@@ -275,8 +275,9 @@ class OpenAICompatClient:
                     # Dropping leaves a gap in the assembled JSON that may parse
                     # into wrong-but-valid args (a quiet false success); folding
                     # it in instead means the single parse at stream end either
-                    # recovers a whole-object fragment or fails loud into the
-                    # TextResponse/retry path below, matching LlamafileClient.
+                    # recovers a whole-object fragment or survives as raw
+                    # (non-dict) args for ResponseValidator to route to the
+                    # tool-error channel, matching LlamafileClient.
                     args_frag = fn.get("arguments")
                     if args_frag is not None:
                         slot["function"]["arguments"] += (
