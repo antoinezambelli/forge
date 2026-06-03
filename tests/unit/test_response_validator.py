@@ -94,7 +94,8 @@ class TestResponseValidatorToolCalls:
         assert result.tool_calls is None
         assert result.nudge.kind == "unknown_tool"
         assert "nonexistent" in result.nudge.content
-        assert result.nudge.role == "user"
+        # Tool-call faults ride the tool-result channel (role="tool").
+        assert result.nudge.role == "tool"
 
     def test_mixed_known_unknown_returns_nudge(self):
         calls = [
@@ -137,6 +138,8 @@ class TestResponseValidatorArgsShape:
         assert result.nudge.kind == "tool_arg_validation"
         assert "search" in result.nudge.content
         assert "JSON object" in result.nudge.content
+        # Malformed args ride the tool-result channel (role="tool").
+        assert result.nudge.role == "tool"
 
     def test_none_args_returns_nudge(self):
         calls = [ToolCall(tool="search", args=None)]  # type: ignore[arg-type]

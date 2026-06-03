@@ -48,6 +48,7 @@ class HTTPServer:
         port: int = 8081,
         serialize_requests: bool = True,
         max_retries: int = 3,
+        max_tool_errors: int = 2,
         rescue_enabled: bool = True,
         native_passthrough: bool = True,
         inject_respond_tool: bool = False,
@@ -57,6 +58,7 @@ class HTTPServer:
         self._host = host
         self._port = port
         self._max_retries = max_retries
+        self._max_tool_errors = max_tool_errors
         self._rescue_enabled = rescue_enabled
         self._native_passthrough = native_passthrough
         self._inject_respond_tool = inject_respond_tool
@@ -309,6 +311,7 @@ class HTTPServer:
                 client=self._client,
                 context_manager=self._context_manager,
                 max_retries=self._max_retries,
+                max_tool_errors=self._max_tool_errors,
                 rescue_enabled=self._rescue_enabled,
                 native_passthrough=self._native_passthrough,
                 inject_respond_tool=self._inject_respond_tool,

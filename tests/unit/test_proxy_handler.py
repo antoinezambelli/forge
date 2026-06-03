@@ -247,6 +247,23 @@ class TestErrorPaths:
         assert len(content_events) > 0
         assert result[-1]["usage"] == {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15}
 
+    @pytest.mark.asyncio
+    async def test_malformed_args_bounded_by_max_tool_errors(self):
+        """Malformed tool args drain the tool-error budget, not retries — so
+        max_tool_errors (not max_retries) bounds the loop. Proves the proxy's
+        new max_tool_errors knob threads through to the ErrorTracker."""
+        # Known tool, non-dict args → tool_arg_validation every turn.
+        client = _mock_client([ToolCall(tool="search", args="bad")])  # type: ignore[arg-type]
+        client.last_usage = {0: TokenUsage(prompt_tokens=10, completion_tokens=5, total_tokens=15)}
+        result = await handle_chat_completions(
+            _body(tools=[_tool_def("search")]),
+            client, _context_manager(), max_retries=5, max_tool_errors=1,
+        )
+        # Exhausted on the tool-error budget (1), not max_retries (5):
+        # send #1 (error, budget→1) + send #2 (error, 2 > 1 → exhausted).
+        assert client.send.call_count == 2
+        assert result["choices"][0]["finish_reason"] == "stop"
+
 
 class TestSamplingPlumbing:
     """Issue A: inbound body sampling fields plumbed through to client.send."""

@@ -60,6 +60,7 @@ def main() -> None:
     parser.add_argument("--serialize", action="store_true", default=None, help="Force request serialization")
     parser.add_argument("--no-serialize", action="store_true", help="Disable request serialization")
     parser.add_argument("--max-retries", type=int, default=3, help="Max retries per request (default: 3)")
+    parser.add_argument("--max-tool-errors", type=int, default=2, help="Max consecutive tool-call errors per request (default: 2)")
     parser.add_argument(
         "--backend-timeout",
         type=float,
@@ -117,6 +118,7 @@ def main() -> None:
         port=args.port,
         serialize=serialize,
         max_retries=args.max_retries,
+        max_tool_errors=args.max_tool_errors,
         rescue_enabled=not args.no_rescue,
         backend_capability=args.backend_capability,
         inject_respond_tool=args.inject_respond_tool,

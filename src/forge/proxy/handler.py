@@ -120,6 +120,7 @@ async def handle_chat_completions(
     client: LLMClient,
     context_manager: ContextManager,
     max_retries: int = 3,
+    max_tool_errors: int = 2,
     rescue_enabled: bool = True,
     native_passthrough: bool = True,
     inject_respond_tool: bool = False,
@@ -136,6 +137,7 @@ async def handle_chat_completions(
         client: The forge LLM client for the backend.
         context_manager: For context compaction.
         max_retries: Max consecutive retries for bad responses.
+        max_tool_errors: Max consecutive tool-call errors (malformed args).
         rescue_enabled: Whether to attempt rescue parsing.
         native_passthrough: When True (default, native capability), forward the
             client's verbatim OpenAI tools/messages to the backend on the clean
@@ -238,7 +240,7 @@ async def handle_chat_completions(
 
     # Set up guardrails
     validator = ResponseValidator(tool_names, rescue_enabled=rescue_enabled)
-    error_tracker = ErrorTracker(max_retries=max_retries)
+    error_tracker = ErrorTracker(max_retries=max_retries, max_tool_errors=max_tool_errors)
 
     # Run inference (compact → fold → serialize → send → validate → retry)
     try:

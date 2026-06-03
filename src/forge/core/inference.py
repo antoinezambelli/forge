@@ -26,6 +26,7 @@ from forge.core.messages import Message, MessageMeta, MessageRole, MessageType, 
 from forge.core.workflow import LLMResponse, TextResponse, ToolCall, ToolSpec
 from forge.errors import StreamError, ToolCallError
 from forge.guardrails import ErrorTracker, ResponseValidator
+from forge.guardrails.nudge import TOOL_ERROR_KINDS
 
 # Maps Nudge.kind → MessageType for message emission.
 _NUDGE_KIND_TO_TYPE: dict[str, MessageType] = {
@@ -35,12 +36,6 @@ _NUDGE_KIND_TO_TYPE: dict[str, MessageType] = {
     "step": MessageType.STEP_NUDGE,
     "prerequisite": MessageType.PREREQUISITE_NUDGE,
 }
-
-# Nudge kinds that drain the tool-error budget (record_result, max_tool_errors)
-# rather than the retry budget (record_retry, max_retries). Args-validation
-# failures are conceptually "tool called with bad args" — same family as
-# FileNotFoundError at runtime — so they share that budget.
-_TOOL_ERROR_KINDS: frozenset[str] = frozenset({"tool_arg_validation"})
 
 
 def _get_usage(client: LLMClient) -> TokenUsage | None:
@@ -292,7 +287,7 @@ async def run_inference(
         #   - everything else (retry, unknown_tool): retry budget (max_retries).
         nudge = validation.nudge
         nudge_type = _NUDGE_KIND_TO_TYPE[nudge.kind]
-        is_tool_error = nudge.kind in _TOOL_ERROR_KINDS
+        is_tool_error = nudge.kind in TOOL_ERROR_KINDS
         if is_tool_error:
             error_tracker.record_result(success=False)
             exhausted = error_tracker.tool_errors_exhausted

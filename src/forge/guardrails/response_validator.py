@@ -86,7 +86,7 @@ class ResponseValidator:
             return ValidationResult(
                 tool_calls=None,
                 nudge=Nudge(
-                    role="user",
+                    role="tool",
                     content=unknown_tool_nudge(unknown[0].tool, self.tool_names),
                     kind="unknown_tool",
                 ),
@@ -102,7 +102,7 @@ class ResponseValidator:
             return ValidationResult(
                 tool_calls=None,
                 nudge=Nudge(
-                    role="user",
+                    role="tool",
                     content=tool_arg_validation_nudge(bad_args[0].tool, bad_args[0].args),
                     kind="tool_arg_validation",
                 ),

@@ -16,7 +16,7 @@ from typing import Literal
 
 from forge.core.workflow import LLMResponse, ToolCall
 from forge.guardrails.error_tracker import ErrorTracker
-from forge.guardrails.nudge import Nudge
+from forge.guardrails.nudge import TOOL_CHANNEL_KINDS, TOOL_ERROR_KINDS, Nudge
 from forge.guardrails.response_validator import ResponseValidator
 from forge.guardrails.step_enforcer import StepEnforcer
 
@@ -28,16 +28,21 @@ class CheckResult:
     Attributes:
         action: What the caller should do next.
             "execute"      -- tool_calls are safe to run.
-            "retry"        -- model produced an unusable response; inject nudge.
+            "retry"        -- model produced unusable output (bad format / bare
+                              text); inject nudge as a user message and re-prompt.
+            "tool_error"   -- model called a tool incorrectly (unknown name or
+                              malformed args); inject nudge as a tool result
+                              (nudge.role == "tool") and re-prompt.
             "step_blocked" -- model tried to skip required steps; inject nudge.
             "fatal"        -- error budget exhausted; stop the workflow.
         tool_calls: Validated tool calls (only set when action == "execute").
-        nudge: Corrective message to inject (set when action is "retry"
-            or "step_blocked").
+        nudge: Corrective message to inject (set when action is "retry",
+            "tool_error", or "step_blocked"). Emit it with its own role:
+            ``messages.append({"role": nudge.role, "content": nudge.content})``.
         reason: Human-readable explanation (only set when action == "fatal").
     """
 
-    action: Literal["execute", "retry", "step_blocked", "fatal"]
+    action: Literal["execute", "retry", "tool_error", "step_blocked", "fatal"]
     tool_calls: list[ToolCall] | None = None
     nudge: Nudge | None = None
     reason: str | None = None
@@ -117,13 +122,29 @@ class Guardrails:
         validation = self._validator.validate(response)
 
         if validation.needs_retry:
-            self._errors.record_retry()
-            if self._errors.retries_exhausted:
-                return CheckResult(
-                    action="fatal",
-                    reason="too many consecutive bad responses",
-                )
-            return CheckResult(action="retry", nudge=validation.nudge)
+            nudge = validation.nudge
+            kind = nudge.kind if nudge is not None else ""
+            # Budget: malformed args drain the tool-error budget; everything
+            # else (bare text, unknown tool) drains the retry budget — matching
+            # run_inference so all three integration modes account identically.
+            if kind in TOOL_ERROR_KINDS:
+                self._errors.record_result(success=False)
+                if self._errors.tool_errors_exhausted:
+                    return CheckResult(
+                        action="fatal",
+                        reason="too many consecutive tool-argument errors",
+                    )
+            else:
+                self._errors.record_retry()
+                if self._errors.retries_exhausted:
+                    return CheckResult(
+                        action="fatal",
+                        reason="too many consecutive bad responses",
+                    )
+            # Channel: tool-call faults (unknown tool, malformed args) ride the
+            # tool-result channel; bare-text failures stay a user-role retry.
+            action = "tool_error" if kind in TOOL_CHANNEL_KINDS else "retry"
+            return CheckResult(action=action, nudge=nudge)
 
         self._errors.reset_retries()
 

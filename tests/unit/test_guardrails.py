@@ -30,11 +30,20 @@ class TestCheckValidation:
         assert result.nudge is not None
         assert result.tool_calls is None
 
-    def test_unknown_tool_triggers_retry(self):
+    def test_unknown_tool_triggers_tool_error(self):
         g = make_guardrails()
         result = g.check([ToolCall(tool="nonexistent", args={})])
-        assert result.action == "retry"
+        assert result.action == "tool_error"
         assert result.nudge is not None
+        assert result.nudge.role == "tool"
+
+    def test_malformed_args_triggers_tool_error(self):
+        g = make_guardrails()
+        result = g.check([ToolCall(tool="search", args="not a dict")])  # type: ignore[arg-type]
+        assert result.action == "tool_error"
+        assert result.nudge is not None
+        assert result.nudge.role == "tool"
+        assert result.nudge.kind == "tool_arg_validation"
 
     def test_valid_tool_call_returns_execute(self):
         g = make_guardrails()
@@ -79,6 +88,42 @@ class TestCheckRetryExhaustion:
         # So this is a retry again, not fatal
         result = g.check(TextResponse(content="nope again"))
         assert result.action == "retry"
+
+
+class TestCheckToolErrorBudget:
+    """Malformed args drain the tool-error budget; unknown-tool drains retries.
+
+    Mirrors run_inference so the middleware facade accounts identically.
+    """
+
+    def test_malformed_args_drains_tool_error_budget(self):
+        g = make_guardrails(max_tool_errors=2, max_retries=5)
+        for _ in range(2):
+            r = g.check([ToolCall(tool="search", args="bad")])  # type: ignore[arg-type]
+            assert r.action == "tool_error"
+        r = g.check([ToolCall(tool="search", args="bad")])  # type: ignore[arg-type]
+        assert r.action == "fatal"
+        assert "tool-argument" in r.reason
+
+    def test_malformed_args_do_not_drain_retry_budget(self):
+        # Tool-arg errors use their own budget; the retry budget stays intact.
+        g = make_guardrails(max_tool_errors=5, max_retries=2)
+        for _ in range(3):
+            assert g.check(
+                [ToolCall(tool="search", args="bad")]  # type: ignore[arg-type]
+            ).action == "tool_error"
+        # Retry budget untouched → a bare-text failure is still a retry.
+        assert g.check(TextResponse(content="nope")).action == "retry"
+
+    def test_unknown_tool_drains_retry_budget(self):
+        # Unknown-tool rides the tool channel (action="tool_error") but still
+        # drains the RETRY budget, matching run_inference.
+        g = make_guardrails(max_retries=2, max_tool_errors=5)
+        for _ in range(2):
+            assert g.check([ToolCall(tool="ghost", args={})]).action == "tool_error"
+        r = g.check([ToolCall(tool="ghost", args={})])
+        assert r.action == "fatal"
+        assert "bad responses" in r.reason
 
 
 # ── check(): step enforcement ────────────────────────────────

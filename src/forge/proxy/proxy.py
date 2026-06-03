@@ -66,6 +66,7 @@ class ProxyServer:
         port: int = 8081,
         serialize: bool | None = None,
         max_retries: int = 3,
+        max_tool_errors: int = 2,
         rescue_enabled: bool = True,
         backend_capability: Literal["native", "prompt"] = "native",
         inject_respond_tool: bool = False,
@@ -93,6 +94,8 @@ class ProxyServer:
             serialize: Serialize requests via lock. None = auto (True for
                 managed, False for external).
             max_retries: Max consecutive retries for bad LLM responses.
+            max_tool_errors: Max consecutive tool-call errors (malformed args)
+                before exhaustion. Default 2.
             rescue_enabled: Attempt rescue parsing of text responses.
             backend_capability: Tool-calling protocol for the backend.
                 ``native`` (default) forwards the client's OpenAI tools/messages
@@ -168,6 +171,7 @@ class ProxyServer:
         self._host = host
         self._port = port
         self._max_retries = max_retries
+        self._max_tool_errors = max_tool_errors
         self._rescue_enabled = rescue_enabled
         self._backend_capability = backend_capability
         self._inject_respond_tool = inject_respond_tool
@@ -254,6 +258,7 @@ class ProxyServer:
             port=self._port,
             serialize_requests=self._serialize,
             max_retries=self._max_retries,
+            max_tool_errors=self._max_tool_errors,
             rescue_enabled=self._rescue_enabled,
             native_passthrough=self._backend_capability == "native",
             inject_respond_tool=self._inject_respond_tool,
