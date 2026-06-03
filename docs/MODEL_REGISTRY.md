@@ -4,9 +4,9 @@ Every model forge knows about, classified by eval-suite status.
 
 ## Status meanings
 
-- **Current** — in the v0.7.0 eval suite. Numbers in [`docs/results/`](results/) and the [dashboard](results/dashboard.html).
+- **Current** — in the published eval. The dashboard folds multiple eval *generations* into one view (the v0.7.0 8–14B lineup, plus the v0.7.4 32GB tier); runs not yet re-swept against the latest code — e.g. the Anthropic ablation — are carried forward and superscript-tagged. Numbers in [`docs/results/`](results/) and the [dashboard](results/dashboard.html).
 - **Retired** — appeared in a prior eval suite, cut from the current one. Either too weak (bare scores below the threshold for informative comparison) or superseded by a newer family member. Sampling defaults retained for backward compatibility.
-- **Unpublished** — sampling defaults are present (either dogfooded by forge consumers, or staged for a future eval), but no eval numbers have been published. Forge will work with them; performance is undocumented.
+- **Unpublished** — sampling defaults are present, but no eval numbers have been published. Forge will work with these models; performance is undocumented.
 
 Sampling values are sourced from the model's HuggingFace card unless noted. Values are verified one model at a time — see [`src/forge/clients/sampling_defaults.py`](../src/forge/clients/sampling_defaults.py) for the authoritative map.
 
@@ -25,6 +25,12 @@ Sampling values are sourced from the model's HuggingFace card unless noted. Valu
 | Granite 4.1 8B | Q4_K_M, Q8_0 | 0.0³ | 1.0 | 0 | — | — | — | (IBM convention, unconfirmed) |
 | Gemma-4 E4B-it | Q4_K_M, Q8_0 | 1.0 | 0.95 | 64 | — | — | — | [HF](https://huggingface.co/google/gemma-4-e4b-it) |
 | Phi-4 | Q4_K_M | — | — | — | — | — | — | (no formal recommendation⁴) |
+| Mistral Small 3.2 24B Instruct 2506 | Q4_K_M | 0.15 | — | — | — | — | — | [HF](https://huggingface.co/mistralai/Mistral-Small-3.2-24B-Instruct-2506) |
+| Qwen3.5 27B | Q4_K_M | 1.0 | 0.95 | 20 | 0.0 | — | 1.5 | [HF](https://huggingface.co/Qwen/Qwen3.5-27B) |
+| Qwen3.5 35B-A3B | Q4_K_M | 1.0 | 0.95 | 20 | 0.0 | — | 1.5 | [HF](https://huggingface.co/Qwen/Qwen3.5-35B-A3B) |
+| Qwen3.6 27B | Q4_K_M | 1.0 | 0.95 | 20 | 0.0 | — | 0.0⁶ | [HF](https://huggingface.co/Qwen/Qwen3.6-27B) |
+| Qwen3.6 35B-A3B UD | Q4_K_M | 1.0 | 0.95 | 20 | 0.0 | — | 1.5 | [HF](https://huggingface.co/Qwen/Qwen3.6-35B-A3B) |
+| Nemotron-3 Nano 30B-A3B | Q4_K_M | 0.6 | 0.95 | — | — | — | —⁷ | [HF](https://huggingface.co/nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16) |
 | Claude Haiku 4.5⁵ | — | — | — | — | — | — | — | (SDK-managed) |
 | Claude Sonnet 4.6⁵ | — | — | — | — | — | — | — | (SDK-managed) |
 | Claude Opus 4.6⁵ | — | — | — | — | — | — | — | (SDK-managed) |
@@ -33,7 +39,9 @@ Sampling values are sourced from the model's HuggingFace card unless noted. Valu
 ² Ministral-3 Reasoning cards show `top_p=0.95` in code examples but do NOT include it in the formal "Recommended Settings" section. Add explicitly if you want to follow the examples.
 ³ Granite 4.1 sampling mirrors the Granite 4.0 IBM convention (greedy decoding); marked unconfirmed pending IBM publication for the 4.1 family specifically.
 ⁴ Phi-4: no formal sampling recommendation from any official source (Microsoft HF card, model docs). Falls through to backend defaults.
-⁵ **Claude numbers in v0.7.0 docs are from the v0.6.0 dataset.** The Anthropic ablation was not re-run in v0.7.0 due to cost (~$272 for the full 11,700-row matrix). Backend support is unchanged; numbers are stable to within tool-error-channel sensitivity (small).
+⁵ **Claude numbers are carried forward from the v0.6.0 dataset** — gen 1 on the dashboard, superscript-tagged. The Anthropic ablation has not been re-run since, owing to cost (~$272 for the full 11,700-row matrix). Backend support is unchanged; numbers are stable to within tool-error-channel sensitivity (small).
+⁶ Qwen3.6 27B (dense) deliberately diverges from its A3B siblings: its card drops the `presence_penalty=1.5` the MoE variants recommend, so forge sends `0.0` (no penalty).
+⁷ Nemotron-3 Nano: the card splits sampling into a Reasoning preset (T=1.0, top_p=1.0) and a Tool-calling preset (T=0.6, top_p=0.95); the tool-calling preset is used here, with thinking enabled via `chat_template_kwargs`.
 
 ---
 
@@ -59,27 +67,21 @@ Sampling params staged, no eval data published. Forge supports these — perform
 |---|---|---|---|---|---|---|---|
 | Qwen3 4B Instruct 2507 | Q4_K_M | 0.7 | 0.8 | 20 | 0.0 | — | [HF](https://huggingface.co/Qwen/Qwen3-4B-Instruct-2507) |
 | Qwen3 4B Thinking 2507 | Q4_K_M | 0.6 | 0.95 | 20 | 0.0 | — | [HF](https://huggingface.co/Qwen/Qwen3-4B-Thinking-2507) |
-| Qwen3.5 27B | Q4_K_M | 1.0 | 0.95 | 20 | 0.0 | presence_penalty=1.5 | [HF](https://huggingface.co/Qwen/Qwen3.5-27B) |
-| Qwen3.5 35B-A3B | Q4_K_M | 1.0 | 0.95 | 20 | 0.0 | presence_penalty=1.5 | [HF](https://huggingface.co/Qwen/Qwen3.5-35B-A3B) |
-| Qwen3.6 35B-A3B UD | Q4_K_M | 1.0 | 0.95 | 20 | 0.0 | presence_penalty=1.5 | [HF](https://huggingface.co/Qwen/Qwen3.6-35B-A3B) |
-| Qwen3.5 122B-A10B | Q4_K_M | 0.7 | 0.8 | 20 | — | balanced profile; thinking mode separate run⁶ | [HF](https://huggingface.co/Qwen/Qwen3.5-122B-A10B) |
+| Qwen3.5 122B-A10B | Q4_K_M | 0.7 | 0.8 | 20 | — | balanced (instruct) preset; thinking mode is separate⁸ | [HF](https://huggingface.co/Qwen/Qwen3.5-122B-A10B) |
 | Qwen3-Coder 30B-A3B Instruct | Q4_K_M | 0.7 | 0.8 | 20 | — | repeat_penalty=1.05 | [HF](https://huggingface.co/Qwen/Qwen3-Coder-30B-A3B-Instruct) |
 | Qwen3-Coder-Next 80B-A3B | Q4_K_M | 1.0 | 0.95 | 40 | — | coder fine-tune over Qwen3-Next | [HF](https://huggingface.co/Qwen/Qwen3-Coder-Next) |
 | Qwen3-Next 80B-A3B Instruct | Q4_K_M | 0.7 | 0.8 | 20 | 0.0 | hybrid-attention MoE; thinking-mode profile | [HF](https://huggingface.co/Qwen/Qwen3-Next-80B-A3B-Instruct) |
-| Mistral Small 3.2 24B Instruct 2506 | Q4_K_M, Q8_0 | 0.15 | — | — | — | — | [HF](https://huggingface.co/mistralai/Mistral-Small-3.2-24B-Instruct-2506) |
 | Devstral Small 2 24B Instruct 2512 | Q4_K_M, Q8_0 | 0.15 | — | — | — | — | [HF](https://huggingface.co/mistralai/Devstral-Small-2-24B-Instruct-2512) |
-| Mistral Small 4 119B 2603 UD | Q4_K_M | 0.7 | — | — | — | `chat_template_kwargs.reasoning_effort="high"`⁷ | [HF](https://huggingface.co/mistralai/Mistral-Small-4-119B-2603) |
+| Mistral Small 4 119B 2603 UD | Q4_K_M | 0.7 | — | — | — | `chat_template_kwargs.reasoning_effort="high"`⁹ | [HF](https://huggingface.co/mistralai/Mistral-Small-4-119B-2603) |
 | Gemma-4 26B-A4B-it | Q4_K_M (UD), Q8_0 | 1.0 | 0.95 | 64 | — | — | [HF](https://huggingface.co/google/gemma-4-26b-a4b-it) |
 | Gemma-4 31B-it | Q4_K_M | 1.0 | 0.95 | 64 | — | — | [HF](https://huggingface.co/google/gemma-4-31b-it) |
-| NVIDIA Nemotron-3 Super 120B-A12B UD | Q4_K_M | 1.0 | 0.95 | — | — | thinking on; low_effort, force_nonempty_content via `chat_template_kwargs`⁸ | [HF](https://huggingface.co/nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-BF16) |
-| Nemotron-3 Nano 30B-A3B | Q4_K_M | 0.6 | 0.95 | — | — | tool-calling preset (deterministic); thinking on via `chat_template_kwargs`⁹ | [HF](https://huggingface.co/nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16) |
-| gpt-oss 120b | Q4_K_M | 1.0 | 1.0 | 0 | 0.0 | `chat_template_kwargs.reasoning_effort="medium"`; **do not** set repeat/presence penalties¹⁰ | [HF](https://huggingface.co/openai/gpt-oss-120b) |
+| NVIDIA Nemotron-3 Super 120B-A12B UD | Q4_K_M | 1.0 | 0.95 | — | — | thinking on; low_effort, force_nonempty_content via `chat_template_kwargs`¹⁰ | [HF](https://huggingface.co/nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-BF16) |
+| gpt-oss 120b | Q4_K_M | 1.0 | 1.0 | 0 | 0.0 | `chat_template_kwargs.reasoning_effort="medium"`; **do not** set repeat/presence penalties¹¹ | [HF](https://huggingface.co/openai/gpt-oss-120b) |
 
-⁶ Qwen3.5-122B-A10B: smoke probe starts with `--reasoning-budget 0` (instruct mode). Bumping to thinking mode is a separate run if smoke clean. Card lists a "balanced" preset of T=0.7 / top_p=0.8 / top_k=20.
-⁷ Mistral-Small-4 card gives T=0.7 for `reasoning_effort="high"` and "between 0.0 and 0.7" for `reasoning_effort="none"` (task-dependent). High-effort profile picked as the safer default; top_p/top_k not specified on the card.
-⁸ Nemotron-3 Super: card recommends T=1.0 / top_p=0.95 across all tasks. `low_effort` reins in over-thinking; `force_nonempty_content` so the model emits something substantive instead of empty `<think>` blocks.
-⁹ Nemotron-3 Nano: card splits sampling into "Reasoning" (T=1.0, top_p=1.0) and "Tool-calling" (T=0.6, top_p=0.95) presets. Currently using the tool-calling preset to test whether F3 deception observed at higher T is temperature-tunable.
-¹⁰ gpt-oss-120b: per the llama.cpp maintainer guide, **explicitly do not set `repeat_penalty` or `presence_penalty`** — they degrade output. Registry omission == None == field omitted from request body. `reasoning_effort` adjustable via `chat_template_kwargs`; "medium" is the current default, bring down if overthinking observed.
+⁸ Qwen3.5-122B-A10B: values are the card's "balanced" instruct preset (T=0.7 / top_p=0.8 / top_k=20). Thinking mode uses different sampling and is tracked as a separate configuration.
+⁹ Mistral-Small-4 card gives T=0.7 for `reasoning_effort="high"` and "between 0.0 and 0.7" for `reasoning_effort="none"` (task-dependent). High-effort profile picked as the safer default; top_p/top_k not specified on the card.
+¹⁰ Nemotron-3 Super: card recommends T=1.0 / top_p=0.95 across all tasks. `low_effort` reins in over-thinking; `force_nonempty_content` so the model emits something substantive instead of empty `<think>` blocks.
+¹¹ gpt-oss-120b: per the llama.cpp maintainer guide, **explicitly do not set `repeat_penalty` or `presence_penalty`** — they degrade output. Registry omission == None == field omitted from request body. `reasoning_effort` adjustable via `chat_template_kwargs`; "medium" is the current default, bring down if overthinking observed.
 
 ---
 

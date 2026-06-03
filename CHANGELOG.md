@@ -2,6 +2,23 @@
 
 All notable changes to forge are documented here.
 
+## [0.7.4] — 2026-06-03
+
+Malformed tool-call arguments now self-correct on the tool-error channel, and the eval suite gains its first model-size upgrade — a 32GB tier (Qwen3.5 / 3.6 27–35B, Nemotron-3 Nano, Mistral-Small-3.2) surfaced in the dashboard alongside the existing 8–14B lineup.
+
+### Added
+- **Proxy `--max-tool-errors`** (default 2) — bounds consecutive tool-argument errors per request, mirroring the `WorkflowRunner` budget. Threaded through `ProxyServer` and the HTTP handler.
+- **32GB model tier** in the published eval and dashboard: Mistral-Small-3.2 24B, Qwen3.5 27B / 35B-A3B, Qwen3.6 27B / 35B-A3B, Nemotron-3 Nano 30B-A3B (moved Unpublished → Current in the [Model Registry](docs/MODEL_REGISTRY.md)).
+- **Eval-generation tracking in the dashboard.** Results gathered against different code states fold into a single view, deduped to the newest generation per config. Runs not yet re-swept (e.g. the Anthropic ablation) are carried forward and superscript-badged with a commit/date legend; Retired-tier models are carried forward but hidden behind a `Show retired` toggle.
+
+### Changed
+- **Malformed tool-call arguments ride the tool-error channel.** A model that emits a structurally valid call whose `arguments` are unparseable or not an object is now corrected via a tool-error result (`role="tool"`, anchored to its `tool_call_id`) draining `max_tool_errors`, uniformly across all OpenAI-shape clients and all three integration modes (`WorkflowRunner`, proxy, `Guardrails` facade). This supersedes 0.7.3's "malformed args drive a retry nudge" behavior. The change is a native-mode conditioning bet — a small model plausibly self-corrects better on the channel it was pretrained on than via a trailing user nudge; in prompt mode the tool role is downgraded to a user message, so behavior there is unchanged. See [ADR-016](docs/decisions/016-malformed-args-tool-error-channel.md).
+- **`Guardrails.check()` gains `action="tool_error"`** for tool-call faults (unknown tool, malformed args) so middleware loops account for them on the tool channel. No consumers depended on the prior action vocabulary.
+- **BREAKING (minor) — `ToolCall` / `TextResponse` are now plain dataclasses** (`args: Any`); shape validation moved entirely to `ResponseValidator`. Keyword construction is unaffected, but the pydantic `.model_*` API on these two types is gone.
+
+### Fixed
+- **Non-object tool args no longer crash the parser.** Previously `arguments` decoding to a list / scalar / `null` raised at `ToolCall` construction; it is now caught at validation and routed to the tool-error channel. `StepTracker.check_prerequisites` additionally guards against a non-dict `args` reaching a direct dispatch.
+
 ## [0.7.3] — 2026-06-01
 
 Native-first proxy. With native function calling now well-supported across modern local models, the proxy defaults to — and is optimized for — native tool calling, forwarding the client's OpenAI `tools` / `messages` to the backend verbatim. Prompt-injection remains available as an explicit opt-in for llama.cpp / llamafile backends that lack a function-calling template, but it is no longer the default path. This release also folds in the OpenAI-compatible client and several proxy / eval fixes that landed on `main` since 0.7.2.
