@@ -59,6 +59,7 @@ class ProxyServer:
         serialize: bool | None = None,
         max_retries: int = 3,
         rescue_enabled: bool = True,
+        api_key: str | None = None,
     ) -> None:
         """
         Args:
@@ -92,6 +93,7 @@ class ProxyServer:
         self._port = port
         self._max_retries = max_retries
         self._rescue_enabled = rescue_enabled
+        self._api_key = api_key
 
         # Auto-detect serialization: managed = single GPU = serialize
         if serialize is None:
@@ -164,12 +166,13 @@ class ProxyServer:
             if not base.endswith("/v1"):
                 base = base + "/v1"
             # External mode: caller manages the backend, so we don't have a
-            # GGUF path. "default" is a placeholder identity for the wire
-            # model field (llama-server ignores it) and JSONL model field.
+            # GGUF path. Use model name if provided, else "default" placeholder.
+            wire_model = self._model or "default"
             client = LlamafileClient(
-                gguf_path="default",
+                gguf_path=wire_model,
                 base_url=base,
                 mode="native",
+                api_key=self._api_key,
             )
             if self._budget_tokens is not None:
                 budget = self._budget_tokens

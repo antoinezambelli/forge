@@ -142,6 +142,7 @@ class LlamafileClient:
         cache_prompt: bool = True,
         slot_id: int | None = None,
         recommended_sampling: bool = False,
+        api_key: str | None = None,
     ) -> None:
         self.base_url = base_url
         # gguf_path is the canonical identity. self.model is the stem (no
@@ -149,7 +150,10 @@ class LlamafileClient:
         # (llama-server ignores it but it flows into eval JSONL rows) and
         # for sampling-defaults lookup.
         self.gguf_path = Path(gguf_path)
-        self.model = self.gguf_path.stem
+        # When gguf_path is a real file, use stem (no .gguf/.llamafile suffix).
+        # When it's a plain model name (no GGUF extension), use it as-is.
+        _GGUF_SUFFIXES = {".gguf", ".llamafile"}
+        self.model = self.gguf_path.stem if self.gguf_path.suffix.lower() in _GGUF_SUFFIXES else str(gguf_path)
         # Apply per-model recommended sampling defaults. Caller's explicit
         # (non-None) kwargs win over the map field-by-field.
         defaults = apply_sampling_defaults(self.model, strict=recommended_sampling)
@@ -160,7 +164,8 @@ class LlamafileClient:
         self.repeat_penalty = repeat_penalty if repeat_penalty is not None else defaults.get("repeat_penalty")
         self.presence_penalty = presence_penalty if presence_penalty is not None else defaults.get("presence_penalty")
         self.mode = mode
-        self._http = httpx.AsyncClient(timeout=timeout)
+        headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
+        self._http = httpx.AsyncClient(timeout=timeout, headers=headers)
         self._think: bool = think if think is not None else True  # auto = capture
         self._cache_prompt = cache_prompt
         self._slot_id = slot_id
@@ -407,6 +412,8 @@ class LlamafileClient:
             base = base[:-3]
 
         resp = await self._http.get(f"{base}/props")
+        if resp.status_code == 404:
+            return None
         resp.raise_for_status()
         data = resp.json()
 

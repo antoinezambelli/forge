@@ -50,6 +50,7 @@ def main() -> None:
     parser.add_argument("--max-retries", type=int, default=3, help="Max retries per request (default: 3)")
     parser.add_argument("--no-rescue", action="store_true", help="Disable rescue parsing")
     parser.add_argument("--verbose", "-v", action="store_true", help="Verbose logging")
+    parser.add_argument("--api-key", help="API key for backend authentication (sent as Bearer token)")
 
     args = parser.parse_args()
 
@@ -82,6 +83,7 @@ def main() -> None:
         serialize=serialize,
         max_retries=args.max_retries,
         rescue_enabled=not args.no_rescue,
+        api_key=args.api_key,
     )
 
     def _shutdown(sig: int, _frame: object) -> None:
