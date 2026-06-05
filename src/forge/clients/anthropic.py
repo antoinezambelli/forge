@@ -40,10 +40,17 @@ class AnthropicClient:
         tool_choice: str | None = None,
         recommended_sampling: bool = False,
         base_url: str | None = None,
+        prompt_caching: bool = False,
     ) -> None:
         self.model = model
         self.max_tokens = max_tokens
         self._tool_choice = tool_choice  # "auto", "any", or None (default=auto)
+        # Opt-in Anthropic prompt caching (billing-only). When on, the rebuild
+        # path marks a static cache breakpoint over the tool defs + system
+        # prompt (re-sent verbatim every turn). Off by default so the proxy
+        # verbatim path and existing request shape are untouched. See
+        # _apply_static_cache for why caching is static-only here.
+        self._prompt_caching = prompt_caching
         # Accepted for API symmetry across clients but currently a no-op:
         # AnthropicClient does not expose sampling kwargs through forge today.
         # The Anthropic SDK manages sampling internally.
@@ -279,7 +286,40 @@ class AnthropicClient:
             kwargs["tools"] = self._convert_tools(tools)
             if self._tool_choice and "tool_choice" not in kwargs:
                 kwargs["tool_choice"] = {"type": self._tool_choice}
+        if self._prompt_caching:
+            self._apply_static_cache(kwargs)
         return kwargs
+
+    @staticmethod
+    def _apply_static_cache(kwargs: dict[str, Any]) -> None:
+        """Mark a static ephemeral cache breakpoint over tool defs + system.
+
+        The tool block and system prompt are byte-identical on every turn of a
+        run, so this prefix reliably read-hits (at 0.1×) from turn 2 onward
+        instead of re-billing the re-sent schema + prompt at full price.
+
+        Static-only on purpose: a *rolling* per-turn breakpoint over the growing
+        conversation is NOT placed here. The eval's default
+        ``reasoning_replay="keep-last"`` re-serializes earlier tool-call messages
+        differently each turn (it keeps only the latest reasoning), which busts a
+        rolling prefix cache — you'd pay 1.25× writes with no reads. The
+        conversation prefix is only stable under ``none``/``full``, and
+        ``reasoning_replay`` is a measured variable we won't pin, so caching is
+        confined to the always-stable tools+system region.
+
+        The cached prefix is ordered tools → system → messages, so a single
+        breakpoint on the system block subsumes the tools; we additionally mark
+        the last tool so the tool prefix still caches when ``system`` is absent.
+        """
+        ephemeral = {"type": "ephemeral"}
+        tools = kwargs.get("tools")
+        if tools:
+            tools[-1]["cache_control"] = ephemeral
+        system = kwargs.get("system")
+        if isinstance(system, str) and system:
+            kwargs["system"] = [
+                {"type": "text", "text": system, "cache_control": ephemeral}
+            ]
 
     async def send(
         self,
@@ -319,6 +359,12 @@ class AnthropicClient:
                 prompt_tokens=response.usage.input_tokens,
                 completion_tokens=response.usage.output_tokens,
                 total_tokens=response.usage.input_tokens + response.usage.output_tokens,
+                cache_creation_input_tokens=getattr(
+                    response.usage, "cache_creation_input_tokens", 0
+                ) or 0,
+                cache_read_input_tokens=getattr(
+                    response.usage, "cache_read_input_tokens", 0
+                ) or 0,
             )
         }
         return self._parse_response(response)
@@ -402,6 +448,12 @@ class AnthropicClient:
                         completion_tokens=final_message.usage.output_tokens,
                         total_tokens=final_message.usage.input_tokens
                         + final_message.usage.output_tokens,
+                        cache_creation_input_tokens=getattr(
+                            final_message.usage, "cache_creation_input_tokens", 0
+                        ) or 0,
+                        cache_read_input_tokens=getattr(
+                            final_message.usage, "cache_read_input_tokens", 0
+                        ) or 0,
                     )
                 }
         except anthropic.APIError as exc:

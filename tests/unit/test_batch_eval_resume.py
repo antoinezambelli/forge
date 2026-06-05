@@ -14,6 +14,7 @@ from forge.core.reasoning import DEFAULT_REASONING_REPLAY
 
 from tests.eval.batch_eval import (
     BatchConfig,
+    _compute_cost,
     _count_completed_runs,
     _run_key,
     _run_result_to_row,
@@ -91,3 +92,52 @@ def test_count_completed_runs_separates_policies(tmp_path) -> None:
     # explicit keep-last + the legacy row defaulting to keep-last
     assert counts[key("keep-last")] == 2
     assert counts[key("none")] + counts[key("full")] + counts[key("keep-last")] == 5
+
+
+def test_compute_cost_prices_cache_tokens() -> None:
+    """Cache writes bill 1.25× and reads 0.1× of the input rate; uncached input
+    and output keep their base rates. (sonnet: $3 input / $15 output per Mtok.)"""
+    cost = _compute_cost(
+        "claude-sonnet-4-6",
+        input_tokens=1_000,
+        output_tokens=500,
+        cache_creation_tokens=2_000,
+        cache_read_tokens=4_000,
+    )
+    expected = (
+        1_000 * 3.0
+        + 2_000 * 3.0 * 1.25
+        + 4_000 * 3.0 * 0.1
+        + 500 * 15.0
+    ) / 1_000_000
+    assert cost == expected
+
+    # Back-compat: omitting cache args matches the old input+output formula.
+    assert _compute_cost("claude-sonnet-4-6", 1_000, 500) == (
+        1_000 * 3.0 + 500 * 15.0
+    ) / 1_000_000
+
+    # Opus 4.8 is priced (placeholder rate), not an unknown-model 0.0.
+    assert _compute_cost("claude-opus-4-8", 1_000, 0) > 0
+
+
+def test_run_result_to_row_emits_cache_tokens() -> None:
+    cfg = BatchConfig(model="claude-sonnet-4-6", backend="anthropic", mode="native", think=None)
+    res = RunResult(
+        scenario_name="sc",
+        completeness=True,
+        iterations_used=3,
+        accuracy=True,
+        messages=None,
+        input_tokens=1_000,
+        output_tokens=500,
+        cache_creation_tokens=2_000,
+        cache_read_tokens=4_000,
+    )
+    row = _run_result_to_row(res, cfg, basic_2step, run_idx=1)
+
+    assert row["cache_creation_input_tokens"] == 2_000
+    assert row["cache_read_input_tokens"] == 4_000
+    assert row["cost_usd"] == round(
+        _compute_cost("claude-sonnet-4-6", 1_000, 500, 2_000, 4_000), 6
+    )

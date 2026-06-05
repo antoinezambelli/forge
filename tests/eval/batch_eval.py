@@ -156,13 +156,13 @@ LLAMAFILE_CONFIGS: list[BatchConfig] = [
 ANTHROPIC_CONFIGS: list[BatchConfig] = [
     BatchConfig(model="claude-haiku-4-5-20251001", backend="anthropic", mode="native", think=None),
     BatchConfig(model="claude-sonnet-4-6", backend="anthropic", mode="native", think=None),
-    BatchConfig(model="claude-opus-4-6", backend="anthropic", mode="native", think=None),
+    BatchConfig(model="claude-opus-4-8", backend="anthropic", mode="native", think=None),
 ]
 
 ANTHROPIC_ANY_CONFIGS: list[BatchConfig] = [
     BatchConfig(model="claude-haiku-4-5-20251001", backend="anthropic", mode="native", think=None, tool_choice="any"),
     BatchConfig(model="claude-sonnet-4-6", backend="anthropic", mode="native", think=None, tool_choice="any"),
-    BatchConfig(model="claude-opus-4-6", backend="anthropic", mode="native", think=None, tool_choice="any"),
+    BatchConfig(model="claude-opus-4-8", backend="anthropic", mode="native", think=None, tool_choice="any"),
 ]
 
 ALL_CONFIGS: list[BatchConfig] = (
@@ -196,16 +196,40 @@ _ANTHROPIC_PRICING: dict[str, tuple[float, float]] = {
     "claude-haiku-4-5-20251001": (1.0, 5.0),
     "claude-sonnet-4-6": (3.0, 15.0),
     "claude-opus-4-6": (5.0, 25.0),
+    # Opus 4.8 standard mode: $5 input / $25 output per Mtok (anthropic.com,
+    # confirmed 2026-06). Same as 4-6. (Fast mode is 2× — $10/$50 — not used here.)
+    "claude-opus-4-8": (5.0, 25.0),
 }
 
+# Prompt-cache token multipliers on the input rate, uniform across current
+# Anthropic models: writes bill 1.25×, reads bill 0.1×.
+_CACHE_WRITE_MULTIPLIER = 1.25
+_CACHE_READ_MULTIPLIER = 0.1
 
-def _compute_cost(model: str, input_tokens: int, output_tokens: int) -> float:
-    """Compute USD cost from token counts. Returns 0.0 for unknown models."""
+
+def _compute_cost(
+    model: str,
+    input_tokens: int,
+    output_tokens: int,
+    cache_creation_tokens: int = 0,
+    cache_read_tokens: int = 0,
+) -> float:
+    """Compute USD cost from token counts. Returns 0.0 for unknown models.
+
+    ``input_tokens`` is the *uncached* input sliver; cached writes/reads are
+    priced separately off the input rate so prompt caching is reflected
+    accurately (the API reports these as distinct usage fields).
+    """
     rates = _ANTHROPIC_PRICING.get(model)
     if not rates:
         return 0.0
     input_rate, output_rate = rates
-    return (input_tokens * input_rate + output_tokens * output_rate) / 1_000_000
+    return (
+        input_tokens * input_rate
+        + cache_creation_tokens * input_rate * _CACHE_WRITE_MULTIPLIER
+        + cache_read_tokens * input_rate * _CACHE_READ_MULTIPLIER
+        + output_tokens * output_rate
+    ) / 1_000_000
 
 
 # ── JSONL helpers ───────────────────────────────────────────────
@@ -342,11 +366,19 @@ def _run_result_to_row(
         row["wasted_calls"] = None
 
     # Token usage and cost (Anthropic only — local backends report 0)
-    if result.input_tokens or result.output_tokens:
+    if (
+        result.input_tokens or result.output_tokens
+        or result.cache_creation_tokens or result.cache_read_tokens
+    ):
         row["input_tokens"] = result.input_tokens
         row["output_tokens"] = result.output_tokens
+        row["cache_creation_input_tokens"] = result.cache_creation_tokens
+        row["cache_read_input_tokens"] = result.cache_read_tokens
         row["cost_usd"] = round(
-            _compute_cost(config.model, result.input_tokens, result.output_tokens),
+            _compute_cost(
+                config.model, result.input_tokens, result.output_tokens,
+                result.cache_creation_tokens, result.cache_read_tokens,
+            ),
             6,
         )
 
@@ -562,7 +594,13 @@ def _build_client(config: BatchConfig, models_dir: Path) -> Any:
     elif config.backend == "anthropic":
         from forge.clients.anthropic import AnthropicClient
 
-        return AnthropicClient(model=config.model, tool_choice=config.tool_choice)
+        # Prompt caching on for sweeps: billing-only (identical model behavior
+        # and accuracy/iterations metrics), caches the re-sent tool defs +
+        # system prompt. Static-only — see AnthropicClient._apply_static_cache.
+        return AnthropicClient(
+            model=config.model, tool_choice=config.tool_choice,
+            prompt_caching=True,
+        )
 
     else:
         raise ValueError(f"Unknown backend: {config.backend}")
