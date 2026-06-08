@@ -10,14 +10,18 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
 from forge.core.reasoning import DEFAULT_REASONING_REPLAY
 
+import tests.eval.batch_eval as batch_eval
 from tests.eval.batch_eval import (
     BatchConfig,
     _compute_cost,
     _count_completed_runs,
     _run_key,
     _run_result_to_row,
+    run_batch,
 )
 from tests.eval.eval_runner import RunResult
 from tests.eval.scenarios import basic_2step
@@ -64,6 +68,48 @@ def test_run_result_to_row_records_reasoning_replay() -> None:
     res = RunResult(scenario_name="sc", completeness=True, iterations_used=2, messages=None)
     default_row = _run_result_to_row(res, cfg, basic_2step, run_idx=1)
     assert default_row["reasoning_replay"] == DEFAULT_REASONING_REPLAY
+
+
+@pytest.mark.asyncio
+async def test_anthropic_batch_rows_record_selected_reasoning_replay(
+    tmp_path, monkeypatch,
+) -> None:
+    """Anthropic rows must use the runtime policy, not the module default."""
+    cfg = BatchConfig(
+        model="claude-sonnet-4-6",
+        backend="anthropic",
+        mode="native",
+        think=True,
+    )
+    output = tmp_path / "results.jsonl"
+
+    monkeypatch.setattr(batch_eval, "ALL_SCENARIOS", [basic_2step])
+    monkeypatch.setattr(batch_eval, "_build_client", lambda config, models_dir: object())
+
+    async def fake_run_with_timeout(client, scenario, eval_config, ablation):
+        assert eval_config.reasoning_replay == "none"
+        return RunResult(
+            scenario_name=scenario.name,
+            completeness=True,
+            iterations_used=3,
+            accuracy=True,
+            messages=None,
+        )
+
+    monkeypatch.setattr(batch_eval, "_run_with_timeout", fake_run_with_timeout)
+
+    await run_batch(
+        configs=[cfg],
+        runs_per_scenario=1,
+        output_path=output,
+        tags=["plumbing"],
+        reasoning_replay="none",
+    )
+
+    row = json.loads(output.read_text().strip())
+    assert row["model"] == "claude-sonnet-4-6"
+    assert row["backend"] == "anthropic"
+    assert row["reasoning_replay"] == "none"
 
 
 def test_count_completed_runs_separates_policies(tmp_path) -> None:

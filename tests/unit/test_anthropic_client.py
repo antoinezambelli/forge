@@ -520,3 +520,42 @@ class TestPromptCaching:
         assert tu.prompt_tokens == 5
         assert tu.cache_creation_input_tokens == 100
         assert tu.cache_read_input_tokens == 200
+
+
+class TestThinking:
+    """Adaptive extended-thinking request wiring (baseline rows). Request-only:
+    thinking is merged into the rebuild path and forces tool_choice=auto."""
+
+    _MESSAGES = [
+        {"role": "system", "content": "sys"},
+        {"role": "user", "content": "hi"},
+    ]
+
+    def test_thinking_merged_into_kwargs(self) -> None:
+        client = AnthropicClient(
+            model="claude-test", api_key="dummy", thinking={"type": "adaptive"}
+        )
+        kwargs = client._build_kwargs(self._MESSAGES, [_make_spec("a")])
+        assert kwargs["thinking"] == {"type": "adaptive"}
+
+    def test_no_thinking_by_default(self) -> None:
+        client = AnthropicClient(model="claude-test", api_key="dummy")
+        kwargs = client._build_kwargs(self._MESSAGES, [_make_spec("a")])
+        assert "thinking" not in kwargs
+
+    def test_thinking_suppresses_forced_tool_choice(self) -> None:
+        # Anthropic forbids a forced tool_choice with thinking on -> must drop it.
+        client = AnthropicClient(
+            model="claude-test", api_key="dummy",
+            tool_choice="any", thinking={"type": "adaptive"},
+        )
+        kwargs = client._build_kwargs(self._MESSAGES, [_make_spec("a")])
+        assert "tool_choice" not in kwargs
+        assert kwargs["thinking"] == {"type": "adaptive"}
+
+    def test_forced_tool_choice_kept_when_no_thinking(self) -> None:
+        client = AnthropicClient(
+            model="claude-test", api_key="dummy", tool_choice="any"
+        )
+        kwargs = client._build_kwargs(self._MESSAGES, [_make_spec("a")])
+        assert kwargs["tool_choice"] == {"type": "any"}

@@ -154,9 +154,13 @@ LLAMAFILE_CONFIGS: list[BatchConfig] = [
 ]
 
 ANTHROPIC_CONFIGS: list[BatchConfig] = [
-    BatchConfig(model="claude-haiku-4-5-20251001", backend="anthropic", mode="native", think=None),
-    BatchConfig(model="claude-sonnet-4-6", backend="anthropic", mode="native", think=None),
-    BatchConfig(model="claude-opus-4-8", backend="anthropic", mode="native", think=None),
+    # think=True -> adaptive extended thinking ("Claude with reasoning" baseline
+    # rows). Haiku has no adaptive support (API rejects it) so it stays a
+    # non-thinking baseline. Wired in _build_client. NOT part of the
+    # reasoning_replay sweep — thinking here is request-only, no replay folding.
+    BatchConfig(model="claude-haiku-4-5-20251001", backend="anthropic", mode="native", think=False),
+    BatchConfig(model="claude-sonnet-4-6", backend="anthropic", mode="native", think=True),
+    BatchConfig(model="claude-opus-4-8", backend="anthropic", mode="native", think=True),
 ]
 
 ANTHROPIC_ANY_CONFIGS: list[BatchConfig] = [
@@ -597,9 +601,17 @@ def _build_client(config: BatchConfig, models_dir: Path) -> Any:
         # Prompt caching on for sweeps: billing-only (identical model behavior
         # and accuracy/iterations metrics), caches the re-sent tool defs +
         # system prompt. Static-only — see AnthropicClient._apply_static_cache.
+        #
+        # Adaptive extended thinking when think=True ("Claude with reasoning"
+        # baselines). Gated off for tool_choice="any" (forced tool choice is
+        # incompatible with thinking) and for models without adaptive support
+        # (Haiku, configured think=False). Request-only: no reasoning_replay
+        # folding — these are baseline rows, not part of the replay sweep.
+        thinking = {"type": "adaptive"} if (config.think and config.tool_choice != "any") else None
         return AnthropicClient(
             model=config.model, tool_choice=config.tool_choice,
-            prompt_caching=True,
+            prompt_caching=True, thinking=thinking,
+            max_tokens=16384 if thinking else 4096,
         )
 
     else:
@@ -794,6 +806,7 @@ async def run_batch(
                             result, config, scenario, run_idx + 1,
                             budget_tokens=scenario_budget,
                             ablation_name=ablation_name,
+                            reasoning_replay=reasoning_replay,
                         )
                         with output_path.open("a") as f:
                             f.write(json.dumps(row) + "\n")

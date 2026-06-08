@@ -41,6 +41,7 @@ class AnthropicClient:
         recommended_sampling: bool = False,
         base_url: str | None = None,
         prompt_caching: bool = False,
+        thinking: dict[str, Any] | None = None,
     ) -> None:
         self.model = model
         self.max_tokens = max_tokens
@@ -51,6 +52,12 @@ class AnthropicClient:
         # verbatim path and existing request shape are untouched. See
         # _apply_static_cache for why caching is static-only here.
         self._prompt_caching = prompt_caching
+        # Extended-thinking request config, e.g. {"type": "adaptive"}. When set,
+        # merged into every messages.create call (and a forced tool_choice is
+        # suppressed — Anthropic requires tool_choice="auto" with thinking on).
+        # None = thinking off; the proxy passthrough path can still carry its
+        # own ``thinking`` via ``passthrough``.
+        self._thinking = thinking
         # Accepted for API symmetry across clients but currently a no-op:
         # AnthropicClient does not expose sampling kwargs through forge today.
         # The Anthropic SDK manages sampling internally.
@@ -284,8 +291,12 @@ class AnthropicClient:
             kwargs["system"] = system
         if tools:
             kwargs["tools"] = self._convert_tools(tools)
-            if self._tool_choice and "tool_choice" not in kwargs:
+            # Extended thinking is incompatible with a forced tool_choice;
+            # Anthropic requires "auto" (the default) when thinking is on.
+            if self._tool_choice and not self._thinking and "tool_choice" not in kwargs:
                 kwargs["tool_choice"] = {"type": self._tool_choice}
+        if self._thinking and "thinking" not in kwargs:
+            kwargs["thinking"] = self._thinking
         if self._prompt_caching:
             self._apply_static_cache(kwargs)
         return kwargs
