@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import subprocess
 import sys
 import time
@@ -30,6 +31,11 @@ from tests.eval.scenarios import ALL_SCENARIOS, EvalScenario
 # ── GGUF paths ──────────────────────────────────────────────────
 
 MODELS_DIR_DEFAULT = Path("models")
+
+
+def _eval_port() -> int:
+    """llama-server port for eval workers; overridden by rig wrappers."""
+    return int(os.environ.get("FORGE_EVAL_PORT", "8080"))
 
 # GGUF and llamafile model files for local-server backends.
 # Each entry is just the filename — paired into a BatchConfig below
@@ -580,6 +586,7 @@ def _build_client(config: BatchConfig, models_dir: Path) -> Any:
         return LlamafileClient(
             gguf_path=str(models_dir / config.gguf_filename),
             mode=config.mode, think=think_val,
+            base_url=f"http://localhost:{_eval_port()}/v1",
             recommended_sampling=recommended_sampling,
         )
 
@@ -591,7 +598,7 @@ def _build_client(config: BatchConfig, models_dir: Path) -> Any:
             gguf_path=str(models_dir / config.gguf_filename),
             mode=config.mode,
             think=think_val,
-            base_url="http://localhost:8080/v1",
+            base_url=f"http://localhost:{_eval_port()}/v1",
             recommended_sampling=recommended_sampling,
         )
 
@@ -703,7 +710,7 @@ async def run_batch(
     total_ran = 0
     total_failed_connect = 0
     batch_start = time.monotonic()
-    server = ServerManager(backend="ollama", port=8080, models_dir=models_dir)
+    server = ServerManager(backend="ollama", port=_eval_port(), models_dir=models_dir)
     prev_backend: str | None = None
     prev_server: ServerManager | None = None
 
@@ -846,7 +853,7 @@ async def run_batch(
                 if prev_server is not None and prev_backend != "ollama":
                     await prev_server.stop()
                 server = ServerManager(
-                    backend=config.backend, port=8080, models_dir=models_dir
+                    backend=config.backend, port=_eval_port(), models_dir=models_dir
                 )
 
             # Resolve GGUF/llamafile path for non-Ollama backends
