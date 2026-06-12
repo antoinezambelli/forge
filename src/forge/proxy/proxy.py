@@ -20,6 +20,7 @@ from forge.clients.ollama import OllamaClient
 from forge.clients.vllm import VLLMClient
 from forge.context.manager import ContextManager
 from forge.context.strategies import TieredCompact
+from forge.core.reasoning import DEFAULT_REASONING_REPLAY, ReasoningReplay, validate_reasoning_replay
 from forge.proxy.server import HTTPServer
 from forge.server import BudgetMode, ServerManager, setup_backend
 
@@ -72,6 +73,7 @@ class ProxyServer:
         inject_respond_tool: bool = False,
         backend_protocol: Literal["openai", "anthropic"] = "openai",
         backend_timeout: float = 300.0,
+        reasoning_replay: ReasoningReplay = DEFAULT_REASONING_REPLAY,
     ) -> None:
         """
         Args:
@@ -118,6 +120,8 @@ class ProxyServer:
                 Only meaningful in external mode; ignored in managed mode.
             backend_timeout: Timeout in seconds for requests from the proxy to
                 the downstream backend.
+            reasoning_replay: How much captured reasoning to replay to the
+                backend on later turns: ``full``, ``keep-last``, or ``none``.
         """
         if backend_url is None and backend is None:
             raise ValueError("Provide either backend_url (external) or backend (managed)")
@@ -177,6 +181,7 @@ class ProxyServer:
         self._inject_respond_tool = inject_respond_tool
         self._backend_protocol = backend_protocol
         self._backend_timeout = backend_timeout
+        self._reasoning_replay = validate_reasoning_replay(reasoning_replay)
 
         # Auto-detect serialization: managed (no external url) = single local
         # GPU = serialize. External callers manage their own concurrency.
@@ -262,6 +267,7 @@ class ProxyServer:
             rescue_enabled=self._rescue_enabled,
             native_passthrough=self._backend_capability == "native",
             inject_respond_tool=self._inject_respond_tool,
+            reasoning_replay=self._reasoning_replay,
         )
         await self._http_server.start()
         self._started = True

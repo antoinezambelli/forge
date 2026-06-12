@@ -13,6 +13,7 @@ from forge.clients.base import ChunkType, LLMClient, StreamChunk
 from forge.context.manager import CompactEvent, ContextManager
 from forge.context.strategies import CompactStrategy, NoCompact, SlidingWindowCompact, TieredCompact
 from forge.core.messages import Message, MessageType
+from forge.core.reasoning import DEFAULT_REASONING_REPLAY, REASONING_REPLAY_CHOICES, ReasoningReplay
 from forge.core.runner import WorkflowRunner
 from forge.core.workflow import ToolCall, ToolDef, ToolSpec, Workflow
 from forge.errors import ForgeError, StreamError
@@ -48,6 +49,8 @@ class RunResult:
     stream_retries: int = 0
     input_tokens: int = 0
     output_tokens: int = 0
+    cache_creation_tokens: int = 0
+    cache_read_tokens: int = 0
     cost_usd: float = 0.0
 
 
@@ -63,6 +66,7 @@ class EvalConfig:
     verbose: bool = False
     budget_override: int | None = None
     stream_retries: int = 2
+    reasoning_replay: ReasoningReplay = DEFAULT_REASONING_REPLAY
 
 
 class CountingClientWrapper:
@@ -73,6 +77,8 @@ class CountingClientWrapper:
         self.call_count = 0
         self.total_input_tokens = 0
         self.total_output_tokens = 0
+        self.total_cache_creation_tokens = 0
+        self.total_cache_read_tokens = 0
 
     def __getattr__(self, name: str) -> Any:
         return getattr(self._client, name)
@@ -86,6 +92,13 @@ class CountingClientWrapper:
             for tu in usage.values():
                 self.total_input_tokens += tu.prompt_tokens
                 self.total_output_tokens += tu.completion_tokens
+                # Anthropic prompt-cache counters; 0 for other backends.
+                self.total_cache_creation_tokens += getattr(
+                    tu, "cache_creation_input_tokens", 0
+                )
+                self.total_cache_read_tokens += getattr(
+                    tu, "cache_read_input_tokens", 0
+                )
 
     async def send(
         self,
@@ -279,6 +292,7 @@ async def run_scenario(
         stream=config.stream,
         on_message=on_message,
         rescue_enabled=rescue_enabled,
+        reasoning_replay=config.reasoning_replay,
     )
 
     start = time.monotonic()
@@ -329,6 +343,8 @@ async def run_scenario(
                 stream_retries=attempt,
                 input_tokens=counting_client.total_input_tokens,
                 output_tokens=counting_client.total_output_tokens,
+                cache_creation_tokens=counting_client.total_cache_creation_tokens,
+                cache_read_tokens=counting_client.total_cache_read_tokens,
             )
         except StreamError as exc:
             last_stream_error = exc
@@ -347,6 +363,8 @@ async def run_scenario(
                 stream_retries=attempt,
                 input_tokens=counting_client.total_input_tokens,
                 output_tokens=counting_client.total_output_tokens,
+                cache_creation_tokens=counting_client.total_cache_creation_tokens,
+                cache_read_tokens=counting_client.total_cache_read_tokens,
             )
         except Exception as exc:
             elapsed = time.monotonic() - start
@@ -362,6 +380,8 @@ async def run_scenario(
                 stream_retries=attempt,
                 input_tokens=counting_client.total_input_tokens,
                 output_tokens=counting_client.total_output_tokens,
+                cache_creation_tokens=counting_client.total_cache_creation_tokens,
+                cache_read_tokens=counting_client.total_cache_read_tokens,
             )
 
     # All stream retries exhausted
@@ -435,6 +455,7 @@ async def run_eval(
             verbose=config.verbose,
             budget_override=scenario_budget,
             stream_retries=config.stream_retries,
+            reasoning_replay=config.reasoning_replay,
         )
 
         scenario_results: list[RunResult] = []
@@ -453,13 +474,15 @@ async def run_eval(
             else:
                 status = "OK"
             cost_str = ""
-            if result.input_tokens:
+            if result.input_tokens or result.cache_read_tokens or result.cache_creation_tokens:
                 from tests.eval.batch_eval import _compute_cost
 
                 cost = _compute_cost(
                     client.model if hasattr(client, "model") else "",
                     result.input_tokens,
                     result.output_tokens,
+                    result.cache_creation_tokens,
+                    result.cache_read_tokens,
                 )
                 if cost > 0:
                     cost_str = f", ${cost:.4f}"
@@ -549,6 +572,13 @@ async def main() -> None:
         help="Ablation preset: selectively disable guardrails (default: reforged = all enabled)",
     )
     parser.add_argument(
+        "--reasoning-replay",
+        choices=list(REASONING_REPLAY_CHOICES),
+        default=DEFAULT_REASONING_REPLAY,
+        help="How much captured reasoning to replay to the backend each turn: "
+        "full (legacy: replay all), keep-last (only most recent), none (default: drop all).",
+    )
+    parser.add_argument(
         "--tool-choice",
         choices=["auto", "any"],
         default=None,
@@ -558,6 +588,13 @@ async def main() -> None:
         "--no-cache-prompt",
         action="store_true",
         help="Disable llama-server prompt caching (default: enabled)",
+    )
+    parser.add_argument(
+        "--no-anthropic-cache",
+        action="store_true",
+        help="Disable Anthropic prompt caching for --backend anthropic "
+        "(default: enabled). Caching is billing-only; use this for a "
+        "cache-free cost-floor comparison.",
     )
     parser.add_argument(
         "--compact-strategy",
@@ -605,7 +642,10 @@ async def main() -> None:
     elif args.backend == "anthropic":
         from forge.clients.anthropic import AnthropicClient
 
-        client = AnthropicClient(model=args.model, tool_choice=args.tool_choice)
+        client = AnthropicClient(
+            model=args.model, tool_choice=args.tool_choice,
+            prompt_caching=not args.no_anthropic_cache,
+        )
     else:
         from forge.clients.llamafile import LlamafileClient
 
@@ -654,6 +694,7 @@ async def main() -> None:
             budget_override=resolved_budget,
             compact_strategy=cli_strategy,
             strategy_overrides={},
+            reasoning_replay=args.reasoning_replay,
         )
     else:
         config = EvalConfig(
@@ -665,6 +706,7 @@ async def main() -> None:
             strategy_overrides={
                 "compaction": TieredCompact(keep_recent=2),
             },
+            reasoning_replay=args.reasoning_replay,
         )
 
     ablation = ABLATION_PRESETS[args.ablation]
@@ -677,6 +719,7 @@ async def main() -> None:
     print(f"Resolved budget: {resolved_budget} tokens")
     print(f"Compact strategy: {strategy_label}")
     print(f"Ablation: {ablation.name}")
+    print(f"Reasoning replay: {args.reasoning_replay}")
     print(f"Tags filter: {args.tags or 'all'}")
     print(f"Scenario filter: {args.scenario or 'all'}")
     print()
@@ -696,14 +739,24 @@ async def main() -> None:
     all_runs = [r for runs in results.values() for r in runs]
     total_input = sum(r.input_tokens for r in all_runs)
     total_output = sum(r.output_tokens for r in all_runs)
-    if total_input:
+    total_cache_creation = sum(r.cache_creation_tokens for r in all_runs)
+    total_cache_read = sum(r.cache_read_tokens for r in all_runs)
+    if total_input or total_cache_read or total_cache_creation:
         from tests.eval.batch_eval import _compute_cost
 
-        total_cost = _compute_cost(args.model, total_input, total_output)
+        total_cost = _compute_cost(
+            args.model, total_input, total_output,
+            total_cache_creation, total_cache_read,
+        )
         print(
             f"Token usage: {total_input:,} input + {total_output:,} output"
             f" = {total_input + total_output:,} total"
         )
+        if total_cache_creation or total_cache_read:
+            print(
+                f"Prompt cache: {total_cache_creation:,} written + "
+                f"{total_cache_read:,} read"
+            )
         if total_cost > 0:
             n_runs = len(all_runs)
             print(f"Total cost: ${total_cost:.4f} ({n_runs} runs, ${total_cost / n_runs:.4f}/run)")

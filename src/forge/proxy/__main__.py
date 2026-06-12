@@ -8,6 +8,7 @@ import signal
 import sys
 import time
 
+from forge.core.reasoning import DEFAULT_REASONING_REPLAY, REASONING_REPLAY_CHOICES
 from forge.proxy.proxy import ProxyServer
 from forge.server import BudgetMode
 
@@ -85,6 +86,13 @@ def main() -> None:
         help="Inject forge's synthetic respond() tool when the client sends "
              "tools (keeps small models in tool-calling mode). Default off.",
     )
+    parser.add_argument(
+        "--reasoning-replay",
+        choices=REASONING_REPLAY_CHOICES,
+        default=DEFAULT_REASONING_REPLAY,
+        help="How much captured reasoning to replay to the backend "
+             "(default: none).",
+    )
     parser.add_argument("--verbose", "-v", action="store_true", help="Verbose logging")
 
     args = parser.parse_args()
@@ -124,6 +132,7 @@ def main() -> None:
         inject_respond_tool=args.inject_respond_tool,
         backend_protocol=args.backend_protocol,
         backend_timeout=args.backend_timeout,
+        reasoning_replay=args.reasoning_replay,
     )
 
     def _shutdown(sig: int, _frame: object) -> None:

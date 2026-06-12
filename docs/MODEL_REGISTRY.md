@@ -4,7 +4,7 @@ Every model forge knows about, classified by eval-suite status.
 
 ## Status meanings
 
-- **Current** — in the published eval. The dashboard folds multiple eval *generations* into one view (the v0.7.0 8–14B lineup, plus the v0.7.4 32GB tier); runs not yet re-swept against the latest code — e.g. the Anthropic ablation — are carried forward and superscript-tagged. Numbers in [`docs/results/`](results/) and the [dashboard](results/dashboard.html).
+- **Current** — in the published eval. The dashboard folds multiple eval *generations* into one view (the v0.7.5 reasoning-replay grid for the 8–14B lineup and Claude tier, plus the v0.7.4 32GB tier); runs not yet re-swept against the latest code — e.g. the 32GB tier and the Claude deep-ablation rows — are carried forward and superscript-tagged. Numbers in [`docs/results/`](results/) and the [dashboard](results/dashboard.html).
 - **Retired** — appeared in a prior eval suite, cut from the current one. Either too weak (bare scores below the threshold for informative comparison) or superseded by a newer family member. Sampling defaults retained for backward compatibility.
 - **Unpublished** — sampling defaults are present, but no eval numbers have been published. Forge will work with these models; performance is undocumented.
 
@@ -20,7 +20,7 @@ Sampling values are sourced from the model's HuggingFace card unless noted. Valu
 | Ministral-3 14B Instruct 2512 | Q4_K_M | 0.05¹ | — | — | — | — | — | [HF](https://huggingface.co/mistralai/Ministral-3-14B-Instruct-2512) |
 | Ministral-3 8B Reasoning 2512 | Q4_K_M, Q8_0 | 0.7 | —² | — | — | — | — | [HF](https://huggingface.co/mistralai/Ministral-3-8B-Reasoning-2512) |
 | Ministral-3 14B Reasoning 2512 | Q4_K_M | 1.0 | —² | — | — | — | — | [HF](https://huggingface.co/mistralai/Ministral-3-14B-Reasoning-2512) |
-| Qwen3 8B | Q4_K_M, Q8_0 | 0.6 | 0.95 | 20 | 0.0 | — | — | [HF](https://huggingface.co/Qwen/Qwen3-8B) |
+| Qwen3 8B | Q4_K_M, Q8_0⁸ | 0.6 | 0.95 | 20 | 0.0 | — | — | [HF](https://huggingface.co/Qwen/Qwen3-8B) |
 | Qwen3 14B | Q4_K_M | 0.6 | 0.95 | 20 | 0.0 | — | — | [HF](https://huggingface.co/Qwen/Qwen3-14B) |
 | Granite 4.1 8B | Q4_K_M, Q8_0 | 0.0³ | 1.0 | 0 | — | — | — | (IBM convention, unconfirmed) |
 | Gemma-4 E4B-it | Q4_K_M, Q8_0 | 1.0 | 0.95 | 64 | — | — | — | [HF](https://huggingface.co/google/gemma-4-e4b-it) |
@@ -33,15 +33,16 @@ Sampling values are sourced from the model's HuggingFace card unless noted. Valu
 | Nemotron-3 Nano 30B-A3B | Q4_K_M | 0.6 | 0.95 | — | — | — | —⁷ | [HF](https://huggingface.co/nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16) |
 | Claude Haiku 4.5⁵ | — | — | — | — | — | — | — | (SDK-managed) |
 | Claude Sonnet 4.6⁵ | — | — | — | — | — | — | — | (SDK-managed) |
-| Claude Opus 4.6⁵ | — | — | — | — | — | — | — | (SDK-managed) |
+| Claude Opus 4.8⁵ | — | — | — | — | — | — | — | (SDK-managed) |
 
 ¹ Ministral-3 Instruct cards say "temperature below 0.1 for production"; 0.05 picked within that range.
 ² Ministral-3 Reasoning cards show `top_p=0.95` in code examples but do NOT include it in the formal "Recommended Settings" section. Add explicitly if you want to follow the examples.
 ³ Granite 4.1 sampling mirrors the Granite 4.0 IBM convention (greedy decoding); marked unconfirmed pending IBM publication for the 4.1 family specifically.
 ⁴ Phi-4: no formal sampling recommendation from any official source (Microsoft HF card, model docs). Falls through to backend defaults.
-⁵ **Claude numbers are carried forward from the v0.6.0 dataset** — gen 1 on the dashboard, superscript-tagged. The Anthropic ablation has not been re-run since, owing to cost (~$272 for the full 11,700-row matrix). Backend support is unchanged; numbers are stable to within tool-error-channel sensitivity (small).
+⁵ **Claude baseline re-measured in the v0.7.5 dataset** with extended thinking enabled (adaptive) for Sonnet 4.6 and Opus 4.8; Haiku 4.5 does not support adaptive thinking and runs non-thinking. Earlier Claude rows ran thinking-off: Opus 4.6 and the Anthropic deep-ablation rows are carried forward from the v0.6.0 dataset (gen 1 on the dashboard, superscript-tagged) — the ablation has not been re-run owing to cost (~$272 for the full 11,700-row matrix).
 ⁶ Qwen3.6 27B (dense) deliberately diverges from its A3B siblings: its card drops the `presence_penalty=1.5` the MoE variants recommend, so forge sends `0.0` (no penalty).
 ⁷ Nemotron-3 Nano: the card splits sampling into a Reasoning preset (T=1.0, top_p=1.0) and a Tool-calling preset (T=0.6, top_p=0.95); the tool-calling preset is used here, with thinking enabled via `chat_template_kwargs`.
+⁸ **Qwen3 8B Q8_0 will be cut (→ Retired) in a future eval generation** on compute-cost vs signal-value grounds, not quality: it was the single most expensive model in the v0.7.5 grid (~108 GPU-hours, ~23% of the full sweep) while adding little information over its Q4_K_M sibling (the Q4/Q8 delta is a couple of points on a mid-board model, and the quant-comparison axis is preserved by the cheaper Ministral and Gemma Q4/Q8 pairs). Its numbers stay Current while they are part of the published dataset.
 
 ---
 

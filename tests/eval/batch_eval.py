@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import subprocess
 import sys
 import time
@@ -19,16 +20,22 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from forge.core.reasoning import DEFAULT_REASONING_REPLAY, REASONING_REPLAY_CHOICES, ReasoningReplay
 from forge.server import BudgetMode, ServerManager
 
 from tests.eval.ablation import ABLATION_PRESETS, AblationConfig
 from tests.eval.eval_runner import EvalConfig, RunResult, run_scenario
-from tests.eval.metrics import analyze_history, compute_metrics
+from tests.eval.metrics import analyze_history, compute_metrics, count_wire_reasoning
 from tests.eval.scenarios import ALL_SCENARIOS, EvalScenario
 
 # ── GGUF paths ──────────────────────────────────────────────────
 
 MODELS_DIR_DEFAULT = Path("models")
+
+
+def _eval_port() -> int:
+    """llama-server port for eval workers; overridden by rig wrappers."""
+    return int(os.environ.get("FORGE_EVAL_PORT", "8080"))
 
 # GGUF and llamafile model files for local-server backends.
 # Each entry is just the filename — paired into a BatchConfig below
@@ -153,15 +160,19 @@ LLAMAFILE_CONFIGS: list[BatchConfig] = [
 ]
 
 ANTHROPIC_CONFIGS: list[BatchConfig] = [
-    BatchConfig(model="claude-haiku-4-5-20251001", backend="anthropic", mode="native", think=None),
-    BatchConfig(model="claude-sonnet-4-6", backend="anthropic", mode="native", think=None),
-    BatchConfig(model="claude-opus-4-6", backend="anthropic", mode="native", think=None),
+    # think=True -> adaptive extended thinking ("Claude with reasoning" baseline
+    # rows). Haiku has no adaptive support (API rejects it) so it stays a
+    # non-thinking baseline. Wired in _build_client. NOT part of the
+    # reasoning_replay sweep — thinking here is request-only, no replay folding.
+    BatchConfig(model="claude-haiku-4-5-20251001", backend="anthropic", mode="native", think=False),
+    BatchConfig(model="claude-sonnet-4-6", backend="anthropic", mode="native", think=True),
+    BatchConfig(model="claude-opus-4-8", backend="anthropic", mode="native", think=True),
 ]
 
 ANTHROPIC_ANY_CONFIGS: list[BatchConfig] = [
     BatchConfig(model="claude-haiku-4-5-20251001", backend="anthropic", mode="native", think=None, tool_choice="any"),
     BatchConfig(model="claude-sonnet-4-6", backend="anthropic", mode="native", think=None, tool_choice="any"),
-    BatchConfig(model="claude-opus-4-6", backend="anthropic", mode="native", think=None, tool_choice="any"),
+    BatchConfig(model="claude-opus-4-8", backend="anthropic", mode="native", think=None, tool_choice="any"),
 ]
 
 ALL_CONFIGS: list[BatchConfig] = (
@@ -195,16 +206,40 @@ _ANTHROPIC_PRICING: dict[str, tuple[float, float]] = {
     "claude-haiku-4-5-20251001": (1.0, 5.0),
     "claude-sonnet-4-6": (3.0, 15.0),
     "claude-opus-4-6": (5.0, 25.0),
+    # Opus 4.8 standard mode: $5 input / $25 output per Mtok (anthropic.com,
+    # confirmed 2026-06). Same as 4-6. (Fast mode is 2× — $10/$50 — not used here.)
+    "claude-opus-4-8": (5.0, 25.0),
 }
 
+# Prompt-cache token multipliers on the input rate, uniform across current
+# Anthropic models: writes bill 1.25×, reads bill 0.1×.
+_CACHE_WRITE_MULTIPLIER = 1.25
+_CACHE_READ_MULTIPLIER = 0.1
 
-def _compute_cost(model: str, input_tokens: int, output_tokens: int) -> float:
-    """Compute USD cost from token counts. Returns 0.0 for unknown models."""
+
+def _compute_cost(
+    model: str,
+    input_tokens: int,
+    output_tokens: int,
+    cache_creation_tokens: int = 0,
+    cache_read_tokens: int = 0,
+) -> float:
+    """Compute USD cost from token counts. Returns 0.0 for unknown models.
+
+    ``input_tokens`` is the *uncached* input sliver; cached writes/reads are
+    priced separately off the input rate so prompt caching is reflected
+    accurately (the API reports these as distinct usage fields).
+    """
     rates = _ANTHROPIC_PRICING.get(model)
     if not rates:
         return 0.0
     input_rate, output_rate = rates
-    return (input_tokens * input_rate + output_tokens * output_rate) / 1_000_000
+    return (
+        input_tokens * input_rate
+        + cache_creation_tokens * input_rate * _CACHE_WRITE_MULTIPLIER
+        + cache_read_tokens * input_rate * _CACHE_READ_MULTIPLIER
+        + output_tokens * output_rate
+    ) / 1_000_000
 
 
 # ── JSONL helpers ───────────────────────────────────────────────
@@ -215,15 +250,39 @@ def _config_key(model: str, backend: str, mode: str) -> str:
     return f"{model}|{backend}|{mode}"
 
 
+def _run_key(
+    model: str,
+    backend: str,
+    mode: str,
+    ablation_name: str,
+    tool_choice: str,
+    reasoning_replay: str,
+    scenario: str,
+) -> str:
+    """Canonical per-run resume key.
+
+    Single source of truth for the resume/dedup dimensions so the counting
+    pass and every run-loop lookup stay in lockstep. reasoning_replay is part
+    of the key: distinct policies (none/keep-last/full) on the same
+    model+scenario are independent runs and must not collide.
+    """
+    return (
+        f"{model}|{backend}|{mode}"
+        f"|{ablation_name}|{tool_choice}|{reasoning_replay}|{scenario}"
+    )
+
+
 def _count_completed_runs(
     jsonl_path: Path,
     ablation_name: str = "reforged",
 ) -> dict[str, int]:
-    """Scan JSONL and count completed runs per (model, backend, mode, ablation, tool_choice, scenario).
+    """Scan JSONL and count completed runs per resume key (see ``_run_key``).
 
-    Returns dict mapping "model|backend|mode|ablation|tool_choice|scenario" → count.
-    Records without an ablation field are treated as "reforged".
-    Records without a tool_choice field are treated as "auto".
+    Returns dict mapping the canonical run key → count. Records without an
+    ablation field are treated as "reforged", without tool_choice as "auto",
+    and without reasoning_replay as the default policy (none) — so
+    pre-knob dumps resume cleanly under the default and are re-run under a
+    different policy.
     """
     counts: dict[str, int] = {}
     if not jsonl_path.exists():
@@ -241,9 +300,10 @@ def _count_completed_runs(
             if row_ablation != ablation_name:
                 continue
             row_tc = row.get("tool_choice", "auto")
-            key = (
-                f"{row['model']}|{row['backend']}|{row['mode']}"
-                f"|{row_ablation}|{row_tc}|{row['scenario']}"
+            row_rr = row.get("reasoning_replay", DEFAULT_REASONING_REPLAY)
+            key = _run_key(
+                row["model"], row["backend"], row["mode"],
+                row_ablation, row_tc, row_rr, row["scenario"],
             )
             counts[key] = counts.get(key, 0) + 1
     return counts
@@ -256,6 +316,7 @@ def _run_result_to_row(
     run_idx: int,
     budget_tokens: int | None = None,
     ablation_name: str = "reforged",
+    reasoning_replay: str = DEFAULT_REASONING_REPLAY,
 ) -> dict[str, Any]:
     """Convert a RunResult into a flat dict for JSONL output."""
     row: dict[str, Any] = {
@@ -264,6 +325,7 @@ def _run_result_to_row(
         "mode": config.mode,
         "ablation": ablation_name,
         "tool_choice": config.tool_choice or "auto",
+        "reasoning_replay": reasoning_replay,
         "scenario": result.scenario_name,
         "run": run_idx,
         "completeness": result.completeness,
@@ -285,11 +347,20 @@ def _run_result_to_row(
         row["step_nudges"] = stats.step_nudges
         row["tool_errors"] = stats.tool_errors
         row["reasoning_msgs"] = stats.reasoning_messages
+        # On-wire reasoning that survives the replay policy (independent
+        # validation of the knob): none->0, keep-last->{0,1}, full->[0,total].
+        # reasoning_wire_total is the denominator (non-empty reasoning blocks),
+        # so reasoning_wire / reasoning_wire_total is the actual replay rate.
+        wire_survived, wire_total = count_wire_reasoning(result.messages, reasoning_replay)
+        row["reasoning_wire"] = wire_survived
+        row["reasoning_wire_total"] = wire_total
     else:
         row["retry_nudges"] = None
         row["step_nudges"] = None
         row["tool_errors"] = None
         row["reasoning_msgs"] = None
+        row["reasoning_wire"] = None
+        row["reasoning_wire_total"] = None
 
     # Correctness
     row["accuracy"] = result.accuracy
@@ -305,11 +376,19 @@ def _run_result_to_row(
         row["wasted_calls"] = None
 
     # Token usage and cost (Anthropic only — local backends report 0)
-    if result.input_tokens or result.output_tokens:
+    if (
+        result.input_tokens or result.output_tokens
+        or result.cache_creation_tokens or result.cache_read_tokens
+    ):
         row["input_tokens"] = result.input_tokens
         row["output_tokens"] = result.output_tokens
+        row["cache_creation_input_tokens"] = result.cache_creation_tokens
+        row["cache_read_input_tokens"] = result.cache_read_tokens
         row["cost_usd"] = round(
-            _compute_cost(config.model, result.input_tokens, result.output_tokens),
+            _compute_cost(
+                config.model, result.input_tokens, result.output_tokens,
+                result.cache_creation_tokens, result.cache_read_tokens,
+            ),
             6,
         )
 
@@ -507,6 +586,7 @@ def _build_client(config: BatchConfig, models_dir: Path) -> Any:
         return LlamafileClient(
             gguf_path=str(models_dir / config.gguf_filename),
             mode=config.mode, think=think_val,
+            base_url=f"http://localhost:{_eval_port()}/v1",
             recommended_sampling=recommended_sampling,
         )
 
@@ -518,14 +598,28 @@ def _build_client(config: BatchConfig, models_dir: Path) -> Any:
             gguf_path=str(models_dir / config.gguf_filename),
             mode=config.mode,
             think=think_val,
-            base_url="http://localhost:8080/v1",
+            base_url=f"http://localhost:{_eval_port()}/v1",
             recommended_sampling=recommended_sampling,
         )
 
     elif config.backend == "anthropic":
         from forge.clients.anthropic import AnthropicClient
 
-        return AnthropicClient(model=config.model, tool_choice=config.tool_choice)
+        # Prompt caching on for sweeps: billing-only (identical model behavior
+        # and accuracy/iterations metrics), caches the re-sent tool defs +
+        # system prompt. Static-only — see AnthropicClient._apply_static_cache.
+        #
+        # Adaptive extended thinking when think=True ("Claude with reasoning"
+        # baselines). Gated off for tool_choice="any" (forced tool choice is
+        # incompatible with thinking) and for models without adaptive support
+        # (Haiku, configured think=False). Request-only: no reasoning_replay
+        # folding — these are baseline rows, not part of the replay sweep.
+        thinking = {"type": "adaptive"} if (config.think and config.tool_choice != "any") else None
+        return AnthropicClient(
+            model=config.model, tool_choice=config.tool_choice,
+            prompt_caching=True, thinking=thinking,
+            max_tokens=16384 if thinking else 4096,
+        )
 
     else:
         raise ValueError(f"Unknown backend: {config.backend}")
@@ -563,6 +657,7 @@ async def run_batch(
     tags: list[str] | None = None,
     scenario_names: list[str] | None = None,
     ablation: AblationConfig | None = None,
+    reasoning_replay: ReasoningReplay = DEFAULT_REASONING_REPLAY,
 ) -> None:
     """Run all configs × scenarios, appending each result to JSONL.
 
@@ -602,9 +697,9 @@ async def run_batch(
             )
             if scenario.name in _COMPACTION_SCENARIOS and skip_compaction:
                 continue
-            key = (
-                f"{config.model}|{config.backend}|{config.mode}"
-                f"|{ablation_name}|{tc_label_pre}|{scenario.name}"
+            key = _run_key(
+                config.model, config.backend, config.mode,
+                ablation_name, tc_label_pre, reasoning_replay, scenario.name,
             )
             existing = completed_counts.get(key, 0)
             total_expected += max(0, runs_per_scenario - existing)
@@ -615,7 +710,7 @@ async def run_batch(
     total_ran = 0
     total_failed_connect = 0
     batch_start = time.monotonic()
-    server = ServerManager(backend="ollama", port=8080, models_dir=models_dir)
+    server = ServerManager(backend="ollama", port=_eval_port(), models_dir=models_dir)
     prev_backend: str | None = None
     prev_server: ServerManager | None = None
 
@@ -642,9 +737,9 @@ async def run_batch(
                     if scenario.name in _COMPACTION_SCENARIOS and skip_compaction:
                         print(f"  {scenario.name}: SKIP (compaction N/A)")
                         continue
-                    key = (
-                        f"{config.model}|{config.backend}|{config.mode}"
-                        f"|{ablation_name}|{tc_label}|{scenario.name}"
+                    key = _run_key(
+                        config.model, config.backend, config.mode,
+                        ablation_name, tc_label, reasoning_replay, scenario.name,
                     )
                     existing = completed_counts.get(key, 0)
                     remaining = max(0, runs_per_scenario - existing)
@@ -674,9 +769,9 @@ async def run_batch(
                         total_skipped += 1
                         continue
 
-                    key = (
-                        f"{config.model}|{config.backend}|{config.mode}"
-                        f"|{ablation_name}|{tc_label}|{scenario.name}"
+                    key = _run_key(
+                        config.model, config.backend, config.mode,
+                        ablation_name, tc_label, reasoning_replay, scenario.name,
                     )
                     existing = completed_counts.get(key, 0)
                     remaining = max(0, runs_per_scenario - existing)
@@ -693,6 +788,7 @@ async def run_batch(
                         keep_message_history=True,
                         verbose=verbose,
                         budget_override=scenario_budget,
+                        reasoning_replay=reasoning_replay,
                     )
 
                     eta = _format_eta(total_ran, total_expected, batch_start)
@@ -717,6 +813,7 @@ async def run_batch(
                             result, config, scenario, run_idx + 1,
                             budget_tokens=scenario_budget,
                             ablation_name=ablation_name,
+                            reasoning_replay=reasoning_replay,
                         )
                         with output_path.open("a") as f:
                             f.write(json.dumps(row) + "\n")
@@ -732,9 +829,9 @@ async def run_batch(
                 )
                 if scenario.name in _COMPACTION_SCENARIOS and skip_compaction:
                     continue
-                key_check = (
-                    f"{config.model}|{config.backend}|{config.mode}"
-                    f"|{ablation_name}|{tc_label}|{scenario.name}"
+                key_check = _run_key(
+                    config.model, config.backend, config.mode,
+                    ablation_name, tc_label, reasoning_replay, scenario.name,
                 )
                 if completed_counts.get(key_check, 0) < runs_per_scenario:
                     has_work = True
@@ -756,7 +853,7 @@ async def run_batch(
                 if prev_server is not None and prev_backend != "ollama":
                     await prev_server.stop()
                 server = ServerManager(
-                    backend=config.backend, port=8080, models_dir=models_dir
+                    backend=config.backend, port=_eval_port(), models_dir=models_dir
                 )
 
             # Resolve GGUF/llamafile path for non-Ollama backends
@@ -816,9 +913,9 @@ async def run_batch(
                     total_skipped += 1
                     continue
 
-                key = (
-                    f"{config.model}|{config.backend}|{config.mode}"
-                    f"|{ablation_name}|{tc_label}|{scenario.name}"
+                key = _run_key(
+                    config.model, config.backend, config.mode,
+                    ablation_name, tc_label, reasoning_replay, scenario.name,
                 )
                 existing = completed_counts.get(key, 0)
                 remaining = max(0, runs_per_scenario - existing)
@@ -843,6 +940,7 @@ async def run_batch(
                     verbose=verbose,
                     budget_override=scenario_budget,
                     strategy_overrides={"compaction": TieredCompact(keep_recent=2)},
+                    reasoning_replay=reasoning_replay,
                 )
 
                 eta = _format_eta(total_ran, total_expected, batch_start)
@@ -900,6 +998,7 @@ async def run_batch(
                         result, config, scenario, run_idx + 1,
                         budget_tokens=scenario_budget,
                         ablation_name=ablation_name,
+                        reasoning_replay=reasoning_replay,
                     )
                     with output_path.open("a") as f:
                         f.write(json.dumps(row) + "\n")
@@ -971,6 +1070,14 @@ async def main() -> None:
         help="Ablation preset: selectively disable guardrails (default: reforged = all enabled)",
     )
     parser.add_argument(
+        "--reasoning-replay",
+        choices=list(REASONING_REPLAY_CHOICES),
+        default=DEFAULT_REASONING_REPLAY,
+        help="How much captured reasoning to replay to the backend each turn: "
+        "full (legacy), keep-last, none (default). Part of the resume key, so "
+        "distinct policies for the same model/scenario are independent runs.",
+    )
+    parser.add_argument(
         "--model",
         type=str,
         default=None,
@@ -1009,6 +1116,7 @@ async def main() -> None:
     print(f"  Config set:    {args.config} ({len(configs)} configs)")
     print(f"  Budget mode:   {budget_mode.value}")
     print(f"  Ablation:      {ablation.name}")
+    print(f"  Reasoning replay: {args.reasoning_replay}")
     if args.scenario:
         print(f"  Scenarios:     {', '.join(args.scenario)}")
     elif args.tags:
@@ -1033,6 +1141,7 @@ async def main() -> None:
         tags=args.tags,
         scenario_names=args.scenario,
         ablation=ablation,
+        reasoning_replay=args.reasoning_replay,
     )
 
 

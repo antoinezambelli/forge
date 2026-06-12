@@ -6,7 +6,7 @@ No API calls or mocks needed.
 
 import json
 from typing import Literal
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from pydantic import BaseModel, Field
@@ -428,6 +428,10 @@ class TestUsageReporting:
         response.content = [text_block]
         response.usage.input_tokens = 12
         response.usage.output_tokens = 7
+        # Real Anthropic Usage reports these as ints (0 without caching); set
+        # them so the MagicMock doesn't auto-create truthy attrs.
+        response.usage.cache_creation_input_tokens = 0
+        response.usage.cache_read_input_tokens = 0
 
         async def fake_create(**kwargs):
             return response
@@ -441,3 +445,117 @@ class TestUsageReporting:
         assert client.last_usage == {0: expected}
         # Cross-client contract: _get_usage resolves slot 0 to the TokenUsage.
         assert _get_usage(client) == expected
+
+
+# ── Prompt caching (static tools+system breakpoint) ──────────────
+
+
+class TestPromptCaching:
+    """Opt-in prompt caching marks a static breakpoint over tool defs + system
+    in the rebuild path only; off by default; never touches the verbatim path."""
+
+    _MESSAGES = [
+        {"role": "system", "content": "stable system prompt"},
+        {"role": "user", "content": "hi"},
+    ]
+
+    def test_static_cache_marks_tools_and_system(self) -> None:
+        client = AnthropicClient(
+            model="claude-test", api_key="dummy", prompt_caching=True
+        )
+        tools = [_make_spec("a"), _make_spec("b")]
+        kwargs = client._build_kwargs(self._MESSAGES, tools)
+
+        # Last tool carries the ephemeral breakpoint (caches the tool prefix).
+        assert kwargs["tools"][-1]["cache_control"] == {"type": "ephemeral"}
+        # System is converted to a cached text block (caches tools+system).
+        assert isinstance(kwargs["system"], list)
+        assert kwargs["system"][0]["text"] == "stable system prompt"
+        assert kwargs["system"][0]["cache_control"] == {"type": "ephemeral"}
+
+    def test_no_cache_control_by_default(self) -> None:
+        client = AnthropicClient(model="claude-test", api_key="dummy")
+        tools = [_make_spec("a"), _make_spec("b")]
+        kwargs = client._build_kwargs(self._MESSAGES, tools)
+
+        assert "cache_control" not in kwargs["tools"][-1]
+        # System stays a plain string when caching is off.
+        assert kwargs["system"] == "stable system prompt"
+
+    def test_cache_does_not_touch_verbatim_inbound(self) -> None:
+        """prompt_caching must not mutate the path-1 verbatim body — that path
+        carries the proxy's own cache_control and bypasses the rebuild."""
+        client = AnthropicClient(
+            model="claude-test", api_key="dummy", prompt_caching=True
+        )
+        inbound = {
+            "max_tokens": 10,
+            "system": "verbatim system",
+            "messages": [{"role": "user", "content": "hi"}],
+        }
+        kwargs = client._build_kwargs([], None, None, inbound)
+
+        # System stays the verbatim string (NOT converted to a cached block).
+        assert kwargs["system"] == "verbatim system"
+
+    @pytest.mark.asyncio
+    async def test_send_records_cache_usage(self) -> None:
+        client = AnthropicClient(
+            model="claude-test", api_key="dummy", prompt_caching=True
+        )
+        text_block = MagicMock()
+        text_block.type = "text"
+        text_block.text = "ok"
+        response = MagicMock()
+        response.content = [text_block]
+        response.usage.input_tokens = 5
+        response.usage.output_tokens = 3
+        response.usage.cache_creation_input_tokens = 100
+        response.usage.cache_read_input_tokens = 200
+        client._client.messages.create = AsyncMock(return_value=response)
+
+        await client.send([{"role": "user", "content": "hi"}])
+
+        tu = client.last_usage[0]
+        assert tu.prompt_tokens == 5
+        assert tu.cache_creation_input_tokens == 100
+        assert tu.cache_read_input_tokens == 200
+
+
+class TestThinking:
+    """Adaptive extended-thinking request wiring (baseline rows). Request-only:
+    thinking is merged into the rebuild path and forces tool_choice=auto."""
+
+    _MESSAGES = [
+        {"role": "system", "content": "sys"},
+        {"role": "user", "content": "hi"},
+    ]
+
+    def test_thinking_merged_into_kwargs(self) -> None:
+        client = AnthropicClient(
+            model="claude-test", api_key="dummy", thinking={"type": "adaptive"}
+        )
+        kwargs = client._build_kwargs(self._MESSAGES, [_make_spec("a")])
+        assert kwargs["thinking"] == {"type": "adaptive"}
+
+    def test_no_thinking_by_default(self) -> None:
+        client = AnthropicClient(model="claude-test", api_key="dummy")
+        kwargs = client._build_kwargs(self._MESSAGES, [_make_spec("a")])
+        assert "thinking" not in kwargs
+
+    def test_thinking_suppresses_forced_tool_choice(self) -> None:
+        # Anthropic forbids a forced tool_choice with thinking on -> must drop it.
+        client = AnthropicClient(
+            model="claude-test", api_key="dummy",
+            tool_choice="any", thinking={"type": "adaptive"},
+        )
+        kwargs = client._build_kwargs(self._MESSAGES, [_make_spec("a")])
+        assert "tool_choice" not in kwargs
+        assert kwargs["thinking"] == {"type": "adaptive"}
+
+    def test_forced_tool_choice_kept_when_no_thinking(self) -> None:
+        client = AnthropicClient(
+            model="claude-test", api_key="dummy", tool_choice="any"
+        )
+        kwargs = client._build_kwargs(self._MESSAGES, [_make_spec("a")])
+        assert kwargs["tool_choice"] == {"type": "any"}

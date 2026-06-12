@@ -5,6 +5,8 @@ export interface ConfigRow {
   backend: string;
   mode: string;
   ablation: string;
+  /** reasoning_replay policy ("none" | "keep-last" | "full"); pre-knob rows count as "full". */
+  replay: string;
   family: string;
   quant: string;
   /** Eval generation this row's data came from (see report.py dedup_latest_gen). */
@@ -72,7 +74,7 @@ export const SUITE_SCOPES: { id: SuiteScope; label: string }[] = [
   { id: "advanced_reasoning", label: "Advanced Reasoning" },
 ];
 
-export const FILTER_DIMENSIONS = ["backend", "mode", "family", "quant"] as const;
+export const FILTER_DIMENSIONS = ["backend", "mode", "family", "quant", "replay"] as const;
 export type FilterDimension = (typeof FILTER_DIMENSIONS)[number];
 
 export type Filters = Record<FilterDimension, Set<string>>;
@@ -102,6 +104,10 @@ export const ABLATION_ORDER: readonly string[] = [
   "no_compact",
 ];
 
+/** Intra-group ordering for reasoning_replay rows: default policy first,
+ * then increasing replay volume. Mirrors _REPLAY_ORDER in report.py. */
+export const REPLAY_ORDER: readonly string[] = ["none", "keep-last", "full"];
+
 /** Pre-baked view definitions — control grouping within the active screen's row set. */
 export type ViewId = "all" | "by-backend" | "by-family";
 
@@ -119,7 +125,7 @@ export const VIEWS: ViewDef[] = [
   {
     id: "by-backend",
     label: "By Backend",
-    groupBy: ["model", "quant", "ablation"],
+    groupBy: ["model", "quant", "ablation", "replay"],
     intraSort: "backend",
   },
   {

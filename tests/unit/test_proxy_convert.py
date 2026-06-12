@@ -149,11 +149,36 @@ class TestToolCallsToOpenai:
         ])
         assert len(result["choices"][0]["message"]["tool_calls"]) == 2
 
-    def test_reasoning_in_content(self):
+    def test_reasoning_omitted_by_default(self):
+        # Default policy is "none": reasoning is not exposed on the response.
         result = tool_calls_to_openai([
             ToolCall(tool="search", args={}, reasoning="Let me think..."),
         ])
+        msg = result["choices"][0]["message"]
+        assert msg["content"] is None
+        assert "reasoning_content" not in msg
+
+    def test_keep_last_reasoning_replay_exposed_as_reasoning_content(self):
+        result = tool_calls_to_openai([
+            ToolCall(tool="search", args={}, reasoning="Let me think..."),
+        ], reasoning_replay="keep-last")
+        msg = result["choices"][0]["message"]
+        assert msg["content"] is None
+        assert msg["reasoning_content"] == "Let me think..."
+
+    def test_full_reasoning_replay_exposes_reasoning_in_content(self):
+        result = tool_calls_to_openai([
+            ToolCall(tool="search", args={}, reasoning="Let me think..."),
+        ], reasoning_replay="full")
         assert result["choices"][0]["message"]["content"] == "Let me think..."
+
+    def test_none_reasoning_replay_omits_reasoning(self):
+        result = tool_calls_to_openai([
+            ToolCall(tool="search", args={}, reasoning="Let me think..."),
+        ], reasoning_replay="none")
+        msg = result["choices"][0]["message"]
+        assert msg["content"] is None
+        assert "reasoning_content" not in msg
 
     def test_no_reasoning_content_is_none(self):
         result = tool_calls_to_openai([ToolCall(tool="search", args={})])
@@ -200,13 +225,34 @@ class TestToolCallsToSseEvents:
         assert events[-1]["choices"][0]["finish_reason"] == "tool_calls"
         assert events[-1]["choices"][0]["delta"] == {}
 
-    def test_reasoning_prepended(self):
+    def test_reasoning_omitted_from_stream_by_default(self):
+        # Default policy is "none": no reasoning delta is streamed.
         events = tool_calls_to_sse_events([
             ToolCall(tool="search", args={}, reasoning="Thinking..."),
         ])
+        assert len(events) == 2
+        assert "tool_calls" in events[0]["choices"][0]["delta"]
+
+    def test_keep_last_reasoning_replay_streams_reasoning_content_delta(self):
+        events = tool_calls_to_sse_events([
+            ToolCall(tool="search", args={}, reasoning="Thinking..."),
+        ], reasoning_replay="keep-last")
         # reasoning delta + tool call delta + final
         assert len(events) == 3
+        assert events[0]["choices"][0]["delta"]["reasoning_content"] == "Thinking..."
+
+    def test_full_reasoning_replay_streams_content_delta(self):
+        events = tool_calls_to_sse_events([
+            ToolCall(tool="search", args={}, reasoning="Thinking..."),
+        ], reasoning_replay="full")
         assert events[0]["choices"][0]["delta"]["content"] == "Thinking..."
+
+    def test_none_reasoning_replay_omits_stream_reasoning_delta(self):
+        events = tool_calls_to_sse_events([
+            ToolCall(tool="search", args={}, reasoning="Thinking..."),
+        ], reasoning_replay="none")
+        assert len(events) == 2
+        assert "tool_calls" in events[0]["choices"][0]["delta"]
 
     def test_multiple_tool_calls(self):
         events = tool_calls_to_sse_events([
@@ -254,3 +300,32 @@ class TestTextToSseEvents:
         events = text_to_sse_events("test", chunk_size=1)
         ids = {e["id"] for e in events}
         assert len(ids) == 1
+
+
+class TestOpenaiReasoningFields:
+    def test_reasoning_content_becomes_reasoning_message(self):
+        msgs = openai_to_messages([{
+            "role": "assistant",
+            "content": None,
+            "reasoning_content": "Think.",
+            "tool_calls": [{
+                "id": "call_1",
+                "function": {"name": "search", "arguments": "{}"},
+            }],
+        }])
+
+        assert [m.metadata.type for m in msgs] == [
+            MessageType.REASONING, MessageType.TOOL_CALL,
+        ]
+        assert msgs[0].content == "Think."
+        assert msgs[1].content == ""
+
+    def test_reasoning_only_message_does_not_add_blank_text_response(self):
+        msgs = openai_to_messages([{
+            "role": "assistant",
+            "content": None,
+            "reasoning_content": "Think.",
+        }])
+
+        assert len(msgs) == 1
+        assert msgs[0].metadata.type == MessageType.REASONING

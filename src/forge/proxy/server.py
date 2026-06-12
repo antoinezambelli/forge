@@ -15,6 +15,7 @@ from typing import Any
 
 from forge.clients.base import LLMClient
 from forge.context.manager import ContextManager
+from forge.core.reasoning import DEFAULT_REASONING_REPLAY, ReasoningReplay, validate_reasoning_replay
 from forge.proxy.handler import handle_chat_completions
 
 logger = logging.getLogger("forge.proxy")
@@ -52,6 +53,7 @@ class HTTPServer:
         rescue_enabled: bool = True,
         native_passthrough: bool = True,
         inject_respond_tool: bool = False,
+        reasoning_replay: ReasoningReplay = DEFAULT_REASONING_REPLAY,
     ) -> None:
         self._client = client
         self._context_manager = context_manager
@@ -62,6 +64,7 @@ class HTTPServer:
         self._rescue_enabled = rescue_enabled
         self._native_passthrough = native_passthrough
         self._inject_respond_tool = inject_respond_tool
+        self._reasoning_replay = validate_reasoning_replay(reasoning_replay)
         self._server: asyncio.Server | None = None
         self._serialize = serialize_requests
         self._queue: asyncio.Queue[_QueueItem] = asyncio.Queue()
@@ -316,6 +319,7 @@ class HTTPServer:
                 native_passthrough=self._native_passthrough,
                 inject_respond_tool=self._inject_respond_tool,
                 protocol=protocol,
+                reasoning_replay=self._reasoning_replay,
             )
         except Exception as exc:
             logger.exception("Handler error")

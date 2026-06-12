@@ -183,6 +183,8 @@ def _stub_anthropic_response():
     msg.content = [MagicMock(type="text", text="ok")]
     msg.usage.input_tokens = 1
     msg.usage.output_tokens = 1
+    msg.usage.cache_creation_input_tokens = 0
+    msg.usage.cache_read_input_tokens = 0
     return msg
 
 

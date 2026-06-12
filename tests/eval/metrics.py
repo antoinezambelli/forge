@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
-from forge.core.messages import Message, MessageType
+from forge.core.inference import fold_and_serialize
+from forge.core.messages import Message, MessageRole, MessageType
+from forge.core.reasoning import ReasoningReplay
 
 if TYPE_CHECKING:
     from tests.eval.eval_runner import RunResult
@@ -49,6 +52,46 @@ def analyze_history(messages: list[Message]) -> HistoryStats:
             case MessageType.REASONING:
                 stats.reasoning_messages += 1
     return stats
+
+
+def count_wire_reasoning(
+    messages: list[Message],
+    reasoning_replay: ReasoningReplay,
+    api_format: str = "openai",
+) -> tuple[int, int]:
+    """Count reasoning messages whose text actually survives onto the backend wire.
+
+    This is an *independent* validation of the reasoning-replay knob, not a
+    reimplementation of it: we serialize the recorded transcript through the
+    real production serializer (``fold_and_serialize`` — the single replay-policy
+    choke point) and then check which of the run's REASONING contents are present
+    in the resulting payload. Returns ``(survived, total)``.
+
+    Expected by policy on a transcript with N>0 reasoning messages:
+      * ``none``      -> survived == 0   (knob strips all reasoning from the wire)
+      * ``keep-last`` -> survived == 1   (only the final reasoning is folded)
+      * ``full``      -> survived == N   (every reasoning is folded, legacy behavior)
+
+    Semantics note: this re-derives the *final-snapshot* wire payload, so for
+    ``keep-last`` it reflects the last reasoning in the completed history, not the
+    cumulative count sent turn-by-turn. ``none``==0 is exact for every prefix
+    because the drop is unconditional. Reasoning survival is independent of
+    ``api_format`` (the drop happens before ``to_api_dict``), so the default is fine.
+    """
+    reasoning_texts = [
+        m.content
+        for m in messages
+        if m.metadata.type == MessageType.REASONING
+        and m.role == MessageRole.ASSISTANT
+        and m.content
+    ]
+    total = len(reasoning_texts)
+    if total == 0:
+        return 0, 0
+    wire = fold_and_serialize(messages, api_format, reasoning_replay=reasoning_replay)
+    blob = json.dumps(wire, ensure_ascii=False)
+    survived = sum(1 for text in reasoning_texts if text in blob)
+    return survived, total
 
 
 # ── Aggregated metrics ───────────────────────────────────────────

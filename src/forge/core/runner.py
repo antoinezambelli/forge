@@ -11,6 +11,7 @@ from forge.clients.base import LLMClient, StreamChunk
 from forge.context.manager import ContextManager
 from forge.core.inference import _NUDGE_KIND_TO_TYPE, _build_tool_call_infos, run_inference
 from forge.core.messages import Message, MessageMeta, MessageRole, MessageType, ToolCallInfo
+from forge.core.reasoning import DEFAULT_REASONING_REPLAY, ReasoningReplay, validate_reasoning_replay
 from forge.core.workflow import ToolCall, TextResponse, Workflow, ToolSpec
 from forge.errors import MaxIterationsError, PrerequisiteError, StepEnforcementError, ToolCallError, ToolExecutionError, ToolResolutionError, WorkflowCancelledError
 from forge.guardrails import ErrorTracker, ResponseValidator, StepEnforcer
@@ -42,6 +43,7 @@ class WorkflowRunner:
         on_message: Callable[[Message], None] | None = None,
         rescue_enabled: bool = True,
         retry_nudge: Callable[[str], str] | str | None = None,
+        reasoning_replay: ReasoningReplay = DEFAULT_REASONING_REPLAY,
     ):
         """
         Args:
@@ -65,6 +67,8 @@ class WorkflowRunner:
             retry_nudge: Custom nudge for bare text responses. Pass a string
                 for a static message, or a callable ``(raw_response) -> str``
                 for dynamic nudges. If None, uses the default.
+            reasoning_replay: How much captured reasoning to replay to the
+                backend on later turns: ``full``, ``keep-last``, or ``none``.
         """
         self.client = client
         self.context_manager = context_manager
@@ -75,6 +79,7 @@ class WorkflowRunner:
         self.on_chunk = on_chunk
         self.on_message = on_message
         self.rescue_enabled = rescue_enabled
+        self.reasoning_replay = validate_reasoning_replay(reasoning_replay)
         if isinstance(retry_nudge, str):
             self._retry_nudge_fn: Callable[[str], str] | None = lambda _raw, _msg=retry_nudge: _msg
         else:
@@ -180,6 +185,7 @@ class WorkflowRunner:
                 max_attempts=self.max_iterations - iteration,
                 stream=self.stream,
                 on_chunk=self.on_chunk,
+                reasoning_replay=self.reasoning_replay,
             )
             # max_attempts exhausted — iteration budget spent
             if result is None:

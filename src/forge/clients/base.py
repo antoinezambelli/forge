@@ -25,11 +25,20 @@ class TokenUsage:
     llama-server).  Backends that don't report usage leave the client's
     ``last_usage`` empty and the context manager falls back to heuristic
     estimation.
+
+    ``cache_creation_input_tokens`` / ``cache_read_input_tokens`` are
+    Anthropic prompt-cache counters (0 for backends without caching, or when
+    caching is off). ``prompt_tokens`` stays the *uncached* input sliver and
+    ``total_tokens`` stays ``prompt + completion`` — the cache counters are
+    carried separately so cost can price them (write 1.25×, read 0.1× of the
+    input rate) without shifting any existing consumer's semantics.
     """
 
     prompt_tokens: int
     completion_tokens: int
     total_tokens: int
+    cache_creation_input_tokens: int = 0
+    cache_read_input_tokens: int = 0
 
 
 # Both Ollama and llama-server use the OpenAI tool schema format today.
