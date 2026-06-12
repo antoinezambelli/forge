@@ -1,5 +1,5 @@
 import type { ConfigRow, ScenarioScope, ScreenId, SortState, SuiteScope, ViewDef } from "./types";
-import { ABLATION_ORDER } from "./types";
+import { ABLATION_ORDER, REPLAY_ORDER } from "./types";
 
 /** Filter rows according to the active screen.
  *
@@ -32,6 +32,12 @@ export function filterByScreen(rows: ConfigRow[], screen: ScreenId): ConfigRow[]
 function ablationRank(name: string): number {
   const idx = ABLATION_ORDER.indexOf(name);
   return idx === -1 ? ABLATION_ORDER.length : idx;
+}
+
+/** Rank for sorting reasoning_replay rows in canonical order; unknowns land last. */
+export function replayRank(policy: string): number {
+  const idx = REPLAY_ORDER.indexOf(policy);
+  return idx === -1 ? REPLAY_ORDER.length : idx;
 }
 
 /** Heat-map color class based on percentage value. */
@@ -253,6 +259,8 @@ export function groupRows(
       if (byAblationRank) {
         const diff = ablationRank(a.ablation) - ablationRank(b.ablation);
         if (diff !== 0) return diff;
+        const rDiff = replayRank(a.replay) - replayRank(b.replay);
+        if (rDiff !== 0) return rDiff;
         return b.score - a.score;
       }
       const scoreDiff = b.score - a.score;

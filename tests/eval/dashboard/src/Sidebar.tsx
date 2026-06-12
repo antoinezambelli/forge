@@ -1,5 +1,6 @@
 import type { ConfigRow, FilterDimension, Filters, ScenarioScope, ScreenId, SuiteScope, ViewId } from "./types";
 import { FILTER_DIMENSIONS, SCENARIO_SCOPES, SUITE_SCOPES } from "./types";
+import { replayRank } from "./utils";
 import { ScreenSelector } from "./ScreenSelector";
 import { ViewSelector } from "./ViewSelector";
 
@@ -8,6 +9,7 @@ const DIMENSION_LABELS: Record<FilterDimension, string> = {
   mode: "Mode",
   family: "Family",
   quant: "Quant",
+  replay: "Reasoning Replay",
 };
 
 interface SidebarProps {
@@ -108,7 +110,11 @@ export function Sidebar({
       )}
 
       {FILTER_DIMENSIONS.map((dim) => {
-        const vals = [...new Set(rows.map((r) => r[dim]))].sort();
+        const vals = [...new Set(rows.map((r) => r[dim]))].sort(
+          dim === "replay"
+            ? (a, b) => replayRank(a) - replayRank(b)
+            : undefined,
+        );
         if (vals.length < 2) return null;
 
         return (

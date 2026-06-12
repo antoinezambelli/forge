@@ -116,13 +116,23 @@ class ConfigKey:
     mode: str
     ablation: str = "reforged"
     tool_choice: str = "auto"
+    # Pre-knob rows ran unbounded replay — legacy behavior == "full".
+    reasoning_replay: str = "full"
 
     @property
     def _tag(self) -> str:
-        """Ablation + tool_choice tag, e.g. '[full]', '[bare]', '[bare+any]'."""
+        """Ablation + tool_choice + replay tag, e.g. '[bare]', '[bare+any]', '[reforged:full]'.
+
+        The replay policy is tagged only when it differs from the default
+        ("none"), so default-policy rows keep the familiar clean label.
+        """
         if self.ablation != "reforged" and self.tool_choice != "auto":
-            return f"[{self.ablation}+{self.tool_choice}]"
-        return f"[{self.ablation}]"
+            base = f"{self.ablation}+{self.tool_choice}"
+        else:
+            base = self.ablation
+        if self.reasoning_replay != "none":
+            base = f"{base}:{self.reasoning_replay}"
+        return f"[{base}]"
 
     @property
     def label(self) -> str:
@@ -144,7 +154,10 @@ class ConfigKey:
         return f"{m} {b}/{mode_char} {self._tag}"
 
     def __hash__(self) -> int:
-        return hash((self.model, self.backend, self.mode, self.ablation, self.tool_choice))
+        return hash((
+            self.model, self.backend, self.mode,
+            self.ablation, self.tool_choice, self.reasoning_replay,
+        ))
 
     def __eq__(self, other: object) -> bool:
         if not isinstance(other, ConfigKey):
@@ -155,6 +168,7 @@ class ConfigKey:
             and self.mode == other.mode
             and self.ablation == other.ablation
             and self.tool_choice == other.tool_choice
+            and self.reasoning_replay == other.reasoning_replay
         )
 
 
@@ -172,8 +186,26 @@ def load_jsonl(path: Path) -> list[dict]:
     return rows
 
 
+def _row_replay(row: dict) -> str:
+    """Row-level reasoning_replay, defaulting pre-knob rows to "full".
+
+    Pre-knob rows (no field) ran unbounded replay, which the knob names
+    "full" — so carried-forward older generations surface with an honest
+    ':full' tag rather than masquerading as the current default.
+    """
+    return row.get("reasoning_replay", "full")
+
+
 def _config_tuple(row: dict) -> tuple[str, str, str, str, str]:
-    """The identity a config is deduped on — mirrors ConfigKey's fields."""
+    """The identity a config is deduped on — ConfigKey's fields minus reasoning_replay.
+
+    reasoning_replay is deliberately NOT part of the dedup identity: pre-knob
+    rows have no field, and a newer-gen re-sweep should supersede them
+    regardless of which policies it ran (else every v0.7.0 row would survive
+    as a stale ':full' duplicate next to its re-swept config). Within one
+    generation all policy rows share the gen, so none/keep-last/full survive
+    dedup side by side as separate display rows (see group_rows).
+    """
     return (
         row["model"],
         row["backend"],
@@ -220,7 +252,10 @@ def group_rows(
     for row in rows:
         ablation = row.get("ablation", "reforged")
         tc = row.get("tool_choice", "auto")
-        key = ConfigKey(row["model"], row["backend"], row["mode"], ablation, tc)
+        key = ConfigKey(
+            row["model"], row["backend"], row["mode"], ablation, tc,
+            _row_replay(row),
+        )
         grouped[key][row["scenario"]].append(row)
     return grouped
 
@@ -662,6 +697,10 @@ GEN_INFO: dict[int, dict[str, str]] = {
         "note": "v0.6.0 suite — incl. Anthropic ablation"},
     2: {"commit": "655e1f6", "date": "2026-05-22",
         "note": "v0.7.0 lineup refresh (8–14B) + 32GB tier debut (v0.7.4)"},
+    # Tag ref, not a commit SHA: gen 3 landed via a branch whose squash-merge
+    # SHA didn't exist when this entry was written; the v0.7.5 tag resolves to it.
+    3: {"commit": "v0.7.5", "date": "2026-06-11",
+        "note": "reasoning-replay grid (8–14B × none/keep-last/full) + Claude thinking-on baseline"},
 }
 
 # Coarse families in the "Retired" tier of docs/MODEL_REGISTRY.md. Retired
@@ -738,6 +777,11 @@ def _legend_lines(scenarios: list[str]) -> list[str]:
         "Ablation: full=all guardrails, no_rescue=no rescue loop, no_nudge=no rescue/retry nudge, "
         "no_steps=no step enforcement, no_recovery=no error recovery, no_compact=no compaction, "
         "bare=all guardrails off"
+    )
+    lines.append(
+        "Replay: ':keep-last'/':full' tags = reasoning_replay policy (how much captured "
+        "reasoning is re-sent to the backend each turn); untagged = none (default). "
+        "Rows predating the knob ran unbounded replay and count as full."
     )
     return lines
 
@@ -942,6 +986,7 @@ def _metrics_to_json_row(m: ConfigMetrics, scenarios: list[str]) -> dict:
         "backend": m.key.backend,
         "mode": m.key.mode,
         "ablation": m.key.ablation,
+        "replay": m.key.reasoning_replay,
         "family": extract_family(m.key.model),
         "quant": extract_quant(m.key.model),
         "gen": m.gen,
@@ -1069,6 +1114,19 @@ def _ablation_rank(name: str) -> int:
         return len(_ABLATION_ORDER)
 
 
+# Ordering for reasoning_replay rows within a group: default policy first,
+# then increasing replay volume. Mirrors REPLAY_ORDER in the dashboard's types.ts.
+_REPLAY_ORDER = ("none", "keep-last", "full")
+
+
+def _replay_rank(policy: str) -> int:
+    """Rank for sorting reasoning_replay rows; unknowns land last."""
+    try:
+        return _REPLAY_ORDER.index(policy)
+    except ValueError:
+        return len(_REPLAY_ORDER)
+
+
 def write_markdown_views(
     all_metrics: list[ConfigMetrics],
     scenarios: list[str],
@@ -1087,6 +1145,7 @@ def write_markdown_views(
         reforged-vs-bare.md — per-(model,backend,mode) reforged+bare pair
         ablation.md         — deep-ablation configs only, 7-row tower per config
         native-vs-prompt.md — llama-server paired native vs prompt (reforged)
+        reasoning-replay.md — replay policy comparison per config (>1 policy)
         budget.md           — compaction scenarios only (reforged)
     """
     import datetime
@@ -1195,7 +1254,10 @@ def write_markdown_views(
         "Forge Eval — Reforged vs Bare",
         "Forge lift: reforged vs bare for each (model, backend, mode)",
         [
-            (f"{model} ({backend}/{mode})", sorted(group, key=lambda m: _ablation_rank(m.key.ablation)))
+            (
+                f"{model} ({backend}/{mode})",
+                sorted(group, key=lambda m: (_ablation_rank(m.key.ablation), _replay_rank(m.key.reasoning_replay))),
+            )
             for (model, backend, mode), group in sorted_rb
         ],
     )
@@ -1216,7 +1278,10 @@ def write_markdown_views(
         "Forge Eval — Full Ablation",
         "Per-guardrail ablation: each config shows all ablation variants",
         [
-            (f"{model} ({backend}/{mode})", sorted(group, key=lambda m: _ablation_rank(m.key.ablation)))
+            (
+                f"{model} ({backend}/{mode})",
+                sorted(group, key=lambda m: (_ablation_rank(m.key.ablation), _replay_rank(m.key.reasoning_replay))),
+            )
             for (model, backend, mode), group in sorted_abl
         ],
     )
@@ -1233,8 +1298,30 @@ def write_markdown_views(
         "Forge Eval — Native vs Prompt (llama-server)",
         "llama-server native FC vs prompt-injected, reforged only",
         [
-            (model, sorted(group, key=lambda m: m.key.mode))
+            (model, sorted(group, key=lambda m: (m.key.mode, _replay_rank(m.key.reasoning_replay))))
             for model, group in sorted(ls_paired.items())
+        ],
+    )
+
+    # ── Orthogonal: reasoning-replay.md ───────────────────────────
+    # Policy comparison: same config (model, backend, mode, ablation), one row
+    # per reasoning_replay policy. Only configs that ran >1 policy appear.
+    rr_groups: dict[tuple[str, str, str, str], list[ConfigMetrics]] = defaultdict(list)
+    for m in complete:
+        if m.key.ablation in ("reforged", "bare"):
+            rr_groups[(m.key.model, m.key.backend, m.key.mode, m.key.ablation)].append(m)
+    rr_multi = {k: v for k, v in rr_groups.items() if len({m.key.reasoning_replay for m in v}) > 1}
+    sorted_rr = sorted(rr_multi.items(), key=lambda kv: max(m.score for m in kv[1]), reverse=True)
+    _grouped_view(
+        "reasoning-replay.md",
+        "Forge Eval — Reasoning Replay Policies",
+        "reasoning_replay policy comparison (none / keep-last / full) per config",
+        [
+            (
+                f"{model} ({backend}/{mode}) [{ablation}]",
+                sorted(group, key=lambda m: _replay_rank(m.key.reasoning_replay)),
+            )
+            for (model, backend, mode, ablation), group in sorted_rr
         ],
     )
 
@@ -1261,7 +1348,7 @@ def write_markdown_views(
             ("## Reforged — which model should I run?", lambda rp: rp.startswith("reforged/")),
             ("## Reforged vs Bare — how much does forge lift a model?", lambda rp: rp == "reforged-vs-bare.md"),
             ("## Full Ablation — which guardrails do the work?", lambda rp: rp == "ablation.md"),
-            ("## Other cross-cuts", lambda rp: rp in ("native-vs-prompt.md", "budget.md")),
+            ("## Other cross-cuts", lambda rp: rp in ("native-vs-prompt.md", "reasoning-replay.md", "budget.md")),
         ]
         index_lines = [
             "# Forge Eval Reports\n",
@@ -1307,6 +1394,11 @@ def main() -> None:
         "--ablation", nargs="*",
         help="Filter to specific ablation preset(s) (e.g. --ablation reforged bare). "
         "Default: show all.",
+    )
+    parser.add_argument(
+        "--reasoning-replay", nargs="*",
+        help="Filter to specific reasoning_replay polic(ies) (e.g. --reasoning-replay none). "
+        "Rows predating the knob count as 'full'. Default: show all.",
     )
     parser.add_argument(
         "--exclude-scenario", nargs="*", metavar="NAME",
@@ -1355,6 +1447,14 @@ def main() -> None:
         rows = [r for r in rows if r.get("ablation", "reforged") in ablation_set]
         if not rows:
             print(f"No data for ablation preset(s): {', '.join(args.ablation)}")
+            sys.exit(0)
+
+    # Filter by reasoning_replay policy if requested
+    if args.reasoning_replay:
+        rr_set = set(args.reasoning_replay)
+        rows = [r for r in rows if _row_replay(r) in rr_set]
+        if not rows:
+            print(f"No data for reasoning_replay polic(ies): {', '.join(args.reasoning_replay)}")
             sys.exit(0)
 
     # Filter rows by scenario tag before detection
