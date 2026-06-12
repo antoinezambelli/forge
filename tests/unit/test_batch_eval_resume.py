@@ -133,10 +133,10 @@ def test_count_completed_runs_separates_policies(tmp_path) -> None:
     def key(rr: str) -> str:
         return _run_key("M", "llamaserver", "native", "reforged", "auto", rr, "sc")
 
-    assert counts[key("none")] == 2
+    # explicit none ×2 + the legacy row defaulting to none
+    assert counts[key("none")] == 3
     assert counts[key("full")] == 1
-    # explicit keep-last + the legacy row defaulting to keep-last
-    assert counts[key("keep-last")] == 2
+    assert counts[key("keep-last")] == 1
     assert counts[key("none")] + counts[key("full")] + counts[key("keep-last")] == 5
 
 

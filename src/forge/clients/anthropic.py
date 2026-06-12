@@ -310,13 +310,13 @@ class AnthropicClient:
         instead of re-billing the re-sent schema + prompt at full price.
 
         Static-only on purpose: a *rolling* per-turn breakpoint over the growing
-        conversation is NOT placed here. The eval's default
-        ``reasoning_replay="keep-last"`` re-serializes earlier tool-call messages
-        differently each turn (it keeps only the latest reasoning), which busts a
-        rolling prefix cache — you'd pay 1.25× writes with no reads. The
-        conversation prefix is only stable under ``none``/``full``, and
-        ``reasoning_replay`` is a measured variable we won't pin, so caching is
-        confined to the always-stable tools+system region.
+        conversation is NOT placed here. Under ``reasoning_replay="keep-last"``
+        earlier tool-call messages re-serialize differently each turn (only the
+        latest reasoning is kept), which busts a rolling prefix cache — you'd
+        pay 1.25× writes with no reads. The conversation prefix is only stable
+        under ``none``/``full``, and ``reasoning_replay`` is a measured eval
+        variable we won't pin, so caching is confined to the always-stable
+        tools+system region.
 
         The cached prefix is ordered tools → system → messages, so a single
         breakpoint on the system block subsumes the tools; we additionally mark

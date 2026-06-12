@@ -520,11 +520,28 @@ class TestNativePassthrough:
             _body(messages=messages, tools=[_tool_def("search")]),
             client, _context_manager(),
         )
+        # Default policy is "none": every reasoning field is stripped, but the
+        # rest of each raw message survives verbatim.
         sent_messages = client.send.call_args.args[0]
         assert sent_messages[0]["name"] == "a1"
         assert sent_messages[0]["vendor"] == {"kept": True}
         assert "reasoning_content" not in sent_messages[0]
         assert sent_messages[1]["name"] == "a2"
+        assert "reasoning_content" not in sent_messages[1]
+
+    @pytest.mark.asyncio
+    async def test_keep_last_reasoning_replay_keeps_latest_only(self):
+        client = _mock_client([ToolCall(tool="search", args={"q": "x"})])
+        messages = [
+            {"role": "assistant", "content": None, "reasoning_content": "old", "tool_calls": [], "name": "a1"},
+            {"role": "assistant", "content": None, "reasoning_content": "latest", "tool_calls": [], "name": "a2"},
+        ]
+        await handle_chat_completions(
+            _body(messages=messages, tools=[_tool_def("search")]),
+            client, _context_manager(), reasoning_replay="keep-last",
+        )
+        sent_messages = client.send.call_args.args[0]
+        assert "reasoning_content" not in sent_messages[0]
         assert sent_messages[1]["reasoning_content"] == "latest"
 
     @pytest.mark.asyncio

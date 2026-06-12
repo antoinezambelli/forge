@@ -122,6 +122,7 @@ def _make_runner(
     stream: bool = False,
     on_chunk=None,
     budget_tokens: int = 100_000,
+    reasoning_replay: str = "none",
 ) -> WorkflowRunner:
     """Create a WorkflowRunner with NoCompact strategy and generous budget."""
     ctx = ContextManager(strategy=NoCompact(), budget_tokens=budget_tokens)
@@ -133,6 +134,7 @@ def _make_runner(
         max_tool_errors=max_tool_errors,
         stream=stream,
         on_chunk=on_chunk,
+        reasoning_replay=reasoning_replay,
     )
 
 
@@ -1335,13 +1337,31 @@ class TestReasoningCapture:
         assert types[reasoning_idx + 1] == MessageType.TOOL_CALL
 
     @pytest.mark.asyncio
-    async def test_reasoning_folded_into_tool_call_on_wire(self):
-        """Reasoning is folded into the tool_call message's content on the wire."""
+    async def test_reasoning_not_on_wire_by_default(self):
+        """Default reasoning_replay="none": reasoning never reaches the wire."""
         client = MockClient([
             ToolCall(tool="fetch", args={}, reasoning="Thinking about this..."),
             ToolCall(tool="submit", args={}),
         ])
         runner = _make_runner(client)
+        await runner.run(_make_workflow(), "go", prompt_vars={"role": "agent"})
+
+        # Second send call: the tool_call message carries no reasoning content
+        second_call_msgs = client.send_calls[1][0]
+        # system, user, tool_call(assistant), tool_result(tool)
+        assert len(second_call_msgs) == 4
+        assert second_call_msgs[2]["role"] == "assistant"
+        assert second_call_msgs[2]["content"] == ""
+        assert "tool_calls" in second_call_msgs[2]
+
+    @pytest.mark.asyncio
+    async def test_reasoning_folded_into_tool_call_on_wire(self):
+        """With a replaying policy, reasoning is folded into the tool_call message's content on the wire."""
+        client = MockClient([
+            ToolCall(tool="fetch", args={}, reasoning="Thinking about this..."),
+            ToolCall(tool="submit", args={}),
+        ])
+        runner = _make_runner(client, reasoning_replay="keep-last")
         await runner.run(_make_workflow(), "go", prompt_vars={"role": "agent"})
 
         # Second send call: reasoning folded into tool_call content
@@ -1360,7 +1380,7 @@ class TestReasoningCapture:
             ToolCall(tool="fetch", args={}, reasoning="Now I know what to do"),
             ToolCall(tool="submit", args={}),
         ])
-        runner = _make_runner(client)
+        runner = _make_runner(client, reasoning_replay="keep-last")
         await runner.run(_make_workflow(), "go", prompt_vars={"role": "agent"})
 
         # Third send call: after text_response+nudge recovery, then reasoning+fetch

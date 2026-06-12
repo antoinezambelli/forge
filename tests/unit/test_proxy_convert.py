@@ -149,10 +149,19 @@ class TestToolCallsToOpenai:
         ])
         assert len(result["choices"][0]["message"]["tool_calls"]) == 2
 
-    def test_reasoning_default_exposed_as_reasoning_content(self):
+    def test_reasoning_omitted_by_default(self):
+        # Default policy is "none": reasoning is not exposed on the response.
         result = tool_calls_to_openai([
             ToolCall(tool="search", args={}, reasoning="Let me think..."),
         ])
+        msg = result["choices"][0]["message"]
+        assert msg["content"] is None
+        assert "reasoning_content" not in msg
+
+    def test_keep_last_reasoning_replay_exposed_as_reasoning_content(self):
+        result = tool_calls_to_openai([
+            ToolCall(tool="search", args={}, reasoning="Let me think..."),
+        ], reasoning_replay="keep-last")
         msg = result["choices"][0]["message"]
         assert msg["content"] is None
         assert msg["reasoning_content"] == "Let me think..."
@@ -216,10 +225,18 @@ class TestToolCallsToSseEvents:
         assert events[-1]["choices"][0]["finish_reason"] == "tool_calls"
         assert events[-1]["choices"][0]["delta"] == {}
 
-    def test_reasoning_prepended_as_reasoning_content_by_default(self):
+    def test_reasoning_omitted_from_stream_by_default(self):
+        # Default policy is "none": no reasoning delta is streamed.
         events = tool_calls_to_sse_events([
             ToolCall(tool="search", args={}, reasoning="Thinking..."),
         ])
+        assert len(events) == 2
+        assert "tool_calls" in events[0]["choices"][0]["delta"]
+
+    def test_keep_last_reasoning_replay_streams_reasoning_content_delta(self):
+        events = tool_calls_to_sse_events([
+            ToolCall(tool="search", args={}, reasoning="Thinking..."),
+        ], reasoning_replay="keep-last")
         # reasoning delta + tool call delta + final
         assert len(events) == 3
         assert events[0]["choices"][0]["delta"]["reasoning_content"] == "Thinking..."

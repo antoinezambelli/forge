@@ -8,7 +8,7 @@ from typing import Any, Literal
 
 ReasoningReplay = Literal["full", "keep-last", "none"]
 REASONING_REPLAY_CHOICES: tuple[ReasoningReplay, ...] = ("full", "keep-last", "none")
-DEFAULT_REASONING_REPLAY: ReasoningReplay = "keep-last"
+DEFAULT_REASONING_REPLAY: ReasoningReplay = "none"
 
 
 def validate_reasoning_replay(value: str) -> ReasoningReplay:

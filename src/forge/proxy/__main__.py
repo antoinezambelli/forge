@@ -91,7 +91,7 @@ def main() -> None:
         choices=REASONING_REPLAY_CHOICES,
         default=DEFAULT_REASONING_REPLAY,
         help="How much captured reasoning to replay to the backend "
-             "(default: keep-last).",
+             "(default: none).",
     )
     parser.add_argument("--verbose", "-v", action="store_true", help="Verbose logging")
 

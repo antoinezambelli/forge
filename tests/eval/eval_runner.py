@@ -576,7 +576,7 @@ async def main() -> None:
         choices=list(REASONING_REPLAY_CHOICES),
         default=DEFAULT_REASONING_REPLAY,
         help="How much captured reasoning to replay to the backend each turn: "
-        "full (legacy: replay all), keep-last (default: only most recent), none (drop all).",
+        "full (legacy: replay all), keep-last (only most recent), none (default: drop all).",
     )
     parser.add_argument(
         "--tool-choice",

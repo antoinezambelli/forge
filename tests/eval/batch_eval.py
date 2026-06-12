@@ -280,7 +280,7 @@ def _count_completed_runs(
 
     Returns dict mapping the canonical run key → count. Records without an
     ablation field are treated as "reforged", without tool_choice as "auto",
-    and without reasoning_replay as the default policy (keep-last) — so
+    and without reasoning_replay as the default policy (none) — so
     pre-knob dumps resume cleanly under the default and are re-run under a
     different policy.
     """
@@ -1074,7 +1074,7 @@ async def main() -> None:
         choices=list(REASONING_REPLAY_CHOICES),
         default=DEFAULT_REASONING_REPLAY,
         help="How much captured reasoning to replay to the backend each turn: "
-        "full (legacy), keep-last (default), none. Part of the resume key, so "
+        "full (legacy), keep-last, none (default). Part of the resume key, so "
         "distinct policies for the same model/scenario are independent runs.",
     )
     parser.add_argument(
