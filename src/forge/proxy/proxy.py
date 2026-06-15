@@ -74,6 +74,7 @@ class ProxyServer:
         backend_protocol: Literal["openai", "anthropic"] = "openai",
         backend_timeout: float = 300.0,
         reasoning_replay: ReasoningReplay = DEFAULT_REASONING_REPLAY,
+        api_key: str | None = None,
     ) -> None:
         """
         Args:
@@ -182,6 +183,7 @@ class ProxyServer:
         self._backend_protocol = backend_protocol
         self._backend_timeout = backend_timeout
         self._reasoning_replay = validate_reasoning_replay(reasoning_replay)
+        self._api_key = api_key
 
         # Auto-detect serialization: managed (no external url) = single local
         # GPU = serialize. External callers manage their own concurrency.
@@ -317,22 +319,29 @@ class ProxyServer:
                 model_path="default",
                 base_url=base,
                 timeout=self._backend_timeout,
+                api_key=self._api_key,
             )
             # Unlike llama.cpp, vLLM validates the wire `model` field against
             # its --served-model-name aliases (404 on mismatch). External mode
             # has no model path to send, so discover the served identity from
             # /v1/models instead of shipping the "default" placeholder.
-            served = await client.get_served_model_name()
-            if served:
-                logger.info("Discovered vLLM served model name: %s", served)
-                client._set_model_identity(served)
+            # However, if the user explicitly specified a model via --model,
+            # use that instead of auto-discovering.
+            if self._model:
+                logger.info("Using user-specified model: %s", self._model)
+                client._set_model_identity(self._model)
             else:
-                logger.warning(
-                    "Could not discover a served model name from %s/models; "
-                    "sending placeholder 'default' (vLLM will 404 if it "
-                    "validates the model field)",
-                    base,
-                )
+                served = await client.get_served_model_name()
+                if served:
+                    logger.info("Discovered vLLM served model name: %s", served)
+                    client._set_model_identity(served)
+                else:
+                    logger.warning(
+                        "Could not discover a served model name from %s/models; "
+                        "sending placeholder 'default' (vLLM will 404 if it "
+                        "validates the model field)",
+                        base,
+                    )
         else:
             # llamaserver / llamafile / unspecified — OpenAI-compatible adapter.
             # Caller manages the backend, so we don't have a GGUF path. "default"

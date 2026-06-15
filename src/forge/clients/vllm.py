@@ -48,6 +48,7 @@ class VLLMClient:
         model_path: str | Path,
         *,
         base_url: str = "http://localhost:8000/v1",
+        api_key: str | None = None,
         temperature: float | None = None,
         top_p: float | None = None,
         top_k: int | None = None,
@@ -60,6 +61,7 @@ class VLLMClient:
         recommended_sampling: bool = False,
     ) -> None:
         self.base_url = base_url
+        self.api_key = api_key
         # Two identity roles, set together (see _set_model_identity):
         #   self.model        — the wire "model" field, sent verbatim. For vLLM
         #                       this is the model path / HF repo id (or the
@@ -86,7 +88,13 @@ class VLLMClient:
             chat_template_kwargs if chat_template_kwargs is not None
             else defaults.get("chat_template_kwargs")
         )
-        self._http = httpx.AsyncClient(timeout=timeout)
+        
+        # Build headers with API key if provided
+        headers = {}
+        if self.api_key:
+            headers["Authorization"] = f"Bearer {self.api_key}"
+        
+        self._http = httpx.AsyncClient(timeout=timeout, headers=headers)
         self._think: bool = think
         self.last_usage: dict[int, TokenUsage] = {}
 

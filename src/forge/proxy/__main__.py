@@ -54,6 +54,11 @@ def main() -> None:
              "'anthropic' for Anthropic-shape downstreams (LiteLLM /v1/messages, "
              "real Anthropic API, self-hosted Anthropic proxy). External mode only.",
     )
+    parser.add_argument(
+        "--api-key",
+        help="API key for the external backend (e.g., NVIDIA API key). "
+             "Can also be set via environment variable NVIDIA_API_KEY.",
+    )
 
     # Proxy options
     parser.add_argument("--host", default="127.0.0.1", help="Proxy listen host (default: 127.0.0.1)")
@@ -133,6 +138,7 @@ def main() -> None:
         backend_protocol=args.backend_protocol,
         backend_timeout=args.backend_timeout,
         reasoning_replay=args.reasoning_replay,
+        api_key=args.api_key,
     )
 
     def _shutdown(sig: int, _frame: object) -> None:
