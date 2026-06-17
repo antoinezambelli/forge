@@ -167,6 +167,19 @@ MODEL_SAMPLING_DEFAULTS: dict[str, dict[str, float | int]] = {
     "mistral-nemo:12b-instruct-2407-q4_K_M": {"temperature": 0.3},  # https://huggingface.co/mistralai/Mistral-Nemo-Instruct-2407
     "Mistral-Nemo-Instruct-2407-Q4_K_M":     {"temperature": 0.3},  # https://huggingface.co/mistralai/Mistral-Nemo-Instruct-2407 (GGUF)
     "Mistral-Nemo-Instruct-2407.Q4_K_M":     {"temperature": 0.3},  # https://huggingface.co/mistralai/Mistral-Nemo-Instruct-2407 (llamafile)
+    # LFM2.5-8B-A1B (LiquidAI) — MoE, 8B total / ~1B active. Reasoning model (assistant turns carry an
+    # explicit chain of thought). Card recommends temperature=0.2, top_k=80, repetition_penalty=1.05
+    # (forge field name: repeat_penalty); top_p / min_p / presence_penalty not specified. Native tool
+    # format uses special <|tool_call_start|>/<|tool_call_end|> tokens (handled server-side in native
+    # mode). Prompt-mode probe: follows forge's injected {"tool","args"} JSON cleanly (rescue Strategy 1);
+    # the special-token format itself is not a rescue strategy, so only a Pythonic-token fallback (not
+    # observed) would miss.
+    "LFM2.5-8B-A1B-Q4_K_M":                 {"temperature": 0.2, "top_k": 80, "repeat_penalty": 1.05},  # https://huggingface.co/LiquidAI/LFM2.5-8B-A1B
+    # Mellum2-12B-A2.5B (JetBrains) — MoE, 12B total / 2.5B active, 64 experts. Both variants share the
+    # same card sampling (T=0.6, top_p=0.95, top_k=20; min_p / repeat_penalty / presence_penalty not
+    # specified). Thinking = <think> CoT (qwen3 reasoning parser); Instruct = direct (hermes tool parser).
+    "Mellum2-12B-A2.5B-Thinking-Q4_K_M":    {"temperature": 0.6, "top_p": 0.95, "top_k": 20},  # https://huggingface.co/JetBrains/Mellum2-12B-A2.5B-Thinking
+    "Mellum2-12B-A2.5B-Instruct-Q4_K_M":    {"temperature": 0.6, "top_p": 0.95, "top_k": 20},  # https://huggingface.co/JetBrains/Mellum2-12B-A2.5B-Instruct
     # Granite 4.0 — IBM-pointed reference cites greedy decoding (T=0); top_p/top_k effectively no-op at T=0
     # but kept explicit to match the source recommendation. IBM HF cards / GitHub repo / prompt-engineering
     # guide v2 themselves do not document sampling; Unsloth's tutorial cites IBM directly.

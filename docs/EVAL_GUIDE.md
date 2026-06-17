@@ -169,6 +169,16 @@ python -m tests.eval.report eval_results_v0.7.0.jsonl --html docs/results/dashbo
 
 Older datasets (e.g. `eval_results_v0.6.0.jsonl`) remain in the repo for comparison and reproducibility. `batch_eval` writes to `eval_results.jsonl` by default; rename to a versioned filename before committing to the repo.
 
+### Eval generations and post-release addenda
+
+The `gen` field (an integer injected per-row, legend in `report.py:GEN_INFO`) is a **comparability epoch, not a release version**. It is bumped only when a change is judged eval-material; many releases can share one gen, and a single gen can span several eval waves merged across files (`dedup_latest_gen` keeps the newest gen per config). This decouples "did we add models / re-sweep" from "did we cut a release" — adding models does not require a version bump.
+
+To fold new models into an existing dataset, stamp them with that dataset's `gen` and append the rows. Because they are net-new configs, no existing number is recomputed and they slot into the leaderboard as same-gen peers (no carry-forward badge).
+
+Addenda to date:
+
+- **2026-06-17 — v0.7.5 / gen 3, 16GB tier (rig-01):** added `LFM2.5-8B-A1B-Q4_K_M` and `Mellum2-12B-A2.5B-Q4_K_M` (Thinking + Instruct), each native + prompt, reforged + bare, n=50, into `eval_results_v0.7.5.jsonl`. Run post-release on llama.cpp `b9647`. No version bump — stamped `gen: 3`. Headline: Mellum2-12B Instruct (native, reforged) 81.0%. Caveat: replay coverage for these three is `none` only, not the full none/keep-last/full grid the other gen-3 8–14B models carry.
+
 ### Forge eval report
 
 ```bash

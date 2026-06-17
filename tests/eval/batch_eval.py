@@ -62,6 +62,11 @@ _GGUF_FILES: list[str] = [
     "Qwen3.6-27B-Q4_K_M.gguf",
     "Qwen3.6-35B-A3B-UD-Q4_K_M.gguf",
     "Nemotron-3-Nano-30B-A3B-Q4_K_M.gguf",
+    # 16GB tier (rig-01) — LFM2.5 MoE + Mellum2 MoE (both variants). All
+    # support native FC, so each gets native + prompt configs below.
+    "LFM2.5-8B-A1B-Q4_K_M.gguf",
+    "Mellum2-12B-A2.5B-Thinking-Q4_K_M.gguf",
+    "Mellum2-12B-A2.5B-Instruct-Q4_K_M.gguf",
 ]
 
 # Models that lack native function-calling support — only run prompt mode.
@@ -179,6 +184,17 @@ ALL_CONFIGS: list[BatchConfig] = (
     LLAMASERVER_CONFIGS + LLAMAFILE_CONFIGS + OLLAMA_CONFIGS
 )
 
+# New models wired for the az/evals sweep (16GB tier): LFM2.5 MoE + Mellum2 MoE
+# (both variants), each native + prompt. Subset lets a run target only these.
+_NEW_MODEL_STEMS: set[str] = {
+    "LFM2.5-8B-A1B-Q4_K_M",
+    "Mellum2-12B-A2.5B-Thinking-Q4_K_M",
+    "Mellum2-12B-A2.5B-Instruct-Q4_K_M",
+}
+NEW_MODEL_CONFIGS: list[BatchConfig] = [
+    c for c in LLAMASERVER_CONFIGS if c.model in _NEW_MODEL_STEMS
+]
+
 # Named subsets for quick iteration
 # Note: "anthropic" is separate from "all" — it costs money per API call.
 CONFIG_SETS: dict[str, list[BatchConfig]] = {
@@ -188,6 +204,9 @@ CONFIG_SETS: dict[str, list[BatchConfig]] = {
     "llamafile": LLAMAFILE_CONFIGS,
     "llamaserver-native": [c for c in LLAMASERVER_CONFIGS if c.mode == "native"],
     "llamaserver-prompt": [c for c in LLAMASERVER_CONFIGS if c.mode == "prompt"],
+    "new-models": NEW_MODEL_CONFIGS,
+    "new-models-native": [c for c in NEW_MODEL_CONFIGS if c.mode == "native"],
+    "new-models-prompt": [c for c in NEW_MODEL_CONFIGS if c.mode == "prompt"],
     "anthropic": ANTHROPIC_CONFIGS,
     "anthropic-any": ANTHROPIC_ANY_CONFIGS,
     "haiku": [c for c in ANTHROPIC_CONFIGS if "haiku" in c.model],
@@ -410,6 +429,11 @@ _SERVER_EXTRA_FLAGS: dict[str, list[str]] = {
     "Qwen3.6-27B-Q4_K_M": ["--reasoning-format", "auto"],
     "Qwen3.6-35B-A3B-UD-Q4_K_M": ["--reasoning-format", "auto"],
     "Nemotron-3-Nano-30B-A3B-Q4_K_M": ["--reasoning-format", "auto"],
+    # 16GB tier reasoning models: LFM2.5 emits explicit CoT, Mellum2 Thinking
+    # emits <think> (qwen3-style) — both need server-side parsing. Mellum2
+    # Instruct is direct (no <think>), so it gets no extra flag.
+    "LFM2.5-8B-A1B-Q4_K_M": ["--reasoning-format", "auto"],
+    "Mellum2-12B-A2.5B-Thinking-Q4_K_M": ["--reasoning-format", "auto"],
 }
 
 
