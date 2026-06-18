@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import AsyncIterator
+from functools import partial
 from unittest.mock import AsyncMock
 
 import pytest
@@ -22,6 +23,12 @@ from forge.core.workflow import (
 )
 from forge.errors import WorkflowCancelledError
 from pydantic import BaseModel
+
+from tests.conftest import MockClient as _SharedMockClient
+
+# SlotWorker tests never stream; the shared double's send_stream is left
+# unsupported to match the original local double's behavior exactly.
+MockClient = partial(_SharedMockClient, stream_mode="unsupported")
 
 
 class EmptyParams(BaseModel):
@@ -54,28 +61,7 @@ def _make_workflow(terminal_tool: str = "submit") -> Workflow:
     )
 
 
-class MockClient:
-    """Mock LLMClient that returns scripted responses."""
-
-    def __init__(self, responses: list):
-        self.responses = list(responses)
-        self._call_index = 0
-
-    async def send(self, messages, tools=None, sampling=None, passthrough=None, inbound_anthropic_body=None):
-        resp = self.responses[self._call_index]
-        self._call_index += 1
-        if isinstance(resp, ToolCall):
-            return [resp]
-        return resp
-
-    async def send_stream(self, messages, tools=None, sampling=None, passthrough=None, inbound_anthropic_body=None):
-        raise NotImplementedError
-
-    async def get_context_length(self):
-        return None
-
-
-def _make_worker(client: MockClient) -> SlotWorker:
+def _make_worker(client: _SharedMockClient) -> SlotWorker:
     ctx = ContextManager(strategy=NoCompact(), budget_tokens=100_000)
     runner = WorkflowRunner(client=client, context_manager=ctx)
     return SlotWorker(runner)

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncIterator
 from unittest.mock import MagicMock
 
 import pytest
@@ -15,7 +14,6 @@ from forge.core.messages import Message, MessageMeta, MessageRole, MessageType, 
 from forge.core.runner import WorkflowRunner
 from pydantic import BaseModel
 from forge.core.workflow import (
-    LLMResponse,
     TextResponse,
     ToolCall,
     ToolDef,
@@ -24,61 +22,14 @@ from forge.core.workflow import (
 )
 from forge.errors import MaxIterationsError, PrerequisiteError, StepEnforcementError, StreamError, ToolCallError, ToolExecutionError, ToolResolutionError, WorkflowCancelledError
 
+from tests.conftest import MockClient
+
 
 class EmptyParams(BaseModel):
     pass
 
 
 # ── Helpers ──────────────────────────────────────────────────────
-
-
-class MockClient:
-    """Mock LLMClient that returns scripted responses.
-
-    Accepts ToolCall or TextResponse in the response list. Single ToolCall
-    entries are automatically wrapped in a list to match the runner's
-    expected LLMResponse = list[ToolCall] | TextResponse.
-    """
-
-    def __init__(self, responses: list[ToolCall | TextResponse]):
-        self.responses = list(responses)
-        self._call_index = 0
-        self.send_calls: list[tuple[list[dict], list[ToolSpec] | None]] = []
-        self.send_stream_calls: list[tuple[list[dict], list[ToolSpec] | None]] = []
-
-    def _next(self) -> LLMResponse:
-        resp = self.responses[self._call_index]
-        self._call_index += 1
-        if isinstance(resp, ToolCall):
-            return [resp]
-        return resp
-
-    async def send(
-        self,
-        messages: list[dict[str, str]],
-        tools: list[ToolSpec] | None = None,
-        sampling: dict[str, object] | None = None,
-        passthrough: dict[str, object] | None = None,
-        inbound_anthropic_body: dict[str, object] | None = None,
-    ) -> LLMResponse:
-        self.send_calls.append((messages, tools))
-        return self._next()
-
-    async def send_stream(
-        self,
-        messages: list[dict[str, str]],
-        tools: list[ToolSpec] | None = None,
-        sampling: dict[str, object] | None = None,
-        passthrough: dict[str, object] | None = None,
-        inbound_anthropic_body: dict[str, object] | None = None,
-    ) -> AsyncIterator[StreamChunk]:
-        self.send_stream_calls.append((messages, tools))
-        resp = self._next()
-        yield StreamChunk(type=ChunkType.TEXT_DELTA, content="partial...")
-        yield StreamChunk(type=ChunkType.FINAL, response=resp)
-
-    async def get_context_length(self) -> int | None:
-        return None
 
 
 def _make_tool(name: str, fn=None) -> ToolDef:
