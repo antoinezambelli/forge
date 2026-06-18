@@ -151,4 +151,4 @@ Eval generations (older runs carried forward, superscript-tagged):
   ¹ gen 1 — v0.6.0 suite — incl. Anthropic ablation (commit 2b05dc4, 2026-05-08)
   ² gen 2 — v0.7.0 lineup refresh (8–14B) + 32GB tier debut (v0.7.4) (commit 655e1f6, 2026-05-22)
 
-*Generated 2026-06-11 20:28*
+*Generated 2026-06-18 02:22*

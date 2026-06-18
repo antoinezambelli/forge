@@ -102,6 +102,17 @@ ministral-3:14b-instruct-2512-q4_K_M OL/N [reforged:full]²         74.8%    74.
 ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 ```
 
+## Mellum2-12B-A2.5B-Instruct-Q4_K_M
+
+```
+-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+Model/Backend                                          Scr      Acc      Cmp    Eff   Wst    Spd     N    rel   arg   tsl   b2s   s3s   crt   srn   err   dgr   dge   art   grs   iar rel_s arg_s tsl_s b2s_s s3s_s crt_s srn_s err_s dgr_s dge_s art_s grs_s iar_s
+-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+Mellum2-12B-A2.5B-Instruct-Q4_K_M LS/N [reforged]    81.0%    82.3%    98.4%    76%   1.5   1.2s    50    100   100   100    86   100   100   100   100   100    44     0    98    24   100   100   100    88   100   100   100   100   100    44     0    98    24
+Mellum2-12B-A2.5B-Instruct-Q4_K_M LS/P [reforged]    60.7%    62.4%    97.3%    95%   0.2   1.2s    50     94   100   100   100   100    42    98   100    16    24     0     6    10    92   100   100   100   100    34    98   100    26    22     0    10     6
+-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+```
+
 ## gemma4-e4b
 
 ```
@@ -213,6 +224,28 @@ granite4.1:8b-q4_K_M OL/N [reforged:full]²         57.8%    57.8%   100.0%    8
 -----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 ```
 
+## Mellum2-12B-A2.5B-Thinking-Q4_K_M
+
+```
+-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+Model/Backend                                          Scr      Acc      Cmp    Eff   Wst    Spd     N    rel   arg   tsl   b2s   s3s   crt   srn   err   dgr   dge   art   grs   iar rel_s arg_s tsl_s b2s_s s3s_s crt_s srn_s err_s dgr_s dge_s art_s grs_s iar_s
+-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+Mellum2-12B-A2.5B-Thinking-Q4_K_M LS/N [reforged]    68.4%    68.7%    99.5%    80%   0.7   8.8s    50    100    92   100   100   100    44   100    96    56     0     2    38    86   100    82   100   100   100    34   100    86    64     0     0    30    68
+Mellum2-12B-A2.5B-Thinking-Q4_K_M LS/P [reforged]    66.8%    68.4%    97.8%    94%   0.3   7.9s    50    100   100   100   100   100    42    92   100    28    24     4    32    38   100   100   100   100   100    52    90   100    40    30     2    46    18
+-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+```
+
+## LFM2.5-8B-A1B-Q4_K_M
+
+```
+------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+Model/Backend                             Scr      Acc      Cmp    Eff   Wst    Spd     N    rel   arg   tsl   b2s   s3s   crt   srn   err   dgr   dge   art   grs   iar rel_s arg_s tsl_s b2s_s s3s_s crt_s srn_s err_s dgr_s dge_s art_s grs_s iar_s
+------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+LFM2.5-8B-A1B-Q4_K_M LS/N [reforged]    57.7%    64.9%    88.8%    68%   1.3   6.6s    50    100    98    90    60   100    82   100   100    18     4     0     6     0   100    98    88    78   100    50   100   100    18     2     0     8     0
+LFM2.5-8B-A1B-Q4_K_M LS/P [reforged]    35.3%    48.7%    72.5%    48%   2.7  19.1s    50    100    54     0    24    66     8    92    62    44     2     0     4     4   100    40     0    48    60     6    84    70    44     2     0     4     0
+------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+```
+
 Scr=score(correct/total), Acc=accuracy(correct/total, excl validate errors), Cmp=completeness(completed/total), Eff=efficiency(ideal/actual calls), Wst=avg wasted calls, Spd=avg time(excl compaction)
 rel=relevance_detection, arg=argument_fidelity, tsl=tool_selection, b2s=basic_2step, s3s=sequential_3step, crt=conditional_routing, srn=sequential_reasoning, err=error_recovery, dgr=data_gap_recovery, dge=data_gap_recovery_extended, art=argument_transformation, grs=grounded_synthesis, iar=inconsistent_api_recovery, rel_s=relevance_detection_stateful, arg_s=argument_fidelity_stateful, tsl_s=tool_selection_stateful, b2s_s=basic_2step_stateful, s3s_s=sequential_3step_stateful, crt_s=conditional_routing_stateful, srn_s=sequential_reasoning_stateful, err_s=error_recovery_stateful, dgr_s=data_gap_recovery_stateful, dge_s=data_gap_recovery_extended_stateful, art_s=argument_transformation_stateful, grs_s=grounded_synthesis_stateful, iar_s=inconsistent_api_recovery_stateful
 Ablation: full=all guardrails, no_rescue=no rescue loop, no_nudge=no rescue/retry nudge, no_steps=no step enforcement, no_recovery=no error recovery, no_compact=no compaction, bare=all guardrails off
@@ -222,4 +255,4 @@ Eval generations (older runs carried forward, superscript-tagged):
   ¹ gen 1 — v0.6.0 suite — incl. Anthropic ablation (commit 2b05dc4, 2026-05-08)
   ² gen 2 — v0.7.0 lineup refresh (8–14B) + 32GB tier debut (v0.7.4) (commit 655e1f6, 2026-05-22)
 
-*Generated 2026-06-11 20:28*
+*Generated 2026-06-18 02:22*

@@ -161,13 +161,16 @@ Resume is automatic: re-run the same command and it skips completed scenarios.
 
 ### Committed datasets
 
-Released datasets are versioned in the repo: `eval_results_vX.Y.Z.jsonl` (LFS-tracked). The current shipped dashboard at `docs/results/dashboard.html` reflects the latest version. To regenerate the dashboard or markdown views against a specific release:
+Released datasets are versioned in the repo: `eval_results_vX.Y.Z.jsonl` (LFS-tracked). The current shipped dashboard at `docs/results/dashboard.html` reflects the latest version. The shipped dashboard is built from **all** versioned datasets at once — `report` merges them and `dedup_latest_gen` keeps the newest gen per config, so older-gen models carry forward as superscript-badged peers. Pass every `eval_results_v*.jsonl`, oldest to newest:
 
 ```bash
-python -m tests.eval.report eval_results_v0.7.0.jsonl --html docs/results/dashboard.html --markdown docs/results/
+python -m tests.eval.report \
+  eval_results_v0.6.0.jsonl eval_results_v0.7.0.jsonl \
+  eval_results_v0.7.4.jsonl eval_results_v0.7.5.jsonl \
+  --html docs/results/dashboard.html --markdown docs/results/
 ```
 
-Older datasets (e.g. `eval_results_v0.6.0.jsonl`) remain in the repo for comparison and reproducibility. `batch_eval` writes to `eval_results.jsonl` by default; rename to a versioned filename before committing to the repo.
+Generating from a single file is fine for a quick look at one release in isolation, but it drops every model not present in that file — including the carried-forward older generations — so do not commit a single-file render as the shipped dashboard. `batch_eval` writes to `eval_results.jsonl` by default; rename to a versioned filename before committing to the repo.
 
 ### Eval generations and post-release addenda
 
