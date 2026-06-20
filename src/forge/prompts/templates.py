@@ -6,6 +6,7 @@ import json
 import re
 
 from forge.core.workflow import ToolCall, ToolSpec
+from forge.prompts.think_tags import THINK_TAG_RE as _THINK_TAG_RE
 
 
 def build_tool_prompt(tools: list[ToolSpec]) -> str:
@@ -119,12 +120,6 @@ def _try_parse_tool_call(json_str: str, available_tools: list[str]) -> ToolCall 
 # Captures: tool name and the JSON args blob.
 _REHEARSAL_RE = re.compile(
     r"(\w+)\[ARGS\](\{.*\})", re.DOTALL
-)
-
-# Think tag patterns (same as llamafile._THINK_TAG_RE) — needed to strip
-# thinking blocks before rescue parsing.
-_THINK_TAG_RE = re.compile(
-    r"\[THINK\].*?\[/THINK\]|<think>.*?</think>", re.DOTALL
 )
 
 # Qwen Coder XML tool call format.

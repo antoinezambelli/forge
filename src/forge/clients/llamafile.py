@@ -22,37 +22,14 @@ from forge.clients.sampling_defaults import apply_sampling_defaults
 from forge.core.workflow import LLMResponse, TextResponse, ToolCall, ToolSpec
 from forge.errors import BackendError, ContextDiscoveryError
 from forge.prompts.templates import build_tool_prompt, extract_tool_call
-
-# Model-specific thinking tag formats. Extend this list when adding new model
-# families. If a model library/registry is added later, move these patterns
-# into per-model profiles instead of hard-coding here.
-#   - [THINK]...[/THINK]  — Mistral (Ministral Reasoning)
-#   - <think>...</think>   — Qwen3, DeepSeek
-_THINK_TAG_RE = re.compile(
-    r"\[THINK\](.*?)\[/THINK\]|<think>(.*?)</think>", re.DOTALL
-)
+# Re-exported under the historical private name so existing imports
+# (`from forge.clients.llamafile import _extract_think_tags`) keep working.
+from forge.prompts.think_tags import extract_think_tags as _extract_think_tags
 
 # Multi-shard GGUF naming convention: "<stem>-00001-of-00003.gguf". The shard
 # index is filesystem layout, not model identity, so strip it for the
 # sampling-defaults registry key.
 _SHARD_SUFFIX_RE = re.compile(r"-\d{5}-of-\d{5}$")
-
-
-def _extract_think_tags(text: str) -> tuple[str, str]:
-    """Extract thinking blocks from text.
-
-    Supports [THINK]...[/THINK] (Mistral) and <think>...</think> (Qwen/DeepSeek).
-    Returns (reasoning, remaining_content).
-    """
-    reasoning_parts: list[str] = []
-    remaining = text
-    for m in _THINK_TAG_RE.finditer(text):
-        # group(1) is [THINK] match, group(2) is <think> match
-        content = (m.group(1) or m.group(2) or "").strip()
-        reasoning_parts.append(content)
-    if reasoning_parts:
-        remaining = _THINK_TAG_RE.sub("", text).strip()
-    return "\n\n".join(reasoning_parts), remaining
 
 
 def _merge_consecutive(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
