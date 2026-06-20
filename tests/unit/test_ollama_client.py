@@ -763,6 +763,117 @@ class TestOllamaSendStream:
         assert "timeout" in str(exc_info.value).lower()
 
 
+# ── outbound message normalization (#111 / #115) ─────────────────
+
+
+def _sent_body(mock_call) -> dict:
+    return mock_call.kwargs.get("json") or mock_call[1].get("json")
+
+
+class TestNormalizeMessagesForOllama:
+    """Outbound coercion of OpenAI-wire messages to Ollama's native schema."""
+
+    def test_flattens_multipart_content(self) -> None:
+        from forge.clients.ollama import _normalize_messages_for_ollama
+        out = _normalize_messages_for_ollama([
+            {"role": "user", "content": [{"type": "text", "text": "hello"}]},
+        ])
+        assert out[0]["content"] == "hello"
+
+    def test_joins_multiple_text_parts_and_drops_images(self) -> None:
+        from forge.clients.ollama import _normalize_messages_for_ollama
+        out = _normalize_messages_for_ollama([
+            {"role": "user", "content": [
+                {"type": "text", "text": "a"},
+                {"type": "image_url", "image_url": {"url": "data:..."}},
+                {"type": "text", "text": "b"},
+            ]},
+        ])
+        assert out[0]["content"] == "a\nb"
+
+    def test_coerces_json_string_tool_args_to_dict(self) -> None:
+        from forge.clients.ollama import _normalize_messages_for_ollama
+        out = _normalize_messages_for_ollama([
+            {"role": "assistant", "tool_calls": [
+                {"function": {"name": "t", "arguments": '{"x": "1"}'}}
+            ]},
+        ])
+        assert out[0]["tool_calls"][0]["function"]["arguments"] == {"x": "1"}
+
+    def test_preserves_already_dict_tool_args(self) -> None:
+        from forge.clients.ollama import _normalize_messages_for_ollama
+        out = _normalize_messages_for_ollama([
+            {"role": "assistant", "tool_calls": [
+                {"function": {"name": "t", "arguments": {"x": "1"}}}
+            ]},
+        ])
+        assert out[0]["tool_calls"][0]["function"]["arguments"] == {"x": "1"}
+
+    def test_leaves_malformed_tool_args_untouched(self) -> None:
+        """A non-object/malformed args payload is not coerced to {}."""
+        from forge.clients.ollama import _normalize_messages_for_ollama
+        out = _normalize_messages_for_ollama([
+            {"role": "assistant", "tool_calls": [
+                {"function": {"name": "t", "arguments": "not json"}}
+            ]},
+        ])
+        assert out[0]["tool_calls"][0]["function"]["arguments"] == "not json"
+
+    def test_does_not_mutate_input(self) -> None:
+        from forge.clients.ollama import _normalize_messages_for_ollama
+        original = [
+            {"role": "user", "content": [{"type": "text", "text": "hi"}]},
+            {"role": "assistant", "tool_calls": [
+                {"function": {"name": "t", "arguments": '{"x": "1"}'}}
+            ]},
+        ]
+        _normalize_messages_for_ollama(original)
+        assert original[0]["content"] == [{"type": "text", "text": "hi"}]
+        assert original[1]["tool_calls"][0]["function"]["arguments"] == '{"x": "1"}'
+
+    def test_plain_string_content_unchanged(self) -> None:
+        from forge.clients.ollama import _normalize_messages_for_ollama
+        out = _normalize_messages_for_ollama([{"role": "user", "content": "hi"}])
+        assert out[0]["content"] == "hi"
+
+    @pytest.mark.asyncio
+    async def test_send_normalizes_body(self) -> None:
+        """#115 + #111 on the non-streaming wire body."""
+        client = _make_client()
+        client._http.post.return_value = _mock_response({
+            "message": {"role": "assistant", "content": "ok"}
+        })
+        await client.send([
+            {"role": "user", "content": [{"type": "text", "text": "hi"}]},
+            {"role": "assistant", "tool_calls": [
+                {"function": {"name": "t", "arguments": '{"x": "1"}'}}
+            ]},
+            {"role": "tool", "content": "ok"},
+        ])
+        body = _sent_body(client._http.post.call_args)
+        assert body["messages"][0]["content"] == "hi"
+        assert body["messages"][1]["tool_calls"][0]["function"]["arguments"] == {"x": "1"}
+
+    @pytest.mark.asyncio
+    async def test_send_stream_normalizes_body(self) -> None:
+        """send_stream gets identical treatment (WorkflowRunner stream path)."""
+        client = _make_client()
+        lines = [
+            json.dumps({"message": {"role": "assistant", "content": ""}, "done": True}),
+        ]
+        client._http.stream.return_value = _MockStreamResponse(lines)
+        async for _ in client.send_stream([
+            {"role": "user", "content": [{"type": "text", "text": "hi"}]},
+            {"role": "assistant", "tool_calls": [
+                {"function": {"name": "t", "arguments": '{"x": "1"}'}}
+            ]},
+        ]):
+            pass
+        body = _sent_body(client._http.stream.call_args)
+        assert body["messages"][0]["content"] == "hi"
+        assert body["messages"][1]["tool_calls"][0]["function"]["arguments"] == {"x": "1"}
+
+
 # ── get_context_length + set_num_ctx ─────────────────────────────
 
 

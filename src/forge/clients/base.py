@@ -55,6 +55,28 @@ def format_tool(spec: ToolSpec) -> dict[str, Any]:
     }
 
 
+def flatten_content_to_text(content: Any) -> str:
+    """Flatten OpenAI multi-part ``content`` blocks into a plain string.
+
+    OpenAI allows ``content`` as a list of parts (e.g.
+    ``[{"type": "text", "text": "..."}]``). Text parts and bare-string parts
+    are joined with newlines; non-text dict blocks (images, audio, …) are
+    dropped — forge is text-only on this path today. A string passes through
+    unchanged; ``None`` (and any other shape) degrades to ``""``/``str()``.
+    """
+    if isinstance(content, list):
+        parts: list[str] = []
+        for block in content:
+            if isinstance(block, dict) and block.get("type") == "text":
+                parts.append(block.get("text", ""))
+            elif isinstance(block, str):
+                parts.append(block)
+        return "\n".join(parts)
+    if content is None:
+        return ""
+    return content if isinstance(content, str) else str(content)
+
+
 def decode_tool_args(raw: Any) -> Any:
     """Decode a tool-call ``arguments`` payload, fail-loud.
 

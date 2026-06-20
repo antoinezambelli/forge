@@ -1,8 +1,11 @@
 """Tests for proxy request handler."""
 
-import pytest
-from unittest.mock import AsyncMock
+import json
 
+import pytest
+from unittest.mock import AsyncMock, MagicMock
+
+from forge.clients.ollama import OllamaClient
 from forge.context.manager import ContextManager
 from forge.context.strategies import NoCompact
 from forge.core.workflow import TextResponse, ToolCall
@@ -614,6 +617,65 @@ class TestNativePassthrough:
         sent = client.send.call_args.kwargs["raw_openai_tools"]
         names = [t["function"]["name"] for t in sent]
         assert names == ["search", "respond"]
+
+
+class TestOllamaProxyIntegration:
+    """Proxy → REAL OllamaClient (mocked transport): the seam that let #111/#115
+    ship. Every other handler test mocks the client, so it asserts what reaches
+    the client, not what the client actually POSTs to /api/chat. These assert the
+    on-the-wire body on the raw-passthrough first attempt."""
+
+    def _real_ollama(self, response_data):
+        client = OllamaClient(base_url="http://test:11434", model="m", think=False)
+        mock_http = AsyncMock()
+        mock_http.stream = MagicMock()
+        resp = MagicMock()
+        resp.status_code = 200
+        resp.json.return_value = response_data
+        resp.text = json.dumps(response_data)
+        mock_http.post.return_value = resp
+        client._http = mock_http
+        return client
+
+    @pytest.mark.asyncio
+    async def test_no_tools_array_content_normalized(self):
+        """#115 on the no-tools chat path (also raw-passthrough)."""
+        client = self._real_ollama({"message": {"role": "assistant", "content": "ok"}})
+        messages = [{"role": "user", "content": [{"type": "text", "text": "hi"}]}]
+        await handle_chat_completions(
+            _body(messages=messages), client, _context_manager(),
+        )
+        body = client._http.post.call_args.kwargs["json"]
+        assert body["messages"][0]["content"] == "hi"
+
+    @pytest.mark.asyncio
+    async def test_tool_history_string_args_normalized(self):
+        """#111: a replayed assistant tool_calls turn with JSON-string args is
+        coerced to a dict on the wire (the multi-turn 400)."""
+        client = self._real_ollama({
+            "message": {
+                "role": "assistant",
+                "tool_calls": [
+                    {"function": {"name": "search", "arguments": {"q": "ok"}}}
+                ],
+            }
+        })
+        messages = [
+            {"role": "user", "content": "x"},
+            {"role": "assistant", "tool_calls": [
+                {"id": "c1", "type": "function",
+                 "function": {"name": "search", "arguments": '{"q": "1"}'}}
+            ]},
+            {"role": "tool", "tool_call_id": "c1", "content": "result"},
+        ]
+        await handle_chat_completions(
+            _body(messages=messages, tools=[_tool_def("search")]),
+            client, _context_manager(),
+        )
+        # First attempt is the raw-passthrough path where the bug lived.
+        body = client._http.post.call_args_list[0].kwargs["json"]
+        tc_msg = [m for m in body["messages"] if m.get("tool_calls")][0]
+        assert tc_msg["tool_calls"][0]["function"]["arguments"] == {"q": "1"}
 
 
 # ── Prompt capability handoff ───────────────────────────────

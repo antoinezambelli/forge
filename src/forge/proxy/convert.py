@@ -6,9 +6,10 @@ import json
 import uuid
 from typing import Any
 
+from forge.clients.base import flatten_content_to_text
 from forge.core.messages import Message, MessageMeta, MessageRole, MessageType, ToolCallInfo
 from forge.core.reasoning import DEFAULT_REASONING_REPLAY, ReasoningReplay, validate_reasoning_replay
-from forge.core.workflow import ToolCall, TextResponse
+from forge.core.workflow import ToolCall
 
 
 # ── Inbound: OpenAI request → forge Messages ─────────────────────
@@ -23,17 +24,9 @@ def openai_to_messages(openai_messages: list[dict[str, Any]]) -> list[Message]:
 
     for msg in openai_messages:
         role_str = msg.get("role", "user")
-        content = msg.get("content", "") or ""
         # Normalize list-style content blocks to a plain string.
         # OpenAI format allows content as [{"type": "text", "text": "..."}].
-        if isinstance(content, list):
-            parts = []
-            for block in content:
-                if isinstance(block, dict) and block.get("type") == "text":
-                    parts.append(block.get("text", ""))
-                elif isinstance(block, str):
-                    parts.append(block)
-            content = "\n".join(parts)
+        content = flatten_content_to_text(msg.get("content", "") or "")
 
         if role_str == "system":
             messages.append(Message(

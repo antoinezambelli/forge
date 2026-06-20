@@ -8,13 +8,64 @@ from typing import Any
 
 import httpx
 
-from forge.clients.base import ChunkType, StreamChunk, TokenUsage, format_tool
+from forge.clients.base import (
+    ChunkType,
+    StreamChunk,
+    TokenUsage,
+    decode_tool_args,
+    flatten_content_to_text,
+    format_tool,
+)
 from forge.clients.sampling_defaults import apply_sampling_defaults
 from forge.core.workflow import LLMResponse, TextResponse, ToolCall, ToolSpec
 from forge.errors import BackendError, ThinkingNotSupportedError
 from forge.prompts.think_tags import extract_think_tags
 
 _THINK_HEURISTIC_KEYWORDS = ("reason", "think")
+
+
+def _normalize_messages_for_ollama(
+    messages: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Coerce OpenAI-wire messages into Ollama's native /api/chat schema.
+
+    Ollama's native endpoint is stricter than the OpenAI wire format the proxy
+    forwards verbatim on the native-passthrough path (issues #111/#115):
+
+      - ``content`` must be a plain string, not a multi-part array. Multi-part
+        arrays are flattened text-only (images dropped, matching the converted
+        path's long-standing behavior).
+      - tool-call ``arguments`` must be a dict, not the JSON string OpenAI
+        clients replay in assistant history. Only a value that decodes to a
+        dict is rewritten; a malformed / non-object payload is left untouched
+        (it rides the validator's tool-error lane rather than being coerced).
+
+    Returns a new list; the input messages and their nested dicts are not
+    mutated (direct callers may reuse their list).
+    """
+    normalized: list[dict[str, Any]] = []
+    for msg in messages:
+        new_msg = dict(msg)
+        if isinstance(new_msg.get("content"), list):
+            new_msg["content"] = flatten_content_to_text(new_msg["content"])
+
+        tool_calls = new_msg.get("tool_calls")
+        if isinstance(tool_calls, list):
+            new_calls: list[Any] = []
+            for tc in tool_calls:
+                new_tc = dict(tc) if isinstance(tc, dict) else tc
+                func = new_tc.get("function") if isinstance(new_tc, dict) else None
+                if isinstance(func, dict) and "arguments" in func:
+                    decoded = decode_tool_args(func["arguments"])
+                    if isinstance(decoded, dict):
+                        new_func = dict(func)
+                        new_func["arguments"] = decoded
+                        new_tc["function"] = new_func
+                new_calls.append(new_tc)
+            new_msg["tool_calls"] = new_calls
+
+        normalized.append(new_msg)
+    return normalized
 
 
 def _is_think_unsupported_error(status_code: int, body: str) -> bool:
@@ -168,7 +219,7 @@ class OllamaClient:
         """
         body: dict[str, Any] = {
             "model": self.model,
-            "messages": messages,
+            "messages": _normalize_messages_for_ollama(messages),
             "stream": False,
             "options": self._build_options(sampling),
         }
@@ -241,7 +292,7 @@ class OllamaClient:
         """
         body: dict[str, Any] = {
             "model": self.model,
-            "messages": messages,
+            "messages": _normalize_messages_for_ollama(messages),
             "stream": True,
             "options": self._build_options(sampling),
         }
