@@ -2,6 +2,21 @@
 
 All notable changes to forge are documented here.
 
+## [0.7.6] — 2026-06-20
+
+A bug-fix release for the Ollama backend and inline reasoning capture. Multi-turn tool sessions and multi-part message content no longer 400 against Ollama's native API, and chain-of-thought emitted inline in `content` is now captured on vLLM and Ollama as it already was on the structured-field path.
+
+### Added
+- **16GB-tier MoE models** in the published eval set and dashboard (gen-3 regeneration). #107
+
+### Changed
+- **Think-tag parsing consolidated** into one shared helper (`forge.prompts.think_tags`), de-duplicating inline-reasoning extraction across the llamafile client and prompt templates. #112
+- **Scripted test doubles consolidated** into a shared `conftest` fixture, replacing the per-module `MockClient` stand-ins. #76 (thanks @SuperMarioYL).
+
+### Fixed
+- **Inline `<think>` reasoning is captured on vLLM and Ollama.** When a reasoning model emits its chain-of-thought inline in `content` (`<think>…</think>`) instead of a structured reasoning field, that reasoning is now extracted onto the first tool call — matching the behavior already present for structured reasoning fields. #110
+- **Ollama's native `/api/chat` accepts OpenAI-wire message shapes.** On the proxy's native-passthrough path the client's verbatim OpenAI messages reach Ollama's stricter native endpoint. Multi-part array `content` is now flattened to text, and assistant `tool_calls[].function.arguments` sent as a JSON string are coerced to objects — fixing 400s on multi-turn tool sessions and on clients that send array-shaped content. #111, #115
+
 ## [0.7.5] — 2026-06-11
 
 Reasoning replay is now a measured, bounded policy. Reasoning-capable backends return hidden reasoning alongside tool calls, and forge previously re-serialized all of it into backend-facing history on every later turn. The new `reasoning_replay` knob bounds that — and after a full re-sweep of the published eval grid showed that dropping replayed reasoning is quality-free and token-cheaper, the default is `none`. The release also re-baselines the Claude eval tier with extended thinking enabled and adds Anthropic prompt caching with cache-aware cost accounting.
