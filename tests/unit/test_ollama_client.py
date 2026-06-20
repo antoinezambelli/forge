@@ -226,6 +226,41 @@ class TestOllamaSend:
         assert result[0].reasoning is None
 
     @pytest.mark.asyncio
+    async def test_extracts_think_tags_from_content_with_tool_call(self) -> None:
+        """<think> tags inline in content are extracted (not the raw tagged
+        string), when there is no structured thinking field."""
+        client = _make_client(think=True)
+        client._http.post.return_value = _mock_response({
+            "message": {
+                "role": "assistant",
+                "content": "<think>price first</think>",
+                "tool_calls": [
+                    {"function": {"name": "get_pricing", "arguments": {"part": "X"}}}
+                ],
+            }
+        })
+        result = await client.send(
+            [{"role": "user", "content": "test"}], tools=[_make_spec()]
+        )
+        assert isinstance(result, list)
+        assert result[0].reasoning == "price first"
+
+    @pytest.mark.asyncio
+    async def test_think_tags_stripped_from_text_response(self) -> None:
+        """A bare text reply has <think> tags stripped from its content."""
+        client = _make_client()
+        client._http.post.return_value = _mock_response({
+            "message": {
+                "role": "assistant",
+                "content": "<think>pondering</think>Hello there.",
+                "tool_calls": [],
+            }
+        })
+        result = await client.send([{"role": "user", "content": "test"}])
+        assert isinstance(result, TextResponse)
+        assert result.content == "Hello there."
+
+    @pytest.mark.asyncio
     async def test_think_true_explicit(self) -> None:
         """think=True explicitly → always in request body."""
         client = _make_client(think=True)
@@ -498,6 +533,52 @@ class TestOllamaSendStream:
         final = [c for c in chunks if c.type == ChunkType.FINAL][0]
         assert isinstance(final.response, list)
         assert final.response[0].reasoning == "Let me think..."
+
+    @pytest.mark.asyncio
+    async def test_streaming_extracts_think_tags_from_content_with_tool_call(self) -> None:
+        """#110 (streaming): inline <think> in streamed content (no thinking
+        deltas) is extracted onto the FINAL tool call."""
+        client = _make_client(think=True)
+        lines = [
+            json.dumps({"message": {"role": "assistant", "content": "<think>price "}, "done": False}),
+            json.dumps({"message": {"role": "assistant", "content": "first</think>"}, "done": False}),
+            json.dumps({
+                "message": {
+                    "role": "assistant",
+                    "content": "",
+                    "tool_calls": [
+                        {"function": {"name": "get_pricing", "arguments": {"part": "X"}}}
+                    ],
+                },
+                "done": True,
+            }),
+        ]
+        client._http.stream.return_value = _MockStreamResponse(lines)
+        chunks = []
+        async for chunk in client.send_stream(
+            [{"role": "user", "content": "test"}], tools=[_make_spec()]
+        ):
+            chunks.append(chunk)
+        final = [c for c in chunks if c.type == ChunkType.FINAL][0]
+        assert isinstance(final.response, list)
+        assert final.response[0].reasoning == "price first"
+
+    @pytest.mark.asyncio
+    async def test_streaming_strips_think_tags_from_text_response(self) -> None:
+        """A streamed bare text reply has <think> tags stripped from FINAL."""
+        client = _make_client()
+        lines = [
+            json.dumps({"message": {"role": "assistant", "content": "<think>pondering</think>"}, "done": False}),
+            json.dumps({"message": {"role": "assistant", "content": "Hello there."}, "done": False}),
+            json.dumps({"message": {"role": "assistant", "content": ""}, "done": True}),
+        ]
+        client._http.stream.return_value = _MockStreamResponse(lines)
+        chunks = []
+        async for chunk in client.send_stream([{"role": "user", "content": "test"}]):
+            chunks.append(chunk)
+        final = [c for c in chunks if c.type == ChunkType.FINAL][0]
+        assert isinstance(final.response, TextResponse)
+        assert final.response.content == "Hello there."
 
     @pytest.mark.asyncio
     async def test_streaming_thinking_preferred_over_content(self) -> None:

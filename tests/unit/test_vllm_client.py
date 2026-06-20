@@ -180,6 +180,58 @@ class TestSend:
         assert result[0].reasoning is None
 
     @pytest.mark.asyncio
+    async def test_extracts_think_tags_from_content_with_tool_call(self) -> None:
+        """#110: thinking inline in content (no `reasoning` field) is captured."""
+        client = _make_client(think=True)
+        client._http.post.return_value = _mock_response(
+            _tool_call_response(content="<think>check the weather first</think>"),
+        )
+        result = await client.send(
+            [{"role": "user", "content": "x"}], tools=[_make_spec()],
+        )
+        assert isinstance(result, list)
+        assert result[0].reasoning == "check the weather first"
+
+    @pytest.mark.asyncio
+    async def test_reasoning_field_preferred_over_content_tags(self) -> None:
+        """Structured `reasoning` field wins over <think> tags in content."""
+        client = _make_client(think=True)
+        client._http.post.return_value = _mock_response(
+            _tool_call_response(reasoning="structured", content="<think>inline</think>"),
+        )
+        result = await client.send(
+            [{"role": "user", "content": "x"}], tools=[_make_spec()],
+        )
+        assert isinstance(result, list)
+        assert result[0].reasoning == "structured"
+
+    @pytest.mark.asyncio
+    async def test_think_tags_stripped_from_text_response(self) -> None:
+        """A bare text reply has <think> tags stripped from its content."""
+        client = _make_client()
+        client._http.post.return_value = _mock_response(
+            _text_response("<think>pondering</think>The answer is 42."),
+        )
+        result = await client.send([{"role": "user", "content": "x"}])
+        assert isinstance(result, TextResponse)
+        assert result.content == "The answer is 42."
+
+    @pytest.mark.asyncio
+    async def test_thinking_only_text_response_empty_after_strip(self) -> None:
+        """Thinking-only reply (no answer, no tool call) strips to empty content.
+
+        Matches LlamafileClient; the empty TextResponse then rides the existing
+        ResponseValidator retry path (covered in the validator tests).
+        """
+        client = _make_client()
+        client._http.post.return_value = _mock_response(
+            _text_response("<think>just thinking, no answer yet</think>"),
+        )
+        result = await client.send([{"role": "user", "content": "x"}])
+        assert isinstance(result, TextResponse)
+        assert result.content == ""
+
+    @pytest.mark.asyncio
     async def test_usage_recorded(self) -> None:
         client = _make_client()
         client._http.post.return_value = _mock_response(
@@ -380,6 +432,47 @@ class TestSendStream:
         result = finals[0].response
         assert isinstance(result, list)
         assert result[0].reasoning == "Let me think... "
+
+    @pytest.mark.asyncio
+    async def test_stream_extracts_think_tags_from_content_with_tool_call(self) -> None:
+        """#110 (streaming): inline <think> in streamed content (no reasoning
+        deltas) is captured on the FINAL tool call."""
+        client = _make_client(think=True)
+        client._http.stream.return_value = _MockStreamResponse([
+            _sse({"choices": [{"delta": {"content": "<think>inline "}}]}),
+            _sse({"choices": [{"delta": {"content": "plan</think>"}}]}),
+            _sse({"choices": [{"delta": {
+                "tool_calls": [{
+                    "index": 0,
+                    "function": {"name": "get_weather", "arguments": '{"city": "P"}'}
+                }],
+            }}]}),
+            "data: [DONE]",
+        ])
+        chunks = []
+        async for chunk in client.send_stream(
+            [{"role": "user", "content": "x"}], tools=[_make_spec()],
+        ):
+            chunks.append(chunk)
+        result = [c for c in chunks if c.type == ChunkType.FINAL][0].response
+        assert isinstance(result, list)
+        assert result[0].reasoning == "inline plan"
+
+    @pytest.mark.asyncio
+    async def test_stream_strips_think_tags_from_text_response(self) -> None:
+        """A streamed bare text reply has <think> tags stripped from FINAL."""
+        client = _make_client()
+        client._http.stream.return_value = _MockStreamResponse([
+            _sse({"choices": [{"delta": {"content": "<think>pondering</think>"}}]}),
+            _sse({"choices": [{"delta": {"content": "The answer is 42."}}]}),
+            "data: [DONE]",
+        ])
+        chunks = []
+        async for chunk in client.send_stream([{"role": "user", "content": "x"}]):
+            chunks.append(chunk)
+        result = [c for c in chunks if c.type == ChunkType.FINAL][0].response
+        assert isinstance(result, TextResponse)
+        assert result.content == "The answer is 42."
 
     @pytest.mark.asyncio
     async def test_non_200_raises_backend_error(self) -> None:

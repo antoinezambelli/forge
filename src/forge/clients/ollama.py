@@ -12,6 +12,7 @@ from forge.clients.base import ChunkType, StreamChunk, TokenUsage, format_tool
 from forge.clients.sampling_defaults import apply_sampling_defaults
 from forge.core.workflow import LLMResponse, TextResponse, ToolCall, ToolSpec
 from forge.errors import BackendError, ThinkingNotSupportedError
+from forge.prompts.think_tags import extract_think_tags
 
 _THINK_HEURISTIC_KEYWORDS = ("reason", "think")
 
@@ -120,12 +121,17 @@ class OllamaClient:
     ) -> str | None:
         """Gate reasoning capture on _think flag.
 
-        When _think is False, discard all reasoning.
-        When True: prefer thinking field, fall back to content.
+        When _think is False, discard all reasoning. When True: prefer the
+        structured ``thinking`` field; if absent, extract ``<think>`` tags from
+        content; finally fall back to the raw content (an instruct model
+        narrating before its tool call). Mirrors LlamafileClient.
         """
         if not self._think:
             return None
-        return thinking or content or None
+        if thinking:
+            return thinking
+        think, _ = extract_think_tags(content)
+        return think or content or None
 
     def _record_usage(self, data: dict[str, Any]) -> None:
         """Extract token usage from an Ollama response."""
@@ -214,7 +220,10 @@ class OllamaClient:
                 for i, tc in enumerate(tool_calls)
             ]
 
-        return TextResponse(content=msg.get("content", ""))
+        # No tool calls: strip inline thinking so the TextResponse carries
+        # clean content (parity with LlamafileClient).
+        _, content = extract_think_tags(msg.get("content", ""))
+        return TextResponse(content=content)
 
     async def send_stream(
         self,
@@ -321,7 +330,8 @@ class OllamaClient:
                         content = msg.get("content", "")
                         if content:
                             accumulated_content += content
-                        final = TextResponse(content=accumulated_content)
+                        _, text = extract_think_tags(accumulated_content)
+                        final = TextResponse(content=text)
                     yield StreamChunk(type=ChunkType.FINAL, response=final)
                 else:
                     tool_calls = msg.get("tool_calls")

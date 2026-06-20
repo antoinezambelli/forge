@@ -29,6 +29,7 @@ from forge.clients.base import ChunkType, StreamChunk, TokenUsage, decode_tool_a
 from forge.clients.sampling_defaults import apply_sampling_defaults
 from forge.core.workflow import LLMResponse, TextResponse, ToolCall, ToolSpec
 from forge.errors import BackendError
+from forge.prompts.think_tags import extract_think_tags
 
 
 class VLLMClient:
@@ -163,23 +164,26 @@ class VLLMClient:
             total_tokens=usage.get("total_tokens", 0),
         )
 
-    def _resolve_reasoning(
-        self, message_or_accum: dict[str, Any] | str, accumulated_content: str = "",
-    ) -> str | None:
-        """Extract reasoning, gated on _think.
+    def _resolve_reasoning(self, reasoning: str, content: str) -> str | None:
+        """Build final reasoning from the structured field and content, gated
+        on _think.
 
-        vLLM 0.21 returns reasoning in the ``reasoning`` field of the
-        assistant message when ``--reasoning-parser`` is enabled at server
-        boot. If thinking is disabled or the field is empty, return None.
-
-        Accepts either a message dict (from send()) or an accumulated
-        reasoning string (from send_stream()).
+        vLLM 0.21 returns reasoning in the ``reasoning`` field of the assistant
+        message when ``--reasoning-parser`` is enabled at server boot. When
+        that parser is absent — or doesn't split a given model's output — the
+        thinking instead arrives inline in ``content`` (often wrapped in
+        ``<think>...</think>``). To avoid silently dropping it (issue #110) and
+        to keep send() and send_stream() in lockstep with LlamafileClient, fall
+        back to ``<think>``-tag extraction and then to the raw content when the
+        structured field is empty. Both call sites pass the same (reasoning,
+        content) pair, so the two paths resolve identically.
         """
         if not self._think:
             return None
-        if isinstance(message_or_accum, dict):
-            return message_or_accum.get("reasoning") or None
-        return message_or_accum or accumulated_content or None
+        if reasoning:
+            return reasoning
+        think, _ = extract_think_tags(content)
+        return think or content or None
 
     async def send(
         self,
@@ -227,10 +231,16 @@ class VLLMClient:
         if tool_calls:
             return self._parse_tool_calls(
                 tool_calls,
-                reasoning=self._resolve_reasoning(message),
+                reasoning=self._resolve_reasoning(
+                    message.get("reasoning") or "", message.get("content") or "",
+                ),
             )
 
-        return TextResponse(content=message.get("content") or "")
+        # No tool calls: strip any inline thinking — reasoning is only useful
+        # attached to a ToolCall; a TextResponse carries clean content (parity
+        # with LlamafileClient.send()).
+        _, content = extract_think_tags(message.get("content") or "")
+        return TextResponse(content=content)
 
     async def send_stream(
         self,
@@ -334,7 +344,9 @@ class VLLMClient:
                 ),
             )
         else:
-            final = TextResponse(content=accumulated_content)
+            # Strip inline thinking from the final text for parity with send().
+            _, text = extract_think_tags(accumulated_content)
+            final = TextResponse(content=text)
         yield StreamChunk(type=ChunkType.FINAL, response=final)
 
     @staticmethod
