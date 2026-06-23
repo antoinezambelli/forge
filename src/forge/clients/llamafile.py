@@ -42,6 +42,24 @@ _SHARD_SUFFIX_RE = re.compile(r"-\d{5}-of-\d{5}$")
 _KNOWN_GGUF_EXTENSIONS: tuple[str, ...] = (".gguf", ".llamafile")
 
 
+# A 500 whose body is llama.cpp's tool-call parser rejecting MALFORMED/INCOMPLETE
+# model output (e.g. a `write` missing `content`, or a duplicated/incomplete call)
+# — NOT an arbitrary backend error. This one is a transient sampling artifact and
+# recoverable by re-sampling, so we surface it as a retryable text response (the
+# run_inference retry loop nudges the model to re-emit a clean call) instead of
+# echoing the raw error JSON into the conversation. Every OTHER 500 cascades as a
+# BackendError.
+def _is_malformed_tool_call_500(body: str) -> bool:
+    return "Failed to parse input" in body and ("tool_call" in body or "<function=" in body)
+
+
+_MALFORMED_TOOL_CALL_RETRY_TEXT = (
+    "(The previous tool call was malformed and rejected by the parser — likely a "
+    "missing required parameter or a duplicated/incomplete call. Re-emitting a "
+    "single, complete, well-formed tool call.)"
+)
+
+
 def _merge_consecutive(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Ensure strict user/assistant alternation for Jinja parity checker.
 
@@ -418,11 +436,15 @@ class LlamafileClient:
                 error_body = ""
                 async for line in response.aiter_lines():
                     error_body += line
-                yield StreamChunk(
-                    type=ChunkType.FINAL,
-                    response=TextResponse(content=error_body),
-                )
-                return
+                if _is_malformed_tool_call_500(error_body):
+                    # Recoverable: re-sample. Clean nudge, not the raw 500 JSON.
+                    yield StreamChunk(
+                        type=ChunkType.FINAL,
+                        response=TextResponse(content=_MALFORMED_TOOL_CALL_RETRY_TEXT),
+                    )
+                    return
+                # Arbitrary backend 500 — cascade.
+                raise BackendError(500, error_body)
             async for line in response.aiter_lines():
                 line = line.strip()
                 if not line or not line.startswith("data: "):
@@ -590,7 +612,12 @@ class LlamafileClient:
             headers=self._request_headers(extra_headers),
         )
         if resp.status_code == 500:
-            return TextResponse(content=resp.text)
+            is_parse = _is_malformed_tool_call_500(resp.text)
+            if is_parse:
+                # Recoverable: re-sample. Return a clean nudge, not the raw 500 JSON.
+                return TextResponse(content=_MALFORMED_TOOL_CALL_RETRY_TEXT)
+            # Arbitrary backend 500 — cascade.
+            raise BackendError(500, resp.text)
         if resp.status_code != 200:
             raise BackendError(resp.status_code, raw_body=resp.text)
         data = resp.json()
