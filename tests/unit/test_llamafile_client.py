@@ -118,6 +118,41 @@ class TestLlamafileNativeSend:
         assert result.content == "I need more info"
 
     @pytest.mark.asyncio
+    async def test_malformed_tool_call_500_retries_with_clean_nudge(self) -> None:
+        # llama.cpp rejects a malformed/incomplete tool call the model emitted ->
+        # 500 "Failed to parse input". This is recoverable: return a clean nudge so
+        # the inference retry loop re-samples; do NOT leak the raw error JSON.
+        client = _make_client("native")
+        resp = MagicMock()
+        resp.status_code = 500
+        resp.text = (
+            '{"error":{"code":500,"message":"Failed to parse input at pos 84: '
+            '<tool_call>\\n<function=write>\\n<parameter=file_path>\\nx.py\\n'
+            '</parameter>\\n</function>\\n</tool_call>","type":"server_error"}}'
+        )
+        client._http.post.return_value = resp
+        result = await client.send(
+            [{"role": "user", "content": "test"}], tools=[_make_spec()]
+        )
+        assert isinstance(result, TextResponse)
+        assert "malformed" in result.content.lower()
+        assert "Failed to parse input" not in result.content  # raw JSON must not leak
+
+    @pytest.mark.asyncio
+    async def test_arbitrary_500_cascades_as_backend_error(self) -> None:
+        # A real backend 500 (not a tool-call parse rejection) must cascade, not
+        # be swallowed as a retryable text response.
+        client = _make_client("native")
+        resp = MagicMock()
+        resp.status_code = 500
+        resp.text = '{"error":{"message":"CUDA out of memory","type":"server_error"}}'
+        client._http.post.return_value = resp
+        with pytest.raises(BackendError):
+            await client.send(
+                [{"role": "user", "content": "test"}], tools=[_make_spec()]
+            )
+
+    @pytest.mark.asyncio
     async def test_missing_choices_raises_backend_error(self) -> None:
         # Broken provider envelope (200, no choices) → fail loud and consistent
         # rather than KeyError/IndexError on data["choices"][0].
