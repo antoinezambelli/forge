@@ -23,8 +23,12 @@ from forge.errors import (
     MissingCredentialError,
     MultipleCredentialsError,
 )
-from forge.proxy.auth import DUPLICATE_AUTH_MARKER
-from forge.proxy.handler import LazyDiscovery, handle_chat_completions
+from forge.proxy.auth import DUPLICATE_AUTH_MARKER, resolve_inbound_credential
+from forge.proxy.handler import (
+    LazyDiscovery,
+    handle_chat_completions,
+    run_lazy_discovery,
+)
 
 logger = logging.getLogger("forge.proxy")
 
@@ -274,6 +278,23 @@ class HTTPServer:
             protocol, is_stream, msg_count, tool_count, body.get("model", "?"),
         )
 
+        # Streaming responses flush a 200 + SSE header before the handler runs
+        # (so a queued client knows the connection is alive). Run the checks that
+        # must be able to fail with a real HTTP status — credential resolution
+        # and the first-request discovery probe — BEFORE that flush, so a bad/
+        # missing/duplicate credential returns 400/401 rather than 200 + an SSE
+        # error event. On success they latch, so the handler skips re-running
+        # discovery; its credential resolution is pure and repeats harmlessly.
+        # Non-streaming needs no pre-check — it never flushes early, so its
+        # errors already carry a real status.
+        if is_stream:
+            predispatch_error = await self._predispatch(protocol, headers)
+            if predispatch_error is not None:
+                await self._send_exception(
+                    writer, predispatch_error, protocol, as_stream=False,
+                )
+                return
+
         if self._serialize:
             # Queue the request and wait for the worker to process it
             item = _QueueItem(body=body, protocol=protocol, headers=headers)
@@ -301,36 +322,7 @@ class HTTPServer:
             return
 
         if isinstance(result, Exception):
-            # Scrub before logging OR returning: a backend error body (or a
-            # traceback containing one) may have echoed an inbound auth header.
-            # forge never authors a secret into a message, but it does not
-            # control what a backend reflects back.
-            error_msg = redact_secrets(str(result))
-            logger.info("<< ERROR: %s", error_msg[:120])
-            # Credential problems are client errors (the caller sent two
-            # credentials / one colliding with --backend-api-key → 400, or none
-            # at all to an auth-required backend → 401), not backend failures.
-            # These messages carry only slot names, never a secret value.
-            if isinstance(result, MultipleCredentialsError):
-                status = 400
-            elif isinstance(result, MissingCredentialError):
-                status = 401
-            elif isinstance(result, BackendDiscoveryError):
-                # Deferred first-request discovery failed: a backend auth
-                # rejection is the caller's 401; any other cause (backend down,
-                # bad shape) is a 502.
-                status = 401 if result.status_code in (401, 403) else 502
-            elif isinstance(result, BackendError) and result.status_code in (401, 403):
-                # A backend auth rejection during normal dispatch (e.g. a later
-                # zero-credential request to a gated backend, or a bad inbound
-                # key) is the caller's 401, not a forge/backend fault.
-                status = 401
-            else:
-                status = 502
-            if is_stream:
-                await self._send_sse_body(writer, [{"error": error_msg}], protocol=protocol)
-            else:
-                await self._send_error(writer, status, error_msg)
+            await self._send_exception(writer, result, protocol, as_stream=is_stream)
             return
 
         if is_stream:
@@ -339,6 +331,72 @@ class HTTPServer:
         else:
             logger.info("<< JSON 200")
             await self._send_json(writer, 200, json.dumps(result))
+
+    async def _predispatch(
+        self, protocol: str, headers: dict[str, str],
+    ) -> Exception | None:
+        """Pre-flush validation for a streaming request.
+
+        Resolves the inbound credential and runs first-request backend discovery
+        — the checks that must be able to fail with a real HTTP status — and
+        returns the Exception to surface, or None to proceed. Idempotent: the
+        handler re-resolves the (pure) credential and sees discovery latched, so
+        running this first changes nothing on the success path.
+        """
+        try:
+            extra_headers = resolve_inbound_credential(
+                headers,
+                source_protocol=protocol,
+                target_protocol=self._backend_protocol,
+                backend_api_key_present=self._backend_api_key_present,
+            )
+            await run_lazy_discovery(
+                self._client, self._context_manager, self._lazy_discovery, extra_headers,
+            )
+            return None
+        except Exception as exc:
+            return exc
+
+    async def _send_exception(
+        self,
+        writer: asyncio.StreamWriter,
+        exc: Exception,
+        protocol: str,
+        as_stream: bool,
+    ) -> None:
+        """Send an exception as the response.
+
+        ``as_stream`` True → an SSE error event (the 200 + SSE header was already
+        flushed, e.g. a backend fault mid-generation); False → a real HTTP error
+        status. The message is scrubbed of credential-looking substrings before
+        it is logged or sent: a backend error body (or a traceback containing
+        one) may have echoed an inbound auth header — forge never authors a
+        secret into a message, but it doesn't control what a backend reflects.
+        """
+        error_msg = redact_secrets(str(exc))
+        logger.info("<< ERROR: %s", error_msg[:120])
+        # Credential problems are client errors (two credentials / one colliding
+        # with --backend-api-key → 400, or none to an auth-required backend →
+        # 401), not backend failures. These messages carry only slot names.
+        if isinstance(exc, MultipleCredentialsError):
+            status = 400
+        elif isinstance(exc, MissingCredentialError):
+            status = 401
+        elif isinstance(exc, BackendDiscoveryError):
+            # Deferred discovery failed: a backend auth rejection is the caller's
+            # 401; any other cause (backend down, bad shape) is a 502.
+            status = 401 if exc.status_code in (401, 403) else 502
+        elif isinstance(exc, BackendError) and exc.status_code in (401, 403):
+            # A backend auth rejection during normal dispatch (a later zero-cred
+            # request to a gated backend, or a bad inbound key) is the caller's
+            # 401, not a forge/backend fault.
+            status = 401
+        else:
+            status = 502
+        if as_stream:
+            await self._send_sse_body(writer, [{"error": error_msg}], protocol=protocol)
+        else:
+            await self._send_error(writer, status, error_msg)
 
     async def _await_with_disconnect(
         self,

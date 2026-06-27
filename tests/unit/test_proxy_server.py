@@ -592,6 +592,57 @@ class TestSecretHygiene:
             await srv.stop()
 
 
+class TestStreamingErrorStatus:
+    """Pre-dispatch errors on a streaming request return a real HTTP status,
+    not a 200 + SSE error event (the SSE header is flushed only after the
+    credential + first-request discovery checks pass)."""
+
+    @pytest.mark.asyncio
+    async def test_streaming_duplicate_auth_returns_400_not_200(self):
+        srv, port, client = await _auth_server(serialize=False)
+        try:
+            status, body = await _raw_request(
+                port,
+                ["Authorization: Bearer SECRET-ONE", "Authorization: Bearer SECRET-TWO"],
+                {"messages": [{"role": "user", "content": "hi"}], "stream": True},
+            )
+            assert status == 400  # real status, not 200 + an SSE error event
+            assert "SECRET-ONE" not in body and "SECRET-TWO" not in body
+            client.send.assert_not_awaited()
+        finally:
+            await srv.stop()
+
+    @pytest.mark.asyncio
+    async def test_streaming_discovery_failure_returns_401_not_200(self):
+        srv, port, client, _ = await _discovery_server(
+            side_effect=BackendError(401, "unauthorized"),
+        )
+        try:
+            status, _ = await _raw_request(
+                port, [],
+                {"messages": [{"role": "user", "content": "hi"}], "stream": True},
+            )
+            assert status == 401  # deferred-discovery 401 surfaces before the stream
+            client.send.assert_not_awaited()
+        finally:
+            await srv.stop()
+
+    @pytest.mark.asyncio
+    async def test_streaming_success_still_sse_200(self):
+        # The success path is unchanged: header flushes and SSE events stream.
+        srv, port, client = await _auth_server(serialize=False)
+        try:
+            status, body = await _raw_request(
+                port,
+                ["Authorization: Bearer GOODKEY"],
+                {"messages": [{"role": "user", "content": "hi"}], "stream": True},
+            )
+            assert status == 200
+            assert "data:" in body
+        finally:
+            await srv.stop()
+
+
 class TestCorsAllowsApiKey:
     @pytest.mark.asyncio
     async def test_preflight_allows_x_api_key(self):

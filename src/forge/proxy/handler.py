@@ -80,6 +80,56 @@ class LazyDiscovery:
     done: bool = False
 
 
+async def run_lazy_discovery(
+    client: LLMClient,
+    context_manager: ContextManager,
+    lazy_discovery: LazyDiscovery | None,
+    extra_headers: dict[str, str] | None,
+) -> None:
+    """Run deferred external-mode backend discovery once, if pending.
+
+    No-op when discovery isn't deferred or has already latched. Probes the
+    backend with the per-request credential, adopts any backend-owned identity
+    (vLLM served-model-name) into the client, applies the discovered budget to
+    the context manager (when ``apply_budget``), and latches ``done`` — on
+    SUCCESS only, so a failed probe retries on the next request. Raises
+    ``BackendDiscoveryError`` on failure (auth rejection vs fault distinguished
+    by ``status_code``).
+
+    Called before BOTH dispatch paths (a vLLM request needs its served identity
+    on every call, not just the compacting tool path), and optionally by the
+    proxy before flushing a streaming response's headers so a failure can be a
+    real HTTP status instead of an SSE error event.
+
+    Concurrency & a load-bearing assumption (external mode is unserialized, so
+    two first requests can race here):
+      - No lock by design. The probe is idempotent and the commit below is a
+        single await-free block (set client identity, set budget, set done) —
+        asyncio runs it without interleaving, so a concurrent second probe at
+        worst overwrites with identical values. There is no torn state.
+      - This assumes the backend's metadata (served model name, context length)
+        is the SAME regardless of which credential probes it — i.e. one backend
+        URL serves one model. That holds for a single llama.cpp/vLLM server. It
+        does NOT hold for a multi-tenant gateway that routes to different models
+        per API key behind one URL; there, a single shared client identity is
+        the wrong model. That topology is out of scope for the proxy (one
+        backend, one identity); a per-credential client would be required.
+    """
+    if lazy_discovery is None or not lazy_discovery.deferred or lazy_discovery.done:
+        return
+    try:
+        budget = await client.discover_backend_metadata(extra_headers=extra_headers)
+    except BackendError as exc:
+        # Auth rejection (401/403) vs backend/connectivity fault carried via
+        # status_code; the server maps it to the right client status.
+        raise BackendDiscoveryError(status_code=exc.status_code) from exc
+    if lazy_discovery.apply_budget:
+        if budget is None:
+            raise BackendDiscoveryError(status_code=None)
+        context_manager.budget_tokens = budget
+    lazy_discovery.done = True
+
+
 def _extract_sampling(body: dict[str, Any]) -> dict[str, Any] | None:
     """Pull recognized sampling fields out of the inbound request body.
 
@@ -226,41 +276,12 @@ async def handle_chat_completions(
             redact_auth_headers(extra_headers),
         )
 
-    # Deferred external-mode backend discovery (finding #2). In external
-    # passthrough mode the startup backend probe is unauthenticated, so it's
-    # deferred to here — the first request — where the inbound credential
-    # (extra_headers) authenticates it. Placed before BOTH dispatch paths: a
-    # vLLM request needs its discovered served identity on every call (not just
-    # the compacting tool path), so this can't live inside the tools branch.
-    #
-    # Concurrency & a load-bearing assumption (external mode is unserialized, so
-    # two first requests can race here):
-    #   - No lock by design. The probe is idempotent and the commit below is a
-    #     single await-free block (set client identity, set budget, set done) —
-    #     asyncio runs it without interleaving, so a concurrent second probe at
-    #     worst overwrites with identical values. There is no torn state.
-    #   - This assumes the backend's metadata (served model name, context length)
-    #     is the SAME regardless of which credential probes it — i.e. one backend
-    #     URL serves one model. That holds for a single llama.cpp/vLLM server. It
-    #     does NOT hold for a multi-tenant gateway that routes to different models
-    #     per API key behind one URL; there, a single shared client identity is
-    #     the wrong model. That topology is out of scope for the proxy (one
-    #     backend, one identity); a per-credential client would be required.
-    if lazy_discovery is not None and lazy_discovery.deferred and not lazy_discovery.done:
-        try:
-            budget = await client.discover_backend_metadata(extra_headers=extra_headers)
-        except BackendError as exc:
-            # Auth rejection (401/403) vs backend/connectivity fault carried via
-            # status_code; the server maps it to the right client status.
-            raise BackendDiscoveryError(status_code=exc.status_code) from exc
-        if lazy_discovery.apply_budget:
-            if budget is None:
-                raise BackendDiscoveryError(status_code=None)
-            context_manager.budget_tokens = budget
-        # Commit + latch synchronously (no await between the probe's return and
-        # here) so concurrent first requests can't observe a torn state: the
-        # served identity was adopted inside the probe, the budget just above.
-        lazy_discovery.done = True
+    # Deferred external-mode backend discovery (finding #2): runs once on the
+    # first request, before BOTH dispatch paths. The proxy may also run this
+    # earlier (before flushing a streaming response's headers) so a discovery
+    # failure surfaces as a real HTTP status; in that case this is a no-op
+    # (already latched).
+    await run_lazy_discovery(client, context_manager, lazy_discovery, extra_headers)
 
     # Inbound parse + sampling/passthrough extraction (protocol-specific)
     if protocol == "anthropic":

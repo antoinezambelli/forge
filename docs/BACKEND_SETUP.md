@@ -59,10 +59,12 @@ The proxy gets its one credential from one of two sources — never both:
 If an inbound auth header **and** `--backend-api-key` are both present, or a
 single request carries **two** auth headers, the proxy refuses it with **HTTP
 400** (a client error — the message names the conflicting slots, never a secret).
-For a **streaming** request the `200 OK` and SSE headers are already flushed
-before the backend call, so the conflict surfaces as an error *event* inside the
-stream rather than an HTTP 400 — the same way every other proxy streaming error
-is reported.
+This holds for **streaming** requests too: the credential is resolved (and a
+gated backend's context discovered) *before* the `200 OK` / SSE headers are
+flushed, so a credential or discovery failure returns the real status (400/401)
+rather than a stream that opens `200 OK` and then carries an error event. Only a
+failure that happens *after* streaming has begun (the backend faulting
+mid-generation) is reported as an error event inside the already-open stream.
 
 **Cross-protocol relocation.** forge moves the one credential into the target
 backend's canonical auth slot (it never reads the secret value):
