@@ -10,7 +10,12 @@ from forge.context.manager import ContextManager
 from forge.context.strategies import NoCompact
 from forge.core.workflow import TextResponse, ToolCall
 from forge.clients.base import TokenUsage
-from forge.proxy.handler import handle_chat_completions, _extract_tool_specs
+from forge.errors import BackendDiscoveryError, BackendError
+from forge.proxy.handler import (
+    LazyDiscovery,
+    handle_chat_completions,
+    _extract_tool_specs,
+)
 
 
 # ── Helpers ──────────────────────────────────────────────────
@@ -114,6 +119,128 @@ class TestNoToolsPassthrough:
             _body(model="my-model"), client, _context_manager(),
         )
         assert result["model"] == "my-model"
+
+
+# ── Deferred external-mode discovery (finding #2) ────────────
+
+
+def _discovery_client(*, budget=50000):
+    """A no-tools passthrough client whose deferred probe returns ``budget``."""
+    client = _mock_client(TextResponse(content="ok"))
+    client.discover_backend_metadata = AsyncMock(return_value=budget)
+    return client
+
+
+class TestLazyDiscovery:
+    @pytest.mark.asyncio
+    async def test_first_request_runs_discovery_and_latches(self):
+        client = _discovery_client(budget=50000)
+        ctx = _context_manager()
+        lazy = LazyDiscovery(deferred=True, apply_budget=True)
+        await handle_chat_completions(_body(), client, ctx, lazy_discovery=lazy)
+        client.discover_backend_metadata.assert_awaited_once()
+        assert ctx.budget_tokens == 50000  # discovered budget applied
+        assert lazy.done is True
+
+    @pytest.mark.asyncio
+    async def test_runs_on_no_tools_path(self):
+        # The probe must run even for a no-tools request: vLLM needs its served
+        # identity on every call, not just the compacting tool path.
+        client = _discovery_client()
+        lazy = LazyDiscovery(deferred=True, apply_budget=True)
+        await handle_chat_completions(_body(), client, _context_manager(), lazy_discovery=lazy)
+        client.discover_backend_metadata.assert_awaited_once()
+        assert lazy.done is True
+
+    @pytest.mark.asyncio
+    async def test_second_request_skips_after_latch(self):
+        client = _discovery_client()
+        lazy = LazyDiscovery(deferred=True, apply_budget=True, done=True)
+        await handle_chat_completions(_body(), client, _context_manager(), lazy_discovery=lazy)
+        client.discover_backend_metadata.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_none_discovery_skips_block(self):
+        client = _discovery_client()
+        await handle_chat_completions(_body(), client, _context_manager(), lazy_discovery=None)
+        client.discover_backend_metadata.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_apply_budget_false_keeps_explicit_budget(self):
+        # Explicit --budget-tokens: discovery still runs (to adopt identity) but
+        # the returned budget must NOT overwrite the explicit one.
+        client = _discovery_client(budget=99999)
+        ctx = _context_manager()  # budget 8192
+        lazy = LazyDiscovery(deferred=True, apply_budget=False)
+        await handle_chat_completions(_body(), client, ctx, lazy_discovery=lazy)
+        client.discover_backend_metadata.assert_awaited_once()
+        assert ctx.budget_tokens == 8192
+        assert lazy.done is True
+
+    @pytest.mark.asyncio
+    async def test_discovery_failure_raises_and_does_not_latch(self):
+        client = _discovery_client()
+        client.discover_backend_metadata = AsyncMock(
+            side_effect=BackendError(401, "unauthorized"),
+        )
+        lazy = LazyDiscovery(deferred=True, apply_budget=True)
+        with pytest.raises(BackendDiscoveryError) as exc_info:
+            await handle_chat_completions(_body(), client, _context_manager(), lazy_discovery=lazy)
+        assert exc_info.value.status_code == 401  # carried for the 401 mapping
+        assert lazy.done is False  # not latched → a later good request retries
+
+    @pytest.mark.asyncio
+    async def test_none_budget_when_apply_raises(self):
+        # A probe that succeeds but yields no budget (apply_budget) is a loud
+        # failure, not a silent default.
+        client = _discovery_client(budget=None)
+        lazy = LazyDiscovery(deferred=True, apply_budget=True)
+        with pytest.raises(BackendDiscoveryError) as exc_info:
+            await handle_chat_completions(_body(), client, _context_manager(), lazy_discovery=lazy)
+        assert exc_info.value.status_code is None
+        assert lazy.done is False
+
+    @pytest.mark.asyncio
+    async def test_inbound_credential_threaded_to_probe(self):
+        client = _discovery_client()
+        lazy = LazyDiscovery(deferred=True, apply_budget=True)
+        await handle_chat_completions(
+            _body(), client, _context_manager(),
+            headers={"authorization": "Bearer inbound-tok"},
+            lazy_discovery=lazy,
+        )
+        extra = client.discover_backend_metadata.await_args.kwargs["extra_headers"]
+        assert "Bearer inbound-tok" in str(extra)
+
+    @pytest.mark.asyncio
+    async def test_concurrent_first_requests_converge(self):
+        # External is unserialized: two first requests may both probe. Force the
+        # actual race — a gate holds BOTH probes open until both have passed the
+        # `not done` check, so we exercise the concurrent-probe interleave (not a
+        # serialized one). The probe is idempotent, so the latch stays consistent.
+        import asyncio
+
+        client = _mock_client(TextResponse(content="ok"))
+        both_arrived = asyncio.Event()
+        arrivals = {"n": 0}
+
+        async def gated_probe(extra_headers=None):
+            arrivals["n"] += 1
+            if arrivals["n"] >= 2:
+                both_arrived.set()
+            await both_arrived.wait()  # neither returns until both are past the gate
+            return 70000
+
+        client.discover_backend_metadata = AsyncMock(side_effect=gated_probe)
+        ctx = _context_manager()
+        lazy = LazyDiscovery(deferred=True, apply_budget=True)
+        await asyncio.gather(*(
+            handle_chat_completions(_body(), client, ctx, lazy_discovery=lazy)
+            for _ in range(2)
+        ))
+        assert client.discover_backend_metadata.await_count == 2  # both probed
+        assert ctx.budget_tokens == 70000  # consistent, no torn state
+        assert lazy.done is True
 
 
 # ── With tools → guardrails ─────────────────────────────────

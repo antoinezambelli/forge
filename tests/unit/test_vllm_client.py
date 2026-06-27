@@ -540,6 +540,76 @@ class TestGetServedModelName:
         assert await client.get_served_model_name() is None
 
 
+# ── discover_backend_metadata (deferred discovery) ─────────────
+
+
+class TestDiscoverBackendMetadata:
+    @pytest.mark.asyncio
+    async def test_discovers_budget_and_adopts_identity(self) -> None:
+        client = _make_client()
+        client._http.get.return_value = _mock_response({
+            "data": [{"id": "google/gemma-4-26B-A4B-it", "max_model_len": 113000}],
+        })
+        budget = await client.discover_backend_metadata()
+        assert budget == 113000
+        # served id reaches the wire verbatim; registry key is the derived stem
+        assert client.model == "google/gemma-4-26B-A4B-it"
+        assert client.sampling_key == "gemma-4-26B-A4B-it"
+
+    @pytest.mark.asyncio
+    async def test_missing_id_raises(self) -> None:
+        client = _make_client()
+        client._http.get.return_value = _mock_response({
+            "data": [{"max_model_len": 113000}],  # no id
+        })
+        with pytest.raises(BackendError, match="missing id"):
+            await client.discover_backend_metadata()
+
+    @pytest.mark.asyncio
+    async def test_missing_max_model_len_raises(self) -> None:
+        client = _make_client()
+        client._http.get.return_value = _mock_response({
+            "data": [{"id": "local-primary"}],  # no max_model_len
+        })
+        with pytest.raises(BackendError, match="missing max_model_len"):
+            await client.discover_backend_metadata()
+
+    @pytest.mark.asyncio
+    async def test_empty_data_raises(self) -> None:
+        client = _make_client()
+        client._http.get.return_value = _mock_response({"data": []})
+        with pytest.raises(BackendError, match="no entries"):
+            await client.discover_backend_metadata()
+
+    @pytest.mark.asyncio
+    async def test_non_200_raises_with_status_code(self) -> None:
+        client = _make_client()
+        client._http.get.return_value = _mock_response({"error": "unauthorized"}, status_code=401)
+        with pytest.raises(BackendError) as exc_info:
+            await client.discover_backend_metadata()
+        # status_code is carried so the proxy maps a 401 rejection → 401, not 502
+        assert exc_info.value.status_code == 401
+
+    @pytest.mark.asyncio
+    async def test_connection_error_raises_502(self) -> None:
+        client = _make_client()
+        client._http.get.side_effect = httpx.ConnectError("refused")
+        with pytest.raises(BackendError) as exc_info:
+            await client.discover_backend_metadata()
+        assert exc_info.value.status_code == 502
+
+    @pytest.mark.asyncio
+    async def test_extra_headers_threaded_into_probe(self) -> None:
+        client = _make_client()
+        client._http.get.return_value = _mock_response({
+            "data": [{"id": "m", "max_model_len": 4096}],
+        })
+        extra = {"Authorization": "Bearer inbound-token"}
+        await client.discover_backend_metadata(extra_headers=extra)
+        # the per-request credential reaches the probe GET
+        assert client._http.get.await_args.kwargs["headers"] == client._request_headers(extra)
+
+
 # ── edge cases ─────────────────────────────────────────────────
 
 

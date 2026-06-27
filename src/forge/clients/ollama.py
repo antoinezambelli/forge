@@ -455,3 +455,14 @@ class OllamaClient:
         Budget resolution lives in ServerManager, not here.
         """
         return self._num_ctx
+
+    async def discover_backend_metadata(
+        self, extra_headers: dict[str, str] | None = None,
+    ) -> int | None:
+        """Return the configured num_ctx, no probe and no identity to adopt.
+
+        Ollama runs managed (forge owns the local backend), so it is never on
+        the proxy's deferred external path; this exists for Protocol uniformity
+        and ignores ``extra_headers``.
+        """
+        return self._num_ctx

@@ -319,6 +319,21 @@ class LLMClient(Protocol):
         """Query the backend for its configured context window size."""
         ...
 
+    async def discover_backend_metadata(
+        self, extra_headers: dict[str, str] | None = None,
+    ) -> int | None:
+        """Probe the backend once, credentialed by ``extra_headers``.
+
+        The deferred counterpart to startup discovery: adopt any backend-owned
+        wire identity into this client (e.g. vLLM's served model name) as a
+        side effect, and return the discovered context budget — or None when the
+        backend exposes no context length. Carrying ``extra_headers`` lets the
+        proxy run this lazily on the first request so it authenticates with that
+        request's inbound credential (external passthrough mode). Raises
+        ``BackendError`` if the probe is rejected or returns an unusable shape.
+        """
+        ...
+
     async def aclose(self) -> None:
         """Release held network resources (e.g. the httpx connection pool)."""
         ...

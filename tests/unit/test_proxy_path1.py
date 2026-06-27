@@ -59,10 +59,11 @@ class TestProxyServerValidation:
             mock_client.get_context_length = AsyncMock(return_value=200000)
             mock_client_cls.return_value = mock_client
 
-            client, ctx = await proxy._setup_external()
+            client, ctx, lazy = await proxy._setup_external()
 
         assert client is mock_client
         assert ctx.budget_tokens == 200000
+        assert lazy is None  # Anthropic path is never deferred
         mock_client_cls.assert_called_once_with(
             model="claude",
             base_url="http://localhost:8080",

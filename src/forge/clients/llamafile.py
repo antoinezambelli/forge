@@ -483,6 +483,45 @@ class LlamafileClient:
         except (ValueError, KeyError, TypeError) as exc:
             raise ContextDiscoveryError(exc) from exc
 
+    async def discover_backend_metadata(
+        self, extra_headers: dict[str, str] | None = None,
+    ) -> int | None:
+        """Probe /props once for the context budget, credentialed.
+
+        llama.cpp ignores the wire ``model`` field, so there is no identity to
+        adopt — this returns the context length (``n_ctx``) and nothing else.
+        Carries ``extra_headers`` so a gateway in front of llama.cpp can
+        authenticate the probe on the first request. Raises ``BackendError`` on
+        a rejected, unreachable, or unparseable probe (so the proxy maps it to a
+        clean status); returns None when /props reports no ``n_ctx`` (the caller
+        fails loud rather than guessing a budget).
+        """
+        base = self.base_url.rstrip("/")
+        if base.endswith("/v1"):
+            base = base[:-3]
+
+        try:
+            resp = await self._http.get(
+                f"{base}/props", headers=self._request_headers(extra_headers),
+            )
+        except httpx.HTTPError as exc:
+            raise BackendError(502, f"llama.cpp /props unreachable: {exc}") from exc
+        if resp.status_code != 200:
+            raise BackendError(resp.status_code, resp.text)
+
+        try:
+            body = resp.json()
+        except ValueError as exc:
+            raise BackendError(502, f"llama.cpp /props returned non-JSON: {exc}") from exc
+        settings = body.get("default_generation_settings", {}) if isinstance(body, dict) else {}
+        n_ctx = settings.get("n_ctx") if isinstance(settings, dict) else None
+        if n_ctx is None:
+            return None
+        try:
+            return int(n_ctx)
+        except (ValueError, TypeError) as exc:
+            raise BackendError(502, f"llama.cpp /props n_ctx not an integer: {exc}") from exc
+
     async def _send_native(
         self,
         messages: list[dict[str, str]],

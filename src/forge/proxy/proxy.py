@@ -21,8 +21,16 @@ from forge.clients.vllm import VLLMClient
 from forge.context.manager import ContextManager
 from forge.context.strategies import TieredCompact
 from forge.core.reasoning import DEFAULT_REASONING_REPLAY, ReasoningReplay, validate_reasoning_replay
+from forge.proxy.handler import LazyDiscovery
 from forge.proxy.server import HTTPServer
 from forge.server import BudgetMode, ServerManager, setup_backend
+
+# Placeholder budget for a context manager whose real budget is discovered
+# lazily on the first request (external passthrough). It is never read before
+# discovery overwrites it — the discovery hook runs before any compaction —
+# but it's set large so an accidental early read degrades safe (no compaction)
+# rather than over-compacting on a tiny budget.
+_DEFERRED_BUDGET_PLACEHOLDER = 1_000_000
 
 logger = logging.getLogger("forge.proxy")
 
@@ -259,9 +267,9 @@ class ProxyServer:
     async def _async_start(self, ready: threading.Event) -> None:
         """Async startup: backend + HTTP server."""
         if self._backend_url is not None:
-            client, context_manager = await self._setup_external()
+            client, context_manager, lazy_discovery = await self._setup_external()
         else:
-            client, context_manager = await self._setup_managed()
+            client, context_manager, lazy_discovery = await self._setup_managed()
 
         self._client = client
         self._http_server = HTTPServer(
@@ -278,13 +286,21 @@ class ProxyServer:
             reasoning_replay=self._reasoning_replay,
             backend_protocol=self._backend_protocol,
             backend_api_key_present=bool(self._backend_api_key),
+            lazy_discovery=lazy_discovery,
         )
         await self._http_server.start()
         self._started = True
         ready.set()
 
-    async def _setup_external(self) -> tuple[LLMClient, ContextManager]:
-        """External mode: connect to a caller-managed backend."""
+    async def _setup_external(
+        self,
+    ) -> tuple[LLMClient, ContextManager, LazyDiscovery | None]:
+        """External mode: connect to a caller-managed backend.
+
+        Returns the client, its context manager, and an optional LazyDiscovery
+        latch — non-None only when backend discovery is deferred to the first
+        request (external passthrough; see Path 2 below).
+        """
         assert self._backend_url is not None
 
         if self._backend_protocol == "anthropic":
@@ -318,7 +334,9 @@ class ProxyServer:
                 strategy=TieredCompact(),
                 budget_tokens=budget,
             )
-            return client, context_manager
+            # Anthropic reports a static context length with no network call, so
+            # there's nothing to defer.
+            return client, context_manager, None
 
         # Path 2 / default — OpenAI-shape downstream (llama.cpp or vLLM).
         base = self._backend_url.rstrip("/")
@@ -332,21 +350,6 @@ class ProxyServer:
                 timeout=self._backend_timeout,
                 api_key=self._backend_api_key or "",
             )
-            # Unlike llama.cpp, vLLM validates the wire `model` field against
-            # its --served-model-name aliases (404 on mismatch). External mode
-            # has no model path to send, so discover the served identity from
-            # /v1/models instead of shipping the "default" placeholder.
-            served = await client.get_served_model_name()
-            if served:
-                logger.info("Discovered vLLM served model name: %s", served)
-                client._set_model_identity(served)
-            else:
-                logger.warning(
-                    "Could not discover a served model name from %s/models; "
-                    "sending placeholder 'default' (vLLM will 404 if it "
-                    "validates the model field)",
-                    base,
-                )
         else:
             # llamaserver / llamafile / unspecified — OpenAI-compatible adapter.
             # Caller manages the backend, so we don't have a GGUF path. "default"
@@ -360,24 +363,66 @@ class ProxyServer:
                 api_key=self._backend_api_key or "",
             )
 
-        if self._budget_tokens is not None:
-            budget = self._budget_tokens
+        # Decide eager vs deferred discovery. A static --backend-api-key
+        # authenticates the startup probe, so discover now and keep boot-time
+        # fail-fast. Pure passthrough (no static key) can't probe at startup —
+        # the probe would be unauthenticated against a gated backend (finding
+        # #2) — so defer it to the first request, which carries the credential.
+        # vLLM always needs deferral when passthrough (its served-identity probe
+        # is unauthenticated too); llama.cpp only needs it to discover a budget.
+        static_key = bool(self._backend_api_key)
+        defer = (not static_key) and (
+            self._budget_tokens is None or self._backend == "vllm"
+        )
+
+        if defer:
+            apply_budget = self._budget_tokens is None
+            budget = (
+                _DEFERRED_BUDGET_PLACEHOLDER
+                if apply_budget
+                else self._budget_tokens
+            )
+            lazy_discovery: LazyDiscovery | None = LazyDiscovery(
+                deferred=True, apply_budget=apply_budget,
+            )
         else:
-            ctx_len = await client.get_context_length()
-            if ctx_len is None:
-                raise RuntimeError(
-                    f"backend at {self._backend_url} did not report a context "
-                    "length; pass budget_tokens explicitly"
-                )
-            budget = ctx_len
+            lazy_discovery = None
+            if self._backend == "vllm":
+                # Unlike llama.cpp, vLLM validates the wire `model` field against
+                # its --served-model-name aliases (404 on mismatch). External
+                # mode has no model path to send, so discover the served identity
+                # from /v1/models instead of shipping the "default" placeholder.
+                served = await client.get_served_model_name()
+                if served:
+                    logger.info("Discovered vLLM served model name: %s", served)
+                    client._set_model_identity(served)
+                else:
+                    logger.warning(
+                        "Could not discover a served model name from %s/models; "
+                        "sending placeholder 'default' (vLLM will 404 if it "
+                        "validates the model field)",
+                        base,
+                    )
+            if self._budget_tokens is not None:
+                budget = self._budget_tokens
+            else:
+                ctx_len = await client.get_context_length()
+                if ctx_len is None:
+                    raise RuntimeError(
+                        f"backend at {self._backend_url} did not report a context "
+                        "length; pass budget_tokens explicitly"
+                    )
+                budget = ctx_len
 
         context_manager = ContextManager(
             strategy=TieredCompact(),
             budget_tokens=budget,
         )
-        return client, context_manager
+        return client, context_manager, lazy_discovery
 
-    async def _setup_managed(self) -> tuple[LLMClient, ContextManager]:
+    async def _setup_managed(
+        self,
+    ) -> tuple[LLMClient, ContextManager, LazyDiscovery | None]:
         """Managed mode: forge starts the backend via setup_backend."""
         assert self._backend is not None
         client = self._build_managed_client()
@@ -402,7 +447,9 @@ class ProxyServer:
             extra_flags=self._extra_flags,
         )
         self._server_manager = server
-        return client, context_manager
+        # Managed mode probes its own ungated local backend at startup — never
+        # deferred.
+        return client, context_manager, None
 
     def _build_managed_client(self) -> LLMClient:
         """Construct the right client for the managed backend."""

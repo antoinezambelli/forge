@@ -425,6 +425,85 @@ class TestLlamafileGetContextLength:
             await client.get_context_length()
 
 
+# ── discover_backend_metadata (deferred discovery) ───────────────
+
+
+class TestLlamafileDiscoverBackendMetadata:
+    @pytest.mark.asyncio
+    async def test_returns_budget_no_identity(self) -> None:
+        client = _make_client()
+        client._http.get.return_value = _mock_response({
+            "default_generation_settings": {"n_ctx": 32768}
+        })
+        model_before = client.model
+        budget = await client.discover_backend_metadata()
+        assert budget == 32768
+        # llama.cpp ignores the wire model field → no identity adopted/changed
+        assert client.model == model_before
+
+    @pytest.mark.asyncio
+    async def test_probes_props_not_v1(self) -> None:
+        client = _make_client()
+        client._http.get.return_value = _mock_response({
+            "default_generation_settings": {"n_ctx": 4096}
+        })
+        await client.discover_backend_metadata()
+        url = client._http.get.await_args.args[0]
+        assert "/v1" not in url and url.endswith("/props")
+
+    @pytest.mark.asyncio
+    async def test_returns_none_when_no_n_ctx(self) -> None:
+        client = _make_client()
+        client._http.get.return_value = _mock_response({})
+        assert await client.discover_backend_metadata() is None
+
+    @pytest.mark.asyncio
+    async def test_malformed_settings_returns_none(self) -> None:
+        # default_generation_settings present but not a dict → treat as no n_ctx
+        # (fail loud upstream), never an uncaught AttributeError.
+        client = _make_client()
+        client._http.get.return_value = _mock_response(
+            {"default_generation_settings": "not-a-dict"},
+        )
+        assert await client.discover_backend_metadata() is None
+
+    @pytest.mark.asyncio
+    async def test_non_int_n_ctx_raises_502(self) -> None:
+        client = _make_client()
+        client._http.get.return_value = _mock_response(
+            {"default_generation_settings": {"n_ctx": "huge"}},
+        )
+        with pytest.raises(BackendError) as exc_info:
+            await client.discover_backend_metadata()
+        assert exc_info.value.status_code == 502
+
+    @pytest.mark.asyncio
+    async def test_non_200_raises_with_status_code(self) -> None:
+        client = _make_client()
+        client._http.get.return_value = _mock_response({"error": "nope"}, status_code=401)
+        with pytest.raises(BackendError) as exc_info:
+            await client.discover_backend_metadata()
+        assert exc_info.value.status_code == 401
+
+    @pytest.mark.asyncio
+    async def test_connection_error_raises_502(self) -> None:
+        client = _make_client()
+        client._http.get.side_effect = httpx.ConnectError("refused")
+        with pytest.raises(BackendError) as exc_info:
+            await client.discover_backend_metadata()
+        assert exc_info.value.status_code == 502
+
+    @pytest.mark.asyncio
+    async def test_extra_headers_threaded_into_probe(self) -> None:
+        client = _make_client()
+        client._http.get.return_value = _mock_response({
+            "default_generation_settings": {"n_ctx": 4096}
+        })
+        extra = {"Authorization": "Bearer inbound-token"}
+        await client.discover_backend_metadata(extra_headers=extra)
+        assert client._http.get.await_args.kwargs["headers"] == client._request_headers(extra)
+
+
 # ── send_stream ──────────────────────────────────────────────────
 
 

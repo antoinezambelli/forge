@@ -334,3 +334,12 @@ class OpenAICompatClient:
     async def get_context_length(self) -> int | None:
         """OpenAI-compatible endpoints don't expose context length. Returns None."""
         return None
+
+    async def discover_backend_metadata(
+        self, extra_headers: dict[str, str] | None = None,
+    ) -> int | None:
+        """OpenAI-compatible endpoints expose neither context length nor a
+        discoverable identity. Returns None (Protocol uniformity); not wired
+        into the proxy's deferred external path.
+        """
+        return None

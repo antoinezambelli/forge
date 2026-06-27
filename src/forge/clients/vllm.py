@@ -19,6 +19,7 @@ Differences from LlamafileClient:
 from __future__ import annotations
 
 import json
+import logging
 from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Any
@@ -38,6 +39,8 @@ from forge.clients.sampling_defaults import apply_sampling_defaults
 from forge.core.workflow import LLMResponse, TextResponse, ToolCall, ToolSpec
 from forge.errors import BackendError
 from forge.prompts.think_tags import extract_think_tags
+
+logger = logging.getLogger("forge.clients.vllm")
 
 
 class VLLMClient:
@@ -460,3 +463,47 @@ class VLLMClient:
         if not models:
             return None
         return models[0].get("id")
+
+    async def discover_backend_metadata(
+        self, extra_headers: dict[str, str] | None = None,
+    ) -> int | None:
+        """Probe /v1/models once for both budget and served identity.
+
+        vLLM exposes ``max_model_len`` (context budget) and the served model
+        ``id`` (the wire ``model`` field it validates) on the same endpoint, so
+        one credentialed GET yields both — collapsing the two separate startup
+        round-trips. The served id is adopted into this client immediately
+        (``_set_model_identity``), and the budget is returned for the caller to
+        apply to the context manager.
+
+        Both fields are required: vLLM 404s every request without a valid served
+        id, and a missing ``max_model_len`` leaves the budget undiscoverable —
+        either is a loud failure (no silent ``"default"`` / no guessed budget).
+        """
+        try:
+            resp = await self._http.get(
+                f"{self.base_url}/models",
+                headers=self._request_headers(extra_headers),
+            )
+        except httpx.HTTPError as exc:
+            raise BackendError(502, f"vLLM /v1/models unreachable: {exc}") from exc
+        if resp.status_code != 200:
+            raise BackendError(resp.status_code, resp.text)
+
+        models = resp.json().get("data") or []
+        if not models:
+            raise BackendError(500, "vLLM /v1/models returned no entries")
+        entry = models[0]
+
+        served = entry.get("id")
+        if not served:
+            raise BackendError(500, f"vLLM /v1/models entry missing id: {entry}")
+        logger.info("Discovered vLLM served model name: %s", served)
+        self._set_model_identity(served)
+
+        max_model_len = entry.get("max_model_len")
+        if max_model_len is None:
+            raise BackendError(
+                500, f"vLLM /v1/models entry missing max_model_len: {entry}",
+            )
+        return int(max_model_len)

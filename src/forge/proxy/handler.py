@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 from copy import deepcopy
+from dataclasses import dataclass
 from typing import Any, Literal
 
 from forge.clients.base import LLMClient, format_tool, redact_auth_headers
@@ -15,7 +16,7 @@ from forge.core.reasoning import (
     validate_reasoning_replay,
 )
 from forge.core.workflow import ToolCall, ToolSpec, TextResponse
-from forge.errors import ToolCallError
+from forge.errors import BackendDiscoveryError, BackendError, ToolCallError
 from forge.guardrails import ErrorTracker, ResponseValidator
 from forge.proxy.auth import resolve_inbound_credential
 from forge.proxy.convert import (
@@ -54,6 +55,29 @@ _SAMPLING_FIELDS = (
 
 # Body fields forge owns and reasons about — never go into passthrough.
 _FORGE_OWNED = frozenset({"messages", "tools", "stream", "stream_options", "system"})
+
+
+@dataclass
+class LazyDiscovery:
+    """Cross-request latch for deferred external-mode backend discovery.
+
+    In external passthrough mode the proxy can't probe the backend at startup
+    (the probe would be unauthenticated against a gated backend), so discovery
+    is deferred to the first request — where the inbound credential authenticates
+    it. This object, created once at setup and shared across requests, holds:
+
+    - ``deferred``: whether lazy discovery is active at all (False for managed,
+      Anthropic, and eager static-key external — those probe at startup).
+    - ``apply_budget``: whether the discovered context length should be written
+      to the context manager. False when ``--budget-tokens`` was given explicitly
+      (the discovery still runs, but only to adopt vLLM's served identity).
+    - ``done``: latched True once discovery succeeds. Only success latches; a
+      failed probe leaves it False so a later credentialed request retries.
+    """
+
+    deferred: bool
+    apply_budget: bool
+    done: bool = False
 
 
 def _extract_sampling(body: dict[str, Any]) -> dict[str, Any] | None:
@@ -135,6 +159,7 @@ async def handle_chat_completions(
     headers: dict[str, str] | None = None,
     backend_protocol: str = "openai",
     backend_api_key_present: bool = False,
+    lazy_discovery: LazyDiscovery | None = None,
 ) -> dict[str, Any] | list[dict[str, Any]]:
     """Handle an inbound completions request.
 
@@ -200,6 +225,28 @@ async def handle_chat_completions(
             "forwarding inbound credential to backend: %s",
             redact_auth_headers(extra_headers),
         )
+
+    # Deferred external-mode backend discovery (finding #2). In external
+    # passthrough mode the startup backend probe is unauthenticated, so it's
+    # deferred to here — the first request — where the inbound credential
+    # (extra_headers) authenticates it. Placed before BOTH dispatch paths: a
+    # vLLM request needs its discovered served identity on every call (not just
+    # the compacting tool path), so this can't live inside the tools branch.
+    if lazy_discovery is not None and lazy_discovery.deferred and not lazy_discovery.done:
+        try:
+            budget = await client.discover_backend_metadata(extra_headers=extra_headers)
+        except BackendError as exc:
+            # Auth rejection (401/403) vs backend/connectivity fault carried via
+            # status_code; the server maps it to the right client status.
+            raise BackendDiscoveryError(status_code=exc.status_code) from exc
+        if lazy_discovery.apply_budget:
+            if budget is None:
+                raise BackendDiscoveryError(status_code=None)
+            context_manager.budget_tokens = budget
+        # Commit + latch synchronously (no await between the probe's return and
+        # here) so concurrent first requests can't observe a torn state: the
+        # served identity was adopted inside the probe, the budget just above.
+        lazy_discovery.done = True
 
     # Inbound parse + sampling/passthrough extraction (protocol-specific)
     if protocol == "anthropic":

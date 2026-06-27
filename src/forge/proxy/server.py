@@ -16,9 +16,13 @@ from typing import Any
 from forge.clients.base import AUTH_HEADER_NAMES, LLMClient
 from forge.context.manager import ContextManager
 from forge.core.reasoning import DEFAULT_REASONING_REPLAY, ReasoningReplay, validate_reasoning_replay
-from forge.errors import MissingCredentialError, MultipleCredentialsError
+from forge.errors import (
+    BackendDiscoveryError,
+    MissingCredentialError,
+    MultipleCredentialsError,
+)
 from forge.proxy.auth import DUPLICATE_AUTH_MARKER
-from forge.proxy.handler import handle_chat_completions
+from forge.proxy.handler import LazyDiscovery, handle_chat_completions
 
 logger = logging.getLogger("forge.proxy")
 
@@ -61,9 +65,11 @@ class HTTPServer:
         reasoning_replay: ReasoningReplay = DEFAULT_REASONING_REPLAY,
         backend_protocol: str = "openai",
         backend_api_key_present: bool = False,
+        lazy_discovery: LazyDiscovery | None = None,
     ) -> None:
         self._client = client
         self._context_manager = context_manager
+        self._lazy_discovery = lazy_discovery
         self._host = host
         self._port = port
         self._max_retries = max_retries
@@ -303,6 +309,11 @@ class HTTPServer:
                 status = 400
             elif isinstance(result, MissingCredentialError):
                 status = 401
+            elif isinstance(result, BackendDiscoveryError):
+                # Deferred first-request discovery failed: a backend auth
+                # rejection is the caller's 401; any other cause (backend down,
+                # bad shape) is a 502.
+                status = 401 if result.status_code in (401, 403) else 502
             else:
                 status = 502
             if is_stream:
@@ -362,6 +373,7 @@ class HTTPServer:
                 headers=headers,
                 backend_protocol=self._backend_protocol,
                 backend_api_key_present=self._backend_api_key_present,
+                lazy_discovery=self._lazy_discovery,
             )
         except Exception as exc:
             logger.exception("Handler error")

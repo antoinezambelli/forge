@@ -630,3 +630,14 @@ class AnthropicClient:
     async def get_context_length(self) -> int | None:
         """Claude models have 200K context."""
         return 200_000
+
+    async def discover_backend_metadata(
+        self, extra_headers: dict[str, str] | None = None,
+    ) -> int | None:
+        """Static 200K context, no probe and no identity to adopt.
+
+        The Anthropic path reports a known context length without a network
+        call, so it is never deferred — this exists for Protocol uniformity and
+        ignores ``extra_headers``.
+        """
+        return 200_000

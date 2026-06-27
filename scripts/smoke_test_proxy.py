@@ -59,13 +59,26 @@ async def _read_request(
 
 
 def _write_json_response(body: str) -> bytes:
+    return _write_response(200, "OK", body)
+
+
+def _write_response(status: int, reason: str, body: str) -> bytes:
+    # Connection: close — these mocks serve one request per connection and close
+    # it, so tell the client not to pool it. The deferred-discovery flow makes
+    # two backend hits (/props then /v1/chat/completions); without this, httpx
+    # may reuse the just-closed keep-alive connection and the second hit flakes.
     return (
-        "HTTP/1.1 200 OK\r\n"
+        f"HTTP/1.1 {status} {reason}\r\n"
         "Content-Type: application/json\r\n"
         f"Content-Length: {len(body)}\r\n"
+        "Connection: close\r\n"
         "\r\n"
         f"{body}"
     ).encode()
+
+
+# Credential a gated backend (test 4) requires — mirrors `llama-server --api-key`.
+GATED_KEY = "TESTKEY"
 
 
 # ── Mock backends ─────────────────────────────────────────────────────
@@ -100,6 +113,48 @@ async def openai_mock_backend(
                 "finish_reason": "tool_calls",
             }],
             "usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15},
+        })
+
+    writer.write(_write_json_response(body))
+    await writer.drain()
+    writer.close()
+    await writer.wait_closed()
+
+
+async def gated_openai_mock_backend(
+    reader: asyncio.StreamReader, writer: asyncio.StreamWriter,
+) -> None:
+    """OpenAI-shape mock that GATES on ``Authorization: Bearer TESTKEY``.
+
+    Mirrors ``llama-server --api-key``: a missing/wrong credential gets 401 on
+    *every* path — crucially including the ``/props`` context-length probe. This
+    lets the deferred-discovery path (finding #2) be exercised without a real
+    gated backend: the proxy can't probe at startup (it has no credential then),
+    so it must defer to the first request and use that request's inbound key.
+    """
+    path, headers, _body = await _read_request(reader)
+
+    if headers.get("authorization") != f"Bearer {GATED_KEY}":
+        body = json.dumps({"error": {"message": "missing/invalid api key", "type": "auth"}})
+        writer.write(_write_response(401, "Unauthorized", body))
+        await writer.drain()
+        writer.close()
+        await writer.wait_closed()
+        return
+
+    if "/props" in path:
+        body = json.dumps({"default_generation_settings": {"n_ctx": 8192}})
+    else:
+        body = json.dumps({
+            "id": "chatcmpl-gated",
+            "object": "chat.completion",
+            "model": "mock",
+            "choices": [{
+                "index": 0,
+                "message": {"role": "assistant", "content": "OK"},
+                "finish_reason": "stop",
+            }],
+            "usage": {"prompt_tokens": 5, "completion_tokens": 1, "total_tokens": 6},
         })
 
     writer.write(_write_json_response(body))
@@ -255,6 +310,61 @@ async def test_openai() -> None:
         await mock.wait_closed()
 
 
+# ── Test 1b: Gated passthrough → deferred discovery (finding #2) ─────
+
+async def test_gated_passthrough_deferred_discovery() -> None:
+    print("\n=== test_gated_passthrough_deferred_discovery (deferred probe vs gated backend) ===")
+    mock = await asyncio.start_server(gated_openai_mock_backend, "127.0.0.1", 18090)
+    # Pure passthrough: no --backend-api-key, no --budget-tokens → discovery is
+    # deferred to the first request. Against a GATED backend this used to crash
+    # at startup (the unauthenticated /props probe); now the proxy must just start.
+    proxy = _start_proxy(backend_url="http://127.0.0.1:18090", port=18091)
+    print("[setup] gated mock=:18090 proxy=:18091 (no backend_api_key, no budget_tokens)")
+    print("[ok] proxy started against a gated backend (deferred — no startup probe/crash)")
+
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            # Negative: no inbound credential → the deferred /props probe is
+            # unauthenticated → backend 401 → clean 401, discovery NOT latched.
+            r0 = await client.post(
+                "http://127.0.0.1:18091/v1/chat/completions",
+                json={
+                    "model": "test",
+                    "messages": [{"role": "user", "content": "hi"}],
+                    "stream": False,
+                },
+            )
+            assert r0.status_code == 401, (
+                f"no-cred: expected 401, got {r0.status_code} {r0.text[:200]}"
+            )
+            print("[ok] no-credential first request → 401 (probe rejected, not latched)")
+
+            # Positive: same request WITH the credential → the deferred probe
+            # authenticates with the inbound key, context is discovered, request
+            # completes. Also proves no-latch-on-failure: the prior 401 didn't
+            # poison discovery — this retry succeeds.
+            r1 = await client.post(
+                "http://127.0.0.1:18091/v1/chat/completions",
+                headers={"Authorization": f"Bearer {GATED_KEY}"},
+                json={
+                    "model": "test",
+                    "messages": [{"role": "user", "content": "hi"}],
+                    "stream": False,
+                },
+            )
+            assert r1.status_code == 200, (
+                f"with-cred: expected 200, got {r1.status_code} {r1.text[:200]}"
+            )
+            assert r1.json()["choices"][0]["message"]["content"] == "OK"
+            print("[ok] credentialed request → deferred discovery succeeded, 200 "
+                  "(retry after the 401 works → no-latch-on-failure)")
+
+    finally:
+        proxy.stop()
+        mock.close()
+        await mock.wait_closed()
+
+
 # ── Test 2: Path 2 (Anthropic inbound → OpenAI backend) ──────────────
 
 async def test_path2_anthropic_to_openai() -> None:
@@ -388,6 +498,12 @@ async def test_path1_anthropic_passthrough() -> None:
             cache_marker = {"type": "ephemeral"}
             resp = await client.post(
                 "http://127.0.0.1:18085/v1/messages",
+                # v0.8.0 one-credential rule: this proxy is pure passthrough (no
+                # --backend-api-key), so the request must carry a credential —
+                # forge relocates this single inbound x-api-key to the Anthropic
+                # backend's native slot. Without it forge fails loud (401), which
+                # is correct: you can't reach an Anthropic backend with no key.
+                headers={"x-api-key": "smoke-anthropic-key"},
                 json={
                     "model": "claude-mock",
                     "max_tokens": 1024,
@@ -459,6 +575,7 @@ async def test_path1_anthropic_passthrough() -> None:
 
 async def main() -> None:
     await test_openai()
+    await test_gated_passthrough_deferred_discovery()
     await test_path2_anthropic_to_openai()
     await test_path1_anthropic_passthrough()
     print("\n[PASS] All proxy smoke tests passed.")

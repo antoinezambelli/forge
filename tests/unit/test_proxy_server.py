@@ -9,6 +9,8 @@ from unittest.mock import AsyncMock
 from forge.context.manager import ContextManager
 from forge.context.strategies import NoCompact
 from forge.core.workflow import TextResponse, ToolCall
+from forge.errors import BackendError
+from forge.proxy.handler import LazyDiscovery
 from forge.proxy.server import HTTPServer
 
 
@@ -435,5 +437,72 @@ class TestInboundCredentialThreading:
             assert status == 400
             assert "SECRET-INBOUND" not in resp_body
             client.send.assert_not_awaited()
+        finally:
+            await srv.stop()
+
+
+# ── Deferred discovery → status mapping (finding #2) ─────────
+
+
+async def _discovery_server(*, side_effect=None, budget=50000, apply_budget=True):
+    """An OpenAI-wire server whose first request triggers deferred discovery."""
+    client = _mock_client(TextResponse(content="ok"))
+    if side_effect is not None:
+        client.discover_backend_metadata = AsyncMock(side_effect=side_effect)
+    else:
+        client.discover_backend_metadata = AsyncMock(return_value=budget)
+    ctx = ContextManager(strategy=NoCompact(), budget_tokens=8192)
+    srv = HTTPServer(
+        client=client,
+        context_manager=ctx,
+        host="127.0.0.1",
+        port=0,
+        serialize_requests=False,
+        backend_protocol="openai",
+        lazy_discovery=LazyDiscovery(deferred=True, apply_budget=apply_budget),
+    )
+    await srv.start()
+    port = srv._server.sockets[0].getsockname()[1]
+    return srv, port, client, ctx
+
+
+class TestDeferredDiscoveryStatusMapping:
+    @pytest.mark.asyncio
+    async def test_auth_rejection_maps_401(self):
+        srv, port, client, _ = await _discovery_server(
+            side_effect=BackendError(401, "unauthorized"),
+        )
+        try:
+            status, _ = await _raw_request(
+                port, [], {"messages": [{"role": "user", "content": "hi"}]},
+            )
+            assert status == 401  # backend rejected the probe credential
+            client.send.assert_not_awaited()
+        finally:
+            await srv.stop()
+
+    @pytest.mark.asyncio
+    async def test_backend_fault_maps_502(self):
+        srv, port, client, _ = await _discovery_server(
+            side_effect=BackendError(502, "backend unreachable"),
+        )
+        try:
+            status, _ = await _raw_request(
+                port, [], {"messages": [{"role": "user", "content": "hi"}]},
+            )
+            assert status == 502
+        finally:
+            await srv.stop()
+
+    @pytest.mark.asyncio
+    async def test_success_applies_budget_and_serves_200(self):
+        srv, port, client, ctx = await _discovery_server(budget=50000)
+        try:
+            status, _ = await _raw_request(
+                port, [], {"messages": [{"role": "user", "content": "hi"}]},
+            )
+            assert status == 200
+            assert ctx.budget_tokens == 50000  # discovered budget latched
+            client.discover_backend_metadata.assert_awaited_once()
         finally:
             await srv.stop()

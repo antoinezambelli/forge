@@ -395,7 +395,7 @@ async def phase_external(
         proxy = ProxyServer(
             backend_url=f"http://127.0.0.1:{EXTERNAL_BACKEND_PORT}",
             port=EXTERNAL_PROXY_PORT,
-            mode=mode,
+            backend_capability=mode,
             backend_protocol="openai",
         )
         proxy.start()
@@ -430,7 +430,7 @@ async def phase_managed(
         backend_port=MANAGED_BACKEND_PORT,
         port=MANAGED_PROXY_PORT,
         budget_mode=BudgetMode.BACKEND,
-        mode=mode,
+        backend_capability=mode,
         extra_flags=extra_flags,
     )
     proxy.start()
@@ -462,7 +462,7 @@ async def phase_external_vllm(vllm_url: str) -> list[tuple[str, str, str]]:
         backend_url=vllm_url,
         backend="vllm",
         port=VLLM_PROXY_PORT,
-        mode="native",
+        backend_capability="native",
         backend_protocol="openai",
     )
     proxy.start()
