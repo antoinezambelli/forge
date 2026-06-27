@@ -13,9 +13,11 @@ import logging
 from dataclasses import dataclass, field
 from typing import Any
 
-from forge.clients.base import LLMClient
+from forge.clients.base import AUTH_HEADER_NAMES, LLMClient
 from forge.context.manager import ContextManager
 from forge.core.reasoning import DEFAULT_REASONING_REPLAY, ReasoningReplay, validate_reasoning_replay
+from forge.errors import MultipleCredentialsError
+from forge.proxy.auth import DUPLICATE_AUTH_MARKER
 from forge.proxy.handler import handle_chat_completions
 
 logger = logging.getLogger("forge.proxy")
@@ -30,6 +32,9 @@ class _QueueItem:
 
     body: dict[str, Any]
     protocol: str = "openai"
+    # Per-request inbound headers (lowercased). Carries the inbound credential
+    # the handler relocates to the backend. Per-item, never shared.
+    headers: dict[str, str] = field(default_factory=dict)
     future: asyncio.Future = field(default=None)  # type: ignore[assignment]
     cancelled: bool = False
 
@@ -54,6 +59,8 @@ class HTTPServer:
         native_passthrough: bool = True,
         inject_respond_tool: bool = False,
         reasoning_replay: ReasoningReplay = DEFAULT_REASONING_REPLAY,
+        backend_protocol: str = "openai",
+        backend_api_key_present: bool = False,
     ) -> None:
         self._client = client
         self._context_manager = context_manager
@@ -65,6 +72,13 @@ class HTTPServer:
         self._native_passthrough = native_passthrough
         self._inject_respond_tool = inject_respond_tool
         self._reasoning_replay = validate_reasoning_replay(reasoning_replay)
+        # Target wire protocol of the backend (relocation target) and whether a
+        # static --backend-api-key is configured (for the two-source check).
+        # The raw key itself never reaches the handler — it is baked into the
+        # backend client at construction; the handler only needs to know it
+        # exists to refuse an inbound credential alongside it.
+        self._backend_protocol = backend_protocol
+        self._backend_api_key_present = backend_api_key_present
         self._server: asyncio.Server | None = None
         self._serialize = serialize_requests
         self._queue: asyncio.Queue[_QueueItem] = asyncio.Queue()
@@ -104,7 +118,7 @@ class HTTPServer:
                 if item.cancelled or item.future.cancelled():
                     logger.info("   Skipping cancelled request")
                     continue
-                result = await self._run_handler(item.body, item.protocol)
+                result = await self._run_handler(item.body, item.protocol, item.headers)
                 if not item.future.done():
                     item.future.set_result(result)
             except asyncio.CancelledError:
@@ -166,9 +180,13 @@ class HTTPServer:
             elif method == "GET" and path == "/v1/models":
                 await self._handle_models(writer)
             elif method == "POST" and path == "/v1/chat/completions":
-                await self._handle_completions(writer, body_bytes, protocol="openai")
+                await self._handle_completions(
+                    writer, body_bytes, protocol="openai", headers=headers,
+                )
             elif method == "POST" and path == "/v1/messages":
-                await self._handle_completions(writer, body_bytes, protocol="anthropic")
+                await self._handle_completions(
+                    writer, body_bytes, protocol="anthropic", headers=headers,
+                )
             elif method == "OPTIONS":
                 await self._send_cors_preflight(writer)
             else:
@@ -199,7 +217,13 @@ class HTTPServer:
                 break
             if ":" in decoded:
                 key, value = decoded.split(":", 1)
-                headers[key.strip().lower()] = value.strip()
+                key = key.strip().lower()
+                # A repeated auth header name would collapse to last-wins in a
+                # plain dict — forge must never silently pick a credential
+                # winner, so flag it for the credential resolver to refuse.
+                if key in AUTH_HEADER_NAMES and key in headers:
+                    headers[DUPLICATE_AUTH_MARKER] = "1"
+                headers[key] = value.strip()
         return headers
 
     async def _handle_health(self, writer: asyncio.StreamWriter) -> None:
@@ -220,8 +244,10 @@ class HTTPServer:
         writer: asyncio.StreamWriter,
         body_bytes: bytes,
         protocol: str = "openai",
+        headers: dict[str, str] | None = None,
     ) -> None:
         """POST /v1/chat/completions (or /v1/messages) — the main proxy endpoint."""
+        headers = headers or {}
         try:
             body = json.loads(body_bytes)
         except json.JSONDecodeError:
@@ -242,7 +268,7 @@ class HTTPServer:
 
         if self._serialize:
             # Queue the request and wait for the worker to process it
-            item = _QueueItem(body=body, protocol=protocol)
+            item = _QueueItem(body=body, protocol=protocol, headers=headers)
             queue_depth = self._queue.qsize()
             if queue_depth > 0:
                 logger.info("   Queued (depth=%d)", queue_depth + 1)
@@ -259,7 +285,7 @@ class HTTPServer:
         else:
             if is_stream:
                 await self._send_sse_header(writer)
-            result = await self._run_handler(body, protocol)
+            result = await self._run_handler(body, protocol, headers)
 
         if result is None:
             # Client disconnected
@@ -269,10 +295,15 @@ class HTTPServer:
         if isinstance(result, Exception):
             error_msg = str(result)
             logger.info("<< ERROR: %s", error_msg[:120])
+            # A credential conflict is a client error (the caller sent two
+            # credentials, or one that collides with --backend-api-key), not a
+            # backend failure. The error message carries only slot names, never
+            # a secret value.
+            status = 400 if isinstance(result, MultipleCredentialsError) else 502
             if is_stream:
                 await self._send_sse_body(writer, [{"error": error_msg}], protocol=protocol)
             else:
-                await self._send_error(writer, 502, error_msg)
+                await self._send_error(writer, status, error_msg)
             return
 
         if is_stream:
@@ -305,7 +336,10 @@ class HTTPServer:
         return item.future.result()
 
     async def _run_handler(
-        self, body: dict[str, Any], protocol: str = "openai",
+        self,
+        body: dict[str, Any],
+        protocol: str = "openai",
+        headers: dict[str, str] | None = None,
     ) -> dict[str, Any] | list[dict[str, Any]] | Exception:
         """Run the handler, catching errors."""
         try:
@@ -320,6 +354,9 @@ class HTTPServer:
                 inject_respond_tool=self._inject_respond_tool,
                 protocol=protocol,
                 reasoning_replay=self._reasoning_replay,
+                headers=headers,
+                backend_protocol=self._backend_protocol,
+                backend_api_key_present=self._backend_api_key_present,
             )
         except Exception as exc:
             logger.exception("Handler error")

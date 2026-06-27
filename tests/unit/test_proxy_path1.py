@@ -67,6 +67,9 @@ class TestProxyServerValidation:
             model="claude",
             base_url="http://localhost:8080",
             timeout=1800.0,
+            # explicit "" → no static credential and ambient ANTHROPIC_* env is
+            # suppressed at construction (one credential per request).
+            api_key="",
         )
 
 

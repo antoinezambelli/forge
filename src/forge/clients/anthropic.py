@@ -6,9 +6,11 @@ produces) and Anthropic's native Messages API format internally.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
-from collections.abc import AsyncIterator
+import os
+from collections.abc import AsyncIterator, Iterator
 from typing import Any
 
 import anthropic
@@ -44,6 +46,29 @@ _SDK_AUTH_CASING = {"authorization": "Authorization", "x-api-key": "X-Api-Key"}
 # would smuggle an auth header into ``messages.create`` past the one-credential
 # gate, so these are stripped before forge sets its own per-call credential.
 _SDK_CONTROL_KWARGS = ("extra_headers", "extra_body", "extra_query", "timeout")
+
+# Env vars the Anthropic SDK reads for auth when api_key/auth_token are unset.
+# Suppressed while forge constructs a client it owns the credential for, so an
+# ambient value can't inject a hidden second credential the per-request gate
+# never sees.
+_AMBIENT_ANTHROPIC_ENV = ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN")
+
+
+@contextlib.contextmanager
+def _suppressed_ambient_credentials() -> Iterator[None]:
+    """Temporarily clear Anthropic credential env vars, then restore them.
+
+    Used only around SDK construction for forge-owned-credential clients (the
+    proxy). forge may itself run evals that rely on these env vars in another
+    client/process, so they are restored immediately after construction.
+    """
+    saved = {k: os.environ.pop(k, None) for k in _AMBIENT_ANTHROPIC_ENV}
+    try:
+        yield
+    finally:
+        for key, value in saved.items():
+            if value is not None:
+                os.environ[key] = value
 
 
 def _prepare_anthropic_headers(
@@ -115,16 +140,26 @@ class AnthropicClient:
         # One credential per request. ``static_auth`` reflects an explicitly
         # configured static credential (an ``api_key`` argument or an auth
         # header in ``default_headers``); a per-call auth header is then refused
-        # as a second source. NOTE: ``api_key=None`` lets the SDK fall back to
-        # ``ANTHROPIC_API_KEY`` from the environment — that is a deliberate
-        # single credential for direct (WorkflowRunner) use and is NOT tracked
-        # here. The proxy, which forwards inbound credentials, must construct
-        # this client with an explicit ``api_key`` (the resolved
-        # ``--backend-api-key`` or ``""``) so an ambient env key can't become a
-        # silent second credential.
+        # as a second source.
         self._static_auth = static_auth_present(api_key, default_headers)
+        # Credential ownership has three modes, keyed on ``api_key``:
+        #   None  — WorkflowRunner direct use: defer to the SDK's own env-based
+        #           auth (ANTHROPIC_API_KEY / ANTHROPIC_AUTH_TOKEN), the dev's
+        #           deliberate single credential. forge stays out of it.
+        #   ""    — proxy pure passthrough: forge holds NO static credential and
+        #           the per-call forwarded header is the sole auth. Map to None
+        #           so the SDK emits no auth header at all (api_key="" would emit
+        #           a spurious empty X-Api-Key that collides with a per-call
+        #           Authorization on the OAuth path).
+        #   "key" — explicit static credential (proxy --backend-api-key, or an
+        #           explicit WR key).
+        # Whenever forge owns the credential (api_key is not None, including
+        # ""), suppress ambient ANTHROPIC_* env during construction so a stray
+        # ANTHROPIC_API_KEY / ANTHROPIC_AUTH_TOKEN can't become a silent second
+        # credential the per-request gate never sees.
+        forge_owns_credential = api_key is not None
         sdk_kwargs: dict[str, Any] = {
-            "api_key": api_key,
+            "api_key": api_key or None,
             "timeout": timeout,
             "max_retries": max_retries,
         }
@@ -135,7 +170,11 @@ class AnthropicClient:
         # (LiteLLM, a self-hosted proxy, etc.) — proxy path 1.
         if base_url is not None:
             sdk_kwargs["base_url"] = base_url
-        self._client = anthropic.AsyncAnthropic(**sdk_kwargs)
+        if forge_owns_credential:
+            with _suppressed_ambient_credentials():
+                self._client = anthropic.AsyncAnthropic(**sdk_kwargs)
+        else:
+            self._client = anthropic.AsyncAnthropic(**sdk_kwargs)
         # Populated after each send()/send_stream() call. Slot-keyed
         # ``{slot_id: TokenUsage}`` to match LlamafileClient / OllamaClient so
         # ``inference._get_usage`` reads every client uniformly. The Anthropic

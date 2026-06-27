@@ -313,3 +313,127 @@ class TestSerialization:
         assert status == 200
         data = json.loads(response_body)
         assert data["choices"][0]["message"]["content"] == "ok"
+
+
+# ── Inbound credential threading (v0.8.0) ────────────────────
+
+
+async def _http_request_with_auth(port, body, auth_header):
+    """POST /v1/chat/completions with an extra Authorization header."""
+    reader, writer = await asyncio.open_connection("127.0.0.1", port)
+    try:
+        body_bytes = json.dumps(body).encode()
+        request = (
+            f"POST /v1/chat/completions HTTP/1.1\r\n"
+            f"Host: 127.0.0.1:{port}\r\n"
+            f"Content-Type: application/json\r\n"
+            f"Authorization: {auth_header}\r\n"
+            f"Content-Length: {len(body_bytes)}\r\n"
+            f"\r\n"
+        ).encode() + body_bytes
+        writer.write(request)
+        await writer.drain()
+        await asyncio.wait_for(reader.read(65536), timeout=10.0)
+    finally:
+        writer.close()
+        await writer.wait_closed()
+
+
+async def _auth_server(serialize, backend_api_key_present=False):
+    """An HTTPServer fronting an Anthropic-wire backend, with a mock client."""
+    client = _mock_client(TextResponse(content="ok"))
+    ctx = ContextManager(strategy=NoCompact(), budget_tokens=8192)
+    srv = HTTPServer(
+        client=client,
+        context_manager=ctx,
+        host="127.0.0.1",
+        port=0,
+        serialize_requests=serialize,
+        backend_protocol="anthropic",
+        backend_api_key_present=backend_api_key_present,
+    )
+    await srv.start()
+    port = srv._server.sockets[0].getsockname()[1]
+    return srv, port, client
+
+
+async def _raw_request(port, header_lines, body):
+    """POST with arbitrary extra header lines; return (status, body_str)."""
+    reader, writer = await asyncio.open_connection("127.0.0.1", port)
+    try:
+        body_bytes = json.dumps(body).encode()
+        extra = "".join(f"{line}\r\n" for line in header_lines)
+        request = (
+            f"POST /v1/chat/completions HTTP/1.1\r\n"
+            f"Host: 127.0.0.1:{port}\r\n"
+            f"Content-Type: application/json\r\n"
+            f"{extra}"
+            f"Content-Length: {len(body_bytes)}\r\n"
+            f"\r\n"
+        ).encode() + body_bytes
+        writer.write(request)
+        await writer.drain()
+        data = await asyncio.wait_for(reader.read(65536), timeout=10.0)
+        text = data.decode("utf-8", errors="replace")
+        status = int(text.split("\r\n", 1)[0].split(" ", 2)[1])
+        start = text.find("\r\n\r\n")
+        return status, (text[start + 4:] if start >= 0 else "")
+    finally:
+        writer.close()
+        await writer.wait_closed()
+
+
+class TestInboundCredentialThreading:
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("serialize", [False, True])
+    async def test_inbound_auth_relocated_to_backend_client(self, serialize):
+        # Both dispatch paths (direct and the serialized queue worker) must
+        # carry the inbound header to the handler. Source openai endpoint →
+        # anthropic backend: Bearer stripped, relocated to x-api-key.
+        srv, port, client = await _auth_server(serialize)
+        try:
+            await _http_request_with_auth(
+                port,
+                {"messages": [{"role": "user", "content": "hi"}]},
+                "Bearer INBOUND",
+            )
+            assert client.send.await_count == 1
+            assert client.send.call_args.kwargs["extra_headers"] == {"x-api-key": "INBOUND"}
+        finally:
+            await srv.stop()
+
+    @pytest.mark.asyncio
+    async def test_duplicate_auth_header_refused_400_no_secret(self):
+        # Two same-name Authorization headers must be refused (never pick a
+        # winner), as a 400 client error, with no secret in the response body.
+        srv, port, client = await _auth_server(serialize=False)
+        try:
+            status, resp_body = await _raw_request(
+                port,
+                ["Authorization: Bearer SECRET-ONE", "Authorization: Bearer SECRET-TWO"],
+                {"messages": [{"role": "user", "content": "hi"}]},
+            )
+            assert status == 400
+            assert "SECRET-ONE" not in resp_body
+            assert "SECRET-TWO" not in resp_body
+            client.send.assert_not_awaited()
+        finally:
+            await srv.stop()
+
+    @pytest.mark.asyncio
+    async def test_inbound_plus_static_key_refused_400(self):
+        # Inbound credential + configured --backend-api-key → 400 client error.
+        srv, port, client = await _auth_server(
+            serialize=False, backend_api_key_present=True,
+        )
+        try:
+            status, resp_body = await _raw_request(
+                port,
+                ["Authorization: Bearer SECRET-INBOUND"],
+                {"messages": [{"role": "user", "content": "hi"}]},
+            )
+            assert status == 400
+            assert "SECRET-INBOUND" not in resp_body
+            client.send.assert_not_awaited()
+        finally:
+            await srv.stop()

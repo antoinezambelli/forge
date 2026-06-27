@@ -14,6 +14,7 @@ preflight; and the anthropic-version/beta filter.
 
 from __future__ import annotations
 
+import os
 from unittest.mock import MagicMock
 
 import httpx
@@ -345,12 +346,45 @@ def _anthropic_capturing(
     )
 
 
-def test_anthropic_empty_key_neutralizes_static_auth() -> None:
-    # The proxy constructs with api_key="" for pure inbound passthrough — no
-    # static credential, env not consulted.
+def test_anthropic_empty_key_is_pure_passthrough_no_static_auth() -> None:
+    # The proxy constructs with api_key="" for pure inbound passthrough: no
+    # static credential, and api_key is mapped to None so the SDK emits no auth
+    # header at all (no spurious empty X-Api-Key).
     client = AnthropicClient(model="claude", api_key="")
     assert client._static_auth is False
-    assert client._client.api_key == ""
+    assert client._client.api_key is None
+    assert client._client.auth_token is None
+
+
+def test_anthropic_passthrough_suppresses_ambient_env(monkeypatch) -> None:
+    # B1/B2: with ambient ANTHROPIC_* set, a pure-passthrough client must carry
+    # NO ambient credential, and the env must be restored after construction.
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "env-api-key")
+    monkeypatch.setenv("ANTHROPIC_AUTH_TOKEN", "env-auth-token")
+    client = AnthropicClient(model="claude", api_key="")
+    assert client._client.api_key is None
+    assert client._client.auth_token is None
+    # restored for forge's own (eval) clients / other processes
+    assert os.environ["ANTHROPIC_API_KEY"] == "env-api-key"
+    assert os.environ["ANTHROPIC_AUTH_TOKEN"] == "env-auth-token"
+
+
+def test_anthropic_static_key_suppresses_ambient_auth_token(monkeypatch) -> None:
+    # A static --backend-api-key must be the ONLY credential — ambient
+    # ANTHROPIC_AUTH_TOKEN must not add a second (Authorization: Bearer).
+    monkeypatch.setenv("ANTHROPIC_AUTH_TOKEN", "env-auth-token")
+    client = AnthropicClient(model="claude", api_key="STATIC")
+    assert client._client.api_key == "STATIC"
+    assert client._client.auth_token is None
+    assert os.environ["ANTHROPIC_AUTH_TOKEN"] == "env-auth-token"
+
+
+def test_anthropic_none_key_defers_to_env(monkeypatch) -> None:
+    # WR direct use: api_key=None reads ANTHROPIC_API_KEY (the dev's deliberate
+    # single credential); forge does not suppress it.
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "env-api-key")
+    client = AnthropicClient(model="claude")  # api_key=None default
+    assert client._client.api_key == "env-api-key"
 
 
 @pytest.mark.asyncio

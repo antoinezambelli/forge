@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import os
 import signal
 import sys
 import time
@@ -70,6 +71,15 @@ def main() -> None:
     )
     parser.add_argument("--no-rescue", action="store_true", help="Disable rescue parsing")
     parser.add_argument(
+        "--backend-api-key",
+        default=os.environ.get("FORGE_BACKEND_API_KEY"),
+        help="Static credential forge sends to the backend in its native auth "
+             "header (LM Studio, hosted providers, service accounts). forge "
+             "relocates it to the backend's protocol slot. When set, an inbound "
+             "auth header is refused as a second credential (one credential per "
+             "request). Defaults to the FORGE_BACKEND_API_KEY env var.",
+    )
+    parser.add_argument(
         "--backend-capability",
         choices=["native", "prompt"],
         default="native",
@@ -133,6 +143,7 @@ def main() -> None:
         backend_protocol=args.backend_protocol,
         backend_timeout=args.backend_timeout,
         reasoning_replay=args.reasoning_replay,
+        backend_api_key=args.backend_api_key,
     )
 
     def _shutdown(sig: int, _frame: object) -> None:

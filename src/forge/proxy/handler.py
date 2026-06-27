@@ -17,6 +17,7 @@ from forge.core.reasoning import (
 from forge.core.workflow import ToolCall, ToolSpec, TextResponse
 from forge.errors import ToolCallError
 from forge.guardrails import ErrorTracker, ResponseValidator
+from forge.proxy.auth import resolve_inbound_credential
 from forge.proxy.convert import (
     openai_to_messages,
     tool_calls_to_openai,
@@ -131,6 +132,9 @@ async def handle_chat_completions(
     inject_respond_tool: bool = False,
     protocol: Literal["openai", "anthropic"] = "openai",
     reasoning_replay: ReasoningReplay = DEFAULT_REASONING_REPLAY,
+    headers: dict[str, str] | None = None,
+    backend_protocol: str = "openai",
+    backend_api_key_present: bool = False,
 ) -> dict[str, Any] | list[dict[str, Any]]:
     """Handle an inbound completions request.
 
@@ -161,6 +165,14 @@ async def handle_chat_completions(
             ``/v1/chat/completions``; ``anthropic`` for ``/v1/messages``.
         reasoning_replay: How much captured reasoning to replay to the
             backend and expose to clients.
+        headers: Inbound request headers (lowercased keys). The single auth
+            header among them is relocated to the backend's canonical slot and
+            forwarded; no other inbound header is forwarded.
+        backend_protocol: Wire protocol of the backend (relocation target):
+            ``openai`` or ``anthropic``.
+        backend_api_key_present: Whether a static ``--backend-api-key`` is
+            configured. When True, an inbound auth header is a second credential
+            and the request is refused.
 
     Returns:
         If stream=false: a single response dict (protocol-shaped).
@@ -169,6 +181,18 @@ async def handle_chat_completions(
     reasoning_replay = validate_reasoning_replay(reasoning_replay)
     is_stream = body.get("stream", False)
     model_name = body.get("model", "forge")
+
+    # Resolve the single credential forge forwards to the backend: relocate an
+    # inbound auth header into the backend's canonical slot, or None when the
+    # caller sent none (a static --backend-api-key, if configured, is already
+    # baked into the client). Raises MultipleCredentialsError on two sources
+    # (two inbound auth headers, or an inbound header + a static backend key).
+    extra_headers = resolve_inbound_credential(
+        headers,
+        source_protocol=protocol,
+        target_protocol=backend_protocol,
+        backend_api_key_present=backend_api_key_present,
+    )
 
     # Inbound parse + sampling/passthrough extraction (protocol-specific)
     if protocol == "anthropic":
@@ -248,6 +272,7 @@ async def handle_chat_completions(
         response = await client.send(
             api_messages, tools=None, sampling=sampling, passthrough=passthrough,
             inbound_anthropic_body=inbound_anthropic_body,
+            extra_headers=extra_headers,
         )
         usage = _get_usage(client)
         text = response.content if isinstance(response, TextResponse) else ""
@@ -271,6 +296,7 @@ async def handle_chat_completions(
             inbound_anthropic_body=inbound_anthropic_body,
             raw_openai_messages=raw_messages_for_backend,
             raw_openai_tools=raw_tools_for_backend,
+            extra_headers=extra_headers,
             reasoning_replay=reasoning_replay,
         )
     except ToolCallError as exc:

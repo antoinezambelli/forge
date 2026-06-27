@@ -74,6 +74,7 @@ class ProxyServer:
         backend_protocol: Literal["openai", "anthropic"] = "openai",
         backend_timeout: float = 300.0,
         reasoning_replay: ReasoningReplay = DEFAULT_REASONING_REPLAY,
+        backend_api_key: str | None = None,
     ) -> None:
         """
         Args:
@@ -122,6 +123,12 @@ class ProxyServer:
                 the downstream backend.
             reasoning_replay: How much captured reasoning to replay to the
                 backend on later turns: ``full``, ``keep-last``, or ``none``.
+            backend_api_key: Static credential forge sends to the backend in
+                its native auth header (LM Studio / hosted providers / service
+                accounts). Baked into the backend client at construction. When
+                set, an inbound auth header is a second credential and the
+                request is refused (one credential per request). Leave None for
+                pure inbound-credential passthrough.
         """
         if backend_url is None and backend is None:
             raise ValueError("Provide either backend_url (external) or backend (managed)")
@@ -182,6 +189,7 @@ class ProxyServer:
         self._backend_protocol = backend_protocol
         self._backend_timeout = backend_timeout
         self._reasoning_replay = validate_reasoning_replay(reasoning_replay)
+        self._backend_api_key = backend_api_key
 
         # Auto-detect serialization: managed (no external url) = single local
         # GPU = serialize. External callers manage their own concurrency.
@@ -268,6 +276,8 @@ class ProxyServer:
             native_passthrough=self._backend_capability == "native",
             inject_respond_tool=self._inject_respond_tool,
             reasoning_replay=self._reasoning_replay,
+            backend_protocol=self._backend_protocol,
+            backend_api_key_present=bool(self._backend_api_key),
         )
         await self._http_server.start()
         self._started = True
@@ -297,6 +307,9 @@ class ProxyServer:
                 model=self._model or "claude",
                 base_url=self._backend_url.rstrip("/"),
                 timeout=self._backend_timeout,
+                # Explicit key (or "" for pure passthrough) so an ambient
+                # ANTHROPIC_* env var can't become a silent second credential.
+                api_key=self._backend_api_key or "",
             )
             # Anthropic models report a known context length; keep the legacy
             # 8192 fallback rather than failing the well-behaved Path-1 case.
@@ -317,6 +330,7 @@ class ProxyServer:
                 model_path="default",
                 base_url=base,
                 timeout=self._backend_timeout,
+                api_key=self._backend_api_key or "",
             )
             # Unlike llama.cpp, vLLM validates the wire `model` field against
             # its --served-model-name aliases (404 on mismatch). External mode
@@ -343,6 +357,7 @@ class ProxyServer:
                 base_url=base,
                 mode=self._backend_capability,
                 timeout=self._backend_timeout,
+                api_key=self._backend_api_key or "",
             )
 
         if self._budget_tokens is not None:
@@ -397,6 +412,7 @@ class ProxyServer:
             return OllamaClient(
                 model=self._model,
                 timeout=self._backend_timeout,
+                api_key=self._backend_api_key or "",
             )
         if self._backend in ("llamaserver", "llamafile"):
             return LlamafileClient(
@@ -404,6 +420,7 @@ class ProxyServer:
                 base_url=base_url,
                 mode=self._backend_capability,
                 timeout=self._backend_timeout,
+                api_key=self._backend_api_key or "",
             )
         if self._backend == "vllm":
             assert self._model_path is not None
@@ -411,6 +428,7 @@ class ProxyServer:
                 model_path=self._model_path,
                 base_url=base_url,
                 timeout=self._backend_timeout,
+                api_key=self._backend_api_key or "",
             )
         raise ValueError(f"unsupported backend: {self._backend!r}")
 
