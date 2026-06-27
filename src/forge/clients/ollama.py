@@ -15,6 +15,8 @@ from forge.clients.base import (
     decode_tool_args,
     flatten_content_to_text,
     format_tool,
+    resolve_request_headers,
+    static_auth_present,
 )
 from forge.clients.sampling_defaults import apply_sampling_defaults
 from forge.core.workflow import LLMResponse, TextResponse, ToolCall, ToolSpec
@@ -106,6 +108,8 @@ class OllamaClient:
         timeout: float = 300.0,
         think: bool | None = None,
         recommended_sampling: bool = False,
+        api_key: str = "",
+        extra_headers: dict[str, str] | None = None,
     ) -> None:
         self.base_url = base_url
         self.model = model
@@ -121,7 +125,19 @@ class OllamaClient:
         self.min_p = min_p if min_p is not None else defaults.get("min_p")
         self.repeat_penalty = repeat_penalty if repeat_penalty is not None else defaults.get("repeat_penalty")
         self.presence_penalty = presence_penalty if presence_penalty is not None else defaults.get("presence_penalty")
-        self._http = httpx.AsyncClient(timeout=timeout)
+        # Optional backend auth (api_key → Authorization: Bearer; extra_headers
+        # ride on top). Local Ollama is usually unauthenticated, but a gateway
+        # in front of it may require a credential. One credential per request:
+        # validate the static config (raises on api_key + a construction auth
+        # header) BEFORE opening the pool so a conflict fails fast; a per-call
+        # auth header is later refused when a static one is set here.
+        self._static_auth = static_auth_present(api_key, extra_headers)
+        headers: dict[str, str] = {}
+        if api_key:
+            headers["Authorization"] = f"Bearer {api_key}"
+        if extra_headers:
+            headers.update(extra_headers)
+        self._http = httpx.AsyncClient(headers=headers, timeout=timeout)
         self._num_ctx: int | None = None
 
         if think is not None:
@@ -136,6 +152,17 @@ class OllamaClient:
     async def aclose(self) -> None:
         """Close the underlying httpx connection pool."""
         await self._http.aclose()
+
+    def _request_headers(
+        self, extra_headers: dict[str, str] | None,
+    ) -> dict[str, str] | None:
+        """Per-call headers to apply, enforcing the one-credential rule.
+
+        Returns the dict to pass as httpx ``headers=`` (merged over the
+        construction headers, request winning), or None. Never mutates the
+        shared client's construction headers.
+        """
+        return resolve_request_headers(self._static_auth, extra_headers)
 
     # Sampling fields recognized in per-call overrides. ``seed`` is
     # accepted only as a per-call override (not an instance field).
@@ -206,6 +233,7 @@ class OllamaClient:
         passthrough: dict[str, Any] | None = None,
         inbound_anthropic_body: dict[str, Any] | None = None,
         raw_openai_tools: list[dict[str, Any]] | None = None,
+        extra_headers: dict[str, str] | None = None,
     ) -> LLMResponse:
         """Send messages via /api/chat and parse the response.
 
@@ -215,7 +243,9 @@ class OllamaClient:
         Ollama passthrough is a follow-up.
 
         ``inbound_anthropic_body`` / ``raw_openai_tools`` accepted for protocol
-        symmetry, ignored (Ollama is OpenAI-shape only).
+        symmetry, ignored (Ollama is OpenAI-shape only). ``extra_headers``
+        carries the per-call credential, applied over the construction headers
+        on every request (including the think-unsupported retry).
         """
         body: dict[str, Any] = {
             "model": self.model,
@@ -228,8 +258,12 @@ class OllamaClient:
         if tools:
             body["tools"] = [format_tool(t) for t in tools]
 
+        # One credential per request: resolve once and reuse for the retry.
+        req_headers = self._request_headers(extra_headers)
         try:
-            resp = await self._http.post(f"{self.base_url}/api/chat", json=body)
+            resp = await self._http.post(
+                f"{self.base_url}/api/chat", json=body, headers=req_headers,
+            )
         except httpx.ReadTimeout as exc:
             raise BackendError(408, "Read timeout") from exc
 
@@ -240,7 +274,9 @@ class OllamaClient:
             self._think = False
             self._think_resolved = True
             del body["think"]
-            resp = await self._http.post(f"{self.base_url}/api/chat", json=body)
+            resp = await self._http.post(
+                f"{self.base_url}/api/chat", json=body, headers=req_headers,
+            )
 
         if resp.status_code == 500:
             return TextResponse(content=resp.text)
@@ -284,11 +320,14 @@ class OllamaClient:
         passthrough: dict[str, Any] | None = None,
         inbound_anthropic_body: dict[str, Any] | None = None,
         raw_openai_tools: list[dict[str, Any]] | None = None,
+        extra_headers: dict[str, str] | None = None,
     ) -> AsyncIterator[StreamChunk]:
         """Stream via NDJSON from /api/chat.
 
         ``passthrough`` / ``inbound_anthropic_body`` / ``raw_openai_tools``
-        accepted for protocol symmetry; see ``send`` notes.
+        accepted for protocol symmetry; see ``send`` notes. ``extra_headers``
+        carries the per-call credential, applied on both the initial stream
+        and the think-unsupported retry stream.
         """
         body: dict[str, Any] = {
             "model": self.model,
@@ -301,8 +340,10 @@ class OllamaClient:
         if tools:
             body["tools"] = [format_tool(t) for t in tools]
 
+        # One credential per request: resolve once and reuse for the retry.
+        req_headers = self._request_headers(extra_headers)
         async with self._http.stream(
-            "POST", f"{self.base_url}/api/chat", json=body
+            "POST", f"{self.base_url}/api/chat", json=body, headers=req_headers,
         ) as response:
             # Think unsupported: fail fast if explicit, fall back if auto-detected
             if response.status_code == 400:
@@ -332,7 +373,7 @@ class OllamaClient:
 
         # Retry stream without think
         async with self._http.stream(
-            "POST", f"{self.base_url}/api/chat", json=body
+            "POST", f"{self.base_url}/api/chat", json=body, headers=req_headers,
         ) as response:
             async for chunk in self._iter_stream(response):
                 yield chunk

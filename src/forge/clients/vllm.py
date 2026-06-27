@@ -25,7 +25,15 @@ from typing import Any
 
 import httpx
 
-from forge.clients.base import ChunkType, StreamChunk, TokenUsage, decode_tool_args, format_tool
+from forge.clients.base import (
+    ChunkType,
+    StreamChunk,
+    TokenUsage,
+    decode_tool_args,
+    format_tool,
+    resolve_request_headers,
+    static_auth_present,
+)
 from forge.clients.sampling_defaults import apply_sampling_defaults
 from forge.core.workflow import LLMResponse, TextResponse, ToolCall, ToolSpec
 from forge.errors import BackendError
@@ -59,6 +67,8 @@ class VLLMClient:
         timeout: float = 300.0,
         think: bool = True,
         recommended_sampling: bool = False,
+        api_key: str = "",
+        extra_headers: dict[str, str] | None = None,
     ) -> None:
         self.base_url = base_url
         # Two identity roles, set together (see _set_model_identity):
@@ -87,13 +97,36 @@ class VLLMClient:
             chat_template_kwargs if chat_template_kwargs is not None
             else defaults.get("chat_template_kwargs")
         )
-        self._http = httpx.AsyncClient(timeout=timeout)
+        # Optional backend auth (api_key → Authorization: Bearer; extra_headers
+        # ride on top). vLLM servers may be started with --api-key. One
+        # credential per request: validate the static config (raises on api_key
+        # + a construction auth header) BEFORE opening the pool so a conflict
+        # fails fast; a per-call auth header is later refused when a static one
+        # is set here.
+        self._static_auth = static_auth_present(api_key, extra_headers)
+        headers: dict[str, str] = {}
+        if api_key:
+            headers["Authorization"] = f"Bearer {api_key}"
+        if extra_headers:
+            headers.update(extra_headers)
+        self._http = httpx.AsyncClient(headers=headers, timeout=timeout)
         self._think: bool = think
         self.last_usage: dict[int, TokenUsage] = {}
 
     async def aclose(self) -> None:
         """Close the underlying httpx connection pool."""
         await self._http.aclose()
+
+    def _request_headers(
+        self, extra_headers: dict[str, str] | None,
+    ) -> dict[str, str] | None:
+        """Per-call headers to apply, enforcing the one-credential rule.
+
+        Returns the dict to pass as httpx ``headers=`` (merged over the
+        construction headers, request winning), or None. Never mutates the
+        shared client's construction headers.
+        """
+        return resolve_request_headers(self._static_auth, extra_headers)
 
     @staticmethod
     def _derive_sampling_key(wire_id: str) -> str:
@@ -193,12 +226,14 @@ class VLLMClient:
         passthrough: dict[str, Any] | None = None,
         inbound_anthropic_body: dict[str, Any] | None = None,
         raw_openai_tools: list[dict[str, Any]] | None = None,
+        extra_headers: dict[str, str] | None = None,
     ) -> LLMResponse:
         """Send messages via /v1/chat/completions and parse the response.
 
         ``passthrough`` / ``inbound_anthropic_body`` / ``raw_openai_tools`` are
         accepted for protocol symmetry and ignored — vLLM parses tools and
-        reasoning server-side and is native-only.
+        reasoning server-side and is native-only. ``extra_headers`` carries the
+        per-call credential, applied over the construction headers.
         """
         body: dict[str, Any] = {
             "model": self.model,
@@ -212,7 +247,9 @@ class VLLMClient:
 
         try:
             resp = await self._http.post(
-                f"{self.base_url}/chat/completions", json=body,
+                f"{self.base_url}/chat/completions",
+                json=body,
+                headers=self._request_headers(extra_headers),
             )
         except httpx.ReadTimeout as exc:
             raise BackendError(408, "Read timeout") from exc
@@ -250,11 +287,13 @@ class VLLMClient:
         passthrough: dict[str, Any] | None = None,
         inbound_anthropic_body: dict[str, Any] | None = None,
         raw_openai_tools: list[dict[str, Any]] | None = None,
+        extra_headers: dict[str, str] | None = None,
     ) -> AsyncIterator[StreamChunk]:
         """Stream via SSE from /v1/chat/completions.
 
         ``passthrough`` / ``inbound_anthropic_body`` / ``raw_openai_tools``
         accepted for protocol symmetry and ignored (see ``send``).
+        ``extra_headers`` carries the per-call credential.
         """
         body: dict[str, Any] = {
             "model": self.model,
@@ -274,7 +313,10 @@ class VLLMClient:
         tool_call_parts: dict[int, dict[str, str]] = {}
 
         async with self._http.stream(
-            "POST", f"{self.base_url}/chat/completions", json=body,
+            "POST",
+            f"{self.base_url}/chat/completions",
+            json=body,
+            headers=self._request_headers(extra_headers),
         ) as response:
             if response.status_code != 200:
                 error_body = ""

@@ -3,18 +3,101 @@
 from __future__ import annotations
 
 import json
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Mapping
 from dataclasses import dataclass
 from enum import Enum
 from typing import Any, Protocol, runtime_checkable
 
 from forge.core.workflow import LLMResponse, ToolSpec
+from forge.errors import MultipleCredentialsError
 
 # Verbatim OpenAI-shape payloads forwarded by the proxy. The proxy hands the
 # client the user's original ``tools`` array so the backend sees the exact
 # schema the client authored, instead of forge's reconstructed ToolSpec.
 RawOpenAITools = list[dict[str, Any]]
 RawOpenAIMessages = list[dict[str, Any]]
+
+
+# ── Auth credential helpers ──────────────────────────────────────────
+#
+# forge carries exactly ONE credential to the backend, placed in the
+# backend's native auth header. It does not validate the credential, manage
+# its lifecycle, or form any opinion on its value — it only detects presence
+# and relocates the header to the target protocol's canonical slot. Two
+# credentials present anywhere is a hard error (Design Principle #1: fail
+# loud, never silently merge or pick a winner).
+
+# Header names that carry a backend credential (lowercased for
+# case-insensitive comparison).
+AUTH_HEADER_NAMES = frozenset({"authorization", "x-api-key"})
+
+
+def has_auth_header(headers: Mapping[str, str] | None) -> bool:
+    """True if any key in ``headers`` is a recognized auth header."""
+    if not headers:
+        return False
+    return any(name.lower() in AUTH_HEADER_NAMES for name in headers)
+
+
+def static_auth_present(
+    api_key: str | None,
+    construction_headers: Mapping[str, str] | None,
+) -> bool:
+    """Whether a static credential was configured, refusing two static sources.
+
+    A construction ``api_key`` AND a construction auth header is itself two
+    credentials — both would ride on every request. Refuse it at construction
+    (fail loud, Design Principle #1) rather than silently sending both. Returns
+    True when exactly one static credential source is present, False when none.
+    """
+    has_key = bool(api_key)
+    has_header = has_auth_header(construction_headers)
+    if has_key and has_header:
+        raise MultipleCredentialsError(
+            "construction api_key + construction auth header"
+        )
+    return has_key or has_header
+
+
+def resolve_request_headers(
+    static_auth_present: bool,
+    extra_headers: Mapping[str, str] | None,
+) -> dict[str, str] | None:
+    """Validate the one-credential rule and return per-call headers to apply.
+
+    If the client already holds a static auth credential (set at
+    construction) AND this call supplies its own auth header, that is two
+    credentials — refuse it (fail loud; never merge, never pick a winner).
+
+    Returns a plain-dict copy of ``extra_headers`` to pass as the per-call
+    ``headers=`` (httpx merges it over the construction headers, request
+    winning), or ``None`` when there are no per-call headers. Callers MUST
+    pass these per call and MUST NOT mutate the shared client's construction
+    headers — the proxy reuses one client instance across serialized
+    requests, so a mutated credential would leak into later calls.
+    """
+    if not extra_headers:
+        return None
+    if static_auth_present and has_auth_header(extra_headers):
+        raise MultipleCredentialsError(
+            "client construction credential + per-call auth header"
+        )
+    return dict(extra_headers)
+
+
+def redact_auth_headers(headers: Mapping[str, str] | None) -> dict[str, str]:
+    """Return a copy of ``headers`` with auth values masked for logging.
+
+    Never log a raw secret — not even a prefix of an opaque token. The header
+    *name* is preserved (so logs show which slot carried the credential); the
+    value is replaced wholesale with ``***``.
+    """
+    if not headers:
+        return {}
+    return {
+        k: ("***" if k.lower() in AUTH_HEADER_NAMES else v)
+        for k, v in headers.items()
+    }
 
 
 @dataclass(frozen=True)
@@ -155,6 +238,7 @@ class LLMClient(Protocol):
         passthrough: dict[str, Any] | None = None,
         inbound_anthropic_body: dict[str, Any] | None = None,
         raw_openai_tools: RawOpenAITools | None = None,
+        extra_headers: dict[str, str] | None = None,
     ) -> LLMResponse:
         """Send messages and return a parsed response.
 
@@ -190,6 +274,13 @@ class LLMClient(Protocol):
                 it as-is instead of re-emitting ``format_tool(spec)``, so the
                 backend sees the original schema (no name/schema drift). Other
                 clients accept and ignore.
+            extra_headers: Per-call HTTP headers, primarily the one credential
+                forge forwards to the backend (proxy: a relocated inbound auth
+                header; WorkflowRunner: a rotating SSO token). Applied per call
+                over the construction headers (request wins). If the client
+                already holds a static auth credential, supplying an auth
+                header here raises ``MultipleCredentialsError`` — exactly one
+                credential reaches the backend. None = no per-call headers.
         """
         ...
 
@@ -201,6 +292,7 @@ class LLMClient(Protocol):
         passthrough: dict[str, Any] | None = None,
         inbound_anthropic_body: dict[str, Any] | None = None,
         raw_openai_tools: RawOpenAITools | None = None,
+        extra_headers: dict[str, str] | None = None,
     ) -> AsyncIterator[StreamChunk]:
         """Send messages and yield streaming chunks.
 
@@ -219,6 +311,7 @@ class LLMClient(Protocol):
             passthrough: Optional inbound-body extras dict (see ``send``).
             inbound_anthropic_body: Optional path-1 verbatim body (see ``send``).
             raw_openai_tools: Optional verbatim OpenAI tools array (see ``send``).
+            extra_headers: Optional per-call credential header (see ``send``).
         """
         ...
 

@@ -9,7 +9,7 @@ from unittest.mock import AsyncMock, MagicMock
 from forge.clients.openai_compat import OpenAICompatClient
 from forge.clients.base import ChunkType
 from forge.core.workflow import TextResponse, ToolCall, ToolSpec
-from forge.errors import BackendError
+from forge.errors import BackendError, MultipleCredentialsError
 
 
 class PartParams(BaseModel):
@@ -446,11 +446,24 @@ class TestConstructor:
         assert client._http.headers["http-referer"] == "https://example.com"
         assert client._http.headers["x-title"] == "MyApp"
 
-    def test_extra_headers_can_override_authorization(self) -> None:
+    def test_api_key_plus_auth_header_raises(self) -> None:
+        # v0.8.0 one-credential rule: an ``api_key`` AND an auth header in
+        # ``extra_headers`` is two configured credentials → refused at
+        # construction (no silent precedence). For a non-Bearer scheme, pass
+        # ``extra_headers`` alone and omit ``api_key``.
+        with pytest.raises(MultipleCredentialsError):
+            OpenAICompatClient(
+                model="test-model",
+                base_url="https://x/v1",
+                api_key="ignored",
+                extra_headers={"Authorization": "ApiKey custom-scheme"},
+            )
+
+    def test_extra_headers_alone_set_custom_scheme(self) -> None:
+        # The supported path for a custom auth scheme: extra_headers, no api_key.
         client = OpenAICompatClient(
             model="test-model",
             base_url="https://x/v1",
-            api_key="ignored",
             extra_headers={"Authorization": "ApiKey custom-scheme"},
         )
         assert client._http.headers["authorization"] == "ApiKey custom-scheme"

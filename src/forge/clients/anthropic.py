@@ -13,11 +13,57 @@ from typing import Any
 
 import anthropic
 
-from forge.clients.base import ChunkType, StreamChunk, TokenUsage, decode_tool_args
+from forge.clients.base import (
+    ChunkType,
+    StreamChunk,
+    TokenUsage,
+    decode_tool_args,
+    resolve_request_headers,
+    static_auth_present,
+)
 from forge.core.workflow import LLMResponse, TextResponse, ToolCall, ToolSpec
 from forge.errors import BackendError
 
 log = logging.getLogger(__name__)
+
+# The Anthropic SDK pins these headers itself — ``anthropic-version`` is part
+# of its wire contract. A forwarded inbound value must not clobber them, so we
+# drop them from any forge-forwarded header set.
+_ANTHROPIC_PINNED_HEADERS = frozenset({"anthropic-version", "anthropic-beta"})
+
+# The SDK's auth preflight (``_validate_headers``) reads these keys
+# case-SENSITIVELY from a plain dict before the request goes out. The proxy
+# lowercases all inbound header keys, so a relocated ``x-api-key`` would fail
+# the preflight ("Could not resolve authentication method") unless re-cased to
+# exactly what the SDK expects. forge never inspects the credential value.
+_SDK_AUTH_CASING = {"authorization": "Authorization", "x-api-key": "X-Api-Key"}
+
+# SDK request-control kwargs that must never be sourced from an inbound body or
+# passthrough — they are client-side controls (headers/query/timeout), not
+# Anthropic Messages API fields. In particular a body-supplied ``extra_headers``
+# would smuggle an auth header into ``messages.create`` past the one-credential
+# gate, so these are stripped before forge sets its own per-call credential.
+_SDK_CONTROL_KWARGS = ("extra_headers", "extra_body", "extra_query", "timeout")
+
+
+def _prepare_anthropic_headers(
+    headers: dict[str, str] | None,
+) -> dict[str, str] | None:
+    """Canonicalize auth-header casing for the SDK and drop SDK-pinned headers.
+
+    Returns a new dict (or None). Auth headers are re-cased to the SDK's
+    case-sensitive expectation; ``anthropic-version``/``anthropic-beta`` are
+    dropped so the SDK's own pinned version wins.
+    """
+    if not headers:
+        return None
+    prepared: dict[str, str] = {}
+    for k, v in headers.items():
+        kl = k.lower()
+        if kl in _ANTHROPIC_PINNED_HEADERS:
+            continue
+        prepared[_SDK_AUTH_CASING.get(kl, k)] = v
+    return prepared or None
 
 
 class AnthropicClient:
@@ -42,6 +88,7 @@ class AnthropicClient:
         base_url: str | None = None,
         prompt_caching: bool = False,
         thinking: dict[str, Any] | None = None,
+        default_headers: dict[str, str] | None = None,
     ) -> None:
         self.model = model
         self.max_tokens = max_tokens
@@ -65,11 +112,25 @@ class AnthropicClient:
             log.debug(
                 "AnthropicClient ignores recommended_sampling=True — no sampling kwargs are exposed."
             )
+        # One credential per request. ``static_auth`` reflects an explicitly
+        # configured static credential (an ``api_key`` argument or an auth
+        # header in ``default_headers``); a per-call auth header is then refused
+        # as a second source. NOTE: ``api_key=None`` lets the SDK fall back to
+        # ``ANTHROPIC_API_KEY`` from the environment — that is a deliberate
+        # single credential for direct (WorkflowRunner) use and is NOT tracked
+        # here. The proxy, which forwards inbound credentials, must construct
+        # this client with an explicit ``api_key`` (the resolved
+        # ``--backend-api-key`` or ``""``) so an ambient env key can't become a
+        # silent second credential.
+        self._static_auth = static_auth_present(api_key, default_headers)
         sdk_kwargs: dict[str, Any] = {
             "api_key": api_key,
             "timeout": timeout,
             "max_retries": max_retries,
         }
+        prepared_default_headers = _prepare_anthropic_headers(default_headers)
+        if prepared_default_headers:
+            sdk_kwargs["default_headers"] = prepared_default_headers
         # base_url retargets the SDK at an Anthropic-shape downstream
         # (LiteLLM, a self-hosted proxy, etc.) — proxy path 1.
         if base_url is not None:
@@ -85,6 +146,22 @@ class AnthropicClient:
     async def aclose(self) -> None:
         """Close the underlying Anthropic SDK client (and its httpx pool)."""
         await self._client.close()
+
+    def _sdk_extra_headers(
+        self, extra_headers: dict[str, str] | None,
+    ) -> dict[str, str] | None:
+        """Per-call SDK headers, enforcing the one-credential rule.
+
+        Validates against a static construction credential (raises on a second
+        source), then re-cases auth headers to the SDK's case-sensitive
+        expectation and drops SDK-pinned version headers. Passed via the SDK's
+        per-call ``extra_headers=`` — never set as ``default_headers`` (the
+        proxy shares one client instance, so a per-request credential must not
+        leak into later requests).
+        """
+        return _prepare_anthropic_headers(
+            resolve_request_headers(self._static_auth, extra_headers)
+        )
 
     # ── Tool schema conversion ───────────────────────────────────
 
@@ -340,6 +417,7 @@ class AnthropicClient:
         passthrough: dict[str, Any] | None = None,
         inbound_anthropic_body: dict[str, Any] | None = None,
         raw_openai_tools: list[dict[str, Any]] | None = None,
+        extra_headers: dict[str, str] | None = None,
     ) -> LLMResponse:
         """Send messages via the Anthropic Messages API.
 
@@ -349,7 +427,9 @@ class AnthropicClient:
         ``inbound_anthropic_body`` (path 1) triggers verbatim emit — see
         ADR-015 for the cache_control preservation rationale.
         ``raw_openai_tools`` accepted for protocol symmetry, ignored
-        (Anthropic uses its own tool conversion).
+        (Anthropic uses its own tool conversion). ``extra_headers`` carries the
+        per-call credential, re-cased for the SDK and forwarded via the SDK's
+        per-call ``extra_headers=``.
         """
         if sampling:
             log.debug(
@@ -359,6 +439,13 @@ class AnthropicClient:
         kwargs = self._build_kwargs(
             messages, tools, passthrough, inbound_anthropic_body,
         )
+        # Strip SDK control kwargs that a verbatim/passthrough body could carry
+        # before forge installs its own per-call credential.
+        for control_kwarg in _SDK_CONTROL_KWARGS:
+            kwargs.pop(control_kwarg, None)
+        sdk_headers = self._sdk_extra_headers(extra_headers)
+        if sdk_headers:
+            kwargs["extra_headers"] = sdk_headers
         try:
             response = await self._client.messages.create(**kwargs)
         except anthropic.APIError as exc:
@@ -388,6 +475,7 @@ class AnthropicClient:
         passthrough: dict[str, Any] | None = None,
         inbound_anthropic_body: dict[str, Any] | None = None,
         raw_openai_tools: list[dict[str, Any]] | None = None,
+        extra_headers: dict[str, str] | None = None,
     ) -> AsyncIterator[StreamChunk]:
         """Stream via the Anthropic Messages API.
 
@@ -395,6 +483,7 @@ class AnthropicClient:
         ``passthrough`` merges inbound-body extras into the SDK call.
         ``inbound_anthropic_body`` (path 1) triggers verbatim emit; see ADR-015.
         ``raw_openai_tools`` accepted for protocol symmetry, ignored.
+        ``extra_headers`` carries the per-call credential (see :meth:`send`).
         """
         if sampling:
             log.debug(
@@ -404,6 +493,13 @@ class AnthropicClient:
         kwargs = self._build_kwargs(
             messages, tools, passthrough, inbound_anthropic_body,
         )
+        # Strip SDK control kwargs that a verbatim/passthrough body could carry
+        # before forge installs its own per-call credential.
+        for control_kwarg in _SDK_CONTROL_KWARGS:
+            kwargs.pop(control_kwarg, None)
+        sdk_headers = self._sdk_extra_headers(extra_headers)
+        if sdk_headers:
+            kwargs["extra_headers"] = sdk_headers
 
         accumulated_text = ""
         # Track multiple tool_use blocks by index.

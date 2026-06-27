@@ -212,3 +212,24 @@ class StreamError(ForgeError):
 
     def __init__(self, message: str = "Stream ended without FINAL chunk"):
         super().__init__(message)
+
+
+class MultipleCredentialsError(ForgeError):
+    """More than one auth credential was present for a single backend call.
+
+    forge carries exactly one credential to the backend (Design Principle #1:
+    fail loud, no silent merge). This is raised when a client holds a static
+    auth credential (set at construction) AND a per-call ``extra_headers``
+    also carries an auth header, or when a single inbound proxy request
+    carries two distinct auth headers. forge never picks a winner or drops
+    one — it refuses the request.
+    """
+
+    def __init__(self, sources: str):
+        super().__init__(
+            f"Multiple credentials present: {sources}. forge accepts exactly "
+            f"one credential per request — pass auth via a single source "
+            f"(the client's construction key OR a per-call/inbound auth header, "
+            f"never both)."
+        )
+        self.sources = sources
