@@ -233,3 +233,23 @@ class MultipleCredentialsError(ForgeError):
             f"never both)."
         )
         self.sources = sources
+
+
+class MissingCredentialError(ForgeError):
+    """No credential was available for a backend that requires one.
+
+    The counterpart to MultipleCredentialsError: forge would otherwise dispatch
+    a request carrying *zero* credentials. Some backends (the Anthropic SDK in
+    particular) refuse such a request with an opaque client-side error; forge
+    fails loud with a clear one instead. The common trigger is the proxy in
+    pure-passthrough mode (no ``--backend-api-key``) receiving a request with no
+    inbound auth header, pointed at an auth-required backend.
+    """
+
+    def __init__(self, backend: str = "backend"):
+        super().__init__(
+            f"No credential available for the {backend}: forge needs exactly "
+            f"one credential and found none — provide it via an inbound auth "
+            f"header or a static backend key (--backend-api-key)."
+        )
+        self.backend = backend

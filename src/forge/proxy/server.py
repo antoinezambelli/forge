@@ -16,7 +16,7 @@ from typing import Any
 from forge.clients.base import AUTH_HEADER_NAMES, LLMClient
 from forge.context.manager import ContextManager
 from forge.core.reasoning import DEFAULT_REASONING_REPLAY, ReasoningReplay, validate_reasoning_replay
-from forge.errors import MultipleCredentialsError
+from forge.errors import MissingCredentialError, MultipleCredentialsError
 from forge.proxy.auth import DUPLICATE_AUTH_MARKER
 from forge.proxy.handler import handle_chat_completions
 
@@ -295,11 +295,16 @@ class HTTPServer:
         if isinstance(result, Exception):
             error_msg = str(result)
             logger.info("<< ERROR: %s", error_msg[:120])
-            # A credential conflict is a client error (the caller sent two
-            # credentials, or one that collides with --backend-api-key), not a
-            # backend failure. The error message carries only slot names, never
-            # a secret value.
-            status = 400 if isinstance(result, MultipleCredentialsError) else 502
+            # Credential problems are client errors (the caller sent two
+            # credentials / one colliding with --backend-api-key → 400, or none
+            # at all to an auth-required backend → 401), not backend failures.
+            # These messages carry only slot names, never a secret value.
+            if isinstance(result, MultipleCredentialsError):
+                status = 400
+            elif isinstance(result, MissingCredentialError):
+                status = 401
+            else:
+                status = 502
             if is_stream:
                 await self._send_sse_body(writer, [{"error": error_msg}], protocol=protocol)
             else:
@@ -454,6 +459,7 @@ def _status_text(code: int) -> str:
         200: "OK",
         204: "No Content",
         400: "Bad Request",
+        401: "Unauthorized",
         404: "Not Found",
         413: "Payload Too Large",
         500: "Internal Server Error",

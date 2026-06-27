@@ -20,11 +20,12 @@ from forge.clients.base import (
     StreamChunk,
     TokenUsage,
     decode_tool_args,
+    has_auth_header,
     resolve_request_headers,
     static_auth_present,
 )
 from forge.core.workflow import LLMResponse, TextResponse, ToolCall, ToolSpec
-from forge.errors import BackendError
+from forge.errors import BackendError, MissingCredentialError
 
 log = logging.getLogger(__name__)
 
@@ -201,6 +202,23 @@ class AnthropicClient:
         return _prepare_anthropic_headers(
             resolve_request_headers(self._static_auth, extra_headers)
         )
+
+    def _ensure_credential(self, sdk_headers: dict[str, str] | None) -> None:
+        """Fail loud if this request would reach the backend with no credential.
+
+        A credential is present iff the SDK client resolved a construction key
+        (``api_key`` or ``auth_token``, incl. ambient env at build time) or this
+        call carries a per-call auth header. With none, the Anthropic SDK refuses
+        the request with an opaque error surfaced as HTTP 502; forge raises a
+        clear MissingCredentialError (mapped to 401) instead. Never inspects the
+        secret value.
+        """
+        if (
+            self._client.api_key is None
+            and self._client.auth_token is None
+            and not has_auth_header(sdk_headers)
+        ):
+            raise MissingCredentialError("Anthropic backend")
 
     # ── Tool schema conversion ───────────────────────────────────
 
@@ -483,6 +501,7 @@ class AnthropicClient:
         for control_kwarg in _SDK_CONTROL_KWARGS:
             kwargs.pop(control_kwarg, None)
         sdk_headers = self._sdk_extra_headers(extra_headers)
+        self._ensure_credential(sdk_headers)
         if sdk_headers:
             kwargs["extra_headers"] = sdk_headers
         try:
@@ -537,6 +556,7 @@ class AnthropicClient:
         for control_kwarg in _SDK_CONTROL_KWARGS:
             kwargs.pop(control_kwarg, None)
         sdk_headers = self._sdk_extra_headers(extra_headers)
+        self._ensure_credential(sdk_headers)
         if sdk_headers:
             kwargs["extra_headers"] = sdk_headers
 

@@ -31,7 +31,7 @@ from forge.clients.llamafile import LlamafileClient
 from forge.clients.ollama import OllamaClient
 from forge.clients.openai_compat import OpenAICompatClient
 from forge.clients.vllm import VLLMClient
-from forge.errors import MultipleCredentialsError
+from forge.errors import MissingCredentialError, MultipleCredentialsError
 
 _USER_MSG = [{"role": "user", "content": "hi"}]
 
@@ -502,3 +502,38 @@ async def test_anthropic_stream_installs_recased_credential() -> None:
         )
     ]
     assert captured["kwargs"]["extra_headers"] == {"X-Api-Key": "REALKEY"}
+
+
+# ── zero-credential fail-loud (no credential at all) ─────────────────
+
+
+@pytest.mark.asyncio
+async def test_anthropic_zero_credential_send_raises_missing(monkeypatch) -> None:
+    # Pure passthrough (api_key="" -> None), no ambient env, no per-call auth:
+    # forge must fail loud BEFORE the SDK's opaque "could not resolve
+    # authentication" error (which surfaces as HTTP 502). Raised pre-dispatch,
+    # so no network call is attempted.
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.delenv("ANTHROPIC_AUTH_TOKEN", raising=False)
+    client = AnthropicClient(model="claude", api_key="")
+    assert client._client.api_key is None and client._client.auth_token is None
+    with pytest.raises(MissingCredentialError):
+        await client.send(_USER_MSG)
+
+
+@pytest.mark.asyncio
+async def test_anthropic_zero_credential_stream_raises_missing(monkeypatch) -> None:
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.delenv("ANTHROPIC_AUTH_TOKEN", raising=False)
+    client = AnthropicClient(model="claude", api_key="")
+    with pytest.raises(MissingCredentialError):
+        _ = [c async for c in client.send_stream(_USER_MSG)]
+
+
+def test_anthropic_ambient_env_satisfies_credential_requirement(monkeypatch) -> None:
+    # WR direct use: api_key=None reads ANTHROPIC_API_KEY at construction, so the
+    # zero-credential guard must NOT trip even with no per-call header.
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "env-key")
+    client = AnthropicClient(model="claude")  # api_key=None default
+    assert client._client.api_key == "env-key"
+    client._ensure_credential(None)  # no raise
