@@ -15,6 +15,93 @@ Install instructions for each backend live with the upstream project. Below is w
 
 ---
 
+## Authentication
+
+forge carries **exactly one credential** to the backend, placed in the backend's
+native auth header. forge does not validate the credential, manage its lifecycle
+(expiry/refresh), or form any opinion on its value — it only relocates it into
+the correct header slot for the target backend. Auth failures therefore surface
+as the backend's own error (401/403), not a forge error.
+
+**The one rule:** exactly one credential reaches the backend. If two are present
+anywhere, forge **refuses the request** — it never merges, never picks a winner,
+never silently drops one. (Design Principle #1: fail fast, fail loud.)
+
+### WorkflowRunner (library use)
+
+Supply the credential at construction, or per call for a rotating token:
+
+```python
+# Static credential (API key, service account): set once at construction.
+client = OpenAICompatClient(model=..., base_url=..., api_key=API_KEY)
+
+# Rotating credential (e.g. an SSO token refreshed out of band): per call.
+await client.send(messages, extra_headers={"Authorization": f"Bearer {token()}"})
+```
+
+A construction credential **and** a per-call auth header on the same call is two
+credentials → raises `MultipleCredentialsError`. Pass auth through one channel.
+
+For a non-Bearer scheme, pass `extra_headers` alone (omit `api_key`); supplying
+both `api_key` and an auth header at construction is also refused.
+
+### Proxy
+
+The proxy gets its one credential from one of two sources — never both:
+
+1. **Inbound passthrough.** The caller's request already carries a credential;
+   forge forwards it, relocating the header to the backend's protocol when they
+   differ (see the table below). This is the SSO/forwarded-token case.
+2. **Static `--backend-api-key`** (or the `FORGE_BACKEND_API_KEY` env var) for
+   backends where the caller sends nothing — LM Studio, hosted providers,
+   service accounts. Baked into the backend client at startup.
+
+If an inbound auth header **and** `--backend-api-key` are both present, or a
+single request carries **two** auth headers, the proxy refuses it with **HTTP
+400** (a client error — the message names the conflicting slots, never a secret).
+For a **streaming** request the `200 OK` and SSE headers are already flushed
+before the backend call, so the conflict surfaces as an error *event* inside the
+stream rather than an HTTP 400 — the same way every other proxy streaming error
+is reported.
+
+**Cross-protocol relocation.** forge moves the one credential into the target
+backend's canonical auth slot (it never reads the secret value):
+
+| Target backend | forge writes |
+|---|---|
+| OpenAI-wire (llama.cpp, vLLM, Ollama, hosted) | `Authorization: Bearer <token>` |
+| Anthropic-wire | `x-api-key: <token>` (forge pins its own `anthropic-version`) |
+
+Same protocol both ends → forwarded verbatim. Cross-protocol → the token is
+normalized (a leading `Bearer ` is stripped/added as needed) and written to the
+target slot. The common case — Claude Code (Anthropic-wire) in front of an
+OpenAI backend — relocates `x-api-key` → `Authorization: Bearer` unambiguously.
+
+> **One documented limitation:** an Anthropic *OAuth* token (which must ride
+> `Authorization: Bearer`, not `x-api-key`) pushed through forge's *OpenAI*
+> endpoint to an Anthropic backend is relocated to `x-api-key` and rejected by
+> Anthropic. Coherent setups never hit this — OAuth callers use the Anthropic
+> endpoint (`/v1/messages`), which is same-protocol passthrough.
+
+forge forwards **only** the one credential header; it does not forward the rest
+of the inbound header set (so client-set `anthropic-beta`, `OpenAI-Organization`,
+etc. do not reach the backend — a future `--backend-header` may add this).
+
+### Notes
+
+- **Ambient `ANTHROPIC_API_KEY` / `ANTHROPIC_AUTH_TOKEN`** are read by the
+  Anthropic SDK only for *direct* `AnthropicClient()` use (the eval path) — your
+  deliberate single credential. The **proxy** neutralizes these env vars at
+  construction so an ambient value can't become a hidden second credential.
+- **Keyless passthrough to an auth-required backend:** the proxy discovers the
+  backend's context length at startup, before any inbound credential exists. If
+  that endpoint requires auth, pass `--budget-tokens` so startup doesn't need to
+  call it.
+- **DEBUG logging** (proxy `-v`) emits the forwarded credential's header *name*
+  with the value redacted (`x-api-key: ***`). A raw secret is never logged.
+
+---
+
 ## llama-server (recommended)
 
 Upstream: [llama.cpp releases](https://github.com/ggml-org/llama.cpp/releases)

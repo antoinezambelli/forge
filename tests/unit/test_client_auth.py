@@ -110,32 +110,31 @@ def _capturing_http(construction_headers: httpx.Headers, captured: dict) -> http
     )
 
 
-def _openai(**kw) -> tuple[OpenAICompatClient, dict]:
-    c = OpenAICompatClient(base_url="https://b/v1", model="m", **kw)
-    cap: dict = {}
-    c._http = _capturing_http(c._http.headers, cap)
-    return c, cap
+def _swap_transport(client, handler) -> None:
+    """Swap a built client's httpx transport for a capturing one, keeping its
+    real construction headers."""
+    client._http = httpx.AsyncClient(
+        headers=client._http.headers, transport=httpx.MockTransport(handler)
+    )
 
 
-def _ollama(**kw) -> tuple[OllamaClient, dict]:
-    c = OllamaClient(model="m", base_url="https://b", **kw)
-    cap: dict = {}
-    c._http = _capturing_http(c._http.headers, cap)
-    return c, cap
+def _wire(build):
+    """Turn a client constructor into a ``(**kw) -> (client, cap)`` factory whose
+    client captures the merged request headers."""
+
+    def factory(**kw) -> tuple[object, dict]:
+        c = build(**kw)
+        cap: dict = {}
+        c._http = _capturing_http(c._http.headers, cap)
+        return c, cap
+
+    return factory
 
 
-def _llamafile(**kw) -> tuple[LlamafileClient, dict]:
-    c = LlamafileClient(gguf_path="m.gguf", base_url="https://b/v1", **kw)
-    cap: dict = {}
-    c._http = _capturing_http(c._http.headers, cap)
-    return c, cap
-
-
-def _vllm(**kw) -> tuple[VLLMClient, dict]:
-    c = VLLMClient(model_path="m", base_url="https://b/v1", **kw)
-    cap: dict = {}
-    c._http = _capturing_http(c._http.headers, cap)
-    return c, cap
+_openai = _wire(lambda **kw: OpenAICompatClient(base_url="https://b/v1", model="m", **kw))
+_ollama = _wire(lambda **kw: OllamaClient(model="m", base_url="https://b", **kw))
+_llamafile = _wire(lambda **kw: LlamafileClient(gguf_path="m.gguf", base_url="https://b/v1", **kw))
+_vllm = _wire(lambda **kw: VLLMClient(model_path="m", base_url="https://b/v1", **kw))
 
 
 _FACTORIES = [
@@ -207,9 +206,7 @@ async def test_ollama_think_retry_keeps_credential() -> None:
         return httpx.Response(200, json={"message": {"content": "ok"}})
 
     client = OllamaClient(model="reasoner", base_url="https://b", think=None)
-    client._http = httpx.AsyncClient(
-        headers=client._http.headers, transport=httpx.MockTransport(handler)
-    )
+    _swap_transport(client, handler)
     await client.send(_USER_MSG, extra_headers={"Authorization": "Bearer INBOUND"})
     assert len(requests) == 2  # initial + retry
     assert requests[1].headers["authorization"] == "Bearer INBOUND"
@@ -234,9 +231,7 @@ async def test_sse_stream_forwards_credential(factory) -> None:
         cap["request"] = request
         return httpx.Response(200, content=sse)
 
-    client._http = httpx.AsyncClient(
-        headers=client._http.headers, transport=httpx.MockTransport(handler)
-    )
+    _swap_transport(client, handler)
     chunks = [
         c async for c in client.send_stream(
             _USER_MSG, extra_headers={"Authorization": "Bearer INBOUND"}
@@ -256,9 +251,7 @@ async def test_ollama_stream_forwards_credential() -> None:
         return httpx.Response(200, content=ndjson)
 
     client = OllamaClient(model="m", base_url="https://b", think=False)
-    client._http = httpx.AsyncClient(
-        headers=client._http.headers, transport=httpx.MockTransport(handler)
-    )
+    _swap_transport(client, handler)
     _ = [
         c async for c in client.send_stream(
             _USER_MSG, extra_headers={"Authorization": "Bearer INBOUND"}

@@ -6,7 +6,7 @@ import logging
 from copy import deepcopy
 from typing import Any, Literal
 
-from forge.clients.base import LLMClient, format_tool
+from forge.clients.base import LLMClient, format_tool, redact_auth_headers
 from forge.context.manager import ContextManager
 from forge.core.inference import _get_usage, prepare_backend_messages, run_inference
 from forge.core.reasoning import (
@@ -193,6 +193,13 @@ async def handle_chat_completions(
         target_protocol=backend_protocol,
         backend_api_key_present=backend_api_key_present,
     )
+    if extra_headers:
+        # Redacted: the header NAME (which slot carried the credential) with the
+        # value masked wholesale. Never log a raw secret, not even a prefix.
+        logger.debug(
+            "forwarding inbound credential to backend: %s",
+            redact_auth_headers(extra_headers),
+        )
 
     # Inbound parse + sampling/passthrough extraction (protocol-specific)
     if protocol == "anthropic":

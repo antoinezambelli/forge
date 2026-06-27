@@ -216,6 +216,26 @@ async def test_handler_no_inbound_credential_forwards_none():
 
 
 @pytest.mark.asyncio
+async def test_handler_logs_redacted_credential(caplog):
+    import logging
+
+    client = _mock_client(TextResponse(content="ok"))
+    with caplog.at_level(logging.DEBUG, logger="forge.proxy"):
+        await handle_chat_completions(
+            body=_body(),
+            client=client,
+            context_manager=_ctx(),
+            protocol="openai",
+            backend_protocol="anthropic",
+            headers={"authorization": "Bearer SUPERSECRET"},
+        )
+    text = "\n".join(r.getMessage() for r in caplog.records)
+    assert "SUPERSECRET" not in text  # never log a raw secret
+    assert "***" in text
+    assert "x-api-key" in text  # the relocated slot name is shown
+
+
+@pytest.mark.asyncio
 async def test_handler_inbound_plus_static_key_raises():
     client = _mock_client(TextResponse(content="ok"))
     with pytest.raises(MultipleCredentialsError):
