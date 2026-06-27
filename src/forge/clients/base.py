@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import re
 from collections.abc import AsyncIterator, Mapping
 from dataclasses import dataclass
 from enum import Enum
@@ -46,18 +45,22 @@ def static_auth_present(
 ) -> bool:
     """Whether a static credential was configured, refusing two static sources.
 
-    A construction ``api_key`` AND a construction auth header is itself two
-    credentials — both would ride on every request. Refuse it at construction
-    (fail loud, Design Principle #1) rather than silently sending both. Returns
-    True when exactly one static credential source is present, False when none.
+    A construction ``api_key`` AND a construction auth header — or two auth
+    headers in the construction set — is more than one credential, all of which
+    would ride on every request. Refuse it at construction (fail loud, Design
+    Principle #1) rather than silently sending several. A blank/whitespace
+    ``api_key`` (or scheme-only auth header) is not a credential and is ignored.
+    Returns True when exactly one static credential is present, False when none.
     """
-    has_key = bool(api_key)
-    has_header = has_auth_header(construction_headers)
-    if has_key and has_header:
+    count = (1 if (api_key and api_key.strip()) else 0) + count_auth_credentials(
+        construction_headers,
+    )
+    if count > 1:
         raise MultipleCredentialsError(
-            "construction api_key + construction auth header"
+            "more than one static credential at construction "
+            "(api_key and/or auth headers)"
         )
-    return has_key or has_header
+    return count == 1
 
 
 def resolve_request_headers(
@@ -79,7 +82,10 @@ def resolve_request_headers(
     """
     if not extra_headers:
         return None
-    if static_auth_present and has_auth_header(extra_headers):
+    per_call = count_auth_credentials(extra_headers)
+    if per_call > 1:
+        raise MultipleCredentialsError("more than one per-call auth header")
+    if static_auth_present and per_call >= 1:
         raise MultipleCredentialsError(
             "client construction credential + per-call auth header"
         )
@@ -101,36 +107,35 @@ def redact_auth_headers(headers: Mapping[str, str] | None) -> dict[str, str]:
     }
 
 
-# Best-effort credential scrubbing for FREE TEXT that forge did not author and
-# may echo a secret — a backend's error body, or a traceback containing one. The
-# proxy passes such text to logs and back to the caller; a debug/gateway backend
-# that reflects request headers could otherwise leak `Authorization: Bearer ...`
-# or an `x-api-key` value. Heuristic (covers the auth shapes forge handles plus
-# common key prefixes), NOT a guarantee — the real defense is never authoring a
-# secret into a message; this is the safety net for text we don't control.
-_SECRET_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
-    # Authorization: Bearer <token>  (header or echoed in a body)
-    (re.compile(r"(?i)(bearer\s+)([A-Za-z0-9._\-]+)"), r"\1[REDACTED]"),
-    # x-api-key: <token>  /  "x-api-key": "<token>"  (header- or JSON-shaped)
-    (re.compile(r"""(?i)(x-api-key["']?\s*[:=]\s*["']?)([A-Za-z0-9._\-]+)"""),
-     r"\1[REDACTED]"),
-    # Provider key prefixes that are self-evidently secret anywhere they appear.
-    (re.compile(r"\bsk-[A-Za-z0-9._\-]{6,}"), "[REDACTED]"),
-)
+BEARER_PREFIX = "bearer "
 
 
-def redact_secrets(text: str) -> str:
-    """Scrub credential-looking substrings from free text before logging/returning.
+def auth_credential_token(name: str, value: str) -> str:
+    """The secret token carried by an auth header value (``''`` if none).
 
-    Use on backend error bodies and tracebacks at the proxy boundary, where a
-    backend may have echoed an inbound auth header. Best-effort: redacts Bearer
-    tokens, x-api-key values, and ``sk-`` key prefixes. Not exhaustive — do not
-    rely on it to sanitize text forge itself controls (don't author secrets into
-    messages in the first place).
+    Strips a ``Bearer `` scheme from an ``Authorization`` value; ``x-api-key`` is
+    already the raw token. A scheme-only ``Bearer `` or a blank/whitespace value
+    yields ``''`` — i.e. the header is present but carries no credential, so it
+    must not be counted or forwarded as one.
     """
-    for pattern, replacement in _SECRET_PATTERNS:
-        text = pattern.sub(replacement, text)
-    return text
+    if name.lower() == "authorization" and value[: len(BEARER_PREFIX)].lower() == BEARER_PREFIX:
+        return value[len(BEARER_PREFIX):].strip()
+    return value.strip()
+
+
+def count_auth_credentials(headers: Mapping[str, str] | None) -> int:
+    """Number of headers that actually carry an auth credential.
+
+    Counts recognized auth headers whose value resolves to a non-empty token;
+    blank or scheme-only auth headers do not count. forge carries exactly one
+    credential, so callers refuse a bag that yields more than one.
+    """
+    if not headers:
+        return 0
+    return sum(
+        1 for name, value in headers.items()
+        if name.lower() in AUTH_HEADER_NAMES and value and auth_credential_token(name, value)
+    )
 
 
 @dataclass(frozen=True)

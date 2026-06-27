@@ -133,7 +133,7 @@ class OllamaClient:
         # auth header is later refused when a static one is set here.
         self._static_auth = static_auth_present(api_key, extra_headers)
         headers: dict[str, str] = {}
-        if api_key:
+        if api_key and api_key.strip():
             headers["Authorization"] = f"Bearer {api_key}"
         if extra_headers:
             headers.update(extra_headers)
@@ -281,7 +281,7 @@ class OllamaClient:
         if resp.status_code == 500:
             return TextResponse(content=resp.text)
         if resp.status_code != 200:
-            raise BackendError(resp.status_code, resp.text)
+            raise BackendError(resp.status_code, raw_body=resp.text)
         data = resp.json()
         self._record_usage(data)
 
@@ -358,7 +358,7 @@ class OllamaClient:
                     del body["think"]
                     # Fall through to retry below
                 else:
-                    raise BackendError(400, error_body)
+                    raise BackendError(400, raw_body=error_body)
 
             if not self._think_resolved:
                 self._think_resolved = True

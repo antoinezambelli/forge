@@ -108,7 +108,7 @@ class VLLMClient:
         # is set here.
         self._static_auth = static_auth_present(api_key, extra_headers)
         headers: dict[str, str] = {}
-        if api_key:
+        if api_key and api_key.strip():
             headers["Authorization"] = f"Bearer {api_key}"
         if extra_headers:
             headers.update(extra_headers)
@@ -258,7 +258,7 @@ class VLLMClient:
             raise BackendError(408, "Read timeout") from exc
 
         if resp.status_code != 200:
-            raise BackendError(resp.status_code, resp.text)
+            raise BackendError(resp.status_code, raw_body=resp.text)
         data = resp.json()
         self._record_usage(data)
 
@@ -325,7 +325,7 @@ class VLLMClient:
                 error_body = ""
                 async for line in response.aiter_lines():
                     error_body += line
-                raise BackendError(response.status_code, error_body)
+                raise BackendError(response.status_code, raw_body=error_body)
 
             async for line in response.aiter_lines():
                 line = line.strip()
@@ -488,7 +488,7 @@ class VLLMClient:
         except httpx.HTTPError as exc:
             raise BackendError(502, f"vLLM /v1/models unreachable: {exc}") from exc
         if resp.status_code != 200:
-            raise BackendError(resp.status_code, resp.text)
+            raise BackendError(resp.status_code, raw_body=resp.text)
 
         models = resp.json().get("data") or []
         if not models:

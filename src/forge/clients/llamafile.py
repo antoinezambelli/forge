@@ -190,7 +190,7 @@ class LlamafileClient:
         # fast; a per-call auth header is later refused when a static one is set.
         self._static_auth = static_auth_present(api_key, extra_headers)
         headers: dict[str, str] = {}
-        if api_key:
+        if api_key and api_key.strip():
             headers["Authorization"] = f"Bearer {api_key}"
         if extra_headers:
             headers.update(extra_headers)
@@ -507,7 +507,7 @@ class LlamafileClient:
         except httpx.HTTPError as exc:
             raise BackendError(502, f"llama.cpp /props unreachable: {exc}") from exc
         if resp.status_code != 200:
-            raise BackendError(resp.status_code, resp.text)
+            raise BackendError(resp.status_code, raw_body=resp.text)
 
         try:
             body = resp.json()
@@ -560,7 +560,7 @@ class LlamafileClient:
         if resp.status_code == 500:
             return TextResponse(content=resp.text)
         if resp.status_code != 200:
-            raise BackendError(resp.status_code, resp.text)
+            raise BackendError(resp.status_code, raw_body=resp.text)
         data = resp.json()
         self._record_usage(data)
 

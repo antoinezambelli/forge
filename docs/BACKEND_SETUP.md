@@ -61,10 +61,18 @@ single request carries **two** auth headers, the proxy refuses it with **HTTP
 400** (a client error — the message names the conflicting slots, never a secret).
 This holds for **streaming** requests too: the credential is resolved (and a
 gated backend's context discovered) *before* the `200 OK` / SSE headers are
-flushed, so a credential or discovery failure returns the real status (400/401)
-rather than a stream that opens `200 OK` and then carries an error event. Only a
-failure that happens *after* streaming has begun (the backend faulting
-mid-generation) is reported as an error event inside the already-open stream.
+flushed, so a *conflict* (two credentials) or a discovery failure returns the
+real status (400/401) rather than a stream that opens `200 OK` and then carries
+an error event.
+
+One streaming case is unavoidable today: an error that surfaces only when the
+backend is actually called — the backend **rejecting the credential** (401), or
+refusing a request with no credential — happens *after* the SSE headers are
+flushed, because the proxy buffers the response rather than streaming it
+incrementally. Such failures arrive as an error *event* inside the already-open
+`200` stream, not as a `401` status. (Non-streaming requests always get the real
+status; and the direct `WorkflowRunner` library path streams incrementally, so
+this is specific to the buffered proxy.)
 
 **Cross-protocol relocation.** forge moves the one credential into the target
 backend's canonical auth slot (it never reads the secret value):

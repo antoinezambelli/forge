@@ -197,7 +197,12 @@ class ProxyServer:
         self._backend_protocol = backend_protocol
         self._backend_timeout = backend_timeout
         self._reasoning_replay = validate_reasoning_replay(reasoning_replay)
-        self._backend_api_key = backend_api_key
+        # A blank/whitespace --backend-api-key is not a credential: normalize it
+        # to None so it neither rides the wire as garbage nor disables lazy
+        # discovery (which keys off "is a static key present").
+        self._backend_api_key = (
+            backend_api_key if (backend_api_key and backend_api_key.strip()) else None
+        )
 
         # Auto-detect serialization: managed (no external url) = single local
         # GPU = serialize. External callers manage their own concurrency.

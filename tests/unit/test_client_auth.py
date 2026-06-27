@@ -25,8 +25,8 @@ from forge.clients.base import (
     AUTH_HEADER_NAMES,
     has_auth_header,
     redact_auth_headers,
-    redact_secrets,
     resolve_request_headers,
+    static_auth_present,
 )
 from forge.clients.llamafile import LlamafileClient
 from forge.clients.ollama import OllamaClient
@@ -64,6 +64,50 @@ class TestResolveRequestHeaders:
         out = resolve_request_headers(True, {"X-Trace-Id": "1"})
         assert out == {"X-Trace-Id": "1"}
 
+    def test_two_per_call_auth_headers_raises(self) -> None:
+        # One credential per request — two auth headers in one call is refused
+        # (the proxy never hands two, but a direct library caller could).
+        with pytest.raises(MultipleCredentialsError):
+            resolve_request_headers(False, {"Authorization": "Bearer A", "x-api-key": "B"})
+
+    def test_blank_per_call_auth_does_not_collide_with_static(self) -> None:
+        # A blank / scheme-only per-call auth header carries no credential, so it
+        # must not trip the static-plus-per-call conflict.
+        assert resolve_request_headers(True, {"Authorization": ""}) == {"Authorization": ""}
+        assert resolve_request_headers(True, {"Authorization": "Bearer "}) == {
+            "Authorization": "Bearer ",
+        }
+
+
+class TestStaticAuthPresent:
+    def test_none_is_false(self) -> None:
+        assert static_auth_present(None, None) is False
+        assert static_auth_present("", {}) is False
+
+    def test_single_source_is_true(self) -> None:
+        assert static_auth_present("sk-x", None) is True
+        assert static_auth_present(None, {"x-api-key": "k"}) is True
+
+    def test_key_plus_header_raises(self) -> None:
+        with pytest.raises(MultipleCredentialsError):
+            static_auth_present("sk-x", {"x-api-key": "k"})
+
+    def test_two_construction_headers_raises(self) -> None:
+        with pytest.raises(MultipleCredentialsError):
+            static_auth_present(None, {"Authorization": "Bearer A", "x-api-key": "B"})
+
+    def test_blank_key_is_absent(self) -> None:
+        # "   " is not a credential: not present, and (in the proxy) must not
+        # disable lazy discovery as if a real static key existed.
+        assert static_auth_present("   ", None) is False
+
+    def test_blank_key_yields_to_real_header(self) -> None:
+        # Blank key ignored → the real header is the single credential.
+        assert static_auth_present("   ", {"x-api-key": "k"}) is True
+
+    def test_blank_construction_header_is_absent(self) -> None:
+        assert static_auth_present(None, {"Authorization": ""}) is False
+
 
 class TestHasAuthHeader:
     def test_case_insensitive(self) -> None:
@@ -90,25 +134,6 @@ class TestRedactAuthHeaders:
 
     def test_none(self) -> None:
         assert redact_auth_headers(None) == {}
-
-
-class TestRedactSecrets:
-    def test_scrubs_bearer_token(self) -> None:
-        out = redact_secrets("Backend returned 401: Authorization: Bearer sk-live-abc123 rejected")
-        assert "sk-live-abc123" not in out
-        assert "[REDACTED]" in out
-
-    def test_scrubs_x_api_key_json_and_header(self) -> None:
-        assert "secretkey" not in redact_secrets('echoed {"x-api-key": "secretkey"}')
-        assert "secretkey" not in redact_secrets("x-api-key: secretkey")
-
-    def test_scrubs_sk_prefix_anywhere(self) -> None:
-        out = redact_secrets("token sk-ant-api03-deadbeef leaked")
-        assert "deadbeef" not in out and "sk-ant-api03-deadbeef" not in out
-
-    def test_leaves_innocuous_text_intact(self) -> None:
-        msg = "Backend returned 500: model 'foo' not found"
-        assert redact_secrets(msg) == msg
 
 
 # ── httpx clients: real wire headers via MockTransport ───────────────

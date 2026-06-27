@@ -295,7 +295,7 @@ class ServerManager:
         async with httpx.AsyncClient(timeout=10.0) as client:
             resp = await client.get(url)
             if resp.status_code != 200:
-                raise BackendError(resp.status_code, resp.text)
+                raise BackendError(resp.status_code, raw_body=resp.text)
             return resp.json()
 
     async def get_server_context(self) -> int:
@@ -317,7 +317,7 @@ class ServerManager:
                 async with httpx.AsyncClient(timeout=10.0) as client:
                     resp = await client.get(url)
                     if resp.status_code != 200:
-                        raise BackendError(resp.status_code, resp.text)
+                        raise BackendError(resp.status_code, raw_body=resp.text)
                     data = resp.json()
             except (httpx.HTTPError, BackendError) as exc:
                 raise BudgetResolutionError(cause=exc) from exc

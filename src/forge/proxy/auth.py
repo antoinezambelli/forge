@@ -15,31 +15,14 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 
-from forge.clients.base import AUTH_HEADER_NAMES
+from forge.clients.base import AUTH_HEADER_NAMES, BEARER_PREFIX, auth_credential_token
 from forge.errors import MultipleCredentialsError
-
-_BEARER_PREFIX = "bearer "
 
 # Marker the proxy's header reader injects when a single auth header NAME
 # appears more than once on the inbound request. A plain header dict collapses
 # duplicates to last-wins, which would silently pick a credential winner — the
 # marker forces the same fail-loud refusal as two distinct auth headers.
 DUPLICATE_AUTH_MARKER = "x-forge-duplicate-auth"
-
-
-def _credential_token(slot: str, value: str) -> str:
-    """The secret token carried by an auth header value, for presence checks.
-
-    Strips a ``Bearer `` scheme from an ``Authorization`` value; ``x-api-key`` is
-    already the raw token. Used to decide whether a header actually carries a
-    credential — a value like ``Bearer `` (scheme, no token) is NOT a credential,
-    even though its raw string is non-empty.
-    """
-    # Mirror relocate_credential's scheme check exactly (on the unstripped
-    # value) so presence and relocation agree: "Bearer " -> empty token -> absent.
-    if slot == "authorization" and value[: len(_BEARER_PREFIX)].lower() == _BEARER_PREFIX:
-        return value[len(_BEARER_PREFIX):].strip()
-    return value.strip()
 
 
 def extract_inbound_credential(
@@ -63,7 +46,7 @@ def extract_inbound_credential(
     found: list[tuple[str, str]] = []
     for name, value in headers.items():
         slot = name.lower()
-        if slot in AUTH_HEADER_NAMES and value and _credential_token(slot, value):
+        if slot in AUTH_HEADER_NAMES and value and auth_credential_token(slot, value):
             found.append((slot, value))
     if len(found) > 1:
         slots = ", ".join(sorted(s for s, _ in found))
@@ -101,8 +84,8 @@ def relocate_credential(
     if source_protocol == target_protocol:
         return {slot: value}
 
-    if slot == "authorization" and value[: len(_BEARER_PREFIX)].lower() == _BEARER_PREFIX:
-        token = value[len(_BEARER_PREFIX):].strip()
+    if slot == "authorization" and value[: len(BEARER_PREFIX)].lower() == BEARER_PREFIX:
+        token = value[len(BEARER_PREFIX):].strip()
     else:
         token = value
 

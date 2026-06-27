@@ -577,17 +577,18 @@ class TestBackendErrorStatusMapping:
 class TestSecretHygiene:
     @pytest.mark.asyncio
     async def test_backend_error_body_secret_not_leaked_to_client(self):
-        # A backend that echoes the inbound auth header in its error body must
-        # not leak it back through the proxy's error response.
+        # A backend that echoes the inbound auth header in its raw error body
+        # must not leak it: the raw body rides exc.body (off the message), so the
+        # proxy returns only the safe "Backend returned <status>" summary.
         srv, port = await _error_server(
-            BackendError(500, "rejected Authorization: Bearer sk-leak-7777"),
+            BackendError(500, raw_body="rejected Authorization: Bearer sk-leak-7777"),
         )
         try:
             _, body = await _raw_request(
                 port, [], {"messages": [{"role": "user", "content": "hi"}]},
             )
             assert "sk-leak-7777" not in body
-            assert "[REDACTED]" in body
+            assert "Backend returned 500" in body  # safe status summary only
         finally:
             await srv.stop()
 

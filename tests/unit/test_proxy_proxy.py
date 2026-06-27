@@ -289,6 +289,19 @@ class TestExternalDeferredDiscovery:
         assert lazy is None
         assert ctx.budget_tokens == 32768
 
+    @pytest.mark.asyncio
+    async def test_blank_static_key_treated_as_passthrough(self) -> None:
+        # A whitespace --backend-api-key is not a credential: it must normalize
+        # to None and still defer (bool("   ") would have made it eager).
+        proxy = ProxyServer(backend_url="http://localhost:8080", backend_api_key="   ")
+        assert proxy._backend_api_key is None
+        with patch.object(
+            LlamafileClient, "get_context_length", new_callable=AsyncMock,
+        ) as probe:
+            _, _, lazy = await proxy._setup_external()
+        probe.assert_not_awaited()
+        assert lazy is not None and lazy.deferred is True
+
 
 class TestSetupManaged:
     """Managed mode delegates to setup_backend with the right identity field."""

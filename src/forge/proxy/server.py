@@ -10,11 +10,10 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import traceback
 from dataclasses import dataclass, field
 from typing import Any
 
-from forge.clients.base import AUTH_HEADER_NAMES, LLMClient, redact_secrets
+from forge.clients.base import AUTH_HEADER_NAMES, LLMClient
 from forge.context.manager import ContextManager
 from forge.core.reasoning import DEFAULT_REASONING_REPLAY, ReasoningReplay, validate_reasoning_replay
 from forge.errors import (
@@ -368,12 +367,11 @@ class HTTPServer:
 
         ``as_stream`` True → an SSE error event (the 200 + SSE header was already
         flushed, e.g. a backend fault mid-generation); False → a real HTTP error
-        status. The message is scrubbed of credential-looking substrings before
-        it is logged or sent: a backend error body (or a traceback containing
-        one) may have echoed an inbound auth header — forge never authors a
-        secret into a message, but it doesn't control what a backend reflects.
+        status. Exception messages are safe to log/return by construction —
+        forge never authors a secret into one, and ``BackendError`` keeps the raw
+        backend body off its message (on ``exc.body`` instead).
         """
-        error_msg = redact_secrets(str(exc))
+        error_msg = str(exc)
         logger.info("<< ERROR: %s", error_msg[:120])
         # Credential problems are client errors (two credentials / one colliding
         # with --backend-api-key → 400, or none to an auth-required backend →
@@ -445,10 +443,7 @@ class HTTPServer:
                 lazy_discovery=self._lazy_discovery,
             )
         except Exception as exc:
-            # Redact the traceback before logging: a chained BackendError can
-            # carry a backend body that echoed an inbound auth header. Keep the
-            # full stack (debuggability) but scrub credential-looking substrings.
-            logger.error("Handler error:\n%s", redact_secrets(traceback.format_exc()))
+            logger.exception("Handler error")
             return exc
 
     async def _send_json(

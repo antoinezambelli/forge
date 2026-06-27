@@ -186,12 +186,28 @@ class BudgetResolutionError(ForgeError):
 
 
 class BackendError(ForgeError):
-    """Unexpected HTTP error from the LLM backend."""
+    """Unexpected HTTP error from the LLM backend.
 
-    def __init__(self, status_code: int, body: str):
-        super().__init__(f"Backend returned {status_code}: {body}")
+    ``detail`` is a forge-authored summary and IS part of the message — safe to
+    log (forge never writes a secret into it). A backend's RAW response body must
+    be passed as ``raw_body`` instead: a gateway could echo an inbound credential
+    into it, and the message is what gets logged and returned to callers, so the
+    raw body is kept on ``exc.body`` for debugging but never placed in the
+    message. Read ``exc.body`` when you need the raw detail — and don't log it
+    where a secret would be unwelcome.
+    """
+
+    def __init__(
+        self, status_code: int, detail: str = "", *, raw_body: str | None = None,
+    ):
+        message = f"Backend returned {status_code}"
+        if detail:
+            message = f"{message}: {detail}"
+        super().__init__(message)
         self.status_code = status_code
-        self.body = body
+        # The raw backend body when given (kept off the message); otherwise the
+        # forge-authored detail, so ``exc.body`` is always the best available text.
+        self.body = raw_body if raw_body is not None else detail
 
 
 class ThinkingNotSupportedError(BackendError):

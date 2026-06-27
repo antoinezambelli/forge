@@ -101,7 +101,7 @@ class OpenAICompatClient:
         # (e.g. OpenRouter's HTTP-Referer) ride on top. For a non-Bearer auth
         # scheme, pass extra_headers alone and omit api_key.
         headers: dict[str, str] = {}
-        if api_key:
+        if api_key and api_key.strip():
             headers["Authorization"] = f"Bearer {api_key}"
         if extra_headers:
             headers.update(extra_headers)
@@ -227,7 +227,7 @@ class OpenAICompatClient:
             raise BackendError(408, "Read timeout") from exc
 
         if resp.status_code != 200:
-            raise BackendError(resp.status_code, resp.text)
+            raise BackendError(resp.status_code, raw_body=resp.text)
 
         data = resp.json()
         self._record_usage(data)
@@ -273,7 +273,7 @@ class OpenAICompatClient:
         ) as response:
             if response.status_code != 200:
                 error_body = await response.aread()
-                raise BackendError(response.status_code, error_body.decode(errors="replace"))
+                raise BackendError(response.status_code, raw_body=error_body.decode(errors="replace"))
 
             async for line in response.aiter_lines():
                 if not line.startswith("data: "):
