@@ -506,3 +506,104 @@ class TestDeferredDiscoveryStatusMapping:
             client.discover_backend_metadata.assert_awaited_once()
         finally:
             await srv.stop()
+
+
+# ── Codex review hardening (backend-error status + secret hygiene + CORS) ──
+
+
+async def _error_server(exc):
+    """An openai-wire server whose backend client.send raises ``exc``."""
+    client = _mock_client(TextResponse(content="x"))
+    client.send = AsyncMock(side_effect=exc)
+    ctx = ContextManager(strategy=NoCompact(), budget_tokens=8192)
+    srv = HTTPServer(
+        client=client, context_manager=ctx, host="127.0.0.1", port=0,
+        serialize_requests=False, backend_protocol="openai",
+    )
+    await srv.start()
+    return srv, srv._server.sockets[0].getsockname()[1]
+
+
+async def _raw_response(port, method, path):
+    """Return the full raw HTTP response string for a bodyless request."""
+    reader, writer = await asyncio.open_connection("127.0.0.1", port)
+    try:
+        writer.write(
+            f"{method} {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\n\r\n".encode()
+        )
+        await writer.drain()
+        data = await asyncio.wait_for(reader.read(65536), timeout=10.0)
+        return data.decode("utf-8", errors="replace")
+    finally:
+        writer.close()
+        await writer.wait_closed()
+
+
+class TestBackendErrorStatusMapping:
+    @pytest.mark.asyncio
+    async def test_backend_401_during_dispatch_maps_401(self):
+        srv, port = await _error_server(BackendError(401, "unauthorized"))
+        try:
+            status, _ = await _raw_request(
+                port, [], {"messages": [{"role": "user", "content": "hi"}]},
+            )
+            assert status == 401  # backend auth rejection is the caller's 401
+        finally:
+            await srv.stop()
+
+    @pytest.mark.asyncio
+    async def test_backend_403_maps_401(self):
+        srv, port = await _error_server(BackendError(403, "forbidden"))
+        try:
+            status, _ = await _raw_request(
+                port, [], {"messages": [{"role": "user", "content": "hi"}]},
+            )
+            assert status == 401
+        finally:
+            await srv.stop()
+
+    @pytest.mark.asyncio
+    async def test_backend_500_still_maps_502(self):
+        srv, port = await _error_server(BackendError(500, "boom"))
+        try:
+            status, _ = await _raw_request(
+                port, [], {"messages": [{"role": "user", "content": "hi"}]},
+            )
+            assert status == 502  # non-auth backend fault stays 502
+        finally:
+            await srv.stop()
+
+
+class TestSecretHygiene:
+    @pytest.mark.asyncio
+    async def test_backend_error_body_secret_not_leaked_to_client(self):
+        # A backend that echoes the inbound auth header in its error body must
+        # not leak it back through the proxy's error response.
+        srv, port = await _error_server(
+            BackendError(500, "rejected Authorization: Bearer sk-leak-7777"),
+        )
+        try:
+            _, body = await _raw_request(
+                port, [], {"messages": [{"role": "user", "content": "hi"}]},
+            )
+            assert "sk-leak-7777" not in body
+            assert "[REDACTED]" in body
+        finally:
+            await srv.stop()
+
+
+class TestCorsAllowsApiKey:
+    @pytest.mark.asyncio
+    async def test_preflight_allows_x_api_key(self):
+        srv, _, _ = await _auth_server(serialize=False)
+        port = srv._server.sockets[0].getsockname()[1]
+        try:
+            raw = await _raw_response(port, "OPTIONS", "/v1/chat/completions")
+            assert raw.startswith("HTTP/1.1 204")
+            allow = next(
+                l for l in raw.splitlines()
+                if l.lower().startswith("access-control-allow-headers")
+            )
+            assert "x-api-key" in allow.lower()
+        finally:
+            await srv.stop()

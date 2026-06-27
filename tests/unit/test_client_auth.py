@@ -25,6 +25,7 @@ from forge.clients.base import (
     AUTH_HEADER_NAMES,
     has_auth_header,
     redact_auth_headers,
+    redact_secrets,
     resolve_request_headers,
 )
 from forge.clients.llamafile import LlamafileClient
@@ -89,6 +90,25 @@ class TestRedactAuthHeaders:
 
     def test_none(self) -> None:
         assert redact_auth_headers(None) == {}
+
+
+class TestRedactSecrets:
+    def test_scrubs_bearer_token(self) -> None:
+        out = redact_secrets("Backend returned 401: Authorization: Bearer sk-live-abc123 rejected")
+        assert "sk-live-abc123" not in out
+        assert "[REDACTED]" in out
+
+    def test_scrubs_x_api_key_json_and_header(self) -> None:
+        assert "secretkey" not in redact_secrets('echoed {"x-api-key": "secretkey"}')
+        assert "secretkey" not in redact_secrets("x-api-key: secretkey")
+
+    def test_scrubs_sk_prefix_anywhere(self) -> None:
+        out = redact_secrets("token sk-ant-api03-deadbeef leaked")
+        assert "deadbeef" not in out and "sk-ant-api03-deadbeef" not in out
+
+    def test_leaves_innocuous_text_intact(self) -> None:
+        msg = "Backend returned 500: model 'foo' not found"
+        assert redact_secrets(msg) == msg
 
 
 # ── httpx clients: real wire headers via MockTransport ───────────────

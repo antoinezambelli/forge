@@ -232,6 +232,20 @@ async def handle_chat_completions(
     # (extra_headers) authenticates it. Placed before BOTH dispatch paths: a
     # vLLM request needs its discovered served identity on every call (not just
     # the compacting tool path), so this can't live inside the tools branch.
+    #
+    # Concurrency & a load-bearing assumption (external mode is unserialized, so
+    # two first requests can race here):
+    #   - No lock by design. The probe is idempotent and the commit below is a
+    #     single await-free block (set client identity, set budget, set done) —
+    #     asyncio runs it without interleaving, so a concurrent second probe at
+    #     worst overwrites with identical values. There is no torn state.
+    #   - This assumes the backend's metadata (served model name, context length)
+    #     is the SAME regardless of which credential probes it — i.e. one backend
+    #     URL serves one model. That holds for a single llama.cpp/vLLM server. It
+    #     does NOT hold for a multi-tenant gateway that routes to different models
+    #     per API key behind one URL; there, a single shared client identity is
+    #     the wrong model. That topology is out of scope for the proxy (one
+    #     backend, one identity); a per-credential client would be required.
     if lazy_discovery is not None and lazy_discovery.deferred and not lazy_discovery.done:
         try:
             budget = await client.discover_backend_metadata(extra_headers=extra_headers)

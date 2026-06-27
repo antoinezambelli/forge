@@ -60,6 +60,26 @@ class TestExtractInboundCredential:
         assert extract_inbound_credential({"authorization": ""}) == (None, None)
         assert extract_inbound_credential({"x-api-key": "   "}) == (None, None)
 
+    def test_scheme_only_bearer_is_not_a_credential(self):
+        # "Bearer " (scheme, no token) is non-empty as a raw string but carries
+        # no credential — must be treated as absent, not forwarded as empty.
+        assert extract_inbound_credential({"authorization": "Bearer "}) == (None, None)
+        assert extract_inbound_credential({"authorization": "Bearer    "}) == (None, None)
+        assert extract_inbound_credential({"Authorization": "bearer "}) == (None, None)
+
+    def test_scheme_only_bearer_fails_loud_through_resolve(self):
+        # End-to-end: a token-less Bearer must not relocate to an empty
+        # x-api-key / "Bearer " — resolve returns None (→ fail loud downstream).
+        assert resolve_inbound_credential(
+            {"authorization": "Bearer "}, "openai", "anthropic", False,
+        ) is None
+
+    def test_real_bearer_token_still_extracted(self):
+        # Guard against over-stripping: a real token survives.
+        assert extract_inbound_credential({"authorization": "Bearer sk-abc123"}) == (
+            "authorization", "Bearer sk-abc123",
+        )
+
 
 # ── relocate_credential ──────────────────────────────────────────────
 

@@ -27,17 +27,33 @@ _BEARER_PREFIX = "bearer "
 DUPLICATE_AUTH_MARKER = "x-forge-duplicate-auth"
 
 
+def _credential_token(slot: str, value: str) -> str:
+    """The secret token carried by an auth header value, for presence checks.
+
+    Strips a ``Bearer `` scheme from an ``Authorization`` value; ``x-api-key`` is
+    already the raw token. Used to decide whether a header actually carries a
+    credential — a value like ``Bearer `` (scheme, no token) is NOT a credential,
+    even though its raw string is non-empty.
+    """
+    # Mirror relocate_credential's scheme check exactly (on the unstripped
+    # value) so presence and relocation agree: "Bearer " -> empty token -> absent.
+    if slot == "authorization" and value[: len(_BEARER_PREFIX)].lower() == _BEARER_PREFIX:
+        return value[len(_BEARER_PREFIX):].strip()
+    return value.strip()
+
+
 def extract_inbound_credential(
     headers: Mapping[str, str] | None,
 ) -> tuple[str | None, str | None]:
     """Return ``(slot, value)`` for the single inbound auth header.
 
     ``slot`` is the lowercased header name (``authorization`` or ``x-api-key``).
-    Returns ``(None, None)`` when no auth header is present (an empty or
-    whitespace-only auth value is treated as absent). Raises
-    ``MultipleCredentialsError`` if the request carries two distinct auth
-    headers, or the same auth header name more than once — forge never picks a
-    winner.
+    Returns ``(None, None)`` when no auth header carries a credential — an empty,
+    whitespace-only, or scheme-only value (e.g. ``Bearer `` with no token) is
+    treated as absent, so it fails loud downstream rather than forwarding an
+    empty credential. Raises ``MultipleCredentialsError`` if the request carries
+    two distinct auth headers, or the same auth header name more than once —
+    forge never picks a winner.
     """
     headers = headers or {}
     if headers.get(DUPLICATE_AUTH_MARKER):
@@ -47,7 +63,7 @@ def extract_inbound_credential(
     found: list[tuple[str, str]] = []
     for name, value in headers.items():
         slot = name.lower()
-        if slot in AUTH_HEADER_NAMES and value and value.strip():
+        if slot in AUTH_HEADER_NAMES and value and _credential_token(slot, value):
             found.append((slot, value))
     if len(found) > 1:
         slots = ", ".join(sorted(s for s, _ in found))

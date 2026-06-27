@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import AsyncIterator, Mapping
 from dataclasses import dataclass
 from enum import Enum
@@ -98,6 +99,38 @@ def redact_auth_headers(headers: Mapping[str, str] | None) -> dict[str, str]:
         k: ("***" if k.lower() in AUTH_HEADER_NAMES else v)
         for k, v in headers.items()
     }
+
+
+# Best-effort credential scrubbing for FREE TEXT that forge did not author and
+# may echo a secret — a backend's error body, or a traceback containing one. The
+# proxy passes such text to logs and back to the caller; a debug/gateway backend
+# that reflects request headers could otherwise leak `Authorization: Bearer ...`
+# or an `x-api-key` value. Heuristic (covers the auth shapes forge handles plus
+# common key prefixes), NOT a guarantee — the real defense is never authoring a
+# secret into a message; this is the safety net for text we don't control.
+_SECRET_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
+    # Authorization: Bearer <token>  (header or echoed in a body)
+    (re.compile(r"(?i)(bearer\s+)([A-Za-z0-9._\-]+)"), r"\1[REDACTED]"),
+    # x-api-key: <token>  /  "x-api-key": "<token>"  (header- or JSON-shaped)
+    (re.compile(r"""(?i)(x-api-key["']?\s*[:=]\s*["']?)([A-Za-z0-9._\-]+)"""),
+     r"\1[REDACTED]"),
+    # Provider key prefixes that are self-evidently secret anywhere they appear.
+    (re.compile(r"\bsk-[A-Za-z0-9._\-]{6,}"), "[REDACTED]"),
+)
+
+
+def redact_secrets(text: str) -> str:
+    """Scrub credential-looking substrings from free text before logging/returning.
+
+    Use on backend error bodies and tracebacks at the proxy boundary, where a
+    backend may have echoed an inbound auth header. Best-effort: redacts Bearer
+    tokens, x-api-key values, and ``sk-`` key prefixes. Not exhaustive — do not
+    rely on it to sanitize text forge itself controls (don't author secrets into
+    messages in the first place).
+    """
+    for pattern, replacement in _SECRET_PATTERNS:
+        text = pattern.sub(replacement, text)
+    return text
 
 
 @dataclass(frozen=True)

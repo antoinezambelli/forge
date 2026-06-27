@@ -10,14 +10,16 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import traceback
 from dataclasses import dataclass, field
 from typing import Any
 
-from forge.clients.base import AUTH_HEADER_NAMES, LLMClient
+from forge.clients.base import AUTH_HEADER_NAMES, LLMClient, redact_secrets
 from forge.context.manager import ContextManager
 from forge.core.reasoning import DEFAULT_REASONING_REPLAY, ReasoningReplay, validate_reasoning_replay
 from forge.errors import (
     BackendDiscoveryError,
+    BackendError,
     MissingCredentialError,
     MultipleCredentialsError,
 )
@@ -299,7 +301,11 @@ class HTTPServer:
             return
 
         if isinstance(result, Exception):
-            error_msg = str(result)
+            # Scrub before logging OR returning: a backend error body (or a
+            # traceback containing one) may have echoed an inbound auth header.
+            # forge never authors a secret into a message, but it does not
+            # control what a backend reflects back.
+            error_msg = redact_secrets(str(result))
             logger.info("<< ERROR: %s", error_msg[:120])
             # Credential problems are client errors (the caller sent two
             # credentials / one colliding with --backend-api-key → 400, or none
@@ -314,6 +320,11 @@ class HTTPServer:
                 # rejection is the caller's 401; any other cause (backend down,
                 # bad shape) is a 502.
                 status = 401 if result.status_code in (401, 403) else 502
+            elif isinstance(result, BackendError) and result.status_code in (401, 403):
+                # A backend auth rejection during normal dispatch (e.g. a later
+                # zero-credential request to a gated backend, or a bad inbound
+                # key) is the caller's 401, not a forge/backend fault.
+                status = 401
             else:
                 status = 502
             if is_stream:
@@ -376,7 +387,10 @@ class HTTPServer:
                 lazy_discovery=self._lazy_discovery,
             )
         except Exception as exc:
-            logger.exception("Handler error")
+            # Redact the traceback before logging: a chained BackendError can
+            # carry a backend body that echoed an inbound auth header. Keep the
+            # full stack (debuggability) but scrub credential-looking substrings.
+            logger.error("Handler error:\n%s", redact_secrets(traceback.format_exc()))
             return exc
 
     async def _send_json(
@@ -457,7 +471,11 @@ class HTTPServer:
             "HTTP/1.1 204 No Content\r\n"
             "Access-Control-Allow-Origin: *\r\n"
             "Access-Control-Allow-Methods: GET, POST, OPTIONS\r\n"
-            "Access-Control-Allow-Headers: Content-Type, Authorization\r\n"
+            # x-api-key is a first-class inbound credential slot (Anthropic-wire);
+            # browser clients must be allowed to preflight it. anthropic-version /
+            # anthropic-beta are standard Anthropic client headers.
+            "Access-Control-Allow-Headers: Content-Type, Authorization, X-Api-Key, "
+            "anthropic-version, anthropic-beta\r\n"
             "Connection: close\r\n"
             "\r\n"
         )
