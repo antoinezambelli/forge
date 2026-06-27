@@ -180,6 +180,7 @@ async def run_inference(
     inbound_anthropic_body: dict[str, Any] | None = None,
     raw_openai_messages: RawOpenAIMessages | None = None,
     raw_openai_tools: RawOpenAITools | None = None,
+    extra_headers: dict[str, str] | None = None,
     reasoning_replay: ReasoningReplay = DEFAULT_REASONING_REPLAY,
 ) -> InferenceResult | None:
     """Send messages to the LLM with compaction, folding, validation, and retry.
@@ -209,6 +210,10 @@ async def run_inference(
             max_iterations.
         stream: If True, use send_stream() instead of send().
         on_chunk: Async callback for streaming chunks.
+        extra_headers: Optional per-call credential header forwarded to the
+            client's send/send_stream (proxy: a relocated inbound auth header).
+            Passed only when set, so clients/test doubles that omit the kwarg
+            keep their original signature.
 
     Returns:
         InferenceResult with validated tool calls, new messages, and
@@ -293,18 +298,27 @@ async def run_inference(
         if raw_openai_tools is not None and _attempt == 0:
             raw_tools_kwarg["raw_openai_tools"] = raw_openai_tools
 
+        # Forward the per-call credential only when set, so clients/test
+        # doubles that omit the kwarg keep their original signature (same
+        # pattern as raw_openai_tools above).
+        extra_headers_kwarg: dict[str, Any] = {}
+        if extra_headers is not None:
+            extra_headers_kwarg["extra_headers"] = extra_headers
+
         # Send
         if stream:
             response = await _send_streaming(
                 client, api_messages, tool_specs, on_chunk, sampling, passthrough,
                 inbound_anthropic_body=verbatim_body,
                 **raw_tools_kwarg,
+                **extra_headers_kwarg,
             )
         else:
             response = await client.send(
                 api_messages, tools=tool_specs, sampling=sampling, passthrough=passthrough,
                 inbound_anthropic_body=verbatim_body,
                 **raw_tools_kwarg,
+                **extra_headers_kwarg,
             )
         # Subsequent attempts (retries) are mutations regardless of outcome.
         verbatim_body = None
@@ -429,16 +443,21 @@ async def _send_streaming(
     passthrough: dict[str, Any] | None = None,
     inbound_anthropic_body: dict[str, Any] | None = None,
     raw_openai_tools: RawOpenAITools | None = None,
+    extra_headers: dict[str, str] | None = None,
 ) -> LLMResponse:
     """Send via streaming, forwarding chunks to on_chunk callback."""
     response = None
     raw_tools_kwarg: dict[str, Any] = {}
     if raw_openai_tools is not None:
         raw_tools_kwarg["raw_openai_tools"] = raw_openai_tools
+    extra_headers_kwarg: dict[str, Any] = {}
+    if extra_headers is not None:
+        extra_headers_kwarg["extra_headers"] = extra_headers
     async for chunk in client.send_stream(
         api_messages, tools=tool_specs, sampling=sampling, passthrough=passthrough,
         inbound_anthropic_body=inbound_anthropic_body,
         **raw_tools_kwarg,
+        **extra_headers_kwarg,
     ):
         if on_chunk is not None:
             await on_chunk(chunk)
