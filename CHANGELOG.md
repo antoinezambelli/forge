@@ -2,6 +2,19 @@
 
 All notable changes to forge are documented here.
 
+## [0.8.0] — 2026-06-27
+
+First-class authentication across all proxy modes and backends. forge now forwards exactly one credential to the backend — a static `--backend-api-key` or a single inbound auth header — relocating it across protocols (`x-api-key` ↔ `Authorization: Bearer`) when the frontend and backend differ. Gated OpenAI-compatible backends (LM Studio, hosted vLLM, service accounts) work without monkey-patching. Closes #119.
+
+### Added
+- **`--backend-api-key` / `FORGE_BACKEND_API_KEY`** — a static credential forge sends to the backend in its native auth slot (LM Studio, hosted providers, service accounts — the case where the caller sends nothing). Baked into the backend client at startup and relocated to the backend's protocol slot. When set, an inbound auth header is refused as a second credential.
+- **Cross-protocol credential relocation** — an inbound `x-api-key` ↔ `Authorization: Bearer` is rewritten to the backend's protocol when frontend and backend differ (the SSO/forwarded-token case). Frontend protocol is by path (`/v1/chat/completions` = openai, `/v1/messages` = anthropic); backend by `--backend-protocol`. See the auth section in [Backend Setup](docs/BACKEND_SETUP.md).
+- **Deferred backend discovery for gated external backends.** The context-length / served-model-name probe (llama.cpp `/props`, vLLM `/v1/models`) now runs on the **first request**, authenticated by that request's credential, instead of unauthenticated at startup — which previously 401'd and crashed boot against a gated backend. Managed mode and the Anthropic external path are unaffected. New `LLMClient.discover_backend_metadata(extra_headers)`; vLLM collapses its two `/v1/models` round-trips into one.
+
+### Changed
+- **BREAKING — credential handling for auth-required backends.** This only affects backends that *require* auth. **Ungated local backends are unchanged — leave `--backend-api-key` unset and send no auth header, exactly as before; zero credentials is the normal local path and still works.** What changed: when a backend *does* require a credential, a request carrying **zero** now fails loud (401) instead of sending an empty/garbage header that produced an opaque downstream error; and **two** credentials at once (static + inbound, or two inbound auth headers) are refused with **400** rather than one silently winning. Migration: nothing to do for local/ungated backends. For gated backends, supply exactly one credential — set `--backend-api-key` (or `FORGE_BACKEND_API_KEY`), *or* forward an inbound auth header, not both.
+- **Removed the silent `extra_headers`-overrides-`api_key` merge.** A per-call auth header in `extra_headers` no longer shadows a client's configured `api_key`; that combination is now a two-credential conflict (400). Migration: pass the credential one way only. (Undocumented prior behavior, unlikely to be relied on.)
+
 ## [0.7.6] — 2026-06-20
 
 A bug-fix release for the Ollama backend and inline reasoning capture. Multi-turn tool sessions and multi-part message content no longer 400 against Ollama's native API, and chain-of-thought emitted inline in `content` is now captured on vLLM and Ollama as it already was on the structured-field path.
