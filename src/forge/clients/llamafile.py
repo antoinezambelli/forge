@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 from collections.abc import AsyncIterator
 from pathlib import Path
@@ -58,6 +59,121 @@ _MALFORMED_TOOL_CALL_RETRY_TEXT = (
     "missing required parameter or a duplicated/incomplete call. Re-emitting a "
     "single, complete, well-formed tool call.)"
 )
+
+# Used only when the 500 body demonstrably contains <tool_call> block(s) that
+# could not be rescued — i.e. we KNOW the model emitted a skeleton/preview call
+# (the write-stutter). A malformed-500 without visible blocks keeps the generic
+# text above; we don't name a stutter we haven't seen.
+_STUTTER_RETRY_TEXT = (
+    "(The previous response contained a malformed tool-call block — a "
+    "preview/skeleton call missing its required parameters, or a duplicated "
+    "call. Re-emitting exactly ONE complete tool-call block with EVERY "
+    "required parameter filled in, with no preview or skeleton block before "
+    "it.)"
+)
+
+log = logging.getLogger(__name__)
+
+# llama.cpp's "Failed to parse input at pos N: ..." message embeds the raw
+# rejected generation from the failure position onward — including, in the
+# stutter case, the complete well-formed call the model emitted right after
+# the skeleton block. These parse that embedded text (Qwen-coder XML tool
+# format). Caveat: a parameter value containing a literal "</parameter>"
+# line would be truncated at it; rescue validation below rejects the block
+# if that loses a required parameter.
+_TOOL_CALL_BLOCK_RE = re.compile(
+    r"<tool_call>\s*<function=([^>\s]+)>(.*?)</function>\s*</tool_call>",
+    re.DOTALL,
+)
+_TOOL_PARAM_RE = re.compile(
+    r"<parameter=([^>\s]+)>\n?(.*?)\n?</parameter>", re.DOTALL
+)
+
+
+def _tool_requirements(
+    tools_array: list[dict[str, Any]] | None,
+) -> dict[str, tuple[set[str], dict[str, str | None]]]:
+    """Map tool name -> (required param names, param JSON types) from an
+    OpenAI-shape ``tools`` array (what the request body actually carried)."""
+    reqs: dict[str, tuple[set[str], dict[str, str | None]]] = {}
+    for entry in tools_array or []:
+        fn = entry.get("function") or {}
+        name = fn.get("name")
+        if not name:
+            continue
+        params = fn.get("parameters") or {}
+        required = set(params.get("required") or [])
+        types = {
+            key: (prop or {}).get("type")
+            for key, prop in (params.get("properties") or {}).items()
+        }
+        reqs[name] = (required, types)
+    return reqs
+
+
+def _coerce_param(value: str, json_type: str | None) -> Any:
+    """Coerce an XML-format (stringly-typed) param to its schema type.
+
+    Mirrors llama.cpp's own coercion. Raises ValueError when the value
+    cannot satisfy the declared type — the caller drops the block.
+    """
+    if json_type == "integer":
+        return int(value.strip())
+    if json_type == "number":
+        return float(value.strip())
+    if json_type == "boolean":
+        lowered = value.strip().lower()
+        if lowered in ("true", "false"):
+            return lowered == "true"
+        raise ValueError(f"not a boolean: {value!r}")
+    return value
+
+
+def _rescue_tool_calls(
+    error_body: str,
+    tools_array: list[dict[str, Any]] | None,
+) -> tuple[list[ToolCall], bool]:
+    """Salvage complete, valid tool calls from a malformed-tool-call 500 body.
+
+    Returns ``(calls, saw_blocks)``. A block is rescued only if it strictly
+    parses, names a tool present in the request's ``tools`` array, and carries
+    every required parameter (skeleton/preview blocks fail this by
+    construction). Exact-duplicate calls are deduped. ``saw_blocks`` reports
+    whether any ``<tool_call>`` block was visible at all — it selects the
+    stutter-specific retry text when rescue comes up empty.
+    """
+    try:
+        message = json.loads(error_body).get("error", {}).get("message", "")
+    except (ValueError, AttributeError):
+        message = error_body
+    if not isinstance(message, str) or not message:
+        message = error_body
+
+    requirements = _tool_requirements(tools_array)
+    calls: list[ToolCall] = []
+    seen: set[tuple[str, str]] = set()
+    blocks = _TOOL_CALL_BLOCK_RE.findall(message)
+    for name, params_text in blocks:
+        spec = requirements.get(name)
+        if spec is None:
+            continue  # unknown tool — never fabricate a call we can't check
+        required, types = spec
+        args: dict[str, Any] = {}
+        valid = True
+        for key, raw_value in _TOOL_PARAM_RE.findall(params_text):
+            try:
+                args[key] = _coerce_param(raw_value, types.get(key))
+            except ValueError:
+                valid = False
+                break
+        if not valid or not required.issubset(args):
+            continue  # skeleton or mangled block — nothing to execute
+        dedupe_key = (name, json.dumps(args, sort_keys=True, default=str))
+        if dedupe_key in seen:
+            continue
+        seen.add(dedupe_key)
+        calls.append(ToolCall(tool=name, args=args, reasoning=None))
+    return calls, bool(blocks)
 
 
 def _merge_consecutive(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -205,6 +321,9 @@ class LlamafileClient:
                 "backends)."
             )
         self.base_url = base_url
+        # Count of tool calls salvaged from malformed-tool-call 500 bodies —
+        # eval drivers can surface this so rescued runs stay auditable.
+        self.rescued_tool_calls = 0
         # gguf_path is the source path. self.model is the derived identity
         # (filename minus .gguf/.llamafile suffix, minus shard index) used as
         # the wire "model" field (llama-server ignores it but it flows into
@@ -437,10 +556,28 @@ class LlamafileClient:
                 async for line in response.aiter_lines():
                     error_body += line
                 if _is_malformed_tool_call_500(error_body):
+                    # First: try to salvage the complete call(s) behind a
+                    # skeleton/preview block (the write-stutter).
+                    calls, saw_blocks = _rescue_tool_calls(
+                        error_body, body.get("tools")
+                    )
+                    if calls:
+                        self.rescued_tool_calls += len(calls)
+                        log.warning(
+                            "[rescue] salvaged %d complete tool call(s) from a "
+                            "malformed-tool-call 500: %s",
+                            len(calls), [c.tool for c in calls],
+                        )
+                        yield StreamChunk(type=ChunkType.FINAL, response=calls)
+                        return
                     # Recoverable: re-sample. Clean nudge, not the raw 500 JSON.
+                    # Name the stutter only when blocks were actually seen.
                     yield StreamChunk(
                         type=ChunkType.FINAL,
-                        response=TextResponse(content=_MALFORMED_TOOL_CALL_RETRY_TEXT),
+                        response=TextResponse(
+                            content=_STUTTER_RETRY_TEXT if saw_blocks
+                            else _MALFORMED_TOOL_CALL_RETRY_TEXT
+                        ),
                     )
                     return
                 # Arbitrary backend 500 — cascade.
@@ -614,8 +751,23 @@ class LlamafileClient:
         if resp.status_code == 500:
             is_parse = _is_malformed_tool_call_500(resp.text)
             if is_parse:
-                # Recoverable: re-sample. Return a clean nudge, not the raw 500 JSON.
-                return TextResponse(content=_MALFORMED_TOOL_CALL_RETRY_TEXT)
+                # First: try to salvage the complete call(s) the model buried
+                # behind a skeleton/preview block (the write-stutter).
+                calls, saw_blocks = _rescue_tool_calls(resp.text, body.get("tools"))
+                if calls:
+                    self.rescued_tool_calls += len(calls)
+                    log.warning(
+                        "[rescue] salvaged %d complete tool call(s) from a "
+                        "malformed-tool-call 500: %s",
+                        len(calls), [c.tool for c in calls],
+                    )
+                    return calls
+                # Recoverable: re-sample. Return a clean nudge, not the raw 500
+                # JSON. Name the stutter only when blocks were actually seen.
+                return TextResponse(
+                    content=_STUTTER_RETRY_TEXT if saw_blocks
+                    else _MALFORMED_TOOL_CALL_RETRY_TEXT
+                )
             # Arbitrary backend 500 — cascade.
             raise BackendError(500, resp.text)
         if resp.status_code != 200:
