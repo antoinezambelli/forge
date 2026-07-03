@@ -72,6 +72,7 @@ class VLLMClient:
         recommended_sampling: bool = False,
         api_key: str = "",
         extra_headers: dict[str, str] | None = None,
+        adopt_served_identity: bool = True,
     ) -> None:
         self.base_url = base_url
         # Two identity roles, set together (see _set_model_identity):
@@ -82,6 +83,11 @@ class VLLMClient:
         #   self.sampling_key — the derived registry-lookup key for
         #                       apply_sampling_defaults below (must be set first).
         self._set_model_identity(model_path)
+        # Whether external-mode discovery may replace the identity above with
+        # the backend-reported served name. The proxy sets this False when the
+        # user pinned an explicit --model (issue #122): an explicit identity is
+        # never overwritten, only warned about on mismatch.
+        self._adopt_served_identity = adopt_served_identity
 
         # Apply per-model recommended sampling defaults. Caller's explicit
         # (non-None) kwargs win over the map field-by-field.
@@ -472,9 +478,14 @@ class VLLMClient:
         vLLM exposes ``max_model_len`` (context budget) and the served model
         ``id`` (the wire ``model`` field it validates) on the same endpoint, so
         one credentialed GET yields both — collapsing the two separate startup
-        round-trips. The served id is adopted into this client immediately
-        (``_set_model_identity``), and the budget is returned for the caller to
-        apply to the context manager.
+        round-trips. When ``adopt_served_identity`` (construction), the served
+        id is adopted into this client immediately (``_set_model_identity``);
+        when the identity was pinned explicitly it is never overwritten — a
+        pinned name absent from the served list only logs a warning (the
+        backend will reject a truly wrong name itself, loudly). The budget is
+        returned for the caller to apply to the context manager, read from the
+        pinned model's own entry when the backend lists it (on multi-model
+        gateways ``data[0]`` is arbitrary).
 
         Both fields are required: vLLM 404s every request without a valid served
         id, and a missing ``max_model_len`` leaves the budget undiscoverable —
@@ -493,13 +504,27 @@ class VLLMClient:
         models = resp.json().get("data") or []
         if not models:
             raise BackendError(500, "vLLM /v1/models returned no entries")
-        entry = models[0]
 
-        served = entry.get("id")
-        if not served:
-            raise BackendError(500, f"vLLM /v1/models entry missing id: {entry}")
-        logger.info("Discovered vLLM served model name: %s", served)
-        self._set_model_identity(served)
+        if self._adopt_served_identity:
+            entry = models[0]
+            served = entry.get("id")
+            if not served:
+                raise BackendError(500, f"vLLM /v1/models entry missing id: {entry}")
+            logger.info("Discovered vLLM served model name: %s", served)
+            self._set_model_identity(served)
+        else:
+            # Identity pinned at construction (proxy --model): never overwrite.
+            # Prefer the pinned model's own entry for budget metadata; warn when
+            # the backend doesn't list it, but honor the pin — the backend
+            # rejects a truly wrong name itself with a self-explanatory error.
+            pinned = next((m for m in models if m.get("id") == self.model), None)
+            if pinned is None:
+                logger.warning(
+                    "Explicit model %r is not among the backend-served ids %s; "
+                    "honoring the explicit name (the backend may reject it)",
+                    self.model, [m.get("id") for m in models],
+                )
+            entry = pinned or models[0]
 
         max_model_len = entry.get("max_model_len")
         if max_model_len is None:

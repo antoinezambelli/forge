@@ -35,7 +35,13 @@ def main() -> None:
     )
 
     # Managed mode options
-    parser.add_argument("--model", help="Model name (required for ollama)")
+    parser.add_argument(
+        "--model",
+        help="Model name (required for ollama). In external mode this pins the "
+             "wire model identity and overrides served-model-name discovery; on "
+             "hosted multi-model backends pair it with --budget-tokens (the "
+             "discovered budget comes from the backend's model list).",
+    )
     parser.add_argument("--gguf", help="Path to GGUF file (llamaserver/llamafile)")
     parser.add_argument("--model-path", help="Model directory or HF repo id (vllm, managed mode)")
     parser.add_argument("--backend-port", type=int, default=8080, help="Backend port (default: 8080)")

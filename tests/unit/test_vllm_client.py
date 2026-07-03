@@ -598,6 +598,89 @@ class TestDiscoverBackendMetadata:
             await client.discover_backend_metadata()
         assert exc_info.value.status_code == 502
 
+
+# ── discover_backend_metadata with a pinned identity (issue #122) ─────────────
+
+
+def _make_pinned_client(model: str = "nv-mistral-large") -> VLLMClient:
+    client = VLLMClient(
+        model_path=model,
+        base_url="http://test:8000/v1",
+        adopt_served_identity=False,
+    )
+    client._http = AsyncMock()
+    client._http.stream = MagicMock()
+    return client
+
+
+class TestDiscoverBackendMetadataPinned:
+    @pytest.mark.asyncio
+    async def test_pinned_identity_survives_discovery(self) -> None:
+        # Explicit --model wins: the served id is NOT adopted.
+        client = _make_pinned_client()
+        client._http.get.return_value = _mock_response({
+            "data": [{"id": "some-other-model", "max_model_len": 32768}],
+        })
+        budget = await client.discover_backend_metadata()
+        assert budget == 32768
+        assert client.model == "nv-mistral-large"
+        assert client.sampling_key == "nv-mistral-large"
+
+    @pytest.mark.asyncio
+    async def test_budget_read_from_pinned_models_entry(self) -> None:
+        # Multi-model gateway: data[0] is arbitrary; the budget must come from
+        # the pinned model's own entry when the backend lists it.
+        client = _make_pinned_client()
+        client._http.get.return_value = _mock_response({
+            "data": [
+                {"id": "some-other-model", "max_model_len": 8192},
+                {"id": "nv-mistral-large", "max_model_len": 128000},
+            ],
+        })
+        assert await client.discover_backend_metadata() == 128000
+        assert client.model == "nv-mistral-large"
+
+    @pytest.mark.asyncio
+    async def test_pinned_absent_from_list_warns_and_keeps_pin(self, caplog) -> None:
+        client = _make_pinned_client()
+        client._http.get.return_value = _mock_response({
+            "data": [{"id": "some-other-model", "max_model_len": 32768}],
+        })
+        with caplog.at_level("WARNING", logger="forge.clients.vllm"):
+            budget = await client.discover_backend_metadata()
+        assert budget == 32768
+        assert client.model == "nv-mistral-large"
+        assert any(
+            "not among the backend-served ids" in rec.message for rec in caplog.records
+        )
+
+    @pytest.mark.asyncio
+    async def test_pinned_present_in_list_no_warning(self, caplog) -> None:
+        client = _make_pinned_client()
+        client._http.get.return_value = _mock_response({
+            "data": [{"id": "nv-mistral-large", "max_model_len": 128000}],
+        })
+        with caplog.at_level("WARNING", logger="forge.clients.vllm"):
+            await client.discover_backend_metadata()
+        assert not caplog.records
+
+    @pytest.mark.asyncio
+    async def test_pinned_missing_max_model_len_still_raises(self) -> None:
+        # Budget discovery stays loud when pinned: the escape hatch is an
+        # explicit --budget-tokens, not a guessed budget.
+        client = _make_pinned_client()
+        client._http.get.return_value = _mock_response({
+            "data": [{"id": "nv-mistral-large"}],
+        })
+        with pytest.raises(BackendError, match="missing max_model_len"):
+            await client.discover_backend_metadata()
+
+    def test_adopt_defaults_true(self) -> None:
+        # Direct (non-proxy) construction keeps today's adopt-on-discovery
+        # contract unless explicitly opted out.
+        client = _make_client()
+        assert client._adopt_served_identity is True
+
     @pytest.mark.asyncio
     async def test_extra_headers_threaded_into_probe(self) -> None:
         client = _make_client()

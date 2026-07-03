@@ -349,11 +349,16 @@ class ProxyServer:
             base = base + "/v1"
 
         if self._backend == "vllm":
+            # An explicit --model pins the wire identity (issue #122): it seeds
+            # (model, sampling_key) at construction and suppresses served-name
+            # adoption in both discovery paths below. Without it, "default" is
+            # a placeholder that discovery replaces.
             client = VLLMClient(
-                model_path="default",
+                model_path=self._model or "default",
                 base_url=base,
                 timeout=self._backend_timeout,
                 api_key=self._backend_api_key or "",
+                adopt_served_identity=self._model is None,
             )
         else:
             # llamaserver / llamafile / unspecified — OpenAI-compatible adapter.
@@ -373,11 +378,16 @@ class ProxyServer:
         # fail-fast. Pure passthrough (no static key) can't probe at startup —
         # the probe would be unauthenticated against a gated backend (finding
         # #2) — so defer it to the first request, which carries the credential.
-        # vLLM always needs deferral when passthrough (its served-identity probe
-        # is unauthenticated too); llama.cpp only needs it to discover a budget.
+        # vLLM needs deferral when passthrough (its served-identity probe is
+        # unauthenticated too) — unless the identity was pinned via --model, in
+        # which case there is nothing to discover beyond the budget; llama.cpp
+        # only needs it to discover a budget. Pinned identity + explicit budget
+        # means zero probes: passthrough vLLM starts serving with no metadata
+        # round-trip at all.
         static_key = bool(self._backend_api_key)
         defer = (not static_key) and (
-            self._budget_tokens is None or self._backend == "vllm"
+            self._budget_tokens is None
+            or (self._backend == "vllm" and self._model is None)
         )
 
         if defer:
@@ -392,11 +402,13 @@ class ProxyServer:
             )
         else:
             lazy_discovery = None
-            if self._backend == "vllm":
+            if self._backend == "vllm" and self._model is None:
                 # Unlike llama.cpp, vLLM validates the wire `model` field against
                 # its --served-model-name aliases (404 on mismatch). External
                 # mode has no model path to send, so discover the served identity
                 # from /v1/models instead of shipping the "default" placeholder.
+                # (Skipped entirely when --model pinned the identity: an explicit
+                # name is never overwritten by discovery.)
                 served = await client.get_served_model_name()
                 if served:
                     logger.info("Discovered vLLM served model name: %s", served)

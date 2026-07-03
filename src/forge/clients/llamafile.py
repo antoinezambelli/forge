@@ -35,9 +35,10 @@ _SHARD_SUFFIX_RE = re.compile(r"-\d{5}-of-\d{5}$")
 
 # Known file extensions for GGUF/llamafile model files. These are the only
 # suffixes we strip from the filename when deriving the model identity string.
-# ``Path.stem`` is NOT used here because it strips everything after the *first*
-# dot, which silently truncates dotted model names (e.g. ``mimo-v2.5.gguf``
-# → ``mimo-v2`` instead of ``mimo-v2.5``).
+# ``Path.stem`` is NOT used here because it strips whatever follows the LAST
+# dot whether or not it is a real extension — harmless for actual
+# ``*.gguf``/``*.llamafile`` files, but it silently truncates BARE dotted
+# model names as they arrive in proxy mode (e.g. ``mimo-v2.5`` → ``mimo-v2``).
 _KNOWN_GGUF_EXTENSIONS: tuple[str, ...] = (".gguf", ".llamafile")
 
 
