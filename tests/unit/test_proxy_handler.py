@@ -201,6 +201,34 @@ class TestLazyDiscovery:
         assert lazy.done is False
 
     @pytest.mark.asyncio
+    async def test_pinned_unlisted_probe_fails_loud_and_does_not_latch(self):
+        # A REAL pinned VLLMClient against a backend that lists other models:
+        # the fail-loud budget raise flows through run_lazy_discovery as a
+        # BackendDiscoveryError, the latch stays open (a later request — or a
+        # fixed --model / explicit --budget-tokens — retries), and the pin
+        # itself survives the failed probe.
+        from forge.clients.vllm import VLLMClient
+
+        client = VLLMClient(
+            model_path="nv-mistral-large",
+            base_url="http://test:8000/v1",
+            adopt_served_identity=False,
+        )
+        client._http = AsyncMock()
+        resp = MagicMock()
+        resp.status_code = 200
+        resp.json.return_value = {"data": [{"id": "other-model", "max_model_len": 8192}]}
+        client._http.get.return_value = resp
+        lazy = LazyDiscovery(deferred=True, apply_budget=True)
+        with pytest.raises(BackendDiscoveryError) as exc_info:
+            await handle_chat_completions(
+                _body(), client, _context_manager(), lazy_discovery=lazy,
+            )
+        assert exc_info.value.status_code == 500
+        assert lazy.done is False
+        assert client.model == "nv-mistral-large"
+
+    @pytest.mark.asyncio
     async def test_inbound_credential_threaded_to_probe(self):
         client = _discovery_client()
         lazy = LazyDiscovery(deferred=True, apply_budget=True)

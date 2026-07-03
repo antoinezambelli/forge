@@ -16,6 +16,7 @@ from forge.clients.llamafile import LlamafileClient
 from forge.clients.ollama import OllamaClient
 from forge.clients.vllm import VLLMClient
 from forge.context.manager import ContextManager
+from forge.errors import BackendError
 from forge.proxy.proxy import ProxyServer
 from forge.server import BudgetMode
 
@@ -245,6 +246,23 @@ class TestSetupExternal:
         served.assert_not_awaited()
         assert lazy is None
         assert ctx.budget_tokens == 113000
+
+    @pytest.mark.asyncio
+    async def test_vllm_eager_pinned_unlisted_raise_propagates(self) -> None:
+        # The fail-loud raise for a pinned-but-unlisted model must surface at
+        # startup — _setup_external must not swallow it into a soft fallback.
+        proxy = ProxyServer(
+            backend_url="http://localhost:8000", backend="vllm",
+            backend_api_key="K", model="nv-mistral-large",
+        )
+        with patch.object(
+            VLLMClient, "discover_backend_metadata",
+            new_callable=AsyncMock,
+            side_effect=BackendError(
+                500, "explicit model 'nv-mistral-large' is not among ...",
+            ),
+        ), pytest.raises(BackendError, match="not among"):
+            await proxy._setup_external()
 
     @pytest.mark.asyncio
     async def test_vllm_empty_model_is_not_a_pin(self) -> None:
