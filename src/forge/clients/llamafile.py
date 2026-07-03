@@ -60,10 +60,12 @@ _MALFORMED_TOOL_CALL_RETRY_TEXT = (
     "single, complete, well-formed tool call.)"
 )
 
-# Used only when the 500 body demonstrably contains <tool_call> block(s) that
-# could not be rescued — i.e. we KNOW the model emitted a skeleton/preview call
-# (the write-stutter). A malformed-500 without visible blocks keeps the generic
-# text above; we don't name a stutter we haven't seen.
+# Used only when the 500 body demonstrably contains <tool_call> block(s) but
+# none re-parse to a tool from the request (mangled syntax or unknown tool
+# names) — i.e. we KNOW the model emitted a defective call block. A
+# malformed-500 without visible blocks keeps the generic text above; we don't
+# name a stutter we haven't seen. Parseable blocks — skeletons included — are
+# returned as real ToolCalls instead (see _rescue_tool_calls).
 _STUTTER_RETRY_TEXT = (
     "(The previous response contained a malformed tool-call block — a "
     "preview/skeleton call missing its required parameters, or a duplicated "
@@ -133,14 +135,20 @@ def _rescue_tool_calls(
     error_body: str,
     tools_array: list[dict[str, Any]] | None,
 ) -> tuple[list[ToolCall], bool]:
-    """Salvage complete, valid tool calls from a malformed-tool-call 500 body.
+    """Leniently re-parse tool calls out of a malformed-tool-call 500 body.
 
-    Returns ``(calls, saw_blocks)``. A block is rescued only if it strictly
-    parses, names a tool present in the request's ``tools`` array, and carries
-    every required parameter (skeleton/preview blocks fail this by
-    construction). Exact-duplicate calls are deduped. ``saw_blocks`` reports
-    whether any ``<tool_call>`` block was visible at all — it selects the
-    stutter-specific retry text when rescue comes up empty.
+    Returns ``(calls, saw_blocks)``. Every block that parses and names a tool
+    present in the request's ``tools`` array is returned — including
+    skeleton/preview blocks missing required parameters. Validity is decided
+    downstream: the ResponseValidator and the runner's ``fn(**args)`` dispatch
+    reject a skeleton with a ``[ToolError] TypeError`` on the tool channel
+    (the canonical corrective signal), while complete calls simply execute.
+    Unknown tool names are never returned (nothing we can't check against the
+    request), exact duplicates are deduped, and param values are coerced to
+    their declared schema types where possible (kept as raw strings when
+    coercion fails — the tool decides). ``saw_blocks`` reports whether any
+    ``<tool_call>`` block was visible at all — it selects the
+    stutter-specific retry text when parsing comes up empty.
     """
     try:
         message = json.loads(error_body).get("error", {}).get("message", "")
@@ -157,17 +165,13 @@ def _rescue_tool_calls(
         spec = requirements.get(name)
         if spec is None:
             continue  # unknown tool — never fabricate a call we can't check
-        required, types = spec
+        _required, types = spec
         args: dict[str, Any] = {}
-        valid = True
         for key, raw_value in _TOOL_PARAM_RE.findall(params_text):
             try:
                 args[key] = _coerce_param(raw_value, types.get(key))
             except ValueError:
-                valid = False
-                break
-        if not valid or not required.issubset(args):
-            continue  # skeleton or mangled block — nothing to execute
+                args[key] = raw_value
         dedupe_key = (name, json.dumps(args, sort_keys=True, default=str))
         if dedupe_key in seen:
             continue
@@ -556,17 +560,19 @@ class LlamafileClient:
                 async for line in response.aiter_lines():
                     error_body += line
                 if _is_malformed_tool_call_500(error_body):
-                    # First: try to salvage the complete call(s) behind a
-                    # skeleton/preview block (the write-stutter).
+                    # Leniently re-parse the model's calls out of the 500 body
+                    # and hand them downstream: complete calls execute,
+                    # skeletons get rejected by dispatch as [ToolError] on the
+                    # tool channel.
                     calls, saw_blocks = _rescue_tool_calls(
                         error_body, body.get("tools")
                     )
                     if calls:
                         self.rescued_tool_calls += len(calls)
                         log.warning(
-                            "[rescue] salvaged %d complete tool call(s) from a "
+                            "[rescue] re-parsed %d tool call(s) from a "
                             "malformed-tool-call 500: %s",
-                            len(calls), [c.tool for c in calls],
+                            len(calls), [(c.tool, sorted(c.args)) for c in calls],
                         )
                         yield StreamChunk(type=ChunkType.FINAL, response=calls)
                         return
@@ -751,15 +757,16 @@ class LlamafileClient:
         if resp.status_code == 500:
             is_parse = _is_malformed_tool_call_500(resp.text)
             if is_parse:
-                # First: try to salvage the complete call(s) the model buried
-                # behind a skeleton/preview block (the write-stutter).
+                # Leniently re-parse the model's calls out of the 500 body and
+                # hand them downstream: complete calls execute, skeletons get
+                # rejected by dispatch as [ToolError] on the tool channel.
                 calls, saw_blocks = _rescue_tool_calls(resp.text, body.get("tools"))
                 if calls:
                     self.rescued_tool_calls += len(calls)
                     log.warning(
-                        "[rescue] salvaged %d complete tool call(s) from a "
+                        "[rescue] re-parsed %d tool call(s) from a "
                         "malformed-tool-call 500: %s",
-                        len(calls), [c.tool for c in calls],
+                        len(calls), [(c.tool, sorted(c.args)) for c in calls],
                     )
                     return calls
                 # Recoverable: re-sample. Return a clean nudge, not the raw 500

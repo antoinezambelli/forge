@@ -171,10 +171,11 @@ class TestLlamafileNativeSend:
         assert "Failed to parse input" not in result.content  # raw JSON must not leak
 
     @pytest.mark.asyncio
-    async def test_malformed_500_rescues_complete_call_behind_skeleton(self) -> None:
+    async def test_malformed_500_reparses_skeleton_and_complete_call(self) -> None:
         # The write-stutter: a skeleton (path-only) block followed by the same
-        # call complete WITH content. llama.cpp 500s the whole generation; the
-        # complete call rides in the error body — salvage and execute it.
+        # call complete WITH content. llama.cpp 500s the whole generation; both
+        # calls ride in the error body — return BOTH and let downstream decide
+        # (skeleton TypeErrors on the tool channel, complete call executes).
         client = _make_client("native")
         resp = MagicMock()
         resp.status_code = 500
@@ -184,34 +185,36 @@ class TestLlamafileNativeSend:
             [{"role": "user", "content": "test"}], tools=[_make_write_spec()]
         )
         assert isinstance(result, list)
-        assert len(result) == 1  # skeleton dropped, complete call kept
+        assert len(result) == 2
         assert result[0].tool == "write"
-        assert result[0].args["file_path"] == "tests/test_x.py"
-        assert result[0].args["content"].startswith("import unittest")
-        assert result[0].args["content"].endswith("    pass")
-        assert client.rescued_tool_calls == 1
+        assert result[0].args == {"file_path": "tests/test_x.py"}  # skeleton, as emitted
+        assert result[1].tool == "write"
+        assert result[1].args["file_path"] == "tests/test_x.py"
+        assert result[1].args["content"].startswith("import unittest")
+        assert result[1].args["content"].endswith("    pass")
+        assert client.rescued_tool_calls == 2
 
     @pytest.mark.asyncio
-    async def test_malformed_500_rescue_dedupes_repeated_complete_blocks(self) -> None:
-        # Stutters can repeat the complete call too — identical (tool, args)
-        # blocks collapse to one executed call.
+    async def test_malformed_500_rescue_dedupes_repeated_blocks(self) -> None:
+        # Stutters can repeat blocks — identical (tool, args) collapse to one.
         client = _make_client("native")
         resp = MagicMock()
         resp.status_code = 500
         resp.text = _malformed_500_body(
-            f"{_SKELETON_BLOCK}\n{_COMPLETE_BLOCK}\n{_COMPLETE_BLOCK}"
+            f"{_SKELETON_BLOCK}\n{_SKELETON_BLOCK}\n{_COMPLETE_BLOCK}\n{_COMPLETE_BLOCK}"
         )
         client._http.post.return_value = resp
         result = await client.send(
             [{"role": "user", "content": "test"}], tools=[_make_write_spec()]
         )
         assert isinstance(result, list)
-        assert len(result) == 1
+        assert len(result) == 2  # one skeleton + one complete
 
     @pytest.mark.asyncio
-    async def test_malformed_500_skeleton_only_gets_stutter_nudge(self) -> None:
-        # Skeleton block with no complete call behind it: nothing to rescue,
-        # but we SAW the block — the retry text names the stutter explicitly.
+    async def test_malformed_500_skeleton_only_returned_as_call(self) -> None:
+        # Skeleton block alone: returned as a real ToolCall so the runner's
+        # dispatch rejects it with [ToolError] TypeError on the tool channel —
+        # the canonical corrective signal — instead of canned self-talk text.
         client = _make_client("native")
         resp = MagicMock()
         resp.status_code = 500
@@ -220,10 +223,11 @@ class TestLlamafileNativeSend:
         result = await client.send(
             [{"role": "user", "content": "test"}], tools=[_make_write_spec()]
         )
-        assert isinstance(result, TextResponse)
-        assert "ONE complete" in result.content
-        assert "Failed to parse input" not in result.content
-        assert client.rescued_tool_calls == 0
+        assert isinstance(result, list)
+        assert len(result) == 1
+        assert result[0].tool == "write"
+        assert result[0].args == {"file_path": "tests/test_x.py"}
+        assert client.rescued_tool_calls == 1
 
     @pytest.mark.asyncio
     async def test_malformed_500_without_blocks_keeps_generic_nudge(self) -> None:
