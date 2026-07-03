@@ -201,6 +201,52 @@ class TestSetupExternal:
         assert client.model == "default"
 
     @pytest.mark.asyncio
+    async def test_vllm_eager_pinned_no_budget_single_discovery_probe(self) -> None:
+        # Static key + pinned model + no explicit budget: the eager path takes
+        # ONE credentialed discover_backend_metadata probe (which honors the
+        # pin and reads the pinned entry's budget) — never the separate
+        # served-name/context-length probes that read data[0].
+        proxy = ProxyServer(
+            backend_url="http://localhost:8000", backend="vllm",
+            backend_api_key="K", model="nv-mistral-large",
+        )
+        with patch.object(
+            VLLMClient, "discover_backend_metadata",
+            new_callable=AsyncMock, return_value=128000,
+        ) as discover, patch.object(
+            VLLMClient, "get_served_model_name", new_callable=AsyncMock,
+        ) as served, patch.object(
+            VLLMClient, "get_context_length", new_callable=AsyncMock,
+        ) as ctxlen:
+            client, ctx, lazy = await proxy._setup_external()
+        discover.assert_awaited_once()
+        served.assert_not_awaited()
+        ctxlen.assert_not_awaited()
+        assert lazy is None
+        assert ctx.budget_tokens == 128000
+        assert client.model == "nv-mistral-large"
+
+    @pytest.mark.asyncio
+    async def test_vllm_eager_unpinned_no_budget_single_discovery_probe(self) -> None:
+        # Same single-probe collapse without a pin: identity adoption happens
+        # inside discover_backend_metadata (client-level tested).
+        proxy = ProxyServer(
+            backend_url="http://localhost:8000", backend="vllm",
+            backend_api_key="K",
+        )
+        with patch.object(
+            VLLMClient, "discover_backend_metadata",
+            new_callable=AsyncMock, return_value=113000,
+        ) as discover, patch.object(
+            VLLMClient, "get_served_model_name", new_callable=AsyncMock,
+        ) as served:
+            _, ctx, lazy = await proxy._setup_external()
+        discover.assert_awaited_once()
+        served.assert_not_awaited()
+        assert lazy is None
+        assert ctx.budget_tokens == 113000
+
+    @pytest.mark.asyncio
     async def test_vllm_empty_model_is_not_a_pin(self) -> None:
         # A blank --model is normalized away: discovery behaves exactly as if
         # no model was given (placeholder + adoption), instead of pinning

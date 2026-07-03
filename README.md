@@ -148,7 +148,7 @@ Then configure your client to use `http://localhost:8081/v1` as the API base URL
 **Backend compatibility:**
 
 - **Managed mode** spins up the backend for you. Supported backends: `llamaserver`, `llamafile`, `ollama`, `vllm` (use `--backend <name>` with `--gguf` for the GGUF-based backends, `--model-path` for vllm, or `--model` for ollama).
-- **External mode** is backend-agnostic — forge talks `POST /v1/chat/completions` to whatever you point `--backend-url` at, as long as it speaks the OpenAI schema. Tool calls must come back in OpenAI `tool_calls` format or in one of forge's rescue-parsed formats (Mistral `[TOOL_CALLS]`, Qwen `<tool_call>` XML, fenced JSON). For a vLLM server, add `--backend vllm` so the proxy adopts vLLM's `--served-model-name` (vLLM 404s on a mismatched `model` field, unlike llama.cpp).
+- **External mode** is backend-agnostic — forge talks `POST /v1/chat/completions` to whatever you point `--backend-url` at, as long as it speaks the OpenAI schema. Tool calls must come back in OpenAI `tool_calls` format or in one of forge's rescue-parsed formats (Mistral `[TOOL_CALLS]`, Qwen `<tool_call>` XML, fenced JSON). For a vLLM server, add `--backend vllm` so the proxy adopts vLLM's `--served-model-name` (vLLM 404s on a mismatched `model` field, unlike llama.cpp). An explicit `--model` overrides that discovery — for hosted multi-model gateways (one `/v1/models` endpoint listing many models), pin your model and skip discovery entirely: `--backend vllm --model <name> --budget-tokens <n> --backend-api-key <key>`.
 
 ### What proxy mode fortifies
 

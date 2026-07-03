@@ -272,7 +272,7 @@ from forge.clients import VLLMClient
 client = VLLMClient(model_path="/path/to/awq-dir")  # or a HuggingFace repo id
 ```
 
-`model_path` is the canonical identity — a directory of safetensors/config or a HuggingFace repo id; its trailing segment is used for sampling-defaults lookup and the wire `model` field. Unlike llama.cpp, vLLM validates that field against its `--served-model-name`, so in proxy external mode forge auto-discovers the served name from `/v1/models` (pass `--backend vllm`).
+`model_path` is the canonical identity — a directory of safetensors/config or a HuggingFace repo id; its trailing segment is used for sampling-defaults lookup and the wire `model` field. Unlike llama.cpp, vLLM validates that field against its `--served-model-name`, so in proxy external mode forge auto-discovers the served name from `/v1/models` (pass `--backend vllm`). An explicit `--model` pins the identity and overrides discovery — the recipe for hosted multi-model gateways, where `/v1/models` lists many models and `data[0]` is arbitrary: `--backend vllm --model <name> --budget-tokens <n> --backend-api-key <key>` (with `--budget-tokens` set, no metadata probe runs at all; without it, the budget is discovered from the pinned model's own `/v1/models` entry and fails loud if the backend doesn't list it).
 
 ---
 

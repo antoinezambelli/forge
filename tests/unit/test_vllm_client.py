@@ -616,10 +616,13 @@ def _make_pinned_client(model: str = "nv-mistral-large") -> VLLMClient:
 class TestDiscoverBackendMetadataPinned:
     @pytest.mark.asyncio
     async def test_pinned_identity_survives_discovery(self) -> None:
-        # Explicit --model wins: the served id is NOT adopted.
+        # Explicit --model wins: data[0]'s id is NOT adopted over the pin.
         client = _make_pinned_client()
         client._http.get.return_value = _mock_response({
-            "data": [{"id": "some-other-model", "max_model_len": 32768}],
+            "data": [
+                {"id": "some-other-model", "max_model_len": 8192},
+                {"id": "nv-mistral-large", "max_model_len": 32768},
+            ],
         })
         budget = await client.discover_backend_metadata()
         assert budget == 32768
@@ -641,27 +644,27 @@ class TestDiscoverBackendMetadataPinned:
         assert client.model == "nv-mistral-large"
 
     @pytest.mark.asyncio
-    async def test_pinned_absent_from_list_warns_and_keeps_pin(self, caplog) -> None:
+    async def test_pinned_absent_from_list_raises(self) -> None:
+        # Fail loud: another entry's max_model_len has wrong provenance, so a
+        # pinned model the backend doesn't list cannot yield a budget. The
+        # error names the escape hatch (--budget-tokens skips this probe).
         client = _make_pinned_client()
         client._http.get.return_value = _mock_response({
             "data": [{"id": "some-other-model", "max_model_len": 32768}],
         })
-        with caplog.at_level("WARNING", logger="forge.clients.vllm"):
-            budget = await client.discover_backend_metadata()
-        assert budget == 32768
+        with pytest.raises(BackendError, match="cannot discover its context budget"):
+            await client.discover_backend_metadata()
+        # The pin itself is untouched by the failed probe.
         assert client.model == "nv-mistral-large"
-        assert any(
-            "not among the backend-served ids" in rec.message for rec in caplog.records
-        )
 
     @pytest.mark.asyncio
-    async def test_pinned_present_in_list_no_warning(self, caplog) -> None:
+    async def test_pinned_present_in_list_succeeds_quietly(self, caplog) -> None:
         client = _make_pinned_client()
         client._http.get.return_value = _mock_response({
             "data": [{"id": "nv-mistral-large", "max_model_len": 128000}],
         })
         with caplog.at_level("WARNING", logger="forge.clients.vllm"):
-            await client.discover_backend_metadata()
+            assert await client.discover_backend_metadata() == 128000
         assert not caplog.records
 
     @pytest.mark.asyncio

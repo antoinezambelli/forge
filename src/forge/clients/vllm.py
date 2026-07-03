@@ -480,12 +480,13 @@ class VLLMClient:
         one credentialed GET yields both — collapsing the two separate startup
         round-trips. When ``adopt_served_identity`` (construction), the served
         id is adopted into this client immediately (``_set_model_identity``);
-        when the identity was pinned explicitly it is never overwritten — a
-        pinned name absent from the served list only logs a warning (the
-        backend will reject a truly wrong name itself, loudly). The budget is
-        returned for the caller to apply to the context manager, read from the
-        pinned model's own entry when the backend lists it (on multi-model
-        gateways ``data[0]`` is arbitrary).
+        when the identity was pinned explicitly it is never overwritten. The
+        budget is returned for the caller to apply to the context manager —
+        when pinned, it is read from the pinned model's OWN entry (on
+        multi-model gateways ``data[0]`` is arbitrary), and a pinned name the
+        backend doesn't list raises: any other entry's budget would have wrong
+        provenance, and this method is only called when a budget is actually
+        needed (an explicit budget skips the probe entirely).
 
         Both fields are required: vLLM 404s every request without a valid served
         id, and a missing ``max_model_len`` leaves the budget undiscoverable —
@@ -514,21 +515,30 @@ class VLLMClient:
             self._set_model_identity(served)
         else:
             # Identity pinned at construction (proxy --model): never overwrite.
-            # Prefer the pinned model's own entry for budget metadata; warn when
-            # the backend doesn't list it, but honor the pin — the backend
-            # rejects a truly wrong name itself with a self-explanatory error.
-            pinned = next((m for m in models if m.get("id") == self.model), None)
-            if pinned is None:
-                logger.warning(
-                    "Explicit model %r is not among the backend-served ids %s; "
-                    "honoring the explicit name (the backend may reject it)",
-                    self.model, [m.get("id") for m in models],
+            # The budget must come from the pinned model's own entry — on a
+            # multi-model gateway data[0] is arbitrary, so a fallback budget
+            # would silently mis-size the context window. No entry, no budget:
+            # fail loud and name the escape hatch.
+            entry_or_none = next(
+                (m for m in models if m.get("id") == self.model), None,
+            )
+            if entry_or_none is None:
+                raise BackendError(
+                    500,
+                    f"explicit model {self.model!r} is not among the "
+                    f"{len(models)} backend-served ids (first ids: "
+                    f"{[m.get('id') for m in models[:5]]}); cannot discover its "
+                    "context budget — pass an explicit budget (--budget-tokens) "
+                    "or fix the model name",
                 )
-            entry = pinned or models[0]
+            entry = entry_or_none
 
         max_model_len = entry.get("max_model_len")
         if max_model_len is None:
             raise BackendError(
-                500, f"vLLM /v1/models entry missing max_model_len: {entry}",
+                500,
+                f"vLLM /v1/models entry missing max_model_len: {entry} — pass "
+                "an explicit budget (--budget-tokens) if the backend doesn't "
+                "report one",
             )
         return int(max_model_len)

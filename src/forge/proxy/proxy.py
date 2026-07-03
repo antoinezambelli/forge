@@ -138,6 +138,12 @@ class ProxyServer:
                 request is refused (one credential per request). Leave None for
                 pure inbound-credential passthrough.
         """
+        # A blank/whitespace --model is not an identity: normalize it to None
+        # BEFORE validation (mirrors --backend-api-key below) so the managed
+        # "requires model" check catches it as missing, and so the
+        # "or 'default'" fallbacks and the is-None pin logic (external vLLM,
+        # issue #122) can't disagree about whether a model was given.
+        model = model if (model and model.strip()) else None
         if backend_url is None and backend is None:
             raise ValueError("Provide either backend_url (external) or backend (managed)")
         if backend_protocol == "anthropic" and backend_url is None:
@@ -180,11 +186,7 @@ class ProxyServer:
 
         self._backend_url = backend_url
         self._backend = backend
-        # A blank/whitespace --model is not an identity: normalize it to None
-        # (mirrors --backend-api-key below) so the "or 'default'" fallbacks and
-        # the is-None pin logic (external vLLM, issue #122) can't disagree — an
-        # empty string must neither pin the placeholder nor suppress discovery.
-        self._model = model if (model and model.strip()) else None
+        self._model = model
         self._gguf = gguf
         self._model_path = model_path
         self._backend_port = backend_port
@@ -406,25 +408,35 @@ class ProxyServer:
             )
         else:
             lazy_discovery = None
-            if self._backend == "vllm" and self._model is None:
-                # Unlike llama.cpp, vLLM validates the wire `model` field against
-                # its --served-model-name aliases (404 on mismatch). External
-                # mode has no model path to send, so discover the served identity
-                # from /v1/models instead of shipping the "default" placeholder.
-                # (Skipped entirely when --model pinned the identity: an explicit
-                # name is never overwritten by discovery.)
-                served = await client.get_served_model_name()
-                if served:
-                    logger.info("Discovered vLLM served model name: %s", served)
-                    client._set_model_identity(served)
-                else:
-                    logger.warning(
-                        "Could not discover a served model name from %s/models; "
-                        "sending placeholder 'default' (vLLM will 404 if it "
-                        "validates the model field)",
-                        base,
-                    )
-            if self._budget_tokens is not None:
+            if self._backend == "vllm" and self._budget_tokens is None:
+                # One credentialed probe yields both roles: the served identity
+                # (adopted only when --model didn't pin it) and the context
+                # budget — read from the pinned model's own /v1/models entry
+                # when pinned, so a multi-model gateway's arbitrary data[0]
+                # never sizes the window.
+                budget = await client.discover_backend_metadata()
+            elif self._backend == "vllm":
+                budget = self._budget_tokens
+                if self._model is None:
+                    # Unlike llama.cpp, vLLM validates the wire `model` field
+                    # against its --served-model-name aliases (404 on mismatch).
+                    # External mode has no model path to send, so discover the
+                    # served identity from /v1/models instead of shipping the
+                    # "default" placeholder. (Skipped when --model pinned the
+                    # identity: an explicit name is never overwritten by
+                    # discovery.)
+                    served = await client.get_served_model_name()
+                    if served:
+                        logger.info("Discovered vLLM served model name: %s", served)
+                        client._set_model_identity(served)
+                    else:
+                        logger.warning(
+                            "Could not discover a served model name from "
+                            "%s/models; sending placeholder 'default' (vLLM "
+                            "will 404 if it validates the model field)",
+                            base,
+                        )
+            elif self._budget_tokens is not None:
                 budget = self._budget_tokens
             else:
                 ctx_len = await client.get_context_length()
