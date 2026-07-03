@@ -201,6 +201,24 @@ class TestSetupExternal:
         assert client.model == "default"
 
     @pytest.mark.asyncio
+    async def test_vllm_empty_model_is_not_a_pin(self) -> None:
+        # A blank --model is normalized away: discovery behaves exactly as if
+        # no model was given (placeholder + adoption), instead of pinning
+        # "default" with adoption suppressed.
+        proxy = ProxyServer(
+            backend_url="http://localhost:8000", backend="vllm",
+            budget_tokens=8192, backend_api_key="K",
+            model="  ",
+        )
+        with patch.object(
+            VLLMClient, "get_served_model_name",
+            new_callable=AsyncMock, return_value="my-awq-model",
+        ):
+            client, _, _ = await proxy._setup_external()
+        assert client.model == "my-awq-model"
+        assert client._adopt_served_identity is True
+
+    @pytest.mark.asyncio
     async def test_vllm_explicit_model_skips_eager_adoption(self) -> None:
         # Issue #122: an explicit --model pins the identity — the eager
         # served-name probe is skipped entirely, never adopted over the pin.

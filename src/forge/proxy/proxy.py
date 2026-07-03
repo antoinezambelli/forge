@@ -180,7 +180,11 @@ class ProxyServer:
 
         self._backend_url = backend_url
         self._backend = backend
-        self._model = model
+        # A blank/whitespace --model is not an identity: normalize it to None
+        # (mirrors --backend-api-key below) so the "or 'default'" fallbacks and
+        # the is-None pin logic (external vLLM, issue #122) can't disagree — an
+        # empty string must neither pin the placeholder nor suppress discovery.
+        self._model = model if (model and model.strip()) else None
         self._gguf = gguf
         self._model_path = model_path
         self._backend_port = backend_port
