@@ -169,6 +169,26 @@ class TestSetupExternal:
         assert client.sampling_key == "gemma-4-26B-A4B-it"
 
     @pytest.mark.asyncio
+    async def test_llamafile_proxy_bare_model_name_preserves_identity(self) -> None:
+        # Proxy external mode: a bare dotted model name (no .gguf suffix) flows
+        # through gguf_path unchanged — the actual repro path from issue #121.
+        # client.model == client.sampling_key is the llamafile invariant.
+        proxy = ProxyServer(
+            backend_url="http://localhost:8080",
+            backend="llamafile",
+            budget_tokens=8192,
+            backend_api_key="K",
+            model="mimo-v2.5",
+        )
+        with patch.object(
+            LlamafileClient, "get_context_length",
+            new_callable=AsyncMock, return_value=32768,
+        ):
+            client, _, _ = await proxy._setup_external()
+        assert client.model == "mimo-v2.5"
+        assert client.sampling_key == "mimo-v2.5"
+
+    @pytest.mark.asyncio
     async def test_vllm_keeps_placeholder_when_discovery_fails(self) -> None:
         proxy = ProxyServer(
             backend_url="http://localhost:8000", backend="vllm",

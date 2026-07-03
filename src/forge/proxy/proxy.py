@@ -357,9 +357,9 @@ class ProxyServer:
             )
         else:
             # llamaserver / llamafile / unspecified — OpenAI-compatible adapter.
-            # Caller manages the backend, so we don't have a GGUF path. "default"
-            # is a placeholder identity for the wire model field (llama-server
-            # ignores it) and the JSONL model field.
+            # Caller manages the backend, so we don't have a GGUF path. gguf_path
+            # intentionally receives a bare model name here (proxy mode); the
+            # client strips only a trailing .gguf/.llamafile if present.
             client = LlamafileClient(
                 gguf_path=self._model or "default",
                 base_url=base,
@@ -467,6 +467,9 @@ class ProxyServer:
                 api_key=self._backend_api_key or "",
             )
         if self._backend in ("llamaserver", "llamafile"):
+            # gguf_path may be a real GGUF file path or a bare model name
+            # (proxy external mode); the client handles both via the same
+            # extension-stripping logic.
             return LlamafileClient(
                 gguf_path=self._gguf or "default",
                 base_url=base_url,

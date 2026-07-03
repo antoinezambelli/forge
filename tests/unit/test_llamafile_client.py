@@ -1,6 +1,7 @@
 """Tests for forge.clients.llamafile — LlamafileClient with mocked HTTP."""
 
 import json
+from pathlib import Path
 
 import pytest
 from unittest.mock import AsyncMock, MagicMock
@@ -1393,3 +1394,66 @@ class TestPerCallSampling:
         body = client._http.post.call_args.kwargs["json"]
         assert body["temperature"] == 0.5
         assert "seed" not in body
+
+
+# ── Issue #121: Path.stem truncates dotted model names ─────────────
+
+
+class TestDeriveSamplingKey:
+    """LlamafileClient._derive_sampling_key() preserves dots in model identifiers."""
+
+    def test_dotted_model_name_preserved_gguf(self) -> None:
+        """mimo-v2.5.gguf → model='mimo-v2.5' (dot preserved)."""
+        assert LlamafileClient._derive_sampling_key(Path("mimo-v2.5.gguf")) == "mimo-v2.5"
+
+    def test_dotted_model_name_preserved_llamafile(self) -> None:
+        """Model.Q4_K_M.llamafile → model='Model.Q4_K_M'."""
+        assert LlamafileClient._derive_sampling_key(Path("Model.Q4_K_M.llamafile")) == "Model.Q4_K_M"
+
+    def test_shard_suffix_still_stripped(self) -> None:
+        """model-00001-of-00003.gguf → model='model' (shard stripped)."""
+        assert LlamafileClient._derive_sampling_key(Path("model-00001-of-00003.gguf")) == "model"
+
+    def test_plain_name_no_dots(self) -> None:
+        """Plain name without dots: unchanged behavior."""
+        assert LlamafileClient._derive_sampling_key(Path("qwen3:8b-q4_K_M.gguf")) == "qwen3:8b-q4_K_M"
+
+    def test_no_extension_unknown_suffix(self) -> None:
+        """Path without known extension: name used as-is."""
+        assert LlamafileClient._derive_sampling_key(Path("custom-model")) == "custom-model"
+
+    def test_dotted_name_with_shard(self) -> None:
+        """mimo-v2.5-00001-of-00003.gguf → both fixes compose correctly."""
+        assert LlamafileClient._derive_sampling_key(Path("mimo-v2.5-00001-of-00003.gguf")) == "mimo-v2.5"
+
+    def test_bare_model_name_proxy_mode(self) -> None:
+        """Bare model name (no extension, proxy mode): identity preserved."""
+        assert LlamafileClient._derive_sampling_key("mimo-v2.5") == "mimo-v2.5"
+
+    def test_interior_dots_byte_identical_to_stem(self) -> None:
+        """Real-file names with interior dots must match old .stem behavior."""
+        # Mistral-Nemo-Instruct-2407.Q4_K_M.llamafile
+        result = LlamafileClient._derive_sampling_key(
+            Path("Mistral-Nemo-Instruct-2407.Q4_K_M.llamafile")
+        )
+        assert result == "Mistral-Nemo-Instruct-2407.Q4_K_M"
+
+
+class TestModelIdentityInvariant:
+    """client.model == client.sampling_key is an invariant."""
+
+    def test_model_equals_sampling_key_plain(self) -> None:
+        client = LlamafileClient(gguf_path="qwen3:8b-q4_K_M")
+        assert client.model == client.sampling_key == "qwen3:8b-q4_K_M"
+
+    def test_model_equals_sampling_key_dotted(self) -> None:
+        client = LlamafileClient(gguf_path="mimo-v2.5")
+        assert client.model == client.sampling_key == "mimo-v2.5"
+
+    def test_model_equals_sampling_key_with_gguf_ext(self) -> None:
+        client = LlamafileClient(gguf_path="mimo-v2.5.gguf")
+        assert client.model == client.sampling_key == "mimo-v2.5"
+
+    def test_model_equals_sampling_key_with_shard(self) -> None:
+        client = LlamafileClient(gguf_path="model-00001-of-00003.gguf")
+        assert client.model == client.sampling_key == "model"

@@ -33,6 +33,13 @@ from forge.prompts.think_tags import extract_think_tags as _extract_think_tags
 # sampling-defaults registry key.
 _SHARD_SUFFIX_RE = re.compile(r"-\d{5}-of-\d{5}$")
 
+# Known file extensions for GGUF/llamafile model files. These are the only
+# suffixes we strip from the filename when deriving the model identity string.
+# ``Path.stem`` is NOT used here because it strips everything after the *first*
+# dot, which silently truncates dotted model names (e.g. ``mimo-v2.5.gguf``
+# → ``mimo-v2`` instead of ``mimo-v2.5``).
+_KNOWN_GGUF_EXTENSIONS: tuple[str, ...] = (".gguf", ".llamafile")
+
 
 def _merge_consecutive(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Ensure strict user/assistant alternation for Jinja parity checker.
@@ -128,6 +135,29 @@ class LlamafileClient:
 
     api_format: str = "openai"
 
+    @staticmethod
+    def _derive_sampling_key(wire_id: str | Path) -> str:
+        """Derive the sampling-registry lookup key from the wire model id.
+
+        The wire id is a GGUF/llamafile filename (e.g. ``mimo-v2.5.gguf``) or,
+        in proxy mode, a bare model name (e.g. ``mimo-v2.5``).  Known file
+        extensions are stripped explicitly; shard suffixes are then removed.
+
+        Interior dots are preserved — only a trailing ``.gguf`` / ``.llamafile``
+        is consumed.  This stays separate from
+        ``VLLMClient._derive_sampling_key`` (``vllm.py:135``) because the two
+        backends use different artifact conventions (GGUF extension + shard
+        suffix vs. filesystem dirs / HF repo ids), not shared logic.
+
+        For llamafile the wire id and the registry key are the same string, so
+        ``model == sampling_key`` is an invariant of ``LlamafileClient``.
+        """
+        path = Path(wire_id)
+        name = path.name
+        for ext in _KNOWN_GGUF_EXTENSIONS:
+            name = name.removesuffix(ext)
+        return _SHARD_SUFFIX_RE.sub("", name)
+
     def __init__(
         self,
         gguf_path: str | Path,
@@ -156,13 +186,14 @@ class LlamafileClient:
                 "backends)."
             )
         self.base_url = base_url
-        # gguf_path is the source path. self.model is the stem (no
-        # .gguf / .llamafile suffix) used as the wire "model" field
-        # (llama-server ignores it but it flows into eval JSONL rows).
-        # sampling_key is the registry-lookup key; for llamafile it equals
-        # the stem, so the wire id and the lookup key are the same string.
+        # gguf_path is the source path. self.model is the derived identity
+        # (filename minus .gguf/.llamafile suffix, minus shard index) used as
+        # the wire "model" field (llama-server ignores it but it flows into
+        # eval JSONL rows). sampling_key is the registry-lookup key; for
+        # llamafile it equals the model, so the wire id and the lookup key
+        # are the same string.
         self.gguf_path = Path(gguf_path)
-        self.model = _SHARD_SUFFIX_RE.sub("", self.gguf_path.stem)
+        self.model = self._derive_sampling_key(self.gguf_path)
         self.sampling_key = self.model
         # Apply per-model recommended sampling defaults. Caller's explicit
         # (non-None) kwargs win over the map field-by-field.
