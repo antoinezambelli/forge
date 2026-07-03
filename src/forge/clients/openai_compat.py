@@ -28,8 +28,10 @@ from forge.clients.base import (
     static_auth_present,
 )
 from forge.clients.sampling_defaults import apply_sampling_defaults
+from forge.core.reasoning import REASONING_MESSAGE_FIELDS
 from forge.core.workflow import LLMResponse, TextResponse, ToolCall, ToolSpec
 from forge.errors import BackendError
+from forge.prompts.think_tags import extract_think_tags
 
 
 class OpenAICompatClient:
@@ -176,7 +178,44 @@ class OpenAICompatClient:
         )
 
     @staticmethod
-    def _parse_tool_calls(tool_calls: list[dict[str, Any]]) -> LLMResponse:
+    def _structured_reasoning(source: dict[str, Any]) -> str:
+        """First non-empty canonical reasoning field, or ''.
+
+        Ordered by ``REASONING_MESSAGE_FIELDS`` (``reasoning_content`` →
+        ``reasoning`` → ``reasoning_text``) so providers using different field
+        names all work.
+        """
+        for field in REASONING_MESSAGE_FIELDS:
+            val = source.get(field)
+            if val:
+                return str(val)
+        return ""
+
+    @staticmethod
+    def _resolve_reasoning(structured: str, content: str) -> str | None:
+        """Reasoning from a structured field or inline ``<think>`` tags — never
+        bare content.
+
+        This client is provider-agnostic (Groq/Together/OpenRouter/hosted
+        instruct), where a ``content`` preamble alongside a tool call is
+        routinely legitimate user-facing text, not chain-of-thought; labeling it
+        reasoning would mis-route a real assistant turn (and silently drop it
+        under ``reasoning_replay=none``, the default). So — unlike
+        vLLM/Ollama/llamafile — there is deliberately no raw-content fallback
+        (issue #114). Both send paths pass the same ``(structured, content)``
+        pair so they resolve identically.
+        """
+        if structured:
+            return structured
+        think, _ = extract_think_tags(content)
+        return think or None
+
+    @staticmethod
+    def _parse_tool_calls(
+        tool_calls: list[dict[str, Any]],
+        *,
+        reasoning: str | None = None,
+    ) -> LLMResponse:
         """Parse OpenAI ``tool_calls`` into ``ToolCall`` objects.
 
         Tool-call ``arguments`` arrive as JSON strings. Forge is fail-loud:
@@ -187,13 +226,18 @@ class OpenAICompatClient:
         ``ToolCall``; ``ResponseValidator``'s args-shape check then routes it
         through the tool-error channel, so the model self-corrects on the
         canonical tool-result channel rather than a trailing retry nudge.
+
+        ``reasoning`` is keyword-only with a default so existing positional
+        callers keep working; it is attached to the FIRST ToolCall only
+        (parity with vLLM/Ollama).
         """
         return [
             ToolCall(
                 tool=tc.get("function", {}).get("name", ""),
                 args=decode_tool_args(tc.get("function", {}).get("arguments")),
+                reasoning=reasoning if i == 0 else None,
             )
-            for tc in tool_calls
+            for i, tc in enumerate(tool_calls)
         ]
 
     # ── send ─────────────────────────────────────────────────────────
@@ -238,8 +282,18 @@ class OpenAICompatClient:
         msg = choices[0].get("message", {})
         tool_calls = msg.get("tool_calls")
         if tool_calls:
-            return self._parse_tool_calls(tool_calls)
-        return TextResponse(content=msg.get("content") or "")
+            return self._parse_tool_calls(
+                tool_calls,
+                reasoning=self._resolve_reasoning(
+                    self._structured_reasoning(msg), msg.get("content") or "",
+                ),
+            )
+        # No tool calls: strip inline <think> so the TextResponse carries clean,
+        # user-facing content (reasoning is only useful attached to a ToolCall).
+        # extract_think_tags returns the text unchanged when no tags are present,
+        # so plain preambles/answers survive verbatim.
+        _, content = extract_think_tags(msg.get("content") or "")
+        return TextResponse(content=content)
 
     # ── streaming ────────────────────────────────────────────────────
 
@@ -262,6 +316,7 @@ class OpenAICompatClient:
         body = self._build_body(messages, tools, sampling, stream=True, passthrough=passthrough)
 
         accumulated_content = ""
+        accumulated_reasoning = ""
         tool_calls: dict[int, dict[str, Any]] = {}
         usage: dict[str, Any] | None = None
 
@@ -297,6 +352,17 @@ class OpenAICompatClient:
                         accumulated_content += content
                         yield StreamChunk(type=ChunkType.TEXT_DELTA, content=content)
 
+                # Accumulate structured reasoning deltas across all canonical
+                # field names (a given provider streams reasoning under one name
+                # consistently). Do NOT yield a chunk for reasoning deltas —
+                # mirror vLLM, which only accumulates; content deltas keep being
+                # yielded as TEXT_DELTA even when they are <think> fragments, and
+                # are stripped only in the FINAL response.
+                for field in REASONING_MESSAGE_FIELDS:
+                    frag = delta.get(field)
+                    if frag:
+                        accumulated_reasoning += str(frag)
+
                 for tc in delta.get("tool_calls") or []:
                     idx = tc.get("index", 0)
                     slot = tool_calls.setdefault(
@@ -326,9 +392,19 @@ class OpenAICompatClient:
 
         if tool_calls:
             ordered = [tool_calls[i] for i in sorted(tool_calls)]
-            final: LLMResponse = self._parse_tool_calls(ordered)
+            # Resolve reasoning exactly like send(): a structured field wins,
+            # else inline <think> tags. Accumulating raw content across chunks
+            # and extracting once at the end handles <think> tags that straddle
+            # chunk boundaries, and multi-chunk structured reasoning deltas.
+            final: LLMResponse = self._parse_tool_calls(
+                ordered,
+                reasoning=self._resolve_reasoning(
+                    accumulated_reasoning, accumulated_content,
+                ),
+            )
         else:
-            final = TextResponse(content=accumulated_content)
+            _, text = extract_think_tags(accumulated_content)
+            final = TextResponse(content=text)
         yield StreamChunk(type=ChunkType.FINAL, response=final)
 
     async def get_context_length(self) -> int | None:
