@@ -184,11 +184,24 @@ class OpenAICompatClient:
         Ordered by ``REASONING_MESSAGE_FIELDS`` (``reasoning_content`` →
         ``reasoning`` → ``reasoning_text``) so providers using different field
         names all work.
+
+        Fail-loud on a non-string reasoning value (some providers ship
+        structured block lists): silently ``str()``-coercing it would turn a
+        Python repr into chain-of-thought and replay it to the model under
+        ``full``/``keep-last``.
         """
         for field in REASONING_MESSAGE_FIELDS:
             val = source.get(field)
-            if val:
-                return str(val)
+            if not val:
+                continue
+            if not isinstance(val, str):
+                raise BackendError(
+                    500,
+                    f"reasoning field {field!r} is {type(val).__name__}, not a "
+                    f"string: {val!r} — refusing to coerce it into replayable "
+                    "chain-of-thought",
+                )
+            return val
         return ""
 
     @staticmethod
@@ -360,8 +373,18 @@ class OpenAICompatClient:
                 # are stripped only in the FINAL response.
                 for field in REASONING_MESSAGE_FIELDS:
                     frag = delta.get(field)
-                    if frag:
-                        accumulated_reasoning += str(frag)
+                    if not frag:
+                        continue
+                    if not isinstance(frag, str):
+                        # Same fail-loud rule as _structured_reasoning: never
+                        # repr-coerce provider block structures into replayable
+                        # chain-of-thought.
+                        raise BackendError(
+                            500,
+                            f"streamed reasoning field {field!r} is "
+                            f"{type(frag).__name__}, not a string: {frag!r}",
+                        )
+                    accumulated_reasoning += frag
 
                 for tc in delta.get("tool_calls") or []:
                     idx = tc.get("index", 0)
