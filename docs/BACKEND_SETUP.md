@@ -1,6 +1,6 @@
 # Backend Setup
 
-How to point forge at a backend. Forge supports six:
+How to point forge at a backend. Forge supports seven:
 
 | Backend | Forge client | Native FC | Default port | Best for |
 |---|---|---|---|---|
@@ -10,6 +10,7 @@ How to point forge at a backend. Forge supports six:
 | vLLM | `VLLMClient` | Yes (server-side parser) | 8000 | AWQ/GPTQ, high-throughput serving |
 | OpenAI-compatible | `OpenAICompatClient` | Per-model | (caller URL) | Hosted providers (Cloudflare, OpenRouter, …) |
 | Anthropic | `AnthropicClient` | Yes | (API) | Frontier baseline |
+| LiteLLM | `LiteLLMClient` | Per-model | (SDK) | 100+ providers via one interface |
 
 Install instructions for each backend live with the upstream project. Below is what forge expects once a backend is running.
 
@@ -299,6 +300,46 @@ client = AnthropicClient(model="claude-sonnet-4-6")
 ```
 
 No server to smoke-test — first inference call surfaces auth/network issues.
+
+---
+
+## LiteLLM
+
+LiteLLM is a published optional extra:
+
+```bash
+pip install "forge-guardrails[litellm]"
+```
+
+LiteLLM routes requests to 100+ LLM providers (OpenAI, Anthropic, Azure, Bedrock, Vertex, Groq, Together, Mistral, Cohere, etc.) through a unified Python SDK. Set the provider-specific API key in the environment:
+
+```bash
+export OPENAI_API_KEY=sk-...        # for openai/* models
+export ANTHROPIC_API_KEY=sk-ant-... # for anthropic/* models
+```
+
+Forge client:
+
+```python
+from forge.clients import LiteLLMClient
+
+client = LiteLLMClient(model="anthropic/claude-sonnet-4-6")
+```
+
+Or with an explicit key and custom base URL:
+
+```python
+client = LiteLLMClient(
+    model="openai/gpt-4o",
+    api_key="sk-...",
+    api_base="https://my-proxy.example.com",
+)
+```
+
+Notes:
+- **`drop_params=True` by default.** Provider-unsupported kwargs (`seed`, `presence_penalty`, `strict`, etc.) are silently dropped instead of causing 400 errors. Override with `drop_params=False` if needed.
+- **`get_context_length()` queries LiteLLM's model registry**, returning the model's known context window (e.g. 200000 for Claude Sonnet). No separate metadata probe required.
+- **Auth falls back to environment variables** when `api_key` is omitted. LiteLLM reads provider-specific env vars (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `AZURE_API_KEY`, etc.) automatically.
 
 ---
 

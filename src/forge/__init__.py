@@ -27,6 +27,7 @@ from forge.core.reasoning import DEFAULT_REASONING_REPLAY, REASONING_REPLAY_CHOI
 from forge.core.runner import WorkflowRunner
 from forge.core.slot_worker import SlotWorker
 from forge.clients.base import ChunkType, LLMClient, StreamChunk, TokenUsage
+from forge.clients.litellm import LiteLLMClient
 from forge.clients.llamafile import LlamafileClient
 from forge.clients.ollama import OllamaClient
 from forge.clients.openai_compat import OpenAICompatClient
@@ -105,6 +106,7 @@ __all__ = [
     # Client
     "ChunkType",
     "LLMClient",
+    "LiteLLMClient",
     "LlamafileClient",
     "OllamaClient",
     "OpenAICompatClient",

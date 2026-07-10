@@ -1,6 +1,7 @@
 """Client adapters for LLM backends."""
 
 from forge.clients.base import ChunkType, LLMClient, StreamChunk
+from forge.clients.litellm import LiteLLMClient
 from forge.clients.llamafile import LlamafileClient
 from forge.clients.ollama import OllamaClient
 from forge.clients.openai_compat import OpenAICompatClient
@@ -14,6 +15,7 @@ from forge.clients.sampling_defaults import (
 __all__ = [
     "ChunkType",
     "LLMClient",
+    "LiteLLMClient",
     "LlamafileClient",
     "MODEL_SAMPLING_DEFAULTS",
     "OllamaClient",
