@@ -2,6 +2,19 @@
 
 All notable changes to forge are documented here.
 
+## [0.8.1] — 2026-07-10
+
+A bug-fix release for the llamafile backend. When llama.cpp's tool-call parser rejects malformed model output with a 500, the raw error JSON no longer leaks into the conversation as assistant text — complete tool calls are rescued out of the error body and executed, and unrecoverable ones trigger a clean re-sample nudge.
+
+### Added
+- **Tool-call rescue from malformed-500 bodies.** llama.cpp's `Failed to parse input` message embeds the rejected generation; forge now leniently re-parses `<tool_call>` blocks out of it (Qwen-coder XML format) and returns each block that names a tool from the request's `tools` array as a real `ToolCall` — deduped, with parameters coerced to their declared schema types. Skeleton/preview blocks are passed through too: dispatch rejects them with a `[ToolError]` on the tool channel, the canonical corrective signal, while complete calls simply execute. Unknown tool names are never fabricated. Rescues are counted on `LlamafileClient.rescued_tool_calls` and logged, so rescued runs stay auditable.
+
+### Fixed
+- **Malformed tool-call 500s no longer leak error JSON into the conversation.** When llama.cpp rejects a malformed or incomplete tool call and nothing can be rescued from the body, forge returns a targeted retry nudge (naming the stutter pattern when a `<tool_call>` block was visible, generic otherwise) so the retry loop re-samples a clean call. Previously the raw 500 body was echoed back as if the model had said it.
+
+### Changed
+- **Arbitrary llamafile 500s now fail loud.** A 500 that is *not* a tool-call parse rejection raises `BackendError` instead of being returned as a `TextResponse` carrying the error body — genuine backend failures now cascade, matching the other clients, rather than entering the conversation as model text.
+
 ## [0.8.0] — 2026-06-27
 
 First-class authentication across all proxy modes and backends. forge now forwards exactly one credential to the backend — a static `--backend-api-key` or a single inbound auth header — relocating it across protocols (`x-api-key` ↔ `Authorization: Bearer`) when the frontend and backend differ. Gated OpenAI-compatible backends (LM Studio, hosted vLLM, service accounts) work without monkey-patching. Closes #119.
