@@ -60,6 +60,22 @@ def _renamed_500_body(raw_input: str) -> str:
     })
 
 
+def _b9656_generic_parse_500_body() -> str:
+    """The post-581e8eca8 (b9656+) parse-rejection body: a generic format
+    complaint with the rejected generation moved to server logs — no tool-call
+    XML tokens in the body. Shape confirmed against a live b9656+ build."""
+    return json.dumps({
+        "error": {
+            "code": 500,
+            "message": (
+                "Failed to parse tool call: generated output does not match "
+                "the expected format"
+            ),
+            "type": "server_error",
+        }
+    })
+
+
 _SKELETON_BLOCK = (
     "<tool_call>\n<function=write>\n<parameter=file_path>\ntests/test_x.py\n"
     "</parameter>\n</function>\n</tool_call>"
@@ -405,6 +421,47 @@ class TestLlamafileNativeSend:
             await client.send(
                 [{"role": "user", "content": "test"}], tools=[_make_write_spec()]
             )
+
+    @pytest.mark.asyncio
+    async def test_truncated_open_tag_500_returns_generic_nudge(self) -> None:
+        # Echo cut off mid-open-tag (EOS/token budget inside "<tool_call") is
+        # still a generation artifact: the unclosed-prefix gate matches, no
+        # block parses, and the GENERIC nudge (not stutter — no visible block)
+        # comes back retryable instead of cascading.
+        client = _make_client("native")
+        resp = MagicMock()
+        resp.status_code = 500
+        resp.text = json.dumps({
+            "error": {
+                "code": 500,
+                "message": "Failed to parse input at pos 84: <tool_call",
+                "type": "server_error",
+            }
+        })
+        client._http.post.return_value = resp
+        result = await client.send(
+            [{"role": "user", "content": "test"}], tools=[_make_write_spec()]
+        )
+        assert isinstance(result, TextResponse)
+        assert "ONE complete" not in result.content  # generic, not stutter
+        assert client.rescued_tool_calls == 0
+
+    @pytest.mark.asyncio
+    async def test_b9656_generic_parse_500_cascades(self) -> None:
+        # VERSION BOUNDARY (see _is_malformed_tool_call_500): b9656+ no longer
+        # echoes the rejected generation into the 500 body, so the structural
+        # gate must NOT match — the parse 500 cascades as a real BackendError
+        # instead of entering the retry-nudge loop with nothing to rescue.
+        client = _make_client("native")
+        resp = MagicMock()
+        resp.status_code = 500
+        resp.text = _b9656_generic_parse_500_body()
+        client._http.post.return_value = resp
+        with pytest.raises(BackendError):
+            await client.send(
+                [{"role": "user", "content": "test"}], tools=[_make_write_spec()]
+            )
+        assert client.rescued_tool_calls == 0
 
     @pytest.mark.asyncio
     async def test_missing_choices_raises_backend_error(self) -> None:
@@ -1101,6 +1158,45 @@ class TestLlamafileSendStream:
                 pass
         assert "CUDA out of memory" not in str(excinfo.value)
         assert "CUDA out of memory" in excinfo.value.body
+
+    @pytest.mark.asyncio
+    async def test_stream_truncated_open_tag_500_returns_generic_nudge(self) -> None:
+        # Streaming twin: a mid-open-tag truncation stays retryable here too.
+        client = _make_client("native")
+        client._http.stream.return_value = _MockSSE500Response(
+            json.dumps({
+                "error": {
+                    "code": 500,
+                    "message": "Failed to parse input at pos 84: <tool_call",
+                    "type": "server_error",
+                }
+            })
+        )
+        chunks = [
+            c async for c in client.send_stream(
+                [{"role": "user", "content": "test"}], tools=[_make_write_spec()]
+            )
+        ]
+        finals = [c for c in chunks if c.type == ChunkType.FINAL]
+        assert len(finals) == 1
+        assert isinstance(finals[0].response, TextResponse)
+        assert "ONE complete" not in finals[0].response.content
+        assert client.rescued_tool_calls == 0
+
+    @pytest.mark.asyncio
+    async def test_stream_b9656_generic_parse_500_cascades(self) -> None:
+        # Streaming twin: the no-echo b9656+ parse rejection cascades on the
+        # streaming path too (shared structural gate).
+        client = _make_client("native")
+        client._http.stream.return_value = _MockSSE500Response(
+            _b9656_generic_parse_500_body()
+        )
+        with pytest.raises(BackendError):
+            async for _ in client.send_stream(
+                [{"role": "user", "content": "test"}], tools=[_make_write_spec()]
+            ):
+                pass
+        assert client.rescued_tool_calls == 0
 
 
 # ── mode ─────────────────────────────────────────────────────────

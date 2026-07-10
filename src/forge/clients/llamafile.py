@@ -51,10 +51,14 @@ _KNOWN_GGUF_EXTENSIONS: tuple[str, ...] = (".gguf", ".llamafile")
 # echoing the raw error JSON into the conversation. Every OTHER 500 cascades.
 #
 # The gate is STRUCTURAL, not phrase-based: a 500 is rescuable iff its body
-# carries generated tool-call XML (``<tool_call>``/``<function=``). Only the
+# carries generated tool-call XML (``<tool_call``/``<function=``). Only the
 # model generating such a call and the backend choking on it puts that syntax in
 # a 500 body — genuine faults (OOM/slot/context/CUDA) never echo generation, and
-# a request-parse failure dumps JSON, not this XML.
+# a request-parse failure dumps JSON, not this XML. ``<tool_call`` is
+# deliberately unclosed: an echo truncated mid-open-tag (EOS or token budget
+# landing inside the tag) is the same re-sampleable artifact as a complete one,
+# and the leading ``<`` keeps the gate structural — request and schema dumps
+# carry ``"tool_calls"`` as quoted JSON, never the tag.
 #
 # VERSION BOUNDARY: rescue only fires on llama.cpp builds that echo the raw
 # rejected generation into the 500 body. That ended at commit 581e8eca8
@@ -64,7 +68,7 @@ _KNOWN_GGUF_EXTENSIONS: tuple[str, ...] = (".gguf", ".llamafile")
 # this gate never matches, and grammar hardening in the same series makes the
 # malformed call rare anyway, so the 500 just cascades. Effective only on <= b9647.
 def _is_malformed_tool_call_500(body: str) -> bool:
-    return "<tool_call>" in body or "<function=" in body
+    return "<tool_call" in body or "<function=" in body
 
 
 _MALFORMED_TOOL_CALL_RETRY_TEXT = (
