@@ -54,9 +54,15 @@ _KNOWN_GGUF_EXTENSIONS: tuple[str, ...] = (".gguf", ".llamafile")
 # carries generated tool-call XML (``<tool_call>``/``<function=``). Only the
 # model generating such a call and the backend choking on it puts that syntax in
 # a 500 body — genuine faults (OOM/slot/context/CUDA) never echo generation, and
-# a request-parse failure dumps JSON, not this XML. It is robust to every
-# llama.cpp error-string rename across builds (the phrase it used to pin on,
-# "Failed to parse input", was renamed in later builds).
+# a request-parse failure dumps JSON, not this XML.
+#
+# VERSION BOUNDARY: rescue only fires on llama.cpp builds that echo the raw
+# rejected generation into the 500 body. That ended at commit 581e8eca8
+# ("chat: harden peg-native tool call parsing", PR #24329, first in tag b9656,
+# 2026-06-15): the exception became a generic "...does not match the expected
+# <format> format" and the raw generation moved to server logs only. On b9656+
+# this gate never matches, and grammar hardening in the same series makes the
+# malformed call rare anyway, so the 500 just cascades. Effective only on <= b9647.
 def _is_malformed_tool_call_500(body: str) -> bool:
     return "<tool_call>" in body or "<function=" in body
 
