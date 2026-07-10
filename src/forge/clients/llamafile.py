@@ -48,10 +48,17 @@ _KNOWN_GGUF_EXTENSIONS: tuple[str, ...] = (".gguf", ".llamafile")
 # — NOT an arbitrary backend error. This one is a transient sampling artifact and
 # recoverable by re-sampling, so we surface it as a retryable text response (the
 # run_inference retry loop nudges the model to re-emit a clean call) instead of
-# echoing the raw error JSON into the conversation. Every OTHER 500 cascades as a
-# BackendError.
+# echoing the raw error JSON into the conversation. Every OTHER 500 cascades.
+#
+# The gate is STRUCTURAL, not phrase-based: a 500 is rescuable iff its body
+# carries generated tool-call XML (``<tool_call>``/``<function=``). Only the
+# model generating such a call and the backend choking on it puts that syntax in
+# a 500 body — genuine faults (OOM/slot/context/CUDA) never echo generation, and
+# a request-parse failure dumps JSON, not this XML. It is robust to every
+# llama.cpp error-string rename across builds (the phrase it used to pin on,
+# "Failed to parse input", was renamed in later builds).
 def _is_malformed_tool_call_500(body: str) -> bool:
-    return "Failed to parse input" in body and ("tool_call" in body or "<function=" in body)
+    return "<tool_call>" in body or "<function=" in body
 
 
 _MALFORMED_TOOL_CALL_RETRY_TEXT = (
