@@ -38,7 +38,7 @@ forge-proxy = "forge.proxy.__main__:main"
 
 [project.optional-dependencies]
 anthropic = ["anthropic>=0.40"]
-litellm = ["litellm>=1.55,<2.0"]
+litellm = ["litellm>=1.83.0,<2.0"]
 dev = [
     "pytest",
     "pytest-cov",
