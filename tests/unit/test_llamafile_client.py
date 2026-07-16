@@ -111,6 +111,7 @@ def _mock_response(data: dict, status_code: int = 200) -> MagicMock:
     """Create a mock httpx Response."""
     resp = MagicMock()
     resp.json.return_value = data
+    resp.text = json.dumps(data)
     resp.status_code = status_code
     if status_code >= 400:
         resp.raise_for_status.side_effect = httpx.HTTPStatusError(

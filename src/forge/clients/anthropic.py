@@ -641,3 +641,22 @@ class AnthropicClient:
         ignores ``extra_headers``.
         """
         return 200_000
+
+    def forward_request(
+        self,
+        method: str,
+        target: str,
+        body: bytes = b"",
+        extra_headers: dict[str, str] | None = None,
+        stream: bool = False,
+    ) -> None:
+        """No raw HTTP surface to forward to — returns None.
+
+        This client speaks through the Anthropic SDK, not a raw httpx pool,
+        and the llama.cpp-native endpoints don't exist on Anthropic-shape
+        backends (Anthropic's own ``GET /v1/models`` speaks a different,
+        paginated wire shape). The proxy answers 404 itself — except
+        ``/v1/models``, where it falls back to synthesizing a single-entry
+        list from this client's identity.
+        """
+        return None

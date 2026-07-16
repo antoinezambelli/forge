@@ -24,6 +24,7 @@ from forge.clients.base import (
     TokenUsage,
     decode_tool_args,
     format_tool,
+    open_backend_forward,
     resolve_request_headers,
     static_auth_present,
 )
@@ -442,3 +443,23 @@ class OpenAICompatClient:
         into the proxy's deferred external path.
         """
         return None
+
+    def forward_request(
+        self,
+        method: str,
+        target: str,
+        body: bytes = b"",
+        extra_headers: dict[str, str] | None = None,
+        stream: bool = False,
+    ) -> AbstractAsyncContextManager[Any]:
+        """Verbatim passthrough to the backend's server root (see LLMClient).
+
+        The backend decides which endpoints exist — one that doesn't serve
+        ``target`` answers its own 404, and that answer rides through
+        unmapped.
+        """
+        root = self.base_url.rstrip("/").removesuffix("/v1")
+        return open_backend_forward(
+            self._http, f"{root}{target}", method, body,
+            self._request_headers(extra_headers), stream=stream,
+        )

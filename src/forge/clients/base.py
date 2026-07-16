@@ -4,12 +4,15 @@ from __future__ import annotations
 
 import json
 from collections.abc import AsyncIterator, Mapping
+from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from dataclasses import dataclass
 from enum import Enum
 from typing import Any, Protocol, runtime_checkable
 
+import httpx
+
 from forge.core.workflow import LLMResponse, ToolSpec
-from forge.errors import MultipleCredentialsError
+from forge.errors import BackendError, MultipleCredentialsError
 
 # Verbatim OpenAI-shape payloads forwarded by the proxy. The proxy hands the
 # client the user's original ``tools`` array so the backend sees the exact
@@ -372,6 +375,70 @@ class LLMClient(Protocol):
         """
         ...
 
+    def forward_request(
+        self,
+        method: str,
+        target: str,
+        body: bytes = b"",
+        extra_headers: dict[str, str] | None = None,
+        stream: bool = False,
+    ) -> AbstractAsyncContextManager[Any] | None:
+        """Open a verbatim HTTP forward to the backend's server root.
+
+        The proxy's passthrough channel for llama.cpp-native endpoints
+        (``/props``, the ``/models`` router family, ``/v1/models``): the raw
+        inbound body rides through unchanged and the backend's response —
+        status code included — is the answer, never remapped, so a backend
+        that doesn't serve ``target`` answers with its own 404. ``target`` is
+        the root-relative path plus raw query string; clients whose
+        ``base_url`` carries a ``/v1`` suffix strip it. ``stream=True``
+        disables the read timeout (SSE feeds are silent between events).
+
+        Returns an async context manager yielding the streaming
+        ``httpx.Response`` (``status_code`` / ``aread()`` / ``aiter_raw()``),
+        or None when the client has no raw HTTP surface to forward to (the
+        Anthropic SDK path); the proxy then answers 404 itself. Entering the
+        context manager raises ``BackendError`` when the backend is
+        unreachable.
+        """
+        ...
+
     async def aclose(self) -> None:
         """Release held network resources (e.g. the httpx connection pool)."""
         ...
+
+
+@asynccontextmanager
+async def open_backend_forward(
+    http: httpx.AsyncClient,
+    url: str,
+    method: str,
+    body: bytes = b"",
+    headers: dict[str, str] | None = None,
+    stream: bool = False,
+) -> Any:
+    """Shared ``forward_request`` implementation for OpenAI-shape clients.
+
+    Opens ``method url`` on the client's httpx pool in streaming mode and
+    yields the response for the proxy to relay verbatim — the caller decides
+    whether to buffer (``aread``) or stream (``aiter_raw``). ``stream=True``
+    disables the read timeout for long-lived SSE feeds that are legitimately
+    silent between events; buffered forwards keep the pool's configured
+    timeout so a hung backend still fails loud. Raises ``BackendError`` on a
+    connection-level failure; an HTTP error status is the backend's answer
+    and is yielded, never raised.
+    """
+
+    timeout = httpx.Timeout(None) if stream else httpx.USE_CLIENT_DEFAULT
+    ctx = http.stream(
+        method, url, content=body or None, headers=headers, timeout=timeout,
+    )
+    try:
+        resp = await ctx.__aenter__()
+    except httpx.HTTPError as exc:
+        raise BackendError(502, f"backend {url} unreachable: {exc}") from exc
+    try:
+        yield resp
+    finally:
+        await ctx.__aexit__(None, None, None)
+

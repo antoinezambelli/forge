@@ -4,7 +4,7 @@ import asyncio
 import json
 
 import pytest
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 from forge.context.manager import ContextManager
 from forge.context.strategies import NoCompact
@@ -23,6 +23,11 @@ def _mock_client(response):
     client.api_format = "ollama"
     client.model = "mock-model"
     client.send = AsyncMock(return_value=response)
+    # No raw HTTP backend to forward to (passthrough tests override this).
+    # forward_request is called WITHOUT await — it returns an async context
+    # manager, not a coroutine — so it needs a sync mock, or the None check
+    # misfires on the auto-created coroutine.
+    client.forward_request = MagicMock(return_value=None)
     return client
 
 
@@ -138,6 +143,15 @@ class TestHealthAndModels:
         assert status == 200
         data = json.loads(body)
         assert data["status"] == "ok"
+
+    @pytest.mark.asyncio
+    async def test_v1_health_alias(self, server_factory):
+        # Mirrors llama-server's own /v1/health alias of its public health
+        # endpoint; same fallback as /health.
+        srv, port = await server_factory(TextResponse(content=""))
+        status, body = await _http_request(port, "GET", "/v1/health")
+        assert status == 200
+        assert json.loads(body)["status"] == "ok"
 
     @pytest.mark.asyncio
     async def test_models_endpoint(self, server_factory):
@@ -640,6 +654,302 @@ class TestStreamingErrorStatus:
             )
             assert status == 200
             assert "data:" in body
+        finally:
+            await srv.stop()
+
+
+# ── Verbatim passthrough (llama.cpp-native surface + /v1/models) ──
+
+
+class _FakeBackendResponse:
+    """Streaming-mode httpx.Response stand-in: status_code / aread / aiter_raw."""
+
+    def __init__(self, status, chunks):
+        self.status_code = status
+        self._chunks = chunks
+
+    async def aread(self):
+        return b"".join(self._chunks)
+
+    async def aiter_raw(self):
+        for chunk in self._chunks:
+            yield chunk
+
+
+class _FakeForwardCM:
+    """Async CM standing in for LLMClient.forward_request()."""
+
+    def __init__(self, resp=None, enter_exc=None):
+        self._resp = resp
+        self._enter_exc = enter_exc
+
+    async def __aenter__(self):
+        if self._enter_exc is not None:
+            raise self._enter_exc
+        return self._resp
+
+    async def __aexit__(self, *args):
+        return False
+
+
+async def _passthrough_server(
+    *,
+    resp=None,
+    enter_exc=None,
+    forward_none=False,
+    backend_protocol="openai",
+    backend_api_key_present=False,
+):
+    client = _mock_client(TextResponse(content="ok"))
+    if forward_none:
+        client.forward_request = MagicMock(return_value=None)
+    else:
+        client.forward_request = MagicMock(
+            return_value=_FakeForwardCM(resp, enter_exc),
+        )
+    ctx = ContextManager(strategy=NoCompact(), budget_tokens=8192)
+    srv = HTTPServer(
+        client=client, context_manager=ctx, host="127.0.0.1", port=0,
+        serialize_requests=False, backend_protocol=backend_protocol,
+        backend_api_key_present=backend_api_key_present,
+    )
+    await srv.start()
+    return srv, srv._server.sockets[0].getsockname()[1], client
+
+
+async def _request(port, method, path, body=None, header_lines=()):
+    """Any-method HTTP request; returns (status, body_str, raw_response)."""
+    reader, writer = await asyncio.open_connection("127.0.0.1", port)
+    try:
+        body_bytes = b"" if body is None else json.dumps(body).encode()
+        head = (
+            f"{method} {path} HTTP/1.1\r\n"
+            f"Host: 127.0.0.1:{port}\r\n"
+            + "".join(f"{line}\r\n" for line in header_lines)
+        )
+        if body_bytes:
+            head += (
+                f"Content-Type: application/json\r\n"
+                f"Content-Length: {len(body_bytes)}\r\n"
+            )
+        writer.write(head.encode() + b"\r\n" + body_bytes)
+        await writer.drain()
+        data = await asyncio.wait_for(reader.read(-1), timeout=10.0)
+        raw = data.decode("utf-8", errors="replace")
+        status = int(raw.split("\r\n", 1)[0].split(" ", 2)[1])
+        sep = raw.find("\r\n\r\n")
+        return status, (raw[sep + 4:] if sep >= 0 else ""), raw
+    finally:
+        writer.close()
+        await writer.wait_closed()
+
+
+# The full llama.cpp-native surface the proxy forwards — one case per route,
+# (method, inbound path[+query], request body or None). Mirrors
+# _PASSTHROUGH_ROUTES plus the /v1/models family (_handle_models) and the
+# health endpoints (_handle_health).
+PASSTHROUGH_CASES = [
+    ("GET", "/health", None),
+    ("GET", "/v1/health", None),
+    ("GET", "/props?model=Bonsai-27B&autoload=false", None),
+    ("POST", "/props", {"foo": 1}),
+    ("GET", "/v1/models", None),
+    ("GET", "/models", None),
+    ("POST", "/models", {"model": "x"}),
+    ("DELETE", "/models", {"model": "x"}),
+    ("POST", "/models/load", {"model": "Bonsai-27B"}),
+    ("POST", "/models/unload", {"model": "Bonsai-27B"}),
+]
+
+_MODELS_LISTINGS = ("/v1/models", "/models")
+_HEALTH_PATHS = ("/health", "/v1/health")
+
+
+class TestPassthroughForwarding:
+    """The whole passthrough family relays the backend verbatim.
+
+    One parameterized contract instead of a class per endpoint: the backend's
+    status and body are the answer (its own 404 for an endpoint it doesn't
+    serve, 400 "model is not loaded" from /props?model=), the raw method /
+    path / query / body reach the client's forward_request untouched, and
+    credential handling matches the completions path.
+    """
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("method,target,body", PASSTHROUGH_CASES)
+    async def test_answer_forwarded_verbatim(self, method, target, body):
+        payload = b'{"answer": 42}'
+        srv, port, client = await _passthrough_server(
+            resp=_FakeBackendResponse(200, [payload]),
+        )
+        try:
+            status, resp_body, _ = await _request(port, method, target, body)
+            assert status == 200
+            assert resp_body == payload.decode()
+            # Method, path + raw query, and raw body reach the client
+            # untouched (the last call — /v1/models probes capability first).
+            call = client.forward_request.call_args
+            assert call.args == (method, target)
+            expected_body = b"" if body is None else json.dumps(body).encode()
+            assert call.kwargs["body"] == expected_body
+        finally:
+            await srv.stop()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("method,target,body", PASSTHROUGH_CASES)
+    async def test_backend_status_is_the_answer(self, method, target, body):
+        # Error statuses ride through unmapped — never collapsed to 502.
+        err = b'{"error": {"code": 404, "message": "File Not Found"}}'
+        srv, port, _ = await _passthrough_server(
+            resp=_FakeBackendResponse(404, [err]),
+        )
+        try:
+            status, resp_body, _ = await _request(port, method, target, body)
+            assert status == 404
+            assert resp_body == err.decode()
+        finally:
+            await srv.stop()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("method,target,body", PASSTHROUGH_CASES)
+    async def test_no_raw_backend_404_except_local_fallbacks(self, method, target, body):
+        # forward_request → None (Anthropic SDK path): forge's own 404 —
+        # except the models listing (legacy synthesized single-identity
+        # entry) and health (the proxy's own liveness).
+        srv, port, _ = await _passthrough_server(forward_none=True)
+        try:
+            status, resp_body, _ = await _request(port, method, target, body)
+            # Only the GET spellings are the models LISTING; POST/DELETE
+            # /models are router management and 404 like the rest.
+            if method == "GET" and target in _MODELS_LISTINGS:
+                assert status == 200
+                assert json.loads(resp_body)["data"][0]["id"] == "mock-model"
+            elif method == "GET" and target in _HEALTH_PATHS:
+                assert status == 200
+                assert json.loads(resp_body)["status"] == "ok"
+            else:
+                assert status == 404
+                assert "Not found" in resp_body
+        finally:
+            await srv.stop()
+
+    @pytest.mark.asyncio
+    async def test_unreachable_backend_maps_502(self):
+        srv, port, _ = await _passthrough_server(
+            enter_exc=BackendError(502, "backend unreachable"),
+        )
+        try:
+            status, _, _ = await _request(port, "GET", "/props")
+            assert status == 502
+        finally:
+            await srv.stop()
+
+    @pytest.mark.asyncio
+    async def test_inbound_credential_relocated(self):
+        # openai inbound → anthropic backend: Bearer stripped, token moved to
+        # x-api-key — identical to the completions path.
+        srv, port, client = await _passthrough_server(
+            resp=_FakeBackendResponse(200, [b"{}"]),
+            backend_protocol="anthropic",
+        )
+        try:
+            status, _, _ = await _request(
+                port, "GET", "/props", header_lines=["Authorization: Bearer INBOUND"],
+            )
+            assert status == 200
+            assert client.forward_request.call_args.kwargs["extra_headers"] == {
+                "x-api-key": "INBOUND",
+            }
+        finally:
+            await srv.stop()
+
+    @pytest.mark.asyncio
+    async def test_duplicate_auth_refused_400_no_secret(self):
+        srv, port, client = await _passthrough_server(
+            resp=_FakeBackendResponse(200, [b"{}"]),
+        )
+        try:
+            status, resp_body, _ = await _request(
+                port, "GET", "/props",
+                header_lines=[
+                    "Authorization: Bearer SECRET-ONE",
+                    "Authorization: Bearer SECRET-TWO",
+                ],
+            )
+            assert status == 400
+            assert "SECRET-ONE" not in resp_body and "SECRET-TWO" not in resp_body
+            client.forward_request.assert_not_called()
+        finally:
+            await srv.stop()
+
+    @pytest.mark.asyncio
+    async def test_inbound_plus_static_key_refused_400(self):
+        srv, port, client = await _passthrough_server(
+            resp=_FakeBackendResponse(200, [b"{}"]),
+            backend_api_key_present=True,
+        )
+        try:
+            status, resp_body, _ = await _request(
+                port, "GET", "/props",
+                header_lines=["Authorization: Bearer SECRET-INBOUND"],
+            )
+            assert status == 400
+            assert "SECRET-INBOUND" not in resp_body
+            client.forward_request.assert_not_called()
+        finally:
+            await srv.stop()
+
+
+class TestModelsSseRelay:
+    """GET /models/sse is the one streaming row of the passthrough table:
+    chunks relay unbuffered with SSE headers; a refused subscription buffers
+    and forwards its real status like every other passthrough answer."""
+
+    @pytest.mark.asyncio
+    async def test_stream_relayed_with_sse_headers(self):
+        events = [b'event: models\ndata: {"loading": 1}\n\n', b"data: done\n\n"]
+        srv, port, client = await _passthrough_server(
+            resp=_FakeBackendResponse(200, events),
+        )
+        try:
+            _, _, raw = await _request(port, "GET", "/models/sse?api_key=sk-placeholder")
+            assert raw.startswith("HTTP/1.1 200 OK")
+            assert "text/event-stream" in raw
+            for event in events:
+                assert event.decode() in raw
+            assert raw.rstrip().endswith("0")  # chunked terminator sent
+            call = client.forward_request.call_args
+            assert call.args == ("GET", "/models/sse?api_key=sk-placeholder")
+            assert call.kwargs["stream"] is True  # read timeout disabled
+        finally:
+            await srv.stop()
+
+    @pytest.mark.asyncio
+    async def test_refused_subscription_forwards_status_and_body(self):
+        err = json.dumps({"error": {"code": 403, "message": "nope"}}).encode()
+        srv, port, _ = await _passthrough_server(
+            resp=_FakeBackendResponse(403, [err]),
+        )
+        try:
+            _, _, raw = await _request(port, "GET", "/models/sse")
+            assert raw.startswith("HTTP/1.1 403")
+            assert '"nope"' in raw
+            assert "text/event-stream" not in raw
+        finally:
+            await srv.stop()
+
+    @pytest.mark.asyncio
+    async def test_empty_chunk_does_not_end_stream(self):
+        # A zero-length backend chunk must not become the chunked-encoding
+        # terminator: the event after it still arrives.
+        events = [b"data: first\n\n", b"", b"data: second\n\n"]
+        srv, port, _ = await _passthrough_server(
+            resp=_FakeBackendResponse(200, events),
+        )
+        try:
+            _, _, raw = await _request(port, "GET", "/models/sse")
+            assert "data: first" in raw
+            assert "data: second" in raw
         finally:
             await srv.stop()
 

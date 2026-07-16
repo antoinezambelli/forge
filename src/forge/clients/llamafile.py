@@ -6,6 +6,7 @@ import json
 import logging
 import re
 from collections.abc import AsyncIterator
+from contextlib import AbstractAsyncContextManager
 from pathlib import Path
 from typing import Any
 
@@ -18,6 +19,7 @@ from forge.clients.base import (
     TokenUsage,
     decode_tool_args,
     format_tool,
+    open_backend_forward,
     resolve_request_headers,
     static_auth_present,
 )
@@ -742,6 +744,30 @@ class LlamafileClient:
             return int(n_ctx)
         except (ValueError, TypeError) as exc:
             raise BackendError(502, f"llama.cpp /props n_ctx not an integer: {exc}") from exc
+
+    def forward_request(
+        self,
+        method: str,
+        target: str,
+        body: bytes = b"",
+        extra_headers: dict[str, str] | None = None,
+        stream: bool = False,
+    ) -> AbstractAsyncContextManager[Any]:
+        """Verbatim passthrough to the llama-server root (see LLMClient).
+
+        llama.cpp's bespoke endpoints (``/props``, the ``/models`` router
+        family) live on the server root, so the ``/v1`` suffix is stripped
+        from ``base_url``; ``target`` already carries its own prefix when it
+        needs one (``/v1/models``). Status codes are answers here — 400
+        "model is not loaded" from ``/props?model=``, 400 "already running" /
+        404 unknown-name from ``/models/load`` — and ride through unmapped.
+        """
+        root = self.base_url.rstrip("/").removesuffix("/v1")
+        return open_backend_forward(
+            self._http, f"{root}{target}", method, body,
+            self._request_headers(extra_headers), stream=stream,
+        )
+
 
     async def _send_native(
         self,

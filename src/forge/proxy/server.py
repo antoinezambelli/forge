@@ -34,6 +34,25 @@ logger = logging.getLogger("forge.proxy")
 # Maximum request body size (16 MB)
 _MAX_BODY = 16 * 1024 * 1024
 
+# llama.cpp-native endpoints forwarded to the backend verbatim, mirroring
+# llama-server's own route registrations (tools/server/server.cpp): the
+# bespoke root-only surface — /props and the router's /models management
+# family. The backend's answer, status code included, IS the client's answer
+# (400 "model is not loaded" from /props?model=, 400/404 from /models/load,
+# and a backend that doesn't serve the endpoint answers its own 404). The
+# value flags the router's SSE feed, relayed unbuffered with the read
+# timeout off. GET /models — llama-server's root alias of /v1/models — is
+# routed through _handle_models instead, for the Anthropic-path fallback.
+_PASSTHROUGH_ROUTES: dict[tuple[str, str], bool] = {
+    ("GET", "/props"): False,
+    ("POST", "/props"): False,
+    ("POST", "/models"): False,        # router: add a model
+    ("DELETE", "/models"): False,      # router: remove a model
+    ("POST", "/models/load"): False,
+    ("POST", "/models/unload"): False,
+    ("GET", "/models/sse"): True,      # router: model-status SSE feed
+}
+
 
 @dataclass
 class _QueueItem:
@@ -165,7 +184,9 @@ class HTTPServer:
             # Strip the query string before routing. Real clients append
             # query params (e.g. Claude Code POSTs /v1/messages?beta=true);
             # exact-matching the raw target would 404 every such request.
+            # Kept separately ("" or "?...") for routes that forward it.
             path = raw_path.split("?", 1)[0]
+            query = raw_path[len(path):]
 
             # Read headers
             headers = await self._read_headers(reader)
@@ -186,10 +207,17 @@ class HTTPServer:
                 )
 
             # Route
-            if method == "GET" and path == "/health":
-                await self._handle_health(writer)
-            elif method == "GET" and path == "/v1/models":
-                await self._handle_models(writer)
+            # /health, /v1/health, /models, /v1/models require special
+            # casing when proxying OpenAI client -> forge -> Anthropic API
+            if method == "GET" and path in ("/health", "/v1/health"):
+                await self._handle_health(writer, path, query, headers)
+            elif method == "GET" and path in ("/v1/models", "/models"):
+                await self._handle_models(writer, path, query, headers)
+            elif (method, path) in _PASSTHROUGH_ROUTES:
+                await self._handle_passthrough(
+                    writer, method, path, query, body_bytes, headers,
+                    sse=_PASSTHROUGH_ROUTES[(method, path)],
+                )
             elif method == "POST" and path == "/v1/chat/completions":
                 await self._handle_completions(
                     writer, body_bytes, protocol="openai", headers=headers,
@@ -237,18 +265,123 @@ class HTTPServer:
                 headers[key] = value.strip()
         return headers
 
-    async def _handle_health(self, writer: asyncio.StreamWriter) -> None:
-        """GET /health — returns OK."""
-        body = json.dumps({"status": "ok"})
-        await self._send_json(writer, 200, body)
+    async def _handle_health(
+        self, writer: asyncio.StreamWriter, path: str, query: str,
+        headers: dict[str, str],
+    ) -> None:
+        """GET /health (and llama-server's /v1/health alias).
+        Forward request to OpenAI-compatible API.
+        Return a dummy answer when an OpenAI client queries Anthropic API.
+        """
+        # Capability probe only — constructing the CM performs no I/O
+        if self._client.forward_request("GET", path) is None:
+            # Fallback for OpenAI client -> forge -> Anthropic API
+            body = json.dumps({"status": "ok"})
+            await self._send_json(writer, 200, body)
+            return
 
-    async def _handle_models(self, writer: asyncio.StreamWriter) -> None:
-        """GET /v1/models — report the backend model the proxy is fronting."""
-        body = json.dumps({
-            "object": "list",
-            "data": [{"id": self._client.model, "object": "model"}],
-        })
-        await self._send_json(writer, 200, body)
+        await self._handle_passthrough(writer, "GET", path, query, b"", headers)
+
+    async def _handle_models(
+        self, writer: asyncio.StreamWriter, path: str, query: str,
+        headers: dict[str, str],
+    ) -> None:
+        """GET /v1/models (and llama-server's /health alias).
+        Forward request to OpenAI-compatible API.
+        Return a dummy answer when an OpenAI client queries Anthropic API.
+        """
+        # Capability probe only — constructing the CM performs no I/O
+        if self._client.forward_request("GET", path) is None:
+            # Fallback for OpenAI client -> forge -> Anthropic API
+            body = json.dumps({
+                "object": "list",
+                "data": [{"id": self._client.model, "object": "model"}],
+            })
+            await self._send_json(writer, 200, body)
+            return
+
+        await self._handle_passthrough(writer, "GET", path, query, b"", headers)
+
+    async def _handle_passthrough(
+        self,
+        writer: asyncio.StreamWriter,
+        method: str,
+        path: str,
+        query: str,
+        body_bytes: bytes,
+        headers: dict[str, str],
+        sse: bool = False,
+    ) -> None:
+        """Forward a request to the backend and relay the answer, verbatim.
+
+        The table-driven passthrough lane for llama.cpp-native endpoints
+        (_PASSTHROUGH_ROUTES) and the /v1/models family: raw body and query
+        string ride through unchanged, and the backend's status and body come
+        back unmapped — statuses are answers on this surface (400 "model is
+        not loaded", the backend's own 404 for an endpoint it doesn't serve).
+        The single inbound credential is relocated exactly like the
+        completions path; a connection-level failure is the proxy's 502.
+        Backends with no raw HTTP surface (Anthropic SDK path) return None
+        and get forge's own 404.
+
+        ``sse=True`` relays chunks as they arrive instead of buffering — the
+        router's status feed is long-lived and silent between model state
+        changes. A disconnected client is noticed at the next event write; an
+        idle relay holds its backend connection until then, which is fine for
+        a status feed. A refused subscription (non-200) buffers and forwards
+        like any other answer.
+        """
+        try:
+            extra_headers = resolve_inbound_credential(
+                headers,
+                source_protocol="openai",
+                target_protocol=self._backend_protocol,
+                backend_api_key_present=self._backend_api_key_present,
+            )
+            cm = self._client.forward_request(
+                method, f"{path}{query}", body=body_bytes,
+                extra_headers=extra_headers, stream=sse,
+            )
+        except Exception as exc:
+            await self._send_exception(writer, exc, "openai", as_stream=False)
+            return
+        if cm is None:
+            await self._send_error(writer, 404, "Not found")
+            return
+        flushed = False
+        try:
+            async with cm as resp:
+                if not sse or resp.status_code != 200:
+                    body = await resp.aread()
+                    await self._send_json(
+                        writer, resp.status_code,
+                        body.decode("utf-8", errors="replace"),
+                    )
+                    return
+                await self._send_sse_header(writer)
+                flushed = True
+                async for chunk in resp.aiter_raw():
+                    if writer.is_closing():
+                        return
+                    if not chunk:
+                        # A zero-length chunk is the chunked-encoding
+                        # terminator — emitting one would end the stream.
+                        continue
+                    writer.write(f"{len(chunk):x}\r\n".encode() + chunk + b"\r\n")
+                    await writer.drain()
+                if not writer.is_closing():
+                    writer.write(b"0\r\n\r\n")
+                    await writer.drain()
+        except Exception as exc:
+            if not flushed:
+                await self._send_exception(writer, exc, "openai", as_stream=False)
+            else:
+                # Headers are already on the wire — a status can't change and
+                # writing an error body would corrupt the SSE stream. Ending
+                # the connection (the caller closes it) is the only honest
+                # signal left; SSE clients reconnect by design.
+                logger.info("<< passthrough relay ended: %s", str(exc)[:120])
+
 
     async def _handle_completions(
         self,
