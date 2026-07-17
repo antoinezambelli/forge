@@ -62,6 +62,10 @@ _GGUF_FILES: list[str] = [
     "Qwen3.6-27B-Q4_K_M.gguf",
     "Qwen3.6-35B-A3B-UD-Q4_K_M.gguf",
     "Nemotron-3-Nano-30B-A3B-Q4_K_M.gguf",
+    # Gemma-4 large (rig-02, az/eval-large): 26B-A4B MoE + 31B dense. Native FC;
+    # serving recipe in _SERVER_EXTRA_FLAGS (SWA + q8-KV serving fixes).
+    "gemma-4-26B-A4B-it-UD-Q4_K_M.gguf",
+    "gemma-4-31B-it-Q4_K_M.gguf",
     # 16GB tier (rig-01) — LFM2.5 MoE + Mellum2 MoE (both variants). All
     # support native FC, so each gets native + prompt configs below.
     "LFM2.5-8B-A1B-Q4_K_M.gguf",
@@ -434,6 +438,24 @@ _SERVER_EXTRA_FLAGS: dict[str, list[str]] = {
     # Instruct is direct (no <think>), so it gets no extra flag.
     "LFM2.5-8B-A1B-Q4_K_M": ["--reasoning-format", "auto"],
     "Mellum2-12B-A2.5B-Thinking-Q4_K_M": ["--reasoning-format", "auto"],
+    # Gemma-4 large (rig-02): dense 31B + 26B-A4B MoE. --reasoning-format auto for
+    # <think> parsing; --ctx-checkpoints 1 bounds SWA checkpoint RAM (llama.cpp
+    # #21690); q8 KV + -fa for VRAM; --samplers orders temp/top_p/top_k (values
+    # come client-side from recommended_sampling → sampling_defaults). No
+    # --reasoning-budget (absent, as every other config here). No -c: context comes
+    # from --budget-mode (forge-full auto-fit).
+    "gemma-4-31B-it-Q4_K_M": [
+        "--reasoning-format", "auto",
+        "--ctx-checkpoints", "1", "--cache-type-k", "q8_0",
+        "--cache-type-v", "q8_0", "-fa", "1",
+        "--samplers", "temperature;top_p;top_k",
+    ],
+    "gemma-4-26B-A4B-it-UD-Q4_K_M": [
+        "--reasoning-format", "auto",
+        "--ctx-checkpoints", "1", "--cache-type-k", "q8_0",
+        "--cache-type-v", "q8_0", "-fa", "1",
+        "--samplers", "temperature;top_p;top_k",
+    ],
 }
 
 
