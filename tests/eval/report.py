@@ -109,6 +109,28 @@ _AR_SCENARIOS: set[str] = {
 # ── Data loading ────────────────────────────────────────────────
 
 
+# Reasoning-effort DISPLAY vocabulary, keyed by model stem. Maps a row's stored
+# reasoning_level ("default" = the model's registry baseline effort, plus any
+# explicit variant like "high") to the model's native vendor term. Only stems
+# present here render an effort tag; models with no chat-template reasoning knob
+# (qwen's reasoning is a server-side budget; plain instruct models) show nothing.
+# Storage stays generic ("default"/"high" in the JSONL); the bespoke terms live
+# here so display is decoupled from what's stored.
+_REASONING_VOCAB: dict[str, dict[str, str]] = {
+    "gpt-oss-120b-Q4_K_M": {"default": "medium", "high": "high"},
+    "NVIDIA-Nemotron-3-Super-120B-A12B-UD-Q4_K_M": {"default": "low", "high": "high"},
+}
+
+
+def _reasoning_display(model: str, level: str) -> str | None:
+    """Native effort term for a model's reasoning_level, or None when the model
+    has no reasoning-effort axis (so no effort tag is shown)."""
+    vocab = _REASONING_VOCAB.get(model)
+    if vocab is None:
+        return None
+    return vocab.get(level, level)
+
+
 @dataclass
 class ConfigKey:
     model: str
@@ -118,6 +140,10 @@ class ConfigKey:
     tool_choice: str = "auto"
     # Pre-knob rows ran unbounded replay — legacy behavior == "full".
     reasoning_replay: str = "full"
+    # Reasoning-effort level. "default" = the model's registry baseline effort
+    # (pre-axis rows have no field); explicit variants like "high" coexist as
+    # parallel display rows. Rendered via _REASONING_VOCAB in _tag.
+    reasoning_level: str = "default"
 
     @property
     def _tag(self) -> str:
@@ -132,6 +158,9 @@ class ConfigKey:
             base = self.ablation
         if self.reasoning_replay != "none":
             base = f"{base}:{self.reasoning_replay}"
+        effort = _reasoning_display(self.model, self.reasoning_level)
+        if effort is not None:
+            base = f"{base}@{effort}"
         return f"[{base}]"
 
     @property
@@ -157,6 +186,7 @@ class ConfigKey:
         return hash((
             self.model, self.backend, self.mode,
             self.ablation, self.tool_choice, self.reasoning_replay,
+            self.reasoning_level,
         ))
 
     def __eq__(self, other: object) -> bool:
@@ -169,6 +199,7 @@ class ConfigKey:
             and self.ablation == other.ablation
             and self.tool_choice == other.tool_choice
             and self.reasoning_replay == other.reasoning_replay
+            and self.reasoning_level == other.reasoning_level
         )
 
 
@@ -196,7 +227,7 @@ def _row_replay(row: dict) -> str:
     return row.get("reasoning_replay", "full")
 
 
-def _config_tuple(row: dict) -> tuple[str, str, str, str, str]:
+def _config_tuple(row: dict) -> tuple[str, str, str, str, str, str]:
     """The identity a config is deduped on — ConfigKey's fields minus reasoning_replay.
 
     reasoning_replay is deliberately NOT part of the dedup identity: pre-knob
@@ -205,6 +236,10 @@ def _config_tuple(row: dict) -> tuple[str, str, str, str, str]:
     as a stale ':full' duplicate next to its re-swept config). Within one
     generation all policy rows share the gen, so none/keep-last/full survive
     dedup side by side as separate display rows (see group_rows).
+
+    reasoning_level, by contrast, IS part of the dedup identity: effort variants
+    of one stem (e.g. medium vs high) are parallel configs that must coexist,
+    not supersede each other. Pre-axis rows default to "default".
     """
     return (
         row["model"],
@@ -212,6 +247,7 @@ def _config_tuple(row: dict) -> tuple[str, str, str, str, str]:
         row["mode"],
         row.get("ablation", "reforged"),
         row.get("tool_choice", "auto"),
+        row.get("reasoning_level", "default"),
     )
 
 
@@ -254,7 +290,7 @@ def group_rows(
         tc = row.get("tool_choice", "auto")
         key = ConfigKey(
             row["model"], row["backend"], row["mode"], ablation, tc,
-            _row_replay(row),
+            _row_replay(row), row.get("reasoning_level", "default"),
         )
         grouped[key][row["scenario"]].append(row)
     return grouped

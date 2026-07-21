@@ -21,6 +21,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from forge.clients.sampling_defaults import get_sampling_defaults
 from forge.core.reasoning import DEFAULT_REASONING_REPLAY, REASONING_REPLAY_CHOICES, ReasoningReplay
 from forge.server import BudgetMode, ServerManager
 
@@ -129,6 +130,13 @@ class BatchConfig:
     think: bool | None  # None = auto
     tool_choice: str | None = None  # Anthropic only: "auto", "any"
     gguf_filename: str | None = None  # llamaserver/llamafile only
+    # Reasoning-effort axis. reasoning_level tags rows so effort variants of the
+    # same stem coexist in the resume key + report ("default" = registry
+    # recommended sampling). sampling_override, when set, bypasses recommended
+    # sampling in _build_client and passes an explicit param set (its keys match
+    # LlamafileClient kwargs). See forge_eval_reasoning_level_axis design.
+    reasoning_level: str = "default"
+    sampling_override: dict[str, Any] | None = None
 
 
 # Ollama configs: 10 instruct models, native FC, stream
@@ -210,6 +218,38 @@ NEW_MODEL_CONFIGS: list[BatchConfig] = [
     c for c in LLAMASERVER_CONFIGS if c.model in _NEW_MODEL_STEMS
 ]
 
+# Reasoning-effort axis (rig-03): gpt-oss@high + nemotron@high as PARALLEL
+# configs to the medium/low-effort baselines. Same GGUF + native FC, but
+# recommended sampling is bypassed (sampling_override) so chat_template_kwargs
+# swaps the effort knob to HIGH while get_sampling_defaults preserves the rest
+# of the registry baseline (temp/top_p/...). reasoning_level="high" tags the
+# rows so they coexist with the baseline ("default") rows in the resume key +
+# report instead of colliding (silent-skip). Kept OUT of LLAMASERVER_CONFIGS /
+# "all" so only an explicit --config reasoning-high runs them.
+_REASONING_HIGH_CONFIGS: list[BatchConfig] = [
+    BatchConfig(
+        model="gpt-oss-120b-Q4_K_M", backend="llamaserver", mode="native",
+        think=None, gguf_filename="gpt-oss-120b-Q4_K_M-00001-of-00002.gguf",
+        reasoning_level="high",
+        sampling_override={
+            **get_sampling_defaults("gpt-oss-120b-Q4_K_M"),
+            "chat_template_kwargs": {"reasoning_effort": "high"},
+        },
+    ),
+    BatchConfig(
+        model="NVIDIA-Nemotron-3-Super-120B-A12B-UD-Q4_K_M", backend="llamaserver",
+        mode="native", think=None,
+        gguf_filename="NVIDIA-Nemotron-3-Super-120B-A12B-UD-Q4_K_M-00001-of-00003.gguf",
+        reasoning_level="high",
+        sampling_override={
+            **get_sampling_defaults("NVIDIA-Nemotron-3-Super-120B-A12B-UD-Q4_K_M"),
+            "chat_template_kwargs": {
+                "enable_thinking": True, "low_effort": False, "force_nonempty_content": True,
+            },
+        },
+    ),
+]
+
 # Named subsets for quick iteration
 # Note: "anthropic" is separate from "all" — it costs money per API call.
 CONFIG_SETS: dict[str, list[BatchConfig]] = {
@@ -219,6 +259,7 @@ CONFIG_SETS: dict[str, list[BatchConfig]] = {
     "llamafile": LLAMAFILE_CONFIGS,
     "llamaserver-native": [c for c in LLAMASERVER_CONFIGS if c.mode == "native"],
     "llamaserver-prompt": [c for c in LLAMASERVER_CONFIGS if c.mode == "prompt"],
+    "reasoning-high": _REASONING_HIGH_CONFIGS,
     "new-models": NEW_MODEL_CONFIGS,
     "new-models-native": [c for c in NEW_MODEL_CONFIGS if c.mode == "native"],
     "new-models-prompt": [c for c in NEW_MODEL_CONFIGS if c.mode == "prompt"],
@@ -291,6 +332,7 @@ def _run_key(
     ablation_name: str,
     tool_choice: str,
     reasoning_replay: str,
+    reasoning_level: str,
     scenario: str,
 ) -> str:
     """Canonical per-run resume key.
@@ -298,11 +340,13 @@ def _run_key(
     Single source of truth for the resume/dedup dimensions so the counting
     pass and every run-loop lookup stay in lockstep. reasoning_replay is part
     of the key: distinct policies (none/keep-last/full) on the same
-    model+scenario are independent runs and must not collide.
+    model+scenario are independent runs and must not collide. reasoning_level
+    ("default"/"high"/...) is likewise part of the key so effort variants of one
+    stem coexist instead of clobbering.
     """
     return (
         f"{model}|{backend}|{mode}"
-        f"|{ablation_name}|{tool_choice}|{reasoning_replay}|{scenario}"
+        f"|{ablation_name}|{tool_choice}|{reasoning_replay}|{reasoning_level}|{scenario}"
     )
 
 
@@ -335,9 +379,10 @@ def _count_completed_runs(
                 continue
             row_tc = row.get("tool_choice", "auto")
             row_rr = row.get("reasoning_replay", DEFAULT_REASONING_REPLAY)
+            row_rl = row.get("reasoning_level", "default")
             key = _run_key(
                 row["model"], row["backend"], row["mode"],
-                row_ablation, row_tc, row_rr, row["scenario"],
+                row_ablation, row_tc, row_rr, row_rl, row["scenario"],
             )
             counts[key] = counts.get(key, 0) + 1
     return counts
@@ -360,6 +405,7 @@ def _run_result_to_row(
         "ablation": ablation_name,
         "tool_choice": config.tool_choice or "auto",
         "reasoning_replay": reasoning_replay,
+        "reasoning_level": config.reasoning_level,
         "scenario": result.scenario_name,
         "run": run_idx,
         "completeness": result.completeness,
@@ -664,6 +710,19 @@ def _build_client(config: BatchConfig, models_dir: Path) -> Any:
         from forge.clients.llamafile import LlamafileClient
 
         assert config.gguf_filename, f"llamaserver config missing gguf_filename: {config.model}"
+        # Explicit per-config sampling (reasoning-effort axis): opt out of the
+        # registry recommended row and pass the full param set. Its keys match
+        # the constructor kwargs (temperature/top_p/top_k/min_p/
+        # chat_template_kwargs); caller-explicit values win field-by-field and
+        # chat_template_kwargs whole-replaces (llamafile.py:366-380).
+        if config.sampling_override is not None:
+            return LlamafileClient(
+                gguf_path=str(models_dir / config.gguf_filename),
+                mode=config.mode, think=think_val,
+                base_url=f"http://localhost:{_eval_port()}/v1",
+                recommended_sampling=False,
+                **config.sampling_override,
+            )
         return LlamafileClient(
             gguf_path=str(models_dir / config.gguf_filename),
             mode=config.mode, think=think_val,
@@ -780,7 +839,8 @@ async def run_batch(
                 continue
             key = _run_key(
                 config.model, config.backend, config.mode,
-                ablation_name, tc_label_pre, reasoning_replay, scenario.name,
+                ablation_name, tc_label_pre, reasoning_replay,
+                config.reasoning_level, scenario.name,
             )
             existing = completed_counts.get(key, 0)
             total_expected += max(0, runs_per_scenario - existing)
@@ -820,7 +880,8 @@ async def run_batch(
                         continue
                     key = _run_key(
                         config.model, config.backend, config.mode,
-                        ablation_name, tc_label, reasoning_replay, scenario.name,
+                        ablation_name, tc_label, reasoning_replay,
+                        config.reasoning_level, scenario.name,
                     )
                     existing = completed_counts.get(key, 0)
                     remaining = max(0, runs_per_scenario - existing)
@@ -852,7 +913,8 @@ async def run_batch(
 
                     key = _run_key(
                         config.model, config.backend, config.mode,
-                        ablation_name, tc_label, reasoning_replay, scenario.name,
+                        ablation_name, tc_label, reasoning_replay,
+                        config.reasoning_level, scenario.name,
                     )
                     existing = completed_counts.get(key, 0)
                     remaining = max(0, runs_per_scenario - existing)
@@ -912,7 +974,8 @@ async def run_batch(
                     continue
                 key_check = _run_key(
                     config.model, config.backend, config.mode,
-                    ablation_name, tc_label, reasoning_replay, scenario.name,
+                    ablation_name, tc_label, reasoning_replay,
+                    config.reasoning_level, scenario.name,
                 )
                 if completed_counts.get(key_check, 0) < runs_per_scenario:
                     has_work = True
@@ -996,7 +1059,8 @@ async def run_batch(
 
                 key = _run_key(
                     config.model, config.backend, config.mode,
-                    ablation_name, tc_label, reasoning_replay, scenario.name,
+                    ablation_name, tc_label, reasoning_replay,
+                    config.reasoning_level, scenario.name,
                 )
                 existing = completed_counts.get(key, 0)
                 remaining = max(0, runs_per_scenario - existing)
