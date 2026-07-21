@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 import subprocess
 import sys
 import time
@@ -66,6 +67,13 @@ _GGUF_FILES: list[str] = [
     # serving recipe in _SERVER_EXTRA_FLAGS (SWA + q8-KV serving fixes).
     "gemma-4-26B-A4B-it-UD-Q4_K_M.gguf",
     "gemma-4-31B-it-Q4_K_M.gguf",
+    # 120B tier (rig-03, az/eval-large): multi-shard GGUFs — list the FIRST
+    # shard; llama-server auto-loads siblings. The config loop strips the
+    # -NNNNN-of-NNNNN suffix so the model key (and _SERVER_EXTRA_FLAGS /
+    # sampling lookups) resolve on the clean stem. Serving recipe below.
+    "gpt-oss-120b-Q4_K_M-00001-of-00002.gguf",
+    "Qwen3.5-122B-A10B-Q4_K_M-00001-of-00003.gguf",
+    "NVIDIA-Nemotron-3-Super-120B-A12B-UD-Q4_K_M-00001-of-00003.gguf",
     # 16GB tier (rig-01) — LFM2.5 MoE + Mellum2 MoE (both variants). All
     # support native FC, so each gets native + prompt configs below.
     "LFM2.5-8B-A1B-Q4_K_M.gguf",
@@ -144,7 +152,10 @@ OLLAMA_CONFIGS: list[BatchConfig] = [
 # skipped for models in _PROMPT_ONLY_MODELS (no native FC training).
 LLAMASERVER_CONFIGS: list[BatchConfig] = []
 for _filename in _GGUF_FILES:
-    _stem = Path(_filename).stem
+    # Strip a multi-shard suffix (e.g. "-00001-of-00002") so a sharded model
+    # keys on its clean stem for config/flags/sampling/row-identity, while
+    # gguf_filename keeps the first-shard name that llama-server loads from.
+    _stem = re.sub(r"-\d{5}-of-\d{5}$", "", Path(_filename).stem)
     if _stem not in _PROMPT_ONLY_MODELS:
         LLAMASERVER_CONFIGS.append(
             BatchConfig(
@@ -455,6 +466,30 @@ _SERVER_EXTRA_FLAGS: dict[str, list[str]] = {
         "--ctx-checkpoints", "1", "--cache-type-k", "q8_0",
         "--cache-type-v", "q8_0", "-fa", "1",
         "--samplers", "temperature;top_p;top_k",
+    ],
+    # 120B tier (rig-03, UMA/Vulkan). Shared portable recipe: --reasoning-format
+    # auto for <think> parsing, q8 KV + -fa for footprint, --no-prefill-assistant
+    # (trailing-assistant + thinking 400 guard). --no-mmap is rig-03/UMA-required
+    # (weights in shared RAM; kernel must not evict GGUF pages). The RADV env vars
+    # (AMD_VULKAN_ICD/RADV_PERFTEST) are set in the launch wrapper, not here — this
+    # dict is CLI-flags-only. No -c (context from --budget-mode forge-full). No
+    # --reasoning-budget. Reasoning level is client-side via sampling_defaults
+    # chat_template_kwargs (gpt-oss reasoning_effort=medium; nemotron low_effort).
+    "gpt-oss-120b-Q4_K_M": [
+        "--reasoning-format", "auto",
+        "--cache-type-k", "q8_0", "--cache-type-v", "q8_0", "-fa", "1",
+        "-ub", "2048", "-b", "2048",
+        "--no-prefill-assistant", "--no-mmap",
+    ],
+    "Qwen3.5-122B-A10B-Q4_K_M": [
+        "--reasoning-format", "auto",
+        "--cache-type-k", "q8_0", "--cache-type-v", "q8_0", "-fa", "1",
+        "--no-prefill-assistant", "--no-mmap",
+    ],
+    "NVIDIA-Nemotron-3-Super-120B-A12B-UD-Q4_K_M": [
+        "--reasoning-format", "auto",
+        "--cache-type-k", "q8_0", "--cache-type-v", "q8_0", "-fa", "1",
+        "--no-prefill-assistant", "--no-mmap",
     ],
 }
 
