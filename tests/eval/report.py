@@ -228,14 +228,14 @@ def _row_replay(row: dict) -> str:
 
 
 def _config_tuple(row: dict) -> tuple[str, str, str, str, str, str]:
-    """The identity a config is deduped on — ConfigKey's fields minus reasoning_replay.
+    """The BASE identity a config is deduped on — ConfigKey's fields minus reasoning_replay.
 
-    reasoning_replay is deliberately NOT part of the dedup identity: pre-knob
-    rows have no field, and a newer-gen re-sweep should supersede them
-    regardless of which policies it ran (else every v0.7.0 row would survive
-    as a stale ':full' duplicate next to its re-swept config). Within one
-    generation all policy rows share the gen, so none/keep-last/full survive
-    dedup side by side as separate display rows (see group_rows).
+    reasoning_replay is not part of this base identity because pre-knob rows have
+    no field at all: they ran unbounded replay under the old default, and a
+    newer-gen re-sweep of the config should supersede them regardless of which
+    policies it ran (else every v0.7.0 row would survive as a stale ':full'
+    duplicate next to its re-swept config). See _policy_tuple for how rows that
+    DO carry an explicit policy are kept distinct.
 
     reasoning_level, by contrast, IS part of the dedup identity: effort variants
     of one stem (e.g. medium vs high) are parallel configs that must coexist,
@@ -249,6 +249,15 @@ def _config_tuple(row: dict) -> tuple[str, str, str, str, str, str]:
         row.get("tool_choice", "auto"),
         row.get("reasoning_level", "default"),
     )
+
+
+def _policy_tuple(row: dict) -> tuple:
+    """Base identity plus the row's EXPLICIT reasoning_replay policy.
+
+    Legacy pre-knob rows (no field) key on None, so they never collide with an
+    explicit policy arm. Used to scope supersession for explicit rows only.
+    """
+    return _config_tuple(row) + (row.get("reasoning_replay"),)
 
 
 def dedup_latest_gen(rows: list[dict]) -> list[dict]:
@@ -265,17 +274,43 @@ def dedup_latest_gen(rows: list[dict]) -> list[dict]:
     Rows with no ``gen`` field count as gen 0, so a lone legacy file with no
     generations renders exactly as before (everything at gen 0, no badges).
 
+    Supersession is scoped by whether a row carries an EXPLICIT reasoning_replay
+    policy, because the two cases mean different things:
+
+    * Legacy pre-knob rows (no field) are an artifact of the old unbounded-replay
+      default, not a deliberate measurement. Any newer-gen sweep of the config
+      supersedes them — scoped on the base identity — so they never linger as
+      phantom ':full' twins.
+    * Explicit policy rows (none/keep-last/full) are deliberate measurements of
+      that policy, so they are superseded only by a newer gen of the SAME policy
+      — scoped on the base identity plus the policy. An explicit arm that only
+      ever ran in an older gen carries forward with a badge rather than being
+      destroyed by a newer sweep that happened to run different policies.
+
     Note: dedup is whole-config, not per-scenario — a partial re-run would
     shadow the older gen's other scenarios. Not a concern today (re-swept
     configs are full-suite), but worth knowing before partial re-runs land.
     """
-    max_gen: dict[tuple, int] = {}
+    base_max: dict[tuple, int] = {}
+    policy_max: dict[tuple, int] = {}
     for r in rows:
-        k = _config_tuple(r)
         g = r.get("gen", 0)
-        if g > max_gen.get(k, -1):
-            max_gen[k] = g
-    return [r for r in rows if r.get("gen", 0) == max_gen[_config_tuple(r)]]
+        bk = _config_tuple(r)
+        pk = _policy_tuple(r)
+        if g > base_max.get(bk, -1):
+            base_max[bk] = g
+        if g > policy_max.get(pk, -1):
+            policy_max[pk] = g
+
+    kept: list[dict] = []
+    for r in rows:
+        g = r.get("gen", 0)
+        if "reasoning_replay" in r:
+            if g == policy_max[_policy_tuple(r)]:
+                kept.append(r)
+        elif g == base_max[_config_tuple(r)]:
+            kept.append(r)
+    return kept
 
 
 def group_rows(

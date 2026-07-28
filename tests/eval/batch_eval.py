@@ -64,7 +64,7 @@ _GGUF_FILES: list[str] = [
     "Qwen3.6-27B-Q4_K_M.gguf",
     "Qwen3.6-35B-A3B-UD-Q4_K_M.gguf",
     "Nemotron-3-Nano-30B-A3B-Q4_K_M.gguf",
-    # Gemma-4 large (rig-02, az/eval-large): 26B-A4B MoE + 31B dense. Native FC;
+    # Gemma-4 large (rig-04, az/eval-large): 26B-A4B MoE + 31B dense. Native FC;
     # serving recipe in _SERVER_EXTRA_FLAGS (SWA + q8-KV serving fixes).
     "gemma-4-26B-A4B-it-UD-Q4_K_M.gguf",
     "gemma-4-31B-it-Q4_K_M.gguf",
@@ -495,7 +495,7 @@ _SERVER_EXTRA_FLAGS: dict[str, list[str]] = {
     # Instruct is direct (no <think>), so it gets no extra flag.
     "LFM2.5-8B-A1B-Q4_K_M": ["--reasoning-format", "auto"],
     "Mellum2-12B-A2.5B-Thinking-Q4_K_M": ["--reasoning-format", "auto"],
-    # Gemma-4 large (rig-02): dense 31B + 26B-A4B MoE. --reasoning-format auto for
+    # Gemma-4 large (rig-04): dense 31B + 26B-A4B MoE. --reasoning-format auto for
     # <think> parsing; --ctx-checkpoints 1 bounds SWA checkpoint RAM (llama.cpp
     # #21690); q8 KV + -fa for VRAM; --samplers orders temp/top_p/top_k (values
     # come client-side from recommended_sampling → sampling_defaults). No
