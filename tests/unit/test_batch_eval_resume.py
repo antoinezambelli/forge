@@ -1,9 +1,10 @@
-"""Resume-key behavior for the reasoning_replay eval axis (batch_eval).
+"""Resume-key behavior for the eval policy axes (batch_eval).
 
 reasoning_replay is part of the canonical run key: distinct policies
 (none / keep-last / full) on the same model+scenario are independent runs
 and must not collide in resume counting, or a multi-policy sweep would
-under-count and skip work it never actually ran.
+under-count and skip work it never actually ran. reasoning_level is likewise
+independent so effort variants of the same model do not clobber one another.
 """
 
 from __future__ import annotations
@@ -46,7 +47,8 @@ def _row(model: str, scenario: str, reasoning_replay: str) -> dict:
 def test_run_key_distinguishes_reasoning_replay() -> None:
     base = dict(
         model="m", backend="llamaserver", mode="native",
-        ablation_name="reforged", tool_choice="auto", scenario="s",
+        ablation_name="reforged", tool_choice="auto",
+        reasoning_level="default", scenario="s",
     )
     k_none = _run_key(reasoning_replay="none", **base)
     k_keep = _run_key(reasoning_replay="keep-last", **base)
@@ -59,9 +61,24 @@ def test_run_key_distinguishes_reasoning_replay() -> None:
     assert "none" in k_none
 
 
+def test_run_key_distinguishes_reasoning_level() -> None:
+    base = dict(
+        model="m", backend="llamaserver", mode="native",
+        ablation_name="reforged", tool_choice="auto",
+        reasoning_replay="none", scenario="s",
+    )
+    k_default = _run_key(reasoning_level="default", **base)
+    k_high = _run_key(reasoning_level="high", **base)
+
+    assert k_default != k_high
+    assert "default" in k_default
+    assert "high" in k_high
+
+
 def test_run_result_to_row_records_reasoning_replay() -> None:
     row = _row("M", "sc", "none")
     assert row["reasoning_replay"] == "none"
+    assert row["reasoning_level"] == "default"
 
     # Default when the caller doesn't pass one (legacy callers / inert axis).
     cfg = BatchConfig(model="M", backend="llamaserver", mode="native", think=None)
@@ -131,7 +148,10 @@ def test_count_completed_runs_separates_policies(tmp_path) -> None:
     counts = _count_completed_runs(path, ablation_name="reforged")
 
     def key(rr: str) -> str:
-        return _run_key("M", "llamaserver", "native", "reforged", "auto", rr, "sc")
+        return _run_key(
+            "M", "llamaserver", "native", "reforged", "auto",
+            rr, "default", "sc",
+        )
 
     # explicit none ×2 + the legacy row defaulting to none
     assert counts[key("none")] == 3

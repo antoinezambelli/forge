@@ -2,6 +2,22 @@
 
 All notable changes to forge are documented here.
 
+## [0.8.2] — 2026-07-28
+
+A maintenance and eval-publication release. Forge hardens malformed llama.cpp 500 recovery, adds compatibility with clients that use llama-server’s unversioned chat endpoint, and publishes an expanded evaluation dashboard covering 378,300 runs across 291 configurations.
+
+### Added
+- **`POST /chat/completions` proxy alias.** The proxy now serves llama-server’s unversioned endpoint as an alias of `/v1/chat/completions`, restoring compatibility with clients such as pi-llama-cpp.
+- **Expanded large-model eval tiers.** The published roster gains Gemma-4 large models, new Qwen3.6 replay sweeps, LFM2.5 and Mellum2 replay ladders, and a new 120B tier. The consolidated v0.8.2 dataset contains 74,100 generation-3 runs across 57 complete arms.
+- **Reasoning effort as an eval dimension.** Batch resume identity, result rows, report deduplication, and display labels now distinguish effort variants of the same model without conflating their results.
+
+### Changed
+- **Evaluation dashboard regenerated across all published datasets.** The dashboard now represents 378,300 runs and 291 model/backend configurations, with normalized family names for the new models.
+- **Replay-aware generation deduplication.** Explicit replay-policy rows now supersede only older rows for the same policy, allowing independently measured `none`, `keep-last`, and `full` arms to carry forward across generations.
+
+### Fixed
+- **Malformed llama.cpp 500 rescue is stricter and more robust.** Rescue now ignores incomplete tool-call skeletons, recognizes structural and truncated tool-call XML without depending on one backend error phrase, and prevents raw backend bodies from leaking into user-visible error details.
+
 ## [0.8.1] — 2026-07-10
 
 A bug-fix release for the llamafile backend. When llama.cpp's tool-call parser rejects malformed model output with a 500, the raw error JSON no longer leaks into the conversation as assistant text — complete tool calls are rescued out of the error body and executed, and unrecoverable ones trigger a clean re-sample nudge.

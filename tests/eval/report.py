@@ -675,13 +675,23 @@ MODEL_FAMILIES: dict[str, dict[str, str]] = {
     "Qwen3.5-35B-A3B-Q4_K_M":               {"family": "qwen3.5-35b-a3b", "cross_backend_key": "qwen3.5-35b-a3b-q4_K_M"},
     "qwen3.5:27b-q4_K_M":                   {"family": "qwen3.5-27b", "cross_backend_key": "qwen3.5-27b-q4_K_M"},
     "qwen3.5:35b-a3b-q4_K_M":               {"family": "qwen3.5-35b-a3b", "cross_backend_key": "qwen3.5-35b-a3b-q4_K_M"},
+    "Qwen3.5-122B-A10B-Q4_K_M":             {"family": "qwen3.5-122b-a10b", "cross_backend_key": "qwen3.5-122b-a10b-q4_K_M"},
     # qwen3.6 (UD dropped from cross_backend_key — it's a quant variant, cf. gemma A4B UD)
     "Qwen3.6-27B-Q4_K_M":                   {"family": "qwen3.6-27b", "cross_backend_key": "qwen3.6-27b-q4_K_M"},
     "Qwen3.6-35B-A3B-UD-Q4_K_M":            {"family": "qwen3.6-35b-a3b", "cross_backend_key": "qwen3.6-35b-a3b-q4_K_M"},
     "qwen3.6:27b-q4_K_M":                   {"family": "qwen3.6-27b", "cross_backend_key": "qwen3.6-27b-q4_K_M"},
     "qwen3.6:35b-a3b-q4_K_M":               {"family": "qwen3.6-35b-a3b", "cross_backend_key": "qwen3.6-35b-a3b-q4_K_M"},
+    # lfm2.5 8b-a1b (llama-server only)
+    "LFM2.5-8B-A1B-Q4_K_M":                 {"family": "lfm2.5-8b-a1b", "cross_backend_key": "lfm2.5-8b-a1b-q4_K_M"},
+    # mellum2 12b-a2.5b (llama-server only; instruct + thinking share a family)
+    "Mellum2-12B-A2.5B-Instruct-Q4_K_M":    {"family": "mellum2-12b-a2.5b", "cross_backend_key": "mellum2-12b-a2.5b-instruct-q4_K_M"},
+    "Mellum2-12B-A2.5B-Thinking-Q4_K_M":    {"family": "mellum2-12b-a2.5b", "cross_backend_key": "mellum2-12b-a2.5b-thinking-q4_K_M"},
+    # gpt-oss 120b (llama-server only)
+    "gpt-oss-120b-Q4_K_M":                  {"family": "gpt-oss-120b", "cross_backend_key": "gpt-oss-120b-q4_K_M"},
     # nemotron 3 nano (30b a3b, llama-server only)
     "Nemotron-3-Nano-30B-A3B-Q4_K_M":       {"family": "nemotron-3-nano", "cross_backend_key": "nemotron-3-nano-30b-a3b-q4_K_M"},
+    # nemotron 3 super (120b a12b, llama-server only; UD is a quant variant)
+    "NVIDIA-Nemotron-3-Super-120B-A12B-UD-Q4_K_M": {"family": "nemotron-3-super", "cross_backend_key": "nemotron-3-super-120b-a12b-q4_K_M"},
     # granite 4.0 (h-micro / h-tiny)
     "granite-4.0:h-micro-q4_K_M":           {"family": "granite-4.0-h-micro", "cross_backend_key": "granite-4.0-h-micro-q4_K_M"},
     "granite-4.0-h-micro-Q4_K_M":           {"family": "granite-4.0-h-micro", "cross_backend_key": "granite-4.0-h-micro-q4_K_M"},
