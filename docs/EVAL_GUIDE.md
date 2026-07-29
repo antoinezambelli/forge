@@ -167,6 +167,7 @@ Released datasets are versioned in the repo: `eval_results_vX.Y.Z.jsonl` (LFS-tr
 python -m tests.eval.report \
   eval_results_v0.6.0.jsonl eval_results_v0.7.0.jsonl \
   eval_results_v0.7.4.jsonl eval_results_v0.7.5.jsonl \
+  eval_results_v0.8.2.jsonl \
   --html docs/results/dashboard.html --markdown docs/results/
 ```
 

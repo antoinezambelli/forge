@@ -234,7 +234,7 @@ python -m tests.eval.batch_eval --config all --runs 50
 # Reports — ASCII table by default; --html / --markdown export views
 python -m tests.eval.report eval_results.jsonl
 python -m tests.eval.report eval_results.jsonl --html docs/results/dashboard.html
-python -m tests.eval.report eval_results.jsonl --markdown docs/results/raw/
+python -m tests.eval.report eval_results.jsonl --markdown docs/results/
 ```
 
 ## Project Structure
