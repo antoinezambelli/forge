@@ -189,7 +189,7 @@ class HTTPServer:
             if method == "GET" and path == "/health":
                 await self._handle_health(writer)
             elif method == "GET" and path == "/v1/models":
-                await self._handle_models(writer)
+                await self._handle_models(writer, headers)
             elif method == "POST" and path in ("/v1/chat/completions", "/chat/completions"):
                 # llama.cpp serves the OpenAI chat endpoint on both spellings;
                 # llama.cpp-native clients (pi-llama-cpp) POST the unprefixed
@@ -245,8 +245,37 @@ class HTTPServer:
         body = json.dumps({"status": "ok"})
         await self._send_json(writer, 200, body)
 
-    async def _handle_models(self, writer: asyncio.StreamWriter) -> None:
+    async def _handle_models(
+        self,
+        writer: asyncio.StreamWriter,
+        headers: dict[str, str],
+    ) -> None:
         """GET /v1/models — report the backend model the proxy is fronting."""
+        lazy = self._lazy_discovery
+        if (
+            lazy is not None
+            and lazy.deferred
+            and lazy.adopt_model_identity
+            and not lazy.done
+        ):
+            try:
+                extra_headers = resolve_inbound_credential(
+                    headers,
+                    source_protocol="openai",
+                    target_protocol=self._backend_protocol,
+                    backend_api_key_present=self._backend_api_key_present,
+                )
+                await run_lazy_discovery(
+                    self._client,
+                    self._context_manager,
+                    lazy,
+                    extra_headers,
+                )
+            except Exception as exc:
+                await self._send_exception(
+                    writer, exc, protocol="openai", as_stream=False,
+                )
+                return
         body = json.dumps({
             "object": "list",
             "data": [{"id": self._client.model, "object": "model"}],

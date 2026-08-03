@@ -404,7 +404,11 @@ class ProxyServer:
                 else self._budget_tokens
             )
             lazy_discovery: LazyDiscovery | None = LazyDiscovery(
-                deferred=True, apply_budget=apply_budget,
+                deferred=True,
+                apply_budget=apply_budget,
+                adopt_model_identity=(
+                    self._backend == "vllm" and self._model is None
+                ),
             )
         else:
             lazy_discovery = None

@@ -372,6 +372,7 @@ class TestExternalDeferredDiscovery:
         assert lazy is not None
         assert lazy.deferred is True
         assert lazy.apply_budget is True  # no explicit budget → discovery sets it
+        assert lazy.adopt_model_identity is False
         assert lazy.done is False
 
     @pytest.mark.asyncio
@@ -388,6 +389,7 @@ class TestExternalDeferredDiscovery:
         assert client.model == "default"  # identity deferred → still placeholder
         assert lazy.deferred is True
         assert lazy.apply_budget is True
+        assert lazy.adopt_model_identity is True
 
     @pytest.mark.asyncio
     async def test_vllm_passthrough_with_budget_still_defers_for_identity(self) -> None:
@@ -405,6 +407,7 @@ class TestExternalDeferredDiscovery:
         assert ctx.budget_tokens == 4096
         assert lazy.deferred is True
         assert lazy.apply_budget is False
+        assert lazy.adopt_model_identity is True
 
     @pytest.mark.asyncio
     async def test_llamacpp_passthrough_with_budget_not_deferred(self) -> None:
@@ -451,6 +454,7 @@ class TestExternalDeferredDiscovery:
         assert lazy is not None
         assert lazy.deferred is True
         assert lazy.apply_budget is True
+        assert lazy.adopt_model_identity is False
         assert client.model == "nv-mistral-large"
         assert client._adopt_served_identity is False
 

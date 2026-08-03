@@ -385,6 +385,29 @@ async def _raw_request(port, header_lines, body):
         await writer.wait_closed()
 
 
+async def _raw_models_request(port, header_lines=()):
+    """GET /v1/models with arbitrary headers; return (status, body_str)."""
+    reader, writer = await asyncio.open_connection("127.0.0.1", port)
+    try:
+        extra = "".join(f"{line}\r\n" for line in header_lines)
+        request = (
+            f"GET /v1/models HTTP/1.1\r\n"
+            f"Host: 127.0.0.1:{port}\r\n"
+            f"{extra}"
+            f"\r\n"
+        ).encode()
+        writer.write(request)
+        await writer.drain()
+        data = await asyncio.wait_for(reader.read(65536), timeout=10.0)
+        text = data.decode("utf-8", errors="replace")
+        status = int(text.split("\r\n", 1)[0].split(" ", 2)[1])
+        start = text.find("\r\n\r\n")
+        return status, (text[start + 4:] if start >= 0 else "")
+    finally:
+        writer.close()
+        await writer.wait_closed()
+
+
 class TestInboundCredentialThreading:
     @pytest.mark.asyncio
     @pytest.mark.parametrize("serialize", [False, True])
@@ -464,6 +487,205 @@ async def _discovery_server(*, side_effect=None, budget=50000, apply_budget=True
     await srv.start()
     port = srv._server.sockets[0].getsockname()[1]
     return srv, port, client, ctx
+
+
+async def _model_discovery_server(
+    *,
+    side_effect=None,
+    budget=50000,
+    apply_budget=True,
+    adopt_model_identity=True,
+    model="default",
+):
+    """A server whose model list may trigger deferred identity discovery."""
+    client = _mock_client(TextResponse(content="ok"))
+    client.model = model
+
+    if side_effect is not None:
+        client.discover_backend_metadata = AsyncMock(side_effect=side_effect)
+    else:
+        async def discover(extra_headers=None):
+            client.model = "served-model"
+            return budget
+
+        client.discover_backend_metadata = AsyncMock(side_effect=discover)
+
+    ctx = ContextManager(strategy=NoCompact(), budget_tokens=8192)
+    lazy = LazyDiscovery(
+        deferred=True,
+        apply_budget=apply_budget,
+        adopt_model_identity=adopt_model_identity,
+    )
+    srv = HTTPServer(
+        client=client,
+        context_manager=ctx,
+        host="127.0.0.1",
+        port=0,
+        serialize_requests=False,
+        backend_protocol="openai",
+        lazy_discovery=lazy,
+    )
+    await srv.start()
+    port = srv._server.sockets[0].getsockname()[1]
+    return srv, port, client, ctx, lazy
+
+
+class TestModelsLazyIdentityDiscovery:
+    @pytest.mark.asyncio
+    async def test_discovers_before_local_response_and_latches(self):
+        srv, port, client, ctx, lazy = await _model_discovery_server()
+        try:
+            status, body = await _raw_models_request(
+                port, ["Authorization: Bearer INBOUND"],
+            )
+            assert status == 200
+            assert json.loads(body) == {
+                "object": "list",
+                "data": [{"id": "served-model", "object": "model"}],
+            }
+            client.discover_backend_metadata.assert_awaited_once_with(
+                extra_headers={"authorization": "Bearer INBOUND"},
+            )
+            assert ctx.budget_tokens == 50000
+            assert lazy.done is True
+
+            second_status, second_body = await _raw_models_request(port)
+            assert second_status == 200
+            assert json.loads(second_body) == {
+                "object": "list",
+                "data": [{"id": "served-model", "object": "model"}],
+            }
+
+            completion_status, _ = await _raw_request(
+                port, [], {"messages": [{"role": "user", "content": "hi"}]},
+            )
+            assert completion_status == 200
+            assert client.discover_backend_metadata.await_count == 1
+        finally:
+            await srv.stop()
+
+    @pytest.mark.asyncio
+    async def test_identity_only_discovery_preserves_explicit_budget(self):
+        srv, port, client, ctx, lazy = await _model_discovery_server(
+            budget=99999, apply_budget=False,
+        )
+        try:
+            status, body = await _raw_models_request(port)
+            assert status == 200
+            assert json.loads(body)["data"][0]["id"] == "served-model"
+            assert ctx.budget_tokens == 8192
+            assert lazy.done is True
+            client.discover_backend_metadata.assert_awaited_once()
+        finally:
+            await srv.stop()
+
+    @pytest.mark.asyncio
+    async def test_conflicting_credentials_map_400_without_probe(self):
+        srv, port, client, _, lazy = await _model_discovery_server()
+        try:
+            status, body = await _raw_models_request(
+                port,
+                ["Authorization: Bearer SECRET-ONE", "x-api-key: SECRET-TWO"],
+            )
+            assert status == 400
+            assert "SECRET-ONE" not in body and "SECRET-TWO" not in body
+            client.discover_backend_metadata.assert_not_awaited()
+            assert lazy.done is False
+        finally:
+            await srv.stop()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("backend_status", "expected_status"),
+        [(401, 401), (403, 401), (502, 502)],
+    )
+    async def test_discovery_failure_status_mapping(
+        self, backend_status, expected_status,
+    ):
+        srv, port, client, _, lazy = await _model_discovery_server(
+            side_effect=BackendError(backend_status, "discovery failed"),
+        )
+        try:
+            status, body = await _raw_models_request(port)
+            assert status == expected_status
+            assert "\"object\": \"list\"" not in body
+            client.discover_backend_metadata.assert_awaited_once()
+            assert lazy.done is False
+        finally:
+            await srv.stop()
+
+    @pytest.mark.asyncio
+    async def test_failed_model_list_retries_on_next_full_request(self):
+        srv, port, client, ctx, lazy = await _model_discovery_server()
+        attempts = 0
+
+        async def fail_then_succeed(extra_headers=None):
+            nonlocal attempts
+            attempts += 1
+            if attempts == 1:
+                raise BackendError(502, "temporarily unavailable")
+            client.model = "served-after-retry"
+            return 64000
+
+        client.discover_backend_metadata = AsyncMock(side_effect=fail_then_succeed)
+        try:
+            first_status, first_body = await _raw_models_request(port)
+            assert first_status == 502
+            assert "\"object\": \"list\"" not in first_body
+            assert lazy.done is False
+            assert client.model == "default"
+
+            second_status, second_body = await _raw_models_request(port)
+            assert second_status == 200
+            assert json.loads(second_body) == {
+                "object": "list",
+                "data": [{"id": "served-after-retry", "object": "model"}],
+            }
+            assert client.discover_backend_metadata.await_count == 2
+            assert ctx.budget_tokens == 64000
+            assert lazy.done is True
+        finally:
+            await srv.stop()
+
+    @pytest.mark.asyncio
+    async def test_pinned_budget_only_list_skips_credentials_and_probe(self):
+        srv, port, client, ctx, lazy = await _model_discovery_server(
+            adopt_model_identity=False,
+            model="pinned-model",
+        )
+        try:
+            status, body = await _raw_models_request(
+                port,
+                ["Authorization: Bearer ONE", "x-api-key: TWO"],
+            )
+            assert status == 200
+            assert json.loads(body) == {
+                "object": "list",
+                "data": [{"id": "pinned-model", "object": "model"}],
+            }
+            client.discover_backend_metadata.assert_not_awaited()
+            assert ctx.budget_tokens == 8192
+            assert lazy.done is False
+        finally:
+            await srv.stop()
+
+    @pytest.mark.asyncio
+    async def test_non_vllm_lazy_budget_list_stays_local_and_probe_free(self):
+        srv, port, client, _, lazy = await _model_discovery_server(
+            adopt_model_identity=False,
+            model="llama.cpp-model",
+        )
+        try:
+            status, body = await _raw_models_request(port)
+            assert status == 200
+            assert json.loads(body) == {
+                "object": "list",
+                "data": [{"id": "llama.cpp-model", "object": "model"}],
+            }
+            client.discover_backend_metadata.assert_not_awaited()
+            assert lazy.done is False
+        finally:
+            await srv.stop()
 
 
 class TestDeferredDiscoveryStatusMapping:

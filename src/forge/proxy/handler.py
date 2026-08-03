@@ -71,6 +71,9 @@ class LazyDiscovery:
     - ``apply_budget``: whether the discovered context length should be written
       to the context manager. False when ``--budget-tokens`` was given explicitly
       (the discovery still runs, but only to adopt vLLM's served identity).
+    - ``adopt_model_identity``: whether the deferred work includes adopting
+      vLLM's served-model identity. Unlike ``apply_budget``, this is False for
+      pinned vLLM and llama.cpp budget-only discovery.
     - ``done``: latched True once discovery succeeds. Only success latches; a
       failed probe leaves it False so a later credentialed request retries.
     """
@@ -78,6 +81,7 @@ class LazyDiscovery:
     deferred: bool
     apply_budget: bool
     done: bool = False
+    adopt_model_identity: bool = False
 
 
 async def run_lazy_discovery(
