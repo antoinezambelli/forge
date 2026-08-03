@@ -27,6 +27,7 @@ from forge.server import BudgetMode, ServerManager
 
 from tests.eval.ablation import ABLATION_PRESETS, AblationConfig
 from tests.eval.eval_runner import EvalConfig, RunResult, run_scenario
+from tests.eval.generation import effective_generation, effective_reasoning_replay
 from tests.eval.metrics import analyze_history, compute_metrics, count_wire_reasoning
 from tests.eval.scenarios import ALL_SCENARIOS, EvalScenario
 
@@ -350,42 +351,115 @@ def _run_key(
     )
 
 
-def _count_completed_runs(
+def _validate_generation(generation: Any, *, context: str = "generation") -> int:
+    """Return a valid eval generation or fail closed."""
+    if type(generation) is not int or generation < 0:
+        raise ValueError(
+            f"{context} must be a non-negative integer (bool is not allowed), "
+            f"got {generation!r}"
+        )
+    return generation
+
+
+def _parse_generation(value: str) -> int:
+    """Argparse type for non-negative eval generations."""
+    try:
+        generation = int(value)
+    except ValueError as exc:
+        raise ValueError("generation must be a non-negative integer") from exc
+    return _validate_generation(generation)
+
+
+def _preflight_completed_runs(
     jsonl_path: Path,
+    requested_generation: int,
     ablation_name: str = "reforged",
 ) -> dict[str, int]:
-    """Scan JSONL and count completed runs per resume key (see ``_run_key``).
+    """Validate append compatibility and count runs in one streaming pass.
 
-    Returns dict mapping the canonical run key → count. Records without an
-    ablation field are treated as "reforged", without tool_choice as "auto",
-    and without reasoning_replay as the default policy (none) — so
-    pre-knob dumps resume cleanly under the default and are re-run under a
-    different policy.
+    Every stored row participates in the single-generation check, while only
+    rows for ``ablation_name`` contribute to the resume map. Historical rows
+    without ``gen`` are generation 0 and rows without ``reasoning_replay`` used
+    the historical ``full`` behavior.
     """
+    requested_generation = _validate_generation(requested_generation)
     counts: dict[str, int] = {}
     if not jsonl_path.exists():
         return counts
-    with jsonl_path.open() as f:
-        for line in f:
+
+    file_generation: int | None = None
+    with jsonl_path.open("rb") as f:
+        for line_number, raw_line in enumerate(f, 1):
+            try:
+                line = raw_line.decode("utf-8")
+            except UnicodeDecodeError as exc:
+                raise ValueError(
+                    f"{jsonl_path}:{line_number}: invalid UTF-8 JSONL row"
+                ) from exc
             line = line.strip()
             if not line:
                 continue
             try:
                 row = json.loads(line)
-            except json.JSONDecodeError:
-                continue
+            except json.JSONDecodeError as exc:
+                raise ValueError(
+                    f"{jsonl_path}:{line_number}: malformed JSON: {exc.msg}"
+                ) from exc
+            if not isinstance(row, dict):
+                raise ValueError(
+                    f"{jsonl_path}:{line_number}: JSONL row must be an object"
+                )
+            try:
+                row_generation = _validate_generation(
+                    effective_generation(row), context="gen"
+                )
+            except ValueError as exc:
+                raise ValueError(f"{jsonl_path}:{line_number}: {exc}") from exc
+            if file_generation is None:
+                file_generation = row_generation
+            elif row_generation != file_generation:
+                raise ValueError(
+                    f"{jsonl_path}:{line_number}: mixed effective generations "
+                    f"{file_generation} and {row_generation}"
+                )
+
             row_ablation = row.get("ablation", "reforged")
             if row_ablation != ablation_name:
                 continue
-            row_tc = row.get("tool_choice", "auto")
-            row_rr = row.get("reasoning_replay", DEFAULT_REASONING_REPLAY)
-            row_rl = row.get("reasoning_level", "default")
-            key = _run_key(
-                row["model"], row["backend"], row["mode"],
-                row_ablation, row_tc, row_rr, row_rl, row["scenario"],
-            )
+            try:
+                key = _run_key(
+                    row["model"], row["backend"], row["mode"],
+                    row_ablation, row.get("tool_choice", "auto"),
+                    effective_reasoning_replay(row),
+                    row.get("reasoning_level", "default"), row["scenario"],
+                )
+            except (KeyError, TypeError, ValueError) as exc:
+                raise ValueError(
+                    f"{jsonl_path}:{line_number}: cannot build resume key: {exc}"
+                ) from exc
             counts[key] = counts.get(key, 0) + 1
+
+    if file_generation is not None and file_generation != requested_generation:
+        raise ValueError(
+            f"{jsonl_path}: existing effective generation {file_generation} "
+            f"does not match requested generation {requested_generation}"
+        )
     return counts
+
+
+def _append_jsonl_row(jsonl_path: Path, row: dict[str, Any]) -> None:
+    """Append one UTF-8 row, separating an unterminated existing final row."""
+    payload = (json.dumps(row) + "\n").encode("utf-8")
+    with jsonl_path.open("ab+") as f:
+        f.seek(0, os.SEEK_END)
+        size = f.tell()
+        separator = b""
+        if size:
+            f.seek(-1, os.SEEK_END)
+            if f.read(1) != b"\n":
+                separator = b"\n"
+        f.seek(0, os.SEEK_END)
+        f.write(separator + payload)
 
 
 def _run_result_to_row(
@@ -393,12 +467,16 @@ def _run_result_to_row(
     config: BatchConfig,
     scenario: EvalScenario,
     run_idx: int,
+    *,
+    generation: int,
     budget_tokens: int | None = None,
     ablation_name: str = "reforged",
     reasoning_replay: str = DEFAULT_REASONING_REPLAY,
 ) -> dict[str, Any]:
     """Convert a RunResult into a flat dict for JSONL output."""
+    generation = _validate_generation(generation)
     row: dict[str, Any] = {
+        "gen": generation,
         "model": config.model,
         "backend": config.backend,
         "mode": config.mode,
@@ -798,6 +876,7 @@ async def run_batch(
     scenario_names: list[str] | None = None,
     ablation: AblationConfig | None = None,
     reasoning_replay: ReasoningReplay = DEFAULT_REASONING_REPLAY,
+    generation: int = 0,
 ) -> None:
     """Run all configs × scenarios, appending each result to JSONL.
 
@@ -807,6 +886,8 @@ async def run_batch(
     """
     from forge.context.strategies import TieredCompact
     from tests.eval.eval_runner import _COMPACTION_SCENARIOS
+
+    generation = _validate_generation(generation)
 
     if scenario_names:
         name_set = set(scenario_names)
@@ -822,7 +903,9 @@ async def run_batch(
         scenarios = ALL_SCENARIOS
 
     ablation_name = ablation.name if ablation is not None else "reforged"
-    completed_counts = _count_completed_runs(output_path, ablation_name=ablation_name)
+    completed_counts = _preflight_completed_runs(
+        output_path, generation, ablation_name=ablation_name
+    )
 
     # Precompute total expected runs (excluding skips and unavailable models)
     total_expected = 0
@@ -954,12 +1037,12 @@ async def run_batch(
 
                         row = _run_result_to_row(
                             result, config, scenario, run_idx + 1,
+                            generation=generation,
                             budget_tokens=scenario_budget,
                             ablation_name=ablation_name,
                             reasoning_replay=reasoning_replay,
                         )
-                        with output_path.open("a") as f:
-                            f.write(json.dumps(row) + "\n")
+                        _append_jsonl_row(output_path, row)
 
                         completed_counts[key] = completed_counts.get(key, 0) + 1
                 continue
@@ -1141,12 +1224,12 @@ async def run_batch(
 
                     row = _run_result_to_row(
                         result, config, scenario, run_idx + 1,
+                        generation=generation,
                         budget_tokens=scenario_budget,
                         ablation_name=ablation_name,
                         reasoning_replay=reasoning_replay,
                     )
-                    with output_path.open("a") as f:
-                        f.write(json.dumps(row) + "\n")
+                    _append_jsonl_row(output_path, row)
 
                     # Update in-memory count for resume correctness
                     completed_counts[key] = completed_counts.get(key, 0) + 1
@@ -1179,6 +1262,12 @@ async def main() -> None:
     budget_choices = [m.value for m in BudgetMode]
     parser = argparse.ArgumentParser(description="Forge batch eval runner")
     parser.add_argument("--runs", type=int, default=50, help="Runs per scenario")
+    parser.add_argument(
+        "--generation",
+        type=_parse_generation,
+        default=0,
+        help="Non-negative eval comparability generation (default: 0)",
+    )
     parser.add_argument(
         "--output", type=str, default=None, help="JSONL output path"
     )
@@ -1262,6 +1351,7 @@ async def main() -> None:
     print(f"  Budget mode:   {budget_mode.value}")
     print(f"  Ablation:      {ablation.name}")
     print(f"  Reasoning replay: {args.reasoning_replay}")
+    print(f"  Generation:     {args.generation}")
     if args.scenario:
         print(f"  Scenarios:     {', '.join(args.scenario)}")
     elif args.tags:
@@ -1287,6 +1377,7 @@ async def main() -> None:
         scenario_names=args.scenario,
         ablation=ablation,
         reasoning_replay=args.reasoning_replay,
+        generation=args.generation,
     )
 
 

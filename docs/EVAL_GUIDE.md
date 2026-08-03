@@ -121,6 +121,7 @@ Run large-scale model comparisons across all backends. Results append to JSONL w
 |------|--------|---------|-------------|
 | `--config` | `all`, `ollama`, `llamaserver`, `llamafile`, `llamaserver-native`, `llamaserver-prompt`, `anthropic`, `anthropic-any`, `haiku`, `sonnet`, `opus`, `haiku-any`, `sonnet-any`, `opus-any` | `all` | Config set to run |
 | `--runs` | int | `50` | Runs per scenario |
+| `--generation` | non-negative int | `0` | Comparability epoch written to every row; released runs select a nonzero generation |
 | `--output` | path | `eval_results.jsonl` | JSONL output path |
 | `--scenario` | name(s) | all | Run specific scenario(s) |
 | `--tags` | tag(s) | all | Filter scenarios by tag |
@@ -153,7 +154,8 @@ python -m tests.eval.batch_eval --config llamaserver --model 8b-reasoning --runs
 python -m tests.eval.batch_eval --config ollama --runs 50 --scenario basic_2step sequential_reasoning
 ```
 
-Resume is automatic: re-run the same command and it skips completed scenarios.
+Resume is automatic: re-run the same command with the same generation and
+policy and it skips completed scenarios.
 
 ---
 
@@ -173,11 +175,33 @@ python -m tests.eval.report \
 
 Generating from a single file is fine for a quick look at one release in isolation, but it drops every model not present in that file — including the carried-forward older generations — so do not commit a single-file render as the shipped dashboard. `batch_eval` writes to `eval_results.jsonl` by default; rename to a versioned filename before committing to the repo.
 
-### Eval generations and post-release addenda
+### Eval generations and collection
 
-The `gen` field (an integer injected per-row, legend in `report.py:GEN_INFO`) is a **comparability epoch, not a release version**. It is bumped only when a change is judged eval-material; many releases can share one gen, and a single gen can span several eval waves merged across files (`dedup_latest_gen` keeps the newest gen per config). This decouples "did we add models / re-sweep" from "did we cut a release" — adding models does not require a version bump.
+The `gen` field is a **comparability epoch, not a release version**. It is
+bumped only when a change is judged eval-material; many releases can share one
+generation, and one generation can span several eval waves merged across files
+(`dedup_latest_gen` keeps the newest generation per config). Generation 0 is
+reserved for scratch runs and legacy rows that predate the field. Every new row
+records an explicit generation; invoke a released collection with, for example,
+`--generation 4` rather than adding the field after collection.
 
-To fold new models into an existing dataset, stamp them with that dataset's `gen` and append the rows. Because they are net-new configs, no existing number is recomputed and they slot into the leaderboard as same-gen peers (no carry-forward badge).
+One output file carries only one effective generation. Before dry-run or live
+collection starts a client/server or appends a row, `batch_eval` streams the
+existing file and rejects generation mismatches, mixed generations, malformed
+generation values, malformed JSON, and ambiguous resume rows. A legacy file
+whose rows all omit `gen` is generation 0 and can only resume with generation
+0. For resume identity, historical rows without `reasoning_replay` mean `full`
+(the behavior they actually ran); they do not collide with an explicit modern
+`none` arm. Same-generation, same-policy resume remains count-based.
+
+To fold new models into an existing dataset, run the collector with that
+dataset's generation and append the rows. Because they are net-new configs, no
+existing number is recomputed and they slot into the leaderboard as
+same-generation peers (no carry-forward badge).
+
+An output is single-process owned while collection is active. Concurrent
+writers and file locking are unsupported; schedule separate output files and
+merge them only after validating their generation.
 
 Addenda to date:
 

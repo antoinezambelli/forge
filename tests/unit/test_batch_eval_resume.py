@@ -1,25 +1,18 @@
-"""Resume-key behavior for the eval policy axes (batch_eval).
-
-reasoning_replay is part of the canonical run key: distinct policies
-(none / keep-last / full) on the same model+scenario are independent runs
-and must not collide in resume counting, or a multi-policy sweep would
-under-count and skip work it never actually ran. reasoning_level is likewise
-independent so effort variants of the same model do not clobber one another.
-"""
+"""Generation-aware row capture and resume behavior for batch evals."""
 
 from __future__ import annotations
 
 import json
+from pathlib import Path
+from typing import Any
 
 import pytest
-
-from forge.core.reasoning import DEFAULT_REASONING_REPLAY
 
 import tests.eval.batch_eval as batch_eval
 from tests.eval.batch_eval import (
     BatchConfig,
     _compute_cost,
-    _count_completed_runs,
+    _preflight_completed_runs,
     _run_key,
     _run_result_to_row,
     run_batch,
@@ -28,20 +21,80 @@ from tests.eval.eval_runner import RunResult
 from tests.eval.scenarios import basic_2step
 
 
-def _row(model: str, scenario: str, reasoning_replay: str) -> dict:
-    """Build a JSONL row via the production path for a given policy."""
-    cfg = BatchConfig(model=model, backend="llamaserver", mode="native", think=None)
-    res = RunResult(
+def _result(scenario: str = "basic_2step") -> RunResult:
+    return RunResult(
         scenario_name=scenario,
         completeness=True,
         iterations_used=3,
         accuracy=True,
         messages=None,
     )
+
+
+def _row(
+    model: str = "M",
+    scenario: str = "basic_2step",
+    reasoning_replay: str = "none",
+    generation: int = 0,
+    run_idx: int = 1,
+) -> dict[str, Any]:
+    """Build a JSONL row via the production serializer."""
+    cfg = BatchConfig(model=model, backend="llamaserver", mode="native", think=None)
     return _run_result_to_row(
-        res, cfg, basic_2step, run_idx=1,
-        ablation_name="reforged", reasoning_replay=reasoning_replay,
+        _result(scenario), cfg, basic_2step, run_idx,
+        generation=generation,
+        ablation_name="reforged",
+        reasoning_replay=reasoning_replay,
     )
+
+
+def _write_rows(path: Path, rows: list[dict[str, Any]]) -> None:
+    path.write_text(
+        "".join(json.dumps(row) + "\n" for row in rows), encoding="utf-8"
+    )
+
+
+def _managed_config() -> BatchConfig:
+    return BatchConfig(model="M", backend="ollama", mode="native", think=None)
+
+
+def _anthropic_config() -> BatchConfig:
+    return BatchConfig(
+        model="claude-sonnet-4-6", backend="anthropic", mode="native", think=True
+    )
+
+
+def _install_inert_backend(monkeypatch: pytest.MonkeyPatch) -> None:
+    class FakeServerManager:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def start_with_budget(self, **kwargs):
+            return 4096
+
+        async def resolve_budget(self, *args, **kwargs):
+            return 4096
+
+        async def stop(self):
+            pass
+
+    monkeypatch.setattr(batch_eval, "ALL_SCENARIOS", [basic_2step])
+    monkeypatch.setattr(batch_eval, "_check_model_available", lambda *args: None)
+    monkeypatch.setattr(batch_eval, "ServerManager", FakeServerManager)
+    monkeypatch.setattr(batch_eval, "_build_client", lambda *args: object())
+
+    async def fake_run_with_timeout(client, scenario, eval_config, ablation):
+        return _result(scenario.name)
+
+    monkeypatch.setattr(batch_eval, "_run_with_timeout", fake_run_with_timeout)
+
+
+def _fail_if_backend_reached(monkeypatch: pytest.MonkeyPatch) -> None:
+    def fail(*args, **kwargs):
+        pytest.fail("backend construction was reached before generation preflight")
+
+    monkeypatch.setattr(batch_eval, "ServerManager", fail)
+    monkeypatch.setattr(batch_eval, "_build_client", fail)
 
 
 def test_run_key_distinguishes_reasoning_replay() -> None:
@@ -50,15 +103,11 @@ def test_run_key_distinguishes_reasoning_replay() -> None:
         ablation_name="reforged", tool_choice="auto",
         reasoning_level="default", scenario="s",
     )
-    k_none = _run_key(reasoning_replay="none", **base)
-    k_keep = _run_key(reasoning_replay="keep-last", **base)
-    k_full = _run_key(reasoning_replay="full", **base)
-
-    # All three policies yield distinct keys...
-    assert len({k_none, k_keep, k_full}) == 3
-    # ...and the key is stable for the same inputs.
-    assert _run_key(reasoning_replay="none", **base) == k_none
-    assert "none" in k_none
+    keys = {
+        _run_key(reasoning_replay=policy, **base)
+        for policy in ("none", "keep-last", "full")
+    }
+    assert len(keys) == 3
 
 
 def test_run_key_distinguishes_reasoning_level() -> None:
@@ -67,102 +116,297 @@ def test_run_key_distinguishes_reasoning_level() -> None:
         ablation_name="reforged", tool_choice="auto",
         reasoning_replay="none", scenario="s",
     )
-    k_default = _run_key(reasoning_level="default", **base)
-    k_high = _run_key(reasoning_level="high", **base)
-
-    assert k_default != k_high
-    assert "default" in k_default
-    assert "high" in k_high
+    assert _run_key(reasoning_level="default", **base) != _run_key(
+        reasoning_level="high", **base
+    )
 
 
-def test_run_result_to_row_records_reasoning_replay() -> None:
-    row = _row("M", "sc", "none")
-    assert row["reasoning_replay"] == "none"
-    assert row["reasoning_level"] == "default"
+def test_run_result_to_row_records_generation_and_replay() -> None:
+    scratch = _row(reasoning_replay="none", generation=0)
+    released = _row(reasoning_replay="full", generation=7)
 
-    # Default when the caller doesn't pass one (legacy callers / inert axis).
+    assert scratch["gen"] == 0
+    assert scratch["reasoning_replay"] == "none"
+    assert released["gen"] == 7
+    assert released["reasoning_replay"] == "full"
+    assert released["reasoning_level"] == "default"
+
+
+def test_run_result_to_row_requires_generation_keyword() -> None:
     cfg = BatchConfig(model="M", backend="llamaserver", mode="native", think=None)
-    res = RunResult(scenario_name="sc", completeness=True, iterations_used=2, messages=None)
-    default_row = _run_result_to_row(res, cfg, basic_2step, run_idx=1)
-    assert default_row["reasoning_replay"] == DEFAULT_REASONING_REPLAY
+    with pytest.raises(TypeError, match="generation"):
+        _run_result_to_row(_result(), cfg, basic_2step, 1)  # type: ignore[call-arg]
 
 
 @pytest.mark.asyncio
-async def test_anthropic_batch_rows_record_selected_reasoning_replay(
-    tmp_path, monkeypatch,
+async def test_anthropic_append_records_nonzero_generation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Anthropic rows must use the runtime policy, not the module default."""
-    cfg = BatchConfig(
-        model="claude-sonnet-4-6",
-        backend="anthropic",
-        mode="native",
-        think=True,
-    )
     output = tmp_path / "results.jsonl"
-
-    monkeypatch.setattr(batch_eval, "ALL_SCENARIOS", [basic_2step])
-    monkeypatch.setattr(batch_eval, "_build_client", lambda config, models_dir: object())
-
-    async def fake_run_with_timeout(client, scenario, eval_config, ablation):
-        assert eval_config.reasoning_replay == "none"
-        return RunResult(
-            scenario_name=scenario.name,
-            completeness=True,
-            iterations_used=3,
-            accuracy=True,
-            messages=None,
-        )
-
-    monkeypatch.setattr(batch_eval, "_run_with_timeout", fake_run_with_timeout)
+    _install_inert_backend(monkeypatch)
 
     await run_batch(
-        configs=[cfg],
+        configs=[_anthropic_config()],
         runs_per_scenario=1,
         output_path=output,
-        tags=["plumbing"],
         reasoning_replay="none",
+        generation=4,
     )
 
-    row = json.loads(output.read_text().strip())
-    assert row["model"] == "claude-sonnet-4-6"
+    row = json.loads(output.read_text(encoding="utf-8"))
     assert row["backend"] == "anthropic"
+    assert row["gen"] == 4
     assert row["reasoning_replay"] == "none"
 
 
-def test_count_completed_runs_separates_policies(tmp_path) -> None:
-    rows = [
-        _row("M", "sc", "none"),
-        _row("M", "sc", "none"),
-        _row("M", "sc", "full"),
-        _row("M", "sc", "keep-last"),
-    ]
-    # A pre-knob row (no reasoning_replay field) must fold into the default
-    # policy, so a default-policy resume skips it and a different policy re-runs.
-    legacy = _row("M", "sc", "keep-last")
+@pytest.mark.asyncio
+async def test_new_output_defaults_to_generation_zero(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    output = tmp_path / "results.jsonl"
+    _install_inert_backend(monkeypatch)
+
+    await run_batch(
+        configs=[_anthropic_config()], runs_per_scenario=1, output_path=output
+    )
+
+    assert json.loads(output.read_text(encoding="utf-8"))["gen"] == 0
+
+
+@pytest.mark.asyncio
+async def test_managed_server_append_records_nonzero_generation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    output = tmp_path / "results.jsonl"
+    _install_inert_backend(monkeypatch)
+
+    await run_batch(
+        configs=[_managed_config()],
+        runs_per_scenario=1,
+        output_path=output,
+        generation=5,
+    )
+
+    row = json.loads(output.read_text(encoding="utf-8"))
+    assert row["backend"] == "ollama"
+    assert row["gen"] == 5
+
+
+@pytest.mark.asyncio
+async def test_empty_output_accepts_requested_generation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    output = tmp_path / "results.jsonl"
+    output.write_bytes(b"")
+    _install_inert_backend(monkeypatch)
+
+    await run_batch(
+        configs=[_anthropic_config()], runs_per_scenario=1,
+        output_path=output, generation=6,
+    )
+
+    assert json.loads(output.read_text(encoding="utf-8"))["gen"] == 6
+
+
+@pytest.mark.asyncio
+async def test_same_generation_resume_uses_exact_next_run_number(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    output = tmp_path / "results.jsonl"
+    first = _row(model="claude-sonnet-4-6", generation=3, run_idx=1)
+    first["backend"] = "anthropic"
+    _write_rows(output, [first])
+    _install_inert_backend(monkeypatch)
+
+    await run_batch(
+        configs=[_anthropic_config()], runs_per_scenario=2,
+        output_path=output, reasoning_replay="none", generation=3,
+    )
+
+    rows = [json.loads(line) for line in output.read_text(encoding="utf-8").splitlines()]
+    assert [row["run"] for row in rows] == [1, 2]
+    assert {row["gen"] for row in rows} == {3}
+
+
+@pytest.mark.parametrize("backend_path", ["anthropic", "managed"])
+@pytest.mark.asyncio
+async def test_resume_safely_separates_unterminated_final_row(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    backend_path: str,
+) -> None:
+    output = tmp_path / "results.jsonl"
+    config = _anthropic_config() if backend_path == "anthropic" else _managed_config()
+    first = _row(model=config.model, generation=4, run_idx=1)
+    first["backend"] = config.backend
+    first["mode"] = config.mode
+    original = json.dumps(first).encode("utf-8")
+    output.write_bytes(original)
+    _install_inert_backend(monkeypatch)
+
+    await run_batch(
+        configs=[config], runs_per_scenario=2,
+        output_path=output, reasoning_replay="none", generation=4,
+    )
+
+    appended = output.read_bytes()
+    assert appended.startswith(original + b"\n")
+    rows = [json.loads(line) for line in appended.splitlines()]
+    assert [row["run"] for row in rows] == [1, 2]
+    assert {row["gen"] for row in rows} == {4}
+
+
+def test_legacy_missing_replay_counts_as_full_not_none(tmp_path: Path) -> None:
+    legacy = _row(reasoning_replay="none")
     del legacy["reasoning_replay"]
-    rows.append(legacy)
+    del legacy["gen"]
+    output = tmp_path / "legacy.jsonl"
+    _write_rows(output, [legacy])
 
-    path = tmp_path / "results.jsonl"
-    path.write_text("\n".join(json.dumps(r) for r in rows) + "\n")
+    counts = _preflight_completed_runs(output, requested_generation=0)
 
-    counts = _count_completed_runs(path, ablation_name="reforged")
-
-    def key(rr: str) -> str:
+    def key(policy: str) -> str:
         return _run_key(
             "M", "llamaserver", "native", "reforged", "auto",
-            rr, "default", "sc",
+            policy, "default", "basic_2step",
         )
 
-    # explicit none ×2 + the legacy row defaulting to none
-    assert counts[key("none")] == 3
     assert counts[key("full")] == 1
-    assert counts[key("keep-last")] == 1
-    assert counts[key("none")] + counts[key("full")] + counts[key("keep-last")] == 5
+    assert counts.get(key("none"), 0) == 0
+
+
+@pytest.mark.asyncio
+async def test_legacy_full_resume_skips_existing_generation_zero_run(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    output = tmp_path / "legacy.jsonl"
+    legacy = _row(model="claude-sonnet-4-6", reasoning_replay="full")
+    legacy["backend"] = "anthropic"
+    del legacy["reasoning_replay"]
+    del legacy["gen"]
+    _write_rows(output, [legacy])
+    before = output.read_bytes()
+    _install_inert_backend(monkeypatch)
+
+    await run_batch(
+        configs=[_anthropic_config()], runs_per_scenario=1,
+        output_path=output, reasoning_replay="full", generation=0,
+    )
+
+    assert output.read_bytes() == before
+
+
+@pytest.mark.asyncio
+async def test_explicit_none_does_not_collide_with_legacy_full(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    output = tmp_path / "legacy.jsonl"
+    legacy = _row(model="claude-sonnet-4-6")
+    legacy["backend"] = "anthropic"
+    del legacy["reasoning_replay"]
+    del legacy["gen"]
+    _write_rows(output, [legacy])
+    _install_inert_backend(monkeypatch)
+
+    await run_batch(
+        configs=[_anthropic_config()], runs_per_scenario=1,
+        output_path=output, reasoning_replay="none", generation=0,
+    )
+
+    rows = [json.loads(line) for line in output.read_text(encoding="utf-8").splitlines()]
+    assert len(rows) == 2
+    assert "reasoning_replay" not in rows[0]
+    assert rows[1]["reasoning_replay"] == "none"
+    assert rows[1]["gen"] == 0
+
+
+@pytest.mark.parametrize(
+    ("payload", "requested_generation", "message"),
+    [
+        (json.dumps(_row(generation=1)).encode() + b"\n", 2, "does not match"),
+        (json.dumps({k: v for k, v in _row().items() if k != "gen"}).encode() + b"\n", 1, "does not match"),
+        ((json.dumps(_row(generation=1)) + "\n" + json.dumps(_row(generation=2)) + "\n").encode(), 1, "mixed effective generations"),
+        (b"{not-json}\n", 0, "malformed JSON"),
+        (b"[]\n", 0, "must be an object"),
+        (b"\xff\n", 0, "invalid UTF-8"),
+        (
+            json.dumps({k: v for k, v in _row().items() if k != "scenario"}).encode()
+            + b"\n",
+            0,
+            "cannot build resume key",
+        ),
+        (json.dumps({**_row(), "gen": True}).encode() + b"\n", 0, "non-negative integer"),
+        (json.dumps({**_row(), "gen": -1}).encode() + b"\n", 0, "non-negative integer"),
+        (json.dumps({**_row(), "gen": 1.0}).encode() + b"\n", 0, "non-negative integer"),
+        (json.dumps({**_row(), "gen": "1"}).encode() + b"\n", 0, "non-negative integer"),
+        (json.dumps({**_row(), "gen": None}).encode() + b"\n", 0, "non-negative integer"),
+    ],
+    ids=[
+        "requested-mismatch", "genless-nonzero", "mixed", "malformed-json",
+        "non-object", "invalid-utf8", "missing-resume-field", "bool", "negative",
+        "float", "string", "null",
+    ],
+)
+@pytest.mark.asyncio
+async def test_rejected_output_preflight_is_before_backend_and_byte_identical(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    payload: bytes,
+    requested_generation: int,
+    message: str,
+) -> None:
+    output = tmp_path / "results.jsonl"
+    output.write_bytes(payload)
+    before = output.read_bytes()
+    _fail_if_backend_reached(monkeypatch)
+
+    with pytest.raises(ValueError, match=message):
+        await run_batch(
+            configs=[_managed_config()], runs_per_scenario=1,
+            output_path=output, generation=requested_generation,
+        )
+
+    assert output.read_bytes() == before
+
+
+@pytest.mark.asyncio
+async def test_dry_run_still_rejects_generation_mismatch_before_backend(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    output = tmp_path / "results.jsonl"
+    _write_rows(output, [_row(generation=2)])
+    before = output.read_bytes()
+    _fail_if_backend_reached(monkeypatch)
+
+    with pytest.raises(ValueError, match="does not match"):
+        await run_batch(
+            configs=[_managed_config()], runs_per_scenario=1,
+            output_path=output, generation=3, dry_run=True,
+        )
+
+    assert output.read_bytes() == before
+
+
+@pytest.mark.parametrize("generation", [True, -1, 1.0, "1", None])
+@pytest.mark.asyncio
+async def test_invalid_programmatic_generation_creates_nothing(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    generation: Any,
+) -> None:
+    output = tmp_path / "not-created.jsonl"
+    _fail_if_backend_reached(monkeypatch)
+
+    with pytest.raises(ValueError, match="non-negative integer"):
+        await run_batch(
+            configs=[_managed_config()], runs_per_scenario=1,
+            output_path=output, generation=generation,
+        )
+
+    assert not output.exists()
 
 
 def test_compute_cost_prices_cache_tokens() -> None:
-    """Cache writes bill 1.25× and reads 0.1× of the input rate; uncached input
-    and output keep their base rates. (sonnet: $3 input / $15 output per Mtok.)"""
     cost = _compute_cost(
         "claude-sonnet-4-6",
         input_tokens=1_000,
@@ -177,20 +421,18 @@ def test_compute_cost_prices_cache_tokens() -> None:
         + 500 * 15.0
     ) / 1_000_000
     assert cost == expected
-
-    # Back-compat: omitting cache args matches the old input+output formula.
     assert _compute_cost("claude-sonnet-4-6", 1_000, 500) == (
         1_000 * 3.0 + 500 * 15.0
     ) / 1_000_000
-
-    # Opus 4.8 is priced (placeholder rate), not an unknown-model 0.0.
     assert _compute_cost("claude-opus-4-8", 1_000, 0) > 0
 
 
 def test_run_result_to_row_emits_cache_tokens() -> None:
-    cfg = BatchConfig(model="claude-sonnet-4-6", backend="anthropic", mode="native", think=None)
-    res = RunResult(
-        scenario_name="sc",
+    cfg = BatchConfig(
+        model="claude-sonnet-4-6", backend="anthropic", mode="native", think=None
+    )
+    result = RunResult(
+        scenario_name="basic_2step",
         completeness=True,
         iterations_used=3,
         accuracy=True,
@@ -200,7 +442,7 @@ def test_run_result_to_row_emits_cache_tokens() -> None:
         cache_creation_tokens=2_000,
         cache_read_tokens=4_000,
     )
-    row = _run_result_to_row(res, cfg, basic_2step, run_idx=1)
+    row = _run_result_to_row(result, cfg, basic_2step, 1, generation=0)
 
     assert row["cache_creation_input_tokens"] == 2_000
     assert row["cache_read_input_tokens"] == 4_000
