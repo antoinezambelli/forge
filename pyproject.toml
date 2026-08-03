@@ -38,12 +38,14 @@ forge-proxy = "forge.proxy.__main__:main"
 
 [project.optional-dependencies]
 anthropic = ["anthropic>=0.40"]
+dataset-builder = ["pyarrow>=18.0.0"]
 dev = [
     "pytest",
     "pytest-cov",
     "pytest-asyncio",
     "anthropic>=0.40",
     "mpmath",
+    "pyarrow>=18.0.0",
 ]
 
 [tool.hatch.build.targets.wheel]

@@ -11,12 +11,17 @@ import pytest
 
 from tests.eval import report
 from tests.eval.generation import (
+    GenerationMaxima,
+    accumulate_generation_maxima,
     base_configuration_identity,
     effective_generation,
     effective_reasoning_replay,
     explicit_policy_identity,
+    is_selected_generation,
+    selection_maximum_generation,
     select_latest_generation,
 )
+from tests.eval.provenance import GEN_INFO as SHARED_GEN_INFO
 
 
 def _row(marker: str, **overrides: Any) -> dict[str, Any]:
@@ -140,6 +145,35 @@ def test_equal_generation_explicit_rows_and_interleaved_order_are_retained() -> 
 
 def test_report_reexports_shared_selector() -> None:
     assert report.dedup_latest_gen is select_latest_generation
+
+
+def test_bounded_maxima_and_predicate_match_selector() -> None:
+    old_none = _row("old-none", gen=1, reasoning_replay="none")
+    carried_full = _row("carried-full", gen=1, reasoning_replay="full")
+    legacy = _row("legacy", gen=1)
+    new_none = _row("new-none", gen=2, reasoning_replay="none")
+    rows = [old_none, carried_full, legacy, new_none]
+    maxima = GenerationMaxima()
+    for row in rows:
+        accumulate_generation_maxima(maxima, row)
+
+    assert [row for row in rows if is_selected_generation(maxima, row)] == [
+        carried_full,
+        new_none,
+    ]
+    assert selection_maximum_generation(maxima, old_none) == 2
+    assert selection_maximum_generation(maxima, legacy) == 2
+    assert len(maxima.base) == 1
+    assert len(maxima.explicit_policy) == 2
+
+
+def test_report_uses_shared_generation_provenance_object() -> None:
+    assert report.GEN_INFO is SHARED_GEN_INFO
+    assert report.GEN_INFO[2] == {
+        "commit": "655e1f6",
+        "date": "2026-05-22",
+        "note": "v0.7.0 lineup refresh (8–14B) + 32GB tier debut (v0.7.4)",
+    }
 
 
 def test_report_groups_legacy_replay_as_full() -> None:

@@ -27,6 +27,7 @@ from tests.eval.generation import (
     effective_reasoning_replay,
     select_latest_generation as dedup_latest_gen,
 )
+from tests.eval.provenance import GEN_INFO
 
 # Scenarios and their ideal iteration counts (from scenarios.py)
 # Hardcoded here so the report script has zero forge imports and can
@@ -677,23 +678,8 @@ def extract_quant(model: str) -> str:
 
 # ── Eval generations & deprecation ────────────────────────────
 
-# An eval generation is a comparability epoch, NOT a release version. It is
-# bumped only when a change is judged eval-material; many releases can share
-# one gen, and one gen can span several eval waves / dataset files. The gen
-# is injected per-row into the dataset (see dedup_latest_gen). This table is
-# the human-readable legend: what each gen means and the commit to reproduce
-# it. gen 0 = the v0.4.0 paper suite (intentionally not backported).
-GEN_INFO: dict[int, dict[str, str]] = {
-    1: {"commit": "2b05dc4", "date": "2026-05-08",
-        "note": "v0.6.0 suite — incl. Anthropic ablation"},
-    2: {"commit": "655e1f6", "date": "2026-05-22",
-        "note": "v0.7.0 lineup refresh (8–14B) + 32GB tier debut (v0.7.4)"},
-    # Tag ref, not a commit SHA: gen 3 landed via a branch whose squash-merge
-    # SHA didn't exist when this entry was written; the v0.7.5 tag resolves to it.
-    3: {"commit": "v0.7.5", "date": "2026-06-11",
-        "note": "reasoning-replay grid (8–14B × none/keep-last/full) + Claude thinking-on baseline"},
-}
-
+# GEN_INFO is the shared human-readable generation legend. Generation 0 is
+# the v0.4.0 paper suite and is intentionally not backported into the legend.
 # Coarse families in the "Retired" tier of docs/MODEL_REGISTRY.md. Retired
 # configs are carried forward by latest-gen dedup but hidden by default —
 # shown only via the dashboard's toggle / --include-retired. Keyed by family

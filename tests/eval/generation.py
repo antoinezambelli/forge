@@ -6,11 +6,50 @@ and collection can use one small contract for interpreting stored eval rows.
 
 from __future__ import annotations
 
+from dataclasses import dataclass, field
 from typing import Any
 
 
 BaseConfigurationIdentity = tuple[Any, Any, Any, Any, Any, Any]
 ExplicitPolicyIdentity = tuple[Any, Any, Any, Any, Any, Any, Any]
+
+
+@dataclass
+class GenerationMaxima:
+    """Bounded selection state keyed by configuration and explicit policy."""
+
+    base: dict[BaseConfigurationIdentity, int] = field(default_factory=dict)
+    explicit_policy: dict[ExplicitPolicyIdentity, int] = field(
+        default_factory=dict
+    )
+
+
+def accumulate_generation_maxima(
+    maxima: GenerationMaxima, row: dict[str, Any]
+) -> None:
+    """Include one row in the bounded maxima used by generation selection."""
+    generation = effective_generation(row)
+    base_identity = base_configuration_identity(row)
+    if generation > maxima.base.get(base_identity, -1):
+        maxima.base[base_identity] = generation
+    if "reasoning_replay" in row:
+        policy_identity = explicit_policy_identity(row)
+        if generation > maxima.explicit_policy.get(policy_identity, -1):
+            maxima.explicit_policy[policy_identity] = generation
+
+
+def selection_maximum_generation(
+    maxima: GenerationMaxima, row: dict[str, Any]
+) -> int:
+    """Return the maximum generation governing one row's selection."""
+    if "reasoning_replay" in row:
+        return maxima.explicit_policy[explicit_policy_identity(row)]
+    return maxima.base[base_configuration_identity(row)]
+
+
+def is_selected_generation(maxima: GenerationMaxima, row: dict[str, Any]) -> bool:
+    """Apply the report-compatible selection predicate to one row."""
+    return effective_generation(row) == selection_maximum_generation(maxima, row)
 
 
 def effective_generation(row: dict[str, Any]) -> int:
@@ -51,23 +90,8 @@ def select_latest_generation(rows: list[dict[str, Any]]) -> list[dict[str, Any]]
     Selection is whole-configuration rather than per-scenario. The returned
     list contains the original row objects and preserves their input order.
     """
-    base_max: dict[BaseConfigurationIdentity, int] = {}
-    policy_max: dict[ExplicitPolicyIdentity, int] = {}
+    maxima = GenerationMaxima()
     for row in rows:
-        generation = effective_generation(row)
-        base_identity = base_configuration_identity(row)
-        policy_identity = explicit_policy_identity(row)
-        if generation > base_max.get(base_identity, -1):
-            base_max[base_identity] = generation
-        if generation > policy_max.get(policy_identity, -1):
-            policy_max[policy_identity] = generation
+        accumulate_generation_maxima(maxima, row)
 
-    selected: list[dict[str, Any]] = []
-    for row in rows:
-        generation = effective_generation(row)
-        if "reasoning_replay" in row:
-            if generation == policy_max[explicit_policy_identity(row)]:
-                selected.append(row)
-        elif generation == base_max[base_configuration_identity(row)]:
-            selected.append(row)
-    return selected
+    return [row for row in rows if is_selected_generation(maxima, row)]

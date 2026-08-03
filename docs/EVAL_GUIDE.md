@@ -175,6 +175,57 @@ python -m tests.eval.report \
 
 Generating from a single file is fine for a quick look at one release in isolation, but it drops every model not present in that file — including the carried-forward older generations — so do not commit a single-file render as the shipped dashboard. `batch_eval` writes to `eval_results.jsonl` by default; rename to a versioned filename before committing to the repo.
 
+### Hugging Face Parquet dataset bundle
+
+The upload-ready dataset is built locally from a Forge source checkout. The
+command is intentionally eval-local (`tests` is not packaged in the wheel),
+does not access the Hugging Face network, and needs no credentials. Install the
+dedicated writer extra, then build only into a path that does not already exist:
+
+```bash
+python -m pip install -e ".[dataset-builder]"
+python -m tests.eval.dataset_builder build --source-root . --output build/forge-eval-dataset-v1 --license mit --citation-url https://github.com/antoinezambelli/forge --reproduction-url https://github.com/antoinezambelli/forge/blob/main/docs/EVAL_GUIDE.md
+python -m tests.eval.dataset_builder verify --source-root . --bundle build/forge-eval-dataset-v1
+```
+
+The fixed v1 layout is:
+
+```text
+README.md
+data/latest/*.parquet
+data/snapshot/*.parquet
+data/history/*.parquet
+provenance/sources.json
+provenance/schema.json
+manifest.json
+```
+
+All configurations use the predecessor's ordered 51-field schema, Zstandard
+compression, batches of at most 8,192 rows, 100,000-row shards, and names of
+the form `part-NNNNN-of-NNNNN.parquet`. Configuration order is `latest`,
+`snapshot`, `history`; `latest` is the sole Dataset Card default. `history`
+contains every released row, `snapshot` retains selected policy arms (including
+carried evidence), and `latest` is the maximum-generation subset. The canonical
+score is `accuracy == true / all cohort rows`; validation-only accuracy is a
+separate diagnostic. Timing, cost, and budget fields are not comparable across
+different collection conditions.
+
+Build metadata is mandatory. `--license` accepts the frozen v1 identifier set
+shown by `python -m tests.eval.dataset_builder build --help`: `apache-2.0`,
+`bsd-2-clause`, `bsd-3-clause`, `cc-by-4.0`, `cc-by-sa-4.0`, `cc0-1.0`,
+`gpl-3.0`, `lgpl-3.0`, `mit`, `mpl-2.0`, `odc-by`, and `odbl`. It rejects
+`other` and custom licenses because those require a license name and/or a
+LICENSE file outside the fixed layout. Citation and reproduction values must
+be absolute HTTP(S) URLs. The builder verifies the five pinned source hashes
+and exact view counts before
+creating a sibling `.NAME.incomplete-*` staging directory. It hashes every
+finished non-manifest file, reads every shard back against the publication
+plan, and only then renames the complete directory into place. Any failure
+after staging begins retains that unmistakably incomplete directory for
+diagnosis and leaves the requested output unpublished. Generated bundles under
+the already-ignored `build/` directory are local artifacts and must not be
+committed.
+
 ### Eval generations and collection
 
 The `gen` field is a **comparability epoch, not a release version**. It is
