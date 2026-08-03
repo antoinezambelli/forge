@@ -328,7 +328,7 @@ async def handle_chat_completions(
         # the runner hasn't mutated messages (clean first-attempt call);
         # OpenAI-shape clients (LlamafileClient) accept and ignore. See
         # ADR-015.
-        inbound_anthropic_body = deepcopy(body)
+        inbound_anthropic_body = dict(body)
     else:
         request_messages = body.get("messages", [])
         request_tools = body.get("tools")
