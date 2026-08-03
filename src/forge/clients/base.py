@@ -263,9 +263,10 @@ class LLMClient(Protocol):
     api_format: str
     """Wire format for Message.to_api_dict(): 'ollama' or 'openai'."""
 
-    model: str
+    model: str | None
     """The backend model identity, sent verbatim as the wire "model" field
-    (the served-model-name, gguf stem, or model tag depending on backend).
+    (the served-model-name, gguf stem, or model tag depending on backend), or
+    None for a request-routed client whose identity is supplied per call.
     Distinct from any sampling-registry lookup key a client also derives."""
 
     async def send(

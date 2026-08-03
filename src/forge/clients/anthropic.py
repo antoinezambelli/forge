@@ -25,7 +25,7 @@ from forge.clients.base import (
     static_auth_present,
 )
 from forge.core.workflow import LLMResponse, TextResponse, ToolCall, ToolSpec
-from forge.errors import BackendError, MissingCredentialError
+from forge.errors import BackendError, MissingCredentialError, MissingModelError
 
 log = logging.getLogger(__name__)
 
@@ -104,7 +104,7 @@ class AnthropicClient:
 
     def __init__(
         self,
-        model: str,
+        model: str | None,
         api_key: str | None = None,
         max_tokens: int = 4096,
         timeout: float = 300.0,
@@ -407,17 +407,23 @@ class AnthropicClient:
         if inbound_anthropic_body is not None:
             # Verbatim emit. Drop the proxy-internal ``stream`` field; the
             # SDK call shape (messages.create vs messages.stream) selects
-            # streaming. ``model`` defaults to the inbound value but the
-            # client's configured model wins if the inbound omitted it.
+            # streaming. A fixed client model is authoritative; a dynamic
+            # proxy client keeps the already-resolved request-local model.
             kwargs = dict(inbound_anthropic_body)
             kwargs.pop("stream", None)
-            kwargs.setdefault("model", self.model)
+            if self.model is not None:
+                kwargs["model"] = self.model
+            if kwargs.get("model") in (None, ""):
+                raise MissingModelError()
             return kwargs
 
         system, converted = self._convert_messages(messages)
         kwargs = dict(passthrough or {})
+        model = self.model if self.model is not None else kwargs.get("model")
+        if model in (None, ""):
+            raise MissingModelError()
         kwargs.update({
-            "model": self.model,
+            "model": model,
             "messages": converted,
         })
         kwargs.setdefault("max_tokens", self.max_tokens)

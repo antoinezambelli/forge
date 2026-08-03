@@ -127,6 +127,22 @@ async def _sse_request(port, body):
         await writer.wait_closed()
 
 
+async def _anthropic_backend_server(model):
+    client = _mock_client(TextResponse(content="ok"))
+    client.model = model
+    ctx = ContextManager(strategy=NoCompact(), budget_tokens=8192)
+    srv = HTTPServer(
+        client=client,
+        context_manager=ctx,
+        host="127.0.0.1",
+        port=0,
+        serialize_requests=False,
+        backend_protocol="anthropic",
+    )
+    await srv.start()
+    return srv, srv._server.sockets[0].getsockname()[1], client
+
+
 # ── Health & Models ──────────────────────────────────────────
 
 
@@ -147,6 +163,16 @@ class TestHealthAndModels:
         data = json.loads(body)
         assert data["object"] == "list"
         assert data["data"][0]["id"] == "mock-model"
+
+    @pytest.mark.asyncio
+    async def test_models_endpoint_empty_for_request_routed_client(self):
+        srv, port, _ = await _anthropic_backend_server(None)
+        try:
+            status, body = await _http_request(port, "GET", "/v1/models")
+            assert status == 200
+            assert json.loads(body) == {"object": "list", "data": []}
+        finally:
+            await srv.stop()
 
     @pytest.mark.asyncio
     async def test_not_found(self, server_factory):
@@ -296,6 +322,31 @@ class TestSSEStreaming:
             for e in json_events
         )
         assert has_tool_call
+
+
+class TestMissingAnthropicModel:
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("path", ["/v1/chat/completions", "/v1/messages"])
+    @pytest.mark.parametrize("stream", [False, True])
+    async def test_missing_model_returns_http_400_before_dispatch(self, stream, path):
+        srv, port, client = await _anthropic_backend_server(None)
+        try:
+            status, body = await _http_request(
+                port,
+                "POST",
+                path,
+                {
+                    "messages": [{"role": "user", "content": "hi"}],
+                    "stream": stream,
+                },
+            )
+            assert status == 400
+            assert "No model was supplied" in body
+            assert "text/event-stream" not in body
+            assert "data:" not in body
+            client.send.assert_not_awaited()
+        finally:
+            await srv.stop()
 
 
 # ── Serialization ───────────────────────────────────────────

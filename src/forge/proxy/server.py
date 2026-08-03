@@ -20,12 +20,14 @@ from forge.errors import (
     BackendDiscoveryError,
     BackendError,
     MissingCredentialError,
+    MissingModelError,
     MultipleCredentialsError,
 )
 from forge.proxy.auth import DUPLICATE_AUTH_MARKER, resolve_inbound_credential
 from forge.proxy.handler import (
     LazyDiscovery,
     handle_chat_completions,
+    resolve_effective_model,
     run_lazy_discovery,
 )
 
@@ -276,9 +278,14 @@ class HTTPServer:
                     writer, exc, protocol="openai", as_stream=False,
                 )
                 return
+        models = (
+            []
+            if self._client.model is None
+            else [{"id": self._client.model, "object": "model"}]
+        )
         body = json.dumps({
             "object": "list",
-            "data": [{"id": self._client.model, "object": "model"}],
+            "data": models,
         })
         await self._send_json(writer, 200, body)
 
@@ -311,15 +318,15 @@ class HTTPServer:
 
         # Streaming responses flush a 200 + SSE header before the handler runs
         # (so a queued client knows the connection is alive). Run the checks that
-        # must be able to fail with a real HTTP status — credential resolution
-        # and the first-request discovery probe — BEFORE that flush, so a bad/
-        # missing/duplicate credential returns 400/401 rather than 200 + an SSE
-        # error event. On success they latch, so the handler skips re-running
-        # discovery; its credential resolution is pure and repeats harmlessly.
+        # must be able to fail with a real HTTP status — model and credential
+        # resolution plus the first-request discovery probe — BEFORE that flush,
+        # so a bad request returns 400/401 rather than 200 + an SSE error event.
+        # On success discovery latches; both resolvers are pure and repeat
+        # harmlessly in the handler.
         # Non-streaming needs no pre-check — it never flushes early, so its
         # errors already carry a real status.
         if is_stream:
-            predispatch_error = await self._predispatch(protocol, headers)
+            predispatch_error = await self._predispatch(body, protocol, headers)
             if predispatch_error is not None:
                 await self._send_exception(
                     writer, predispatch_error, protocol, as_stream=False,
@@ -364,17 +371,18 @@ class HTTPServer:
             await self._send_json(writer, 200, json.dumps(result))
 
     async def _predispatch(
-        self, protocol: str, headers: dict[str, str],
+        self, body: dict[str, Any], protocol: str, headers: dict[str, str],
     ) -> Exception | None:
         """Pre-flush validation for a streaming request.
 
-        Resolves the inbound credential and runs first-request backend discovery
-        — the checks that must be able to fail with a real HTTP status — and
-        returns the Exception to surface, or None to proceed. Idempotent: the
-        handler re-resolves the (pure) credential and sees discovery latched, so
-        running this first changes nothing on the success path.
+        Resolves the effective model and inbound credential, then runs
+        first-request backend discovery — the checks that must be able to fail
+        with a real HTTP status — and returns the Exception to surface, or None
+        to proceed. Idempotent: the handler repeats the pure resolution and sees
+        discovery latched, so running this first changes nothing on success.
         """
         try:
+            resolve_effective_model(body, self._client, self._backend_protocol)
             extra_headers = resolve_inbound_credential(
                 headers,
                 source_protocol=protocol,
@@ -405,10 +413,10 @@ class HTTPServer:
         """
         error_msg = str(exc)
         logger.info("<< ERROR: %s", error_msg[:120])
-        # Credential problems are client errors (two credentials / one colliding
-        # with --backend-api-key → 400, or none to an auth-required backend →
-        # 401), not backend failures. These messages carry only slot names.
-        if isinstance(exc, MultipleCredentialsError):
+        # Missing models and credential conflicts are client errors (400); no
+        # credential for an auth-required backend is 401, not a backend fault.
+        # These messages carry no secret values.
+        if isinstance(exc, (MissingModelError, MultipleCredentialsError)):
             status = 400
         elif isinstance(exc, MissingCredentialError):
             status = 401

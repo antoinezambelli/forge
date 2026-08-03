@@ -7,6 +7,16 @@ class ForgeError(Exception):
     pass
 
 
+class MissingModelError(ForgeError):
+    """No model identity was available for a request-routed backend call."""
+
+    def __init__(self) -> None:
+        super().__init__(
+            "No model was supplied: provide a request model or configure "
+            "the proxy with --model."
+        )
+
+
 class UnsupportedModelError(ForgeError):
     """Caller opted into recommended sampling for a model not in the map.
 

@@ -16,7 +16,12 @@ from forge.core.reasoning import (
     validate_reasoning_replay,
 )
 from forge.core.workflow import ToolCall, ToolSpec, TextResponse
-from forge.errors import BackendDiscoveryError, BackendError, ToolCallError
+from forge.errors import (
+    BackendDiscoveryError,
+    BackendError,
+    MissingModelError,
+    ToolCallError,
+)
 from forge.guardrails import ErrorTracker, ResponseValidator
 from forge.proxy.auth import resolve_inbound_credential
 from forge.proxy.convert import (
@@ -160,6 +165,26 @@ def _extract_passthrough(body: dict[str, Any]) -> dict[str, Any] | None:
     return extras or None
 
 
+def resolve_effective_model(
+    body: dict[str, Any],
+    client: LLMClient,
+    backend_protocol: str,
+) -> Any:
+    """Resolve this request's downstream and response model identity.
+
+    Anthropic-shaped downstreams may be request-routed: a configured client
+    model is a pin, otherwise the inbound model remains request-local. Other
+    backends retain the proxy's existing response-label behavior.
+    """
+    if backend_protocol != "anthropic":
+        return body.get("model", "forge")
+
+    model = client.model if client.model not in (None, "") else body.get("model")
+    if model in (None, ""):
+        raise MissingModelError()
+    return model
+
+
 def _extract_tool_specs(request_tools: list[dict[str, Any]] | None) -> list[ToolSpec]:
     """Extract ToolSpec objects from the OpenAI tools array in the request."""
     if not request_tools:
@@ -259,7 +284,7 @@ async def handle_chat_completions(
     """
     reasoning_replay = validate_reasoning_replay(reasoning_replay)
     is_stream = body.get("stream", False)
-    model_name = body.get("model", "forge")
+    model_name = resolve_effective_model(body, client, backend_protocol)
 
     # Resolve the single credential forge forwards to the backend: relocate an
     # inbound auth header into the backend's canonical slot, or None when the
@@ -303,7 +328,7 @@ async def handle_chat_completions(
         # the runner hasn't mutated messages (clean first-attempt call);
         # OpenAI-shape clients (LlamafileClient) accept and ignore. See
         # ADR-015.
-        inbound_anthropic_body = body
+        inbound_anthropic_body = deepcopy(body)
     else:
         request_messages = body.get("messages", [])
         request_tools = body.get("tools")
@@ -333,6 +358,13 @@ async def handle_chat_completions(
     if protocol == "anthropic":
         raw_tools_for_backend = None
         raw_messages_for_backend = None
+
+    if backend_protocol == "anthropic":
+        if passthrough is None:
+            passthrough = {}
+        passthrough["model"] = model_name
+        if inbound_anthropic_body is not None:
+            inbound_anthropic_body["model"] = model_name
 
     # Optionally inject the respond tool (default off). When on, the model
     # calls respond(message="...") instead of producing bare text, keeping it

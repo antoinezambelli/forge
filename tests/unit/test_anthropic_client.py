@@ -4,6 +4,7 @@ All tests exercise the static conversion methods directly.
 No API calls or mocks needed.
 """
 
+import asyncio
 import json
 from typing import Literal
 from unittest.mock import AsyncMock, MagicMock
@@ -15,6 +16,7 @@ from forge.clients.anthropic import AnthropicClient
 from forge.clients.base import TokenUsage
 from forge.core.inference import _get_usage
 from forge.core.workflow import TextResponse, ToolCall, ToolSpec
+from forge.errors import MissingModelError
 
 
 class CityParams(BaseModel):
@@ -520,6 +522,80 @@ class TestPromptCaching:
         assert tu.prompt_tokens == 5
         assert tu.cache_creation_input_tokens == 100
         assert tu.cache_read_input_tokens == 200
+
+
+class TestRequestRoutedModel:
+    def test_dynamic_client_uses_verbatim_request_model(self) -> None:
+        client = AnthropicClient(model=None, api_key="dummy")
+        kwargs = client._build_kwargs(
+            [], None, inbound_anthropic_body={"model": "route-a", "messages": []},
+        )
+        assert kwargs["model"] == "route-a"
+
+    def test_dynamic_client_uses_rebuild_passthrough_model(self) -> None:
+        client = AnthropicClient(model=None, api_key="dummy")
+        kwargs = client._build_kwargs(
+            [{"role": "user", "content": "hi"}], None,
+            passthrough={"model": "route-b"},
+        )
+        assert kwargs["model"] == "route-b"
+
+    @pytest.mark.parametrize("verbatim", [False, True])
+    def test_dynamic_client_fails_without_request_model(self, verbatim) -> None:
+        client = AnthropicClient(model=None, api_key="dummy")
+        with pytest.raises(MissingModelError):
+            client._build_kwargs(
+                [{"role": "user", "content": "hi"}], None,
+                inbound_anthropic_body={"messages": []} if verbatim else None,
+            )
+
+    def test_direct_fixed_client_overrides_passthrough_model(self) -> None:
+        client = AnthropicClient(model="fixed-model", api_key="dummy")
+        kwargs = client._build_kwargs(
+            [{"role": "user", "content": "hi"}], None,
+            passthrough={"model": "request-model"},
+        )
+        assert kwargs["model"] == "fixed-model"
+
+    @pytest.mark.asyncio
+    async def test_concurrent_clean_and_rebuilt_models_stay_isolated(self) -> None:
+        client = AnthropicClient(model=None, api_key="dummy")
+        both_arrived = asyncio.Event()
+        release = asyncio.Event()
+        recorded = []
+
+        async def gated_create(**kwargs):
+            recorded.append(kwargs)
+            if len(recorded) == 2:
+                both_arrived.set()
+            await release.wait()
+            response = MagicMock()
+            response.content = [MagicMock(type="text", text="ok")]
+            response.usage.input_tokens = 1
+            response.usage.output_tokens = 1
+            response.usage.cache_creation_input_tokens = 0
+            response.usage.cache_read_input_tokens = 0
+            return response
+
+        client._client.messages.create = AsyncMock(side_effect=gated_create)
+        clean = asyncio.create_task(client.send(
+            [], inbound_anthropic_body={
+                "model": "route-opus",
+                "messages": [{"role": "user", "content": "one"}],
+            },
+        ))
+        rebuilt = asyncio.create_task(client.send(
+            [{"role": "user", "content": "two"}],
+            passthrough={"model": "route-sonnet"},
+        ))
+        await both_arrived.wait()
+        release.set()
+        await asyncio.gather(clean, rebuilt)
+
+        assert {kwargs["model"] for kwargs in recorded} == {
+            "route-opus", "route-sonnet",
+        }
+        assert client.model is None
 
 
 class TestThinking:

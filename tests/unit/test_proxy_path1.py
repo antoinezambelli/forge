@@ -18,6 +18,7 @@ import pytest
 
 from forge.clients.anthropic import AnthropicClient
 from forge.core.workflow import TextResponse
+from forge.proxy.handler import handle_chat_completions
 from forge.proxy.proxy import ProxyServer
 
 
@@ -65,13 +66,29 @@ class TestProxyServerValidation:
         assert ctx.budget_tokens == 200000
         assert lazy is None  # Anthropic path is never deferred
         mock_client_cls.assert_called_once_with(
-            model="claude",
+            model=None,
             base_url="http://localhost:8080",
             timeout=1800.0,
             # explicit "" → no static credential and ambient ANTHROPIC_* env is
             # suppressed at construction (one credential per request).
             api_key="",
         )
+
+    @pytest.mark.asyncio
+    async def test_anthropic_external_literal_claude_pin_is_preserved(self):
+        proxy = ProxyServer(
+            backend_url="http://localhost:8080",
+            backend_protocol="anthropic",
+            model="claude",
+        )
+        with patch("forge.clients.anthropic.AnthropicClient") as mock_client_cls:
+            mock_client = MagicMock()
+            mock_client.get_context_length = AsyncMock(return_value=200000)
+            mock_client_cls.return_value = mock_client
+
+            await proxy._setup_external()
+
+        assert mock_client_cls.call_args.kwargs["model"] == "claude"
 
 
 # ── AnthropicClient verbatim path ────────────────────────────
@@ -131,8 +148,8 @@ class TestAnthropicClientVerbatim:
         )
         assert kwargs["model"] == "claude-3-5-sonnet"
 
-    def test_inbound_model_wins_over_client_model(self):
-        """If inbound carries a model, it wins."""
+    def test_fixed_client_model_wins_over_inbound_model(self):
+        """A direct fixed-model client remains authoritative."""
         client = AnthropicClient(model="claude-default")
         inbound = {"model": "claude-opus-4-7", "messages": []}
         kwargs = client._build_kwargs(
@@ -140,7 +157,7 @@ class TestAnthropicClientVerbatim:
             tools=None,
             inbound_anthropic_body=inbound,
         )
-        assert kwargs["model"] == "claude-opus-4-7"
+        assert kwargs["model"] == "claude-default"
 
     def test_none_inbound_uses_convert_messages_path(self):
         """When inbound_anthropic_body is None, falls back to rebuild path."""
@@ -185,6 +202,16 @@ def _stub_anthropic_response():
     """Build a minimal Anthropic-shape response object for AsyncMock."""
     msg = MagicMock()
     msg.content = [MagicMock(type="text", text="ok")]
+    msg.usage.input_tokens = 1
+    msg.usage.output_tokens = 1
+    msg.usage.cache_creation_input_tokens = 0
+    msg.usage.cache_read_input_tokens = 0
+    return msg
+
+
+def _stub_tool_response(name="search", **tool_input):
+    msg = MagicMock()
+    msg.content = [MagicMock(type="tool_use", name=name, input=tool_input)]
     msg.usage.input_tokens = 1
     msg.usage.output_tokens = 1
     msg.usage.cache_creation_input_tokens = 0
@@ -295,3 +322,80 @@ class TestCacheControlSurvivesWire:
         # System is a plain string (no blocks, no cache_control)
         assert kwargs["system"] == "large stable system prompt"
         assert not isinstance(kwargs["system"], list)
+
+
+class TestRequestLocalModelSurvivesMutation:
+    @staticmethod
+    def _body(model):
+        return {
+            "model": model,
+            "max_tokens": 128,
+            "messages": [{"role": "user", "content": "search"}],
+            "tools": [{
+                "name": "search",
+                "description": "Search.",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {"q": {"type": "string"}},
+                },
+            }],
+        }
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("client_model", "inbound_model", "effective_model"),
+        [(None, "route-opus", "route-opus"), ("claude", "caller-model", "claude")],
+    )
+    async def test_model_survives_every_retry_rebuild(
+        self, client_model, inbound_model, effective_model,
+    ):
+        client = AnthropicClient(model=client_model, api_key="dummy")
+        client._client.messages.create = AsyncMock(side_effect=[
+            _stub_anthropic_response(),
+            _stub_anthropic_response(),
+            _stub_tool_response(q="done"),
+        ])
+
+        result = await handle_chat_completions(
+            self._body(inbound_model), client, MagicMock(
+                maybe_compact=MagicMock(side_effect=lambda messages, **_: messages),
+                check_thresholds=MagicMock(return_value=None),
+            ),
+            protocol="anthropic", backend_protocol="anthropic", max_retries=2,
+        )
+
+        calls = client._client.messages.create.call_args_list
+        assert [call.kwargs["model"] for call in calls] == [
+            effective_model, effective_model, effective_model,
+        ]
+        assert calls[0].kwargs["messages"] == self._body(inbound_model)["messages"]
+        assert result["model"] == effective_model
+        assert client.model == client_model
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("client_model", "inbound_model", "effective_model"),
+        [(None, "route-sonnet", "route-sonnet"), ("pinned", "caller", "pinned")],
+    )
+    async def test_model_survives_forced_compaction_rebuild(
+        self, client_model, inbound_model, effective_model,
+    ):
+        client = AnthropicClient(model=client_model, api_key="dummy")
+        client._client.messages.create = AsyncMock(
+            return_value=_stub_tool_response(q="done"),
+        )
+        context_manager = MagicMock()
+        context_manager.maybe_compact.side_effect = (
+            lambda messages, **_: list(messages)
+        )
+        context_manager.check_thresholds.return_value = None
+
+        result = await handle_chat_completions(
+            self._body(inbound_model), client, context_manager,
+            protocol="anthropic", backend_protocol="anthropic",
+        )
+
+        kwargs = client._client.messages.create.call_args.kwargs
+        assert kwargs["model"] == effective_model
+        assert result["model"] == effective_model
+        assert client.model == client_model

@@ -10,7 +10,7 @@ from forge.context.manager import ContextManager
 from forge.context.strategies import NoCompact
 from forge.core.workflow import TextResponse, ToolCall
 from forge.clients.base import TokenUsage
-from forge.errors import BackendDiscoveryError, BackendError
+from forge.errors import BackendDiscoveryError, BackendError, MissingModelError
 from forge.proxy.handler import (
     LazyDiscovery,
     handle_chat_completions,
@@ -645,6 +645,92 @@ class TestAnthropicProtocol:
         api_messages = client.send.call_args.args[0]
         assert api_messages[0]["role"] == "system"
         assert api_messages[0]["content"] == "You are helpful."
+
+
+class TestAnthropicBackendModelRouting:
+    @pytest.mark.asyncio
+    async def test_unpinned_openai_request_uses_opaque_inbound_model(self):
+        client = _mock_client(TextResponse(content="ok"))
+        client.model = None
+        result = await handle_chat_completions(
+            _body(model="nemtoron-120b"), client, _context_manager(),
+            backend_protocol="anthropic",
+        )
+        assert client.send.call_args.kwargs["passthrough"]["model"] == "nemtoron-120b"
+        assert result["model"] == "nemtoron-120b"
+        assert client.model is None
+
+    @pytest.mark.asyncio
+    async def test_literal_claude_is_preserved_when_supplied(self):
+        client = _mock_client(TextResponse(content="ok"))
+        client.model = None
+        result = await handle_chat_completions(
+            _body(model="claude"), client, _context_manager(),
+            backend_protocol="anthropic",
+        )
+        assert client.send.call_args.kwargs["passthrough"]["model"] == "claude"
+        assert result["model"] == "claude"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("protocol", ["openai", "anthropic"])
+    async def test_configured_pin_overrides_both_inbound_wire_shapes(self, protocol):
+        client = _mock_client(TextResponse(content="ok"))
+        client.model = "gateway-pin"
+        body = (
+            _body(model="caller-model")
+            if protocol == "openai"
+            else {
+                "model": "caller-model",
+                "messages": [{"role": "user", "content": "hi"}],
+                "max_tokens": 32,
+            }
+        )
+        result = await handle_chat_completions(
+            body, client, _context_manager(), protocol=protocol,
+            backend_protocol="anthropic",
+        )
+        sent = client.send.call_args.kwargs
+        assert sent["passthrough"]["model"] == "gateway-pin"
+        if protocol == "anthropic":
+            assert sent["inbound_anthropic_body"]["model"] == "gateway-pin"
+        assert result["model"] == "gateway-pin"
+        assert body["model"] == "caller-model"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("protocol", ["openai", "anthropic"])
+    @pytest.mark.parametrize("stream", [False, True])
+    async def test_response_identity_uses_effective_model(self, protocol, stream):
+        client = _mock_client(TextResponse(content="ok"))
+        client.model = "pinned-model"
+        body = {
+            "model": "caller-model",
+            "messages": [{"role": "user", "content": "hi"}],
+            "stream": stream,
+        }
+        result = await handle_chat_completions(
+            body, client, _context_manager(), protocol=protocol,
+            backend_protocol="anthropic",
+        )
+        if not stream:
+            assert result["model"] == "pinned-model"
+        elif protocol == "openai":
+            assert all(event["model"] == "pinned-model" for event in result)
+        else:
+            assert result[0]["message"]["model"] == "pinned-model"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("protocol", ["openai", "anthropic"])
+    @pytest.mark.parametrize("model", [None, ""])
+    async def test_missing_model_fails_closed(self, model, protocol):
+        client = _mock_client(TextResponse(content="ok"))
+        client.model = None
+        body = {"messages": [{"role": "user", "content": "hi"}], "model": model}
+        with pytest.raises(MissingModelError):
+            await handle_chat_completions(
+                body, client, _context_manager(), protocol=protocol,
+                backend_protocol="anthropic",
+            )
+        client.send.assert_not_awaited()
 
 
 # ── Native transparent passthrough ──────────────────────────

@@ -331,7 +331,7 @@ class ProxyServer:
                     "Install it with: pip install 'forge-guardrails[anthropic]'"
                 ) from exc
             client: LLMClient = AnthropicClient(
-                model=self._model or "claude",
+                model=self._model,
                 base_url=self._backend_url.rstrip("/"),
                 timeout=self._backend_timeout,
                 # Explicit key (or "" for pure passthrough) so an ambient
