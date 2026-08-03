@@ -2,6 +2,20 @@
 
 All notable changes to forge are documented here.
 
+## [0.8.3] — 2026-08-03
+
+A proxy-correctness and evaluation-publication release. Forge restores model identity handling across vLLM and Anthropic proxy paths while making evaluation collection and publication deterministic and provenance-safe.
+
+### Added
+- **Deterministic Hugging Face dataset publication tooling.** A new offline `tests.eval.dataset_builder` command produces verified Parquet bundles with `latest`, `snapshot`, and `history` views, a fixed schema, source provenance, content hashes, and an upload-ready Dataset Card. Builds are verified and published atomically, with PyArrow available through the dedicated `dataset-builder` extra. #136
+
+### Changed
+- **Eval-generation provenance is explicit and resume-safe.** `batch_eval --generation` stamps every collected row with its comparability epoch. Existing JSONL outputs are validated before collection begins, rejecting malformed data, mixed or mismatched generations, and ambiguous resume identities. Shared generation and replay-policy semantics now govern collection, reporting, and publication. #135
+
+### Fixed
+- **Unpinned external vLLM proxies discover their served model before listing it.** The first `GET /v1/models` can use the caller's credential to complete lazy discovery, adopt and latch the backend's served identity, and return Forge's existing one-entry model list instead of the temporary `default` placeholder. Explicit pins and non-vLLM backends remain unchanged. #100, #137
+- **Anthropic proxy requests preserve their request-local model identity.** Unpinned Anthropic backends now use each request's opaque model name instead of the fabricated `claude` default; an explicit `--model` remains authoritative, and a request with neither source fails with HTTP 400 before dispatch. Concurrent request models remain isolated, clean Anthropic passthrough preserves fields such as `cache_control` without mutating the caller-owned request body, and `/v1/models` returns an empty list when no proxy-wide model is pinned.
+
 ## [0.8.2] — 2026-07-28
 
 A maintenance and eval-publication release. Forge hardens malformed llama.cpp 500 recovery, adds compatibility with clients that use llama-server’s unversioned chat endpoint, and publishes an expanded evaluation dashboard covering 378,300 runs across 291 configurations.
