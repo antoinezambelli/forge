@@ -22,6 +22,12 @@ from collections import defaultdict
 from dataclasses import dataclass
 from pathlib import Path
 
+from tests.eval.generation import (
+    effective_generation,
+    effective_reasoning_replay,
+    select_latest_generation as dedup_latest_gen,
+)
+
 # Scenarios and their ideal iteration counts (from scenarios.py)
 # Hardcoded here so the report script has zero forge imports and can
 # run on any machine with just Python + the JSONL file.
@@ -217,102 +223,6 @@ def load_jsonl(path: Path) -> list[dict]:
     return rows
 
 
-def _row_replay(row: dict) -> str:
-    """Row-level reasoning_replay, defaulting pre-knob rows to "full".
-
-    Pre-knob rows (no field) ran unbounded replay, which the knob names
-    "full" — so carried-forward older generations surface with an honest
-    ':full' tag rather than masquerading as the current default.
-    """
-    return row.get("reasoning_replay", "full")
-
-
-def _config_tuple(row: dict) -> tuple[str, str, str, str, str, str]:
-    """The BASE identity a config is deduped on — ConfigKey's fields minus reasoning_replay.
-
-    reasoning_replay is not part of this base identity because pre-knob rows have
-    no field at all: they ran unbounded replay under the old default, and a
-    newer-gen re-sweep of the config should supersede them regardless of which
-    policies it ran (else every v0.7.0 row would survive as a stale ':full'
-    duplicate next to its re-swept config). See _policy_tuple for how rows that
-    DO carry an explicit policy are kept distinct.
-
-    reasoning_level, by contrast, IS part of the dedup identity: effort variants
-    of one stem (e.g. medium vs high) are parallel configs that must coexist,
-    not supersede each other. Pre-axis rows default to "default".
-    """
-    return (
-        row["model"],
-        row["backend"],
-        row["mode"],
-        row.get("ablation", "reforged"),
-        row.get("tool_choice", "auto"),
-        row.get("reasoning_level", "default"),
-    )
-
-
-def _policy_tuple(row: dict) -> tuple:
-    """Base identity plus the row's EXPLICIT reasoning_replay policy.
-
-    Legacy pre-knob rows (no field) key on None, so they never collide with an
-    explicit policy arm. Used to scope supersession for explicit rows only.
-    """
-    return _config_tuple(row) + (row.get("reasoning_replay"),)
-
-
-def dedup_latest_gen(rows: list[dict]) -> list[dict]:
-    """Keep only the highest-``gen`` rows for each config.
-
-    Eval generations (the ``gen`` field, injected per-row) let a single
-    dashboard fold multiple eval waves run against different code states.
-    When the same config appears in more than one generation — e.g. a model
-    re-swept in a newer suite — the newest generation wins and the older
-    rows are dropped. Configs that only ever ran in an older generation
-    (e.g. the Anthropic ablation, or Retired models) are carried forward at
-    that older gen and surface with a superscript badge.
-
-    Rows with no ``gen`` field count as gen 0, so a lone legacy file with no
-    generations renders exactly as before (everything at gen 0, no badges).
-
-    Supersession is scoped by whether a row carries an EXPLICIT reasoning_replay
-    policy, because the two cases mean different things:
-
-    * Legacy pre-knob rows (no field) are an artifact of the old unbounded-replay
-      default, not a deliberate measurement. Any newer-gen sweep of the config
-      supersedes them — scoped on the base identity — so they never linger as
-      phantom ':full' twins.
-    * Explicit policy rows (none/keep-last/full) are deliberate measurements of
-      that policy, so they are superseded only by a newer gen of the SAME policy
-      — scoped on the base identity plus the policy. An explicit arm that only
-      ever ran in an older gen carries forward with a badge rather than being
-      destroyed by a newer sweep that happened to run different policies.
-
-    Note: dedup is whole-config, not per-scenario — a partial re-run would
-    shadow the older gen's other scenarios. Not a concern today (re-swept
-    configs are full-suite), but worth knowing before partial re-runs land.
-    """
-    base_max: dict[tuple, int] = {}
-    policy_max: dict[tuple, int] = {}
-    for r in rows:
-        g = r.get("gen", 0)
-        bk = _config_tuple(r)
-        pk = _policy_tuple(r)
-        if g > base_max.get(bk, -1):
-            base_max[bk] = g
-        if g > policy_max.get(pk, -1):
-            policy_max[pk] = g
-
-    kept: list[dict] = []
-    for r in rows:
-        g = r.get("gen", 0)
-        if "reasoning_replay" in r:
-            if g == policy_max[_policy_tuple(r)]:
-                kept.append(r)
-        elif g == base_max[_config_tuple(r)]:
-            kept.append(r)
-    return kept
-
-
 def group_rows(
     rows: list[dict],
 ) -> dict[ConfigKey, dict[str, list[dict]]]:
@@ -325,7 +235,7 @@ def group_rows(
         tc = row.get("tool_choice", "auto")
         key = ConfigKey(
             row["model"], row["backend"], row["mode"], ablation, tc,
-            _row_replay(row), row.get("reasoning_level", "default"),
+            effective_reasoning_replay(row), row.get("reasoning_level", "default"),
         )
         grouped[key][row["scenario"]].append(row)
     return grouped
@@ -521,7 +431,7 @@ def compute_config_metrics(
     gen = 0
     for runs in scenario_runs.values():
         for r in runs:
-            g = r.get("gen", 0)
+            g = effective_generation(r)
             if g > gen:
                 gen = g
     retired = extract_family(key.model) in RETIRED_FAMILIES
@@ -1533,7 +1443,7 @@ def main() -> None:
     # Filter by reasoning_replay policy if requested
     if args.reasoning_replay:
         rr_set = set(args.reasoning_replay)
-        rows = [r for r in rows if _row_replay(r) in rr_set]
+        rows = [r for r in rows if effective_reasoning_replay(r) in rr_set]
         if not rows:
             print(f"No data for reasoning_replay polic(ies): {', '.join(args.reasoning_replay)}")
             sys.exit(0)
