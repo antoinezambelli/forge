@@ -351,6 +351,34 @@ async def _run_test_forge_local_endpoints(proxy_base: str, _model: str) -> None:
     assert options.headers.get("access-control-allow-origin") == "*"
 
 
+def _normalized_vllm_catalog(content: bytes) -> dict | None:
+    """Remove fields that vLLM regenerates for every /v1/models request."""
+    try:
+        payload = json.loads(content)
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        return None
+    if not isinstance(payload, dict) or payload.get("object") != "list":
+        return None
+    rows = payload.get("data")
+    if not isinstance(rows, list) or not rows:
+        return None
+    if not all(isinstance(row, dict) for row in rows):
+        return None
+    if not any(row.get("owned_by") == "vllm" for row in rows):
+        return None
+
+    for row in rows:
+        row.pop("created", None)
+        permissions = row.get("permission")
+        if not isinstance(permissions, list):
+            continue
+        for permission in permissions:
+            if isinstance(permission, dict):
+                permission.pop("id", None)
+                permission.pop("created", None)
+    return payload
+
+
 async def _run_test_metadata_forwarding(
     proxy_base: str,
     backend_mount_root: str,
@@ -365,7 +393,18 @@ async def _run_test_metadata_forwarding(
                 f"F2 {target} status proxy={proxied.status_code} "
                 f"backend={direct.status_code}"
             )
-            assert proxied.content == direct.content, (
+            bodies_match = proxied.content == direct.content
+            if not bodies_match and urlsplit(target).path == "/v1/models":
+                direct_catalog = _normalized_vllm_catalog(direct.content)
+                proxied_catalog = _normalized_vllm_catalog(proxied.content)
+                bodies_match = (
+                    direct_catalog is not None
+                    and proxied_catalog is not None
+                    and proxied_catalog == direct_catalog
+                )
+                if bodies_match:
+                    print("     /v1/models: ignored volatile vLLM permission metadata")
+            assert bodies_match, (
                 f"F2 {target} body differs from backend"
             )
             assert (
