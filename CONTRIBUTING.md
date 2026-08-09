@@ -50,13 +50,13 @@ Then run the live proxy sanity check against the real backends available on
 your machine:
 
 ```bash
-# Real llama-server and Ollama
+# Real specialized llama-server, generic OpenAI, and Ollama profiles
 python scripts/integration_test_proxy.py --gguf path/to/model.gguf
 
 # Ollama only
 python scripts/integration_test_proxy.py --skip-llama
 
-# llama-server only
+# llama-server-backed profiles only (specialized and generic OpenAI)
 python scripts/integration_test_proxy.py --gguf path/to/model.gguf --skip-ollama
 
 # Optional user-managed vLLM

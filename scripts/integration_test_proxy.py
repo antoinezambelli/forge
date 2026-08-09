@@ -1,16 +1,19 @@
 """Integration tests for the proxy against real local-model backends.
 
-Up to five phases run sequentially:
+Up to six phases run sequentially:
 
 1. External mode — script launches ``llama-server`` via subprocess, the
    proxy points at it via ``backend_url``. Matches what users do per the
    BACKEND_SETUP docs.
 2. Managed mode — the proxy owns the llama-server via ServerManager.
    Matches ``python -m forge.proxy --backend llamaserver --gguf X``.
-3. Optional external vLLM — ``--vllm-url`` points Forge at a user-managed
+3. Generic OpenAI-compatible mode — script launches ``llama-server`` as a
+   representative OpenAI-shaped downstream while Forge selects the explicit
+   unmanaged ``openai`` profile.
+4. Optional external vLLM — ``--vllm-url`` points Forge at a user-managed
    vLLM server. The script owns only the proxy in this phase.
-4. External Ollama — the proxy uses Ollama's OpenAI-compatible surface.
-5. Managed Ollama — Forge attaches through its native Ollama adapter.
+5. External Ollama — the proxy uses Ollama's OpenAI-compatible surface.
+6. Managed Ollama — Forge attaches through its native Ollama adapter.
 
 The same Forge-local, metadata, and inference checks run in every enabled phase:
 
@@ -39,7 +42,7 @@ Usage:
         [--skip-external] [--skip-managed] [--skip-llama] [--skip-ollama]
         [--vllm-url URL]
 
-``--gguf`` is required only when either llama-server phase is enabled.
+``--gguf`` is required when any llama-server-backed phase is enabled.
 Paths may use native Windows or Linux syntax. Ollama phases select an already
 installed Gemma-4 E4B Q4 model, falling back to Ministral-3 8B Instruct Q4.
 
@@ -80,6 +83,8 @@ MANAGED_PROXY_PORT = 18089
 VLLM_PROXY_PORT = 18091
 EXTERNAL_OLLAMA_PROXY_PORT = 18092
 MANAGED_OLLAMA_PROXY_PORT = 18093
+GENERIC_OPENAI_BACKEND_PORT = 18094
+GENERIC_OPENAI_PROXY_PORT = 18095
 
 LOG_FILE = Path(__file__).parent / "integration_test_proxy.log"
 
@@ -920,7 +925,61 @@ async def phase_managed(
     return results
 
 
-# ── Phase 3: External vLLM (opt-in) ──────────────────────────────────
+# ── Phase 3: Generic OpenAI-compatible profile ──────────────────────
+
+async def phase_generic_openai(
+    gguf: Path, mode: str = "native", extra_flags: list[str] | None = None,
+) -> list[tuple[str, str, str]]:
+    """Exercise the generic unmanaged OpenAI profile against llama-server."""
+    print(f"\n===== Phase 3: generic OpenAI profile (fc={mode}) =====")
+    print(
+        f"      llama-server on :{GENERIC_OPENAI_BACKEND_PORT}, "
+        f"proxy on :{GENERIC_OPENAI_PROXY_PORT}"
+    )
+
+    backend_root = f"http://127.0.0.1:{GENERIC_OPENAI_BACKEND_PORT}"
+    llama_proc = _spawn_llama_server(
+        gguf, GENERIC_OPENAI_BACKEND_PORT, mode, extra_flags,
+    )
+    try:
+        await _wait_llama_ready(GENERIC_OPENAI_BACKEND_PORT)
+        print("[openai] llama-server ready")
+
+        from forge.proxy import ProxyServer
+        proxy = ProxyServer(
+            backend_url=backend_root,
+            backend="openai",
+            model=gguf.stem,
+            port=GENERIC_OPENAI_PROXY_PORT,
+            backend_capability=mode,
+        )
+        proxy.start()
+        print(f"[openai] proxy ready at {proxy.url}")
+        try:
+            # The generic profile intentionally interprets no backend-specific
+            # context metadata, so reporting remains unavailable without an
+            # operator-supplied denominator.
+            results = await _run_all_tests(
+                proxy.url, backend_root, gguf.stem, None,
+            )
+        finally:
+            proxy.stop()
+    finally:
+        llama_proc.terminate()
+        try:
+            llama_proc.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            llama_proc.kill()
+            llama_proc.wait(timeout=10)
+        print("[openai] llama-server stopped")
+    results.append(await _shutdown_result(
+        (GENERIC_OPENAI_PROXY_PORT, GENERIC_OPENAI_BACKEND_PORT),
+        process=llama_proc,
+    ))
+    return results
+
+
+# ── Phase 4: External vLLM (opt-in) ──────────────────────────────────
 
 async def phase_external_vllm(vllm_url: str) -> list[tuple[str, str, str]]:
     """Run the live battery against a user-managed vLLM server.
@@ -932,7 +991,7 @@ async def phase_external_vllm(vllm_url: str) -> list[tuple[str, str, str]]:
     --tool-call-parser <name>`` (and ``--reasoning-parser`` for thinking
     models) so the tool tests (T4–T6) have a native tool surface.
     """
-    print("\n===== Phase 3: external vLLM (fc=native) =====")
+    print("\n===== Phase 4: external vLLM (fc=native) =====")
     print(f"      user-managed vLLM at {vllm_url}, proxy on :{VLLM_PROXY_PORT}")
     backend_root = _metadata_mount_root(vllm_url)
     model = await _discover_vllm_model(vllm_url)
@@ -958,11 +1017,11 @@ async def phase_external_vllm(vllm_url: str) -> list[tuple[str, str, str]]:
     return results
 
 
-# ── Phase 4: External Ollama ─────────────────────────────────
+# ── Phase 5: External Ollama ─────────────────────────────────
 
 async def phase_external_ollama(model: str) -> list[tuple[str, str, str]]:
     """Exercise Ollama's OpenAI-compatible surface as an unmanaged backend."""
-    print("\n===== Phase 4: external Ollama (OpenAI-compatible) =====")
+    print("\n===== Phase 5: external Ollama (OpenAI-compatible) =====")
     print(
         f"      Ollama at {OLLAMA_URL}, model={model}, "
         f"proxy on :{EXTERNAL_OLLAMA_PROXY_PORT}"
@@ -993,11 +1052,11 @@ async def phase_external_ollama(model: str) -> list[tuple[str, str, str]]:
     return results
 
 
-# ── Phase 5: Managed Ollama ──────────────────────────────────
+# ── Phase 6: Managed Ollama ──────────────────────────────────
 
 async def phase_managed_ollama(model: str) -> list[tuple[str, str, str]]:
     """Exercise Forge's native attached-daemon Ollama profile."""
-    print("\n===== Phase 5: managed Ollama (native adapter) =====")
+    print("\n===== Phase 6: managed Ollama (native adapter) =====")
     print(f"      model={model}, proxy on :{MANAGED_OLLAMA_PROXY_PORT}")
 
     from forge.proxy import ProxyServer
@@ -1057,7 +1116,10 @@ async def main() -> int:
     parser.add_argument(
         "--skip-external",
         action="store_true",
-        help="Skip external llama-server and external Ollama phases.",
+        help=(
+            "Skip external llama-server, generic OpenAI, and external "
+            "Ollama phases."
+        ),
     )
     parser.add_argument(
         "--skip-managed",
@@ -1067,7 +1129,10 @@ async def main() -> int:
     parser.add_argument(
         "--skip-llama",
         action="store_true",
-        help="Skip both llama-server phases; --gguf is then unnecessary.",
+        help=(
+            "Skip specialized and generic llama-server-backed phases; "
+            "--gguf is then unnecessary."
+        ),
     )
     parser.add_argument(
         "--skip-ollama",
@@ -1119,6 +1184,12 @@ async def main() -> int:
         man = await phase_managed(gguf, args.mode, extra_flags)
         _print_summary("managed", man)
         summaries.append(("managed", man))
+
+    if not args.skip_llama and not args.skip_external:
+        assert gguf is not None
+        generic = await phase_generic_openai(gguf, args.mode, extra_flags)
+        _print_summary("openai-generic", generic)
+        summaries.append(("openai-generic", generic))
 
     if args.vllm_url:
         vll = await phase_external_vllm(args.vllm_url)
