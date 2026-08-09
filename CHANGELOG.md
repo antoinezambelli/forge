@@ -2,11 +2,15 @@
 
 All notable changes to forge are documented here.
 
-## [0.9.0] — 2026-08-08
+## [0.9.0] — 2026-08-09
 
-One intentional breaking Proxy update. Forge 0.9.0 replaces the pre-0.9
-configuration, metadata, inference-fidelity, and context behavior atomically;
-see [Migrating to Forge 0.9](docs/MIGRATING_TO_0.9.md) for the complete
+Forge's Proxy has become its most-used integration surface while backend
+support has expanded organically. Forge 0.9 consolidates that growth around a
+clear sidecar contract, replacing accumulated configuration and metadata seams
+before they become a long-term maintenance burden. Guardrail behavior and
+native workflows remain intentionally stable; the breaking changes are
+concentrated in the Proxy contract. See
+[Migrating to Forge 0.9](docs/MIGRATING_TO_0.9.md) for the complete
 old/new/action table.
 
 ### Breaking — ordinary Proxy deployments
@@ -21,17 +25,18 @@ old/new/action table.
   private vLLM routing identity.
 - Response `model` reports the actual pinned, discovered, configured, or
   request-routed wire identity.
-- Proxy is unconditionally no-compaction and never mutates caller history.
-  Missing context-window metadata no longer blocks inference.
+- Proxy is unconditionally no-compaction and never budget-compacts or deletes
+  caller history. Missing context-window metadata no longer blocks unmanaged
+  inference or managed `budget_mode=backend`.
 - Unmanaged startup performs no metadata query. Static-credential unpinned
   vLLM identity discovery moves to first inference and remains retryable.
 
 ### Added
 
-- Closed authenticated read-only forwarding for `/health`, `/v1/health`,
-  `/v1/models`, `/models`, and `/props`, preserving exact path/query,
-  backend status/body/content type, recalculated length, and Forge CORS;
-  transport failures map to 502.
+- Closed read-only forwarding for `/health`, `/v1/health`, `/v1/models`,
+  `/models`, and `/props`, applying the same one-backend-credential rule as
+  inference while preserving exact path/query, backend status/body/content
+  type, recalculated length, and Forge CORS; transport failures map to 502.
 - Local `/forge/health` liveness and `/forge/usage`, which exposes one
   last-completed eligible process-local context snapshot or 204. Session
   attribution prefers a non-empty Claude Code session header over a non-empty
@@ -69,10 +74,10 @@ old/new/action table.
 
 ### Preserved boundaries
 
-- Flat CLI and `ProxyServer`, inference aliases, global CORS, closed unknown
-  routes, retry/exhaustion behavior, credential isolation, streaming shape,
-  managed ownership/shutdown, and managed/unmanaged serialization defaults are
-  preserved.
+- Proxy keeps flat CLI and `ProxyServer` configuration surfaces, inference
+  aliases, global CORS, closed unknown routes, retry/exhaustion behavior,
+  credential isolation, streaming shape, managed ownership/shutdown, and
+  managed/unmanaged serialization defaults.
 - Native `setup_backend()`, `ContextManager`, `WorkflowRunner`, and built-in or
   custom compaction remain supported and distinct from Proxy no-compaction.
 - The optional Anthropic integration now has an `anthropic>=0.86.0` floor.
