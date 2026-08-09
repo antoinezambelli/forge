@@ -1,7 +1,13 @@
 """Tests for forge.context.manager — ContextManager and CompactEvent."""
 
+from dataclasses import FrozenInstanceError
+from datetime import datetime, timezone
+
+import pytest
+
 from forge.core.messages import Message, MessageMeta, MessageRole, MessageType
 from forge.context.manager import CompactEvent, ContextManager
+from forge.context.observations import ContextSession, ContextUsage
 from forge.context.strategies import NoCompact, SlidingWindowCompact, TieredCompact
 
 
@@ -48,6 +54,40 @@ def _build_messages(total_chars: int, count: int = 5) -> list[Message]:
     return msgs
 
 
+class TestUnavailableBudget:
+    def test_no_compact_without_budget_returns_original_messages(self) -> None:
+        mgr = ContextManager(NoCompact(), budget_tokens=None)
+        messages = [_msg("x" * 100_000)]
+
+        assert mgr.check_thresholds(messages) is None
+        assert mgr.maybe_compact(messages) is messages
+
+    @pytest.mark.parametrize(
+        "strategy",
+        [SlidingWindowCompact(keep_recent=1), TieredCompact()],
+    )
+    def test_compacting_strategy_without_budget_is_rejected(self, strategy) -> None:
+        with pytest.raises(ValueError, match="budget_tokens=None requires NoCompact"):
+            ContextManager(strategy, budget_tokens=None)
+
+    def test_thresholds_without_budget_are_rejected(self) -> None:
+        with pytest.raises(ValueError, match="no context thresholds"):
+            ContextManager(
+                NoCompact(),
+                budget_tokens=None,
+                context_thresholds=[0.5],
+                on_context_threshold=lambda *_: None,
+            )
+
+    def test_threshold_callback_without_budget_is_rejected(self) -> None:
+        with pytest.raises(ValueError, match="no context thresholds"):
+            ContextManager(
+                NoCompact(),
+                budget_tokens=None,
+                on_context_threshold=lambda *_: None,
+            )
+
+
 # ── estimate_tokens ─────────────────────────────────────────────
 
 
@@ -65,6 +105,89 @@ class TestEstimateTokens:
         mgr = ContextManager(NoCompact(), budget_tokens=1000)
         msgs = [_msg("a" * 41)]  # 41 / 4 = 10 (integer division)
         assert mgr.estimate_tokens(msgs) == 10
+
+    def test_prefers_observed_usage_including_zero(self) -> None:
+        mgr = ContextManager(NoCompact(), budget_tokens=1000)
+        msgs = [_msg("a" * 400)]
+        mgr.update_token_count(0)
+        assert mgr.estimate_tokens(msgs) == 0
+
+    def test_negative_compatibility_update_invalidates(self) -> None:
+        mgr = ContextManager(NoCompact(), budget_tokens=1000)
+        mgr.update_token_count(25)
+        mgr.update_token_count(-1)
+        assert mgr.usage is None
+        assert mgr.estimate_tokens([_msg("a" * 40)]) == 10
+
+
+class TestContextUsage:
+    def test_record_read_invalidate_and_capacity_independence(self) -> None:
+        mgr = ContextManager(NoCompact(), budget_tokens=123)
+        usage = ContextUsage(
+            current_usage_tokens=0,
+            context_window_tokens=8192,
+            model="opaque-model",
+            context_window_source="opaque-source",
+            observed_at=datetime.now(timezone.utc),
+            session=ContextSession(id="opaque-id", source="opaque-session-source"),
+        )
+
+        mgr.record_usage(usage)
+
+        assert mgr.usage is usage
+        assert mgr.budget_tokens == 123
+        mgr.invalidate_usage()
+        assert mgr.usage is None
+
+    def test_values_are_frozen_and_timestamp_must_be_utc_aware(self) -> None:
+        usage = ContextUsage(
+            current_usage_tokens=1,
+            observed_at=datetime.now(timezone.utc),
+        )
+        with pytest.raises(FrozenInstanceError):
+            usage.current_usage_tokens = 2  # type: ignore[misc]
+        with pytest.raises(ValueError, match="UTC-aware"):
+            ContextUsage(current_usage_tokens=1, observed_at=datetime.now())
+
+    def test_scalar_adapter_records_aware_utc_time(self) -> None:
+        mgr = ContextManager(NoCompact(), budget_tokens=1000)
+        mgr.update_token_count(12)
+        assert mgr.usage is not None
+        assert mgr.usage.current_usage_tokens == 12
+        assert mgr.usage.observed_at.utcoffset() is not None
+        assert mgr.usage.observed_at.utcoffset().total_seconds() == 0
+
+    def test_exports_are_additive(self) -> None:
+        from forge import ContextUsage as TopLevelUsage
+        from forge.context import ContextSession as ContextPackageSession
+
+        assert TopLevelUsage is ContextUsage
+        assert ContextPackageSession is ContextSession
+
+
+class TestPublishedProxyUsage:
+    def test_published_slot_is_distinct_from_native_policy_usage(self):
+        manager = ContextManager(NoCompact(), budget_tokens=1000)
+        native = ContextUsage(
+            current_usage_tokens=10,
+            observed_at=datetime.now(timezone.utc),
+        )
+        published = ContextUsage(
+            current_usage_tokens=20,
+            context_window_tokens=100,
+            model="reported",
+            context_window_source="backend_metadata",
+            observed_at=datetime.now(timezone.utc),
+        )
+
+        manager.record_usage(native)
+        manager.record_published_usage(published)
+        manager.invalidate_usage()
+
+        assert manager.usage is None
+        assert manager.published_usage is published
+        manager.clear_published_usage()
+        assert manager.published_usage is None
 
 
 # ── maybe_compact — under threshold ─────────────────────────────
@@ -127,6 +250,41 @@ class TestMaybeCompactOverThreshold:
         # Should not raise
         result = mgr.maybe_compact(msgs)
         assert len(result) < len(msgs)
+
+    def test_observed_trigger_invalidates_after_real_rewrite(self) -> None:
+        events: list[CompactEvent] = []
+        msgs = _build_messages(total_chars=400, count=6)
+        mgr = ContextManager(
+            SlidingWindowCompact(keep_recent=1, compact_threshold=0.5),
+            budget_tokens=1000,
+            on_compact=events.append,
+        )
+        mgr.update_token_count(600)
+
+        result = mgr.maybe_compact(msgs)
+
+        assert result != msgs
+        assert mgr.usage is None
+        assert events[0].tokens_before == 600
+        assert events[0].tokens_after == sum(len(m.content) for m in result) // 4
+
+    def test_value_equal_phase_retains_usage(self) -> None:
+        events: list[CompactEvent] = []
+        msgs = _build_messages(total_chars=400, count=4)
+        mgr = ContextManager(
+            SlidingWindowCompact(keep_recent=3, compact_threshold=0.5),
+            budget_tokens=1000,
+            on_compact=events.append,
+        )
+        mgr.update_token_count(600)
+
+        result = mgr.maybe_compact(msgs)
+
+        assert result == msgs
+        assert result is not msgs
+        assert mgr.usage is not None
+        assert events[0].tokens_before == 600
+        assert events[0].tokens_after == 600
 
 
 # ── CompactEvent fields ─────────────────────────────────────────

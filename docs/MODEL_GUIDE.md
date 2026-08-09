@@ -84,9 +84,16 @@ For full rationale see [ADR-014](decisions/014-recommended-sampling-opt-in.md). 
 
 ### Proxy mode
 
-The proxy does **not** consult the recommendations map. It plumbs whatever sampling params the inbound request body carries (OpenAI-compatible fields: `temperature`, `top_p`, `top_k`, `min_p`, `repeat_penalty`, `presence_penalty`, `seed`) through to the backend on a per-call basis. The proxy's pre-built client is treated as a "blank slate" — body fields are the only sampling source.
+The proxy does **not** consult the recommendations map. Generic OpenAI/llama
+and vLLM adapters apply the OpenAI-shaped per-call sampling dictionary. Ollama
+translates supported values into native options. `AnthropicClient` ignores the
+OpenAI-shaped dictionary, while clean Anthropic-to-Anthropic requests preserve
+caller-authored Anthropic body fields. The proxy's pre-built client remains a
+blank slate.
 
-To get card-recommended sampling in proxy mode, the calling client looks up `forge.clients.get_sampling_defaults(model)` and includes the values in the request body.
+To get card-recommended sampling in proxy mode, the calling client looks up
+`forge.clients.get_sampling_defaults(model)` and supplies values supported by
+the selected adapter.
 
 ### Overriding
 

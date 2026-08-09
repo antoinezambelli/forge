@@ -13,10 +13,12 @@ pip install -e ".[dev]"
 
 ## Running Tests
 
+### Unit tests
+
 Unit tests are fully deterministic — no LLM backend required.
 
 ```bash
-# Full suite (865 tests)
+# Full deterministic unit suite
 python -m pytest tests/unit/ -v --tb=short
 
 # With coverage
@@ -32,6 +34,46 @@ Integration tests (`@pytest.mark.integration`) require a running backend. Skip t
 python -m pytest tests/ -m "not integration"
 ```
 
+### Proxy verification
+
+After proxy work, run the deterministic proxy contract smoke test:
+
+```bash
+python scripts/smoke_test_proxy.py
+```
+
+This exercises the proxy's routing, configuration, conversion, reporting, and
+failure contracts against programmable mock backends. It is the broad,
+repeatable proxy check and does not require a model server.
+
+Then run the live proxy sanity check against the real backends available on
+your machine:
+
+```bash
+# Real llama-server and Ollama
+python scripts/integration_test_proxy.py --gguf path/to/model.gguf
+
+# Ollama only
+python scripts/integration_test_proxy.py --skip-llama
+
+# llama-server only
+python scripts/integration_test_proxy.py --gguf path/to/model.gguf --skip-ollama
+
+# Optional user-managed vLLM
+python scripts/integration_test_proxy.py \
+  --skip-llama --skip-ollama \
+  --vllm-url http://localhost:8000
+```
+
+The live script is a mostly happy-path operational sanity check. It catches
+broad regressions in startup, backend connectivity, routing, protocol
+conversion, metadata forwarding, context reporting, response identity, and
+cleanup. It is intentionally not an exhaustive compatibility or edge-case
+suite: a pass means the major proxy paths still work against real backends,
+not that every proxy configuration and failure mode has been certified. Run
+`python scripts/integration_test_proxy.py --help` for backend prerequisites and
+the complete option list.
+
 ## Project Layout
 
 ```
@@ -39,6 +81,7 @@ src/forge/           # Library source
   clients/           # LLM backend adapters (one per backend)
   core/              # Workflow, runner, messages, steps
   context/           # Context management and compaction
+  proxy/             # Proxy configuration, HTTP transport, and reporting
   prompts/           # Prompt templates and nudges
 tests/
   unit/              # Deterministic tests
@@ -55,7 +98,12 @@ docs/                # User-facing documentation
 ### Adding a new LLM backend client
 
 1. Create `src/forge/clients/yourbackend.py`
-2. Implement the `LLMClient` protocol defined in `src/forge/clients/base.py` — it requires `send()` and `send_stream()` methods
+2. Implement the complete `LLMClient` protocol defined in
+   `src/forge/clients/base.py`: `api_format`, `model`, `send()`,
+   `send_stream()`, an honest `get_context_length()` (`None` when
+   unavailable), and `aclose()`. The pre-0.9 combined
+   `discover_backend_metadata()` API is removed; do not add it to universal
+   clients.
 3. Add unit tests in `tests/unit/test_yourbackend_client.py`
 4. Export from `src/forge/__init__.py`
 5. Add backend setup instructions to `docs/BACKEND_SETUP.md`

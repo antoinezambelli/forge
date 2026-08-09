@@ -13,19 +13,59 @@ How to point forge at a backend. Forge supports six:
 
 Install instructions for each backend live with the upstream project. Below is what forge expects once a backend is running.
 
+For Proxy, `--backend-url` selects unmanaged mode. The profile selector controls
+the downstream adapter and metadata behavior:
+
+| Unmanaged `--backend` | Downstream profile |
+|---|---|
+| omitted or `openai` | Generic OpenAI-compatible |
+| `anthropic` | Anthropic Messages |
+| `llamaserver` | llama-server specialization |
+| `llamafile` | Llamafile specialization |
+| `ollama` | Ollama through its OpenAI-compatible surface |
+| `vllm` | vLLM with private served-identity discovery |
+
+Managed mode accepts `llamaserver`, `llamafile`, `ollama`, and `vllm`. Forge
+spawns the first, second, and fourth; it attaches to an existing Ollama daemon
+and unloads the selected model on stop without owning or terminating the daemon.
+See [Migrating to Forge 0.9](MIGRATING_TO_0.9.md) for the pre-0.9 selector and
+behavior changes.
+
+An explicit `--backend-port` replaces the target URL authority port while
+preserving a path prefix. For managed child-process flags, put every Forge
+option first because `--extra-flags` consumes the terminal remainder:
+
+```bash
+python -m forge.proxy --backend llamaserver --gguf model.gguf --port 8081 \
+  --extra-flags --reasoning-budget 0 -ngl 99
+```
+
+Use Proxy `/forge/health` for Forge liveness and forwarded `/health` for backend
+readiness. The closed read-only forwarding set is `/health`, `/v1/health`,
+`/v1/models`, `/models`, and `/props`; status, body, content type, query, and
+any resolved credential are preserved. A backend that does not implement a
+forwarded route therefore keeps its own response, including Ollama's `404` for
+`/health`. `/forge/usage` is local and
+reports only one last-completed process-local snapshot.
+
 ---
 
 ## Authentication
 
-forge carries **exactly one credential** to the backend, placed in the backend's
-native auth header. forge does not validate the credential, manage its lifecycle
-(expiry/refresh), or form any opinion on its value — it only relocates it into
-the correct header slot for the target backend. Auth failures therefore surface
-as the backend's own error (401/403), not a forge error.
+forge carries **at most one credential** to the backend, placed in the backend's
+native auth header. Zero is normal for an ungated local backend. forge does not
+validate a credential, manage its lifecycle (expiry/refresh), or form any
+opinion on its value — it only relocates a supplied credential into the correct
+header slot for the target backend. Backend credential rejections surface as
+the backend's own error (401/403). One pre-dispatch exception is
+`AnthropicClient`: when its auth-required path has no credential, Forge raises
+`MissingCredentialError` and Proxy returns 401 without calling the backend.
 
-**The one rule:** exactly one credential reaches the backend. If two are present
+**The rule:** zero or one credential may reach the backend. If two are present
 anywhere, forge **refuses the request** — it never merges, never picks a winner,
-never silently drops one. (Design Principle #1: fail fast, fail loud.)
+never silently drops one. An auth-required backend still rejects a request with
+none; the Anthropic path performs that check inside Forge before dispatch.
+(Design Principle #1: fail fast, fail loud.)
 
 ### WorkflowRunner (library use)
 
@@ -47,7 +87,14 @@ both `api_key` and an auth header at construction is also refused.
 
 ### Proxy
 
-The proxy gets its one credential from one of two sources — never both:
+Forge Proxy is a per-operator sidecar. It does **not** authenticate callers,
+and metadata forwarding does not turn it into an authorization gateway.
+`--backend-api-key` authenticates Forge to the backend; it is not caller
+authorization. Centralized multi-tenant authentication is unsupported without
+an authenticating gateway in front of Forge.
+
+When backend authentication is needed, the proxy gets its credential from one
+of two sources — never both:
 
 1. **Inbound passthrough.** The caller's request already carries a credential;
    forge forwards it, relocating the header to the backend's protocol when they
@@ -59,11 +106,10 @@ The proxy gets its one credential from one of two sources — never both:
 If an inbound auth header **and** `--backend-api-key` are both present, or a
 single request carries **two** auth headers, the proxy refuses it with **HTTP
 400** (a client error — the message names the conflicting slots, never a secret).
-This holds for **streaming** requests too: the credential is resolved (and a
-gated backend's context discovered) *before* the `200 OK` / SSE headers are
-flushed, so a *conflict* (two credentials) or a discovery failure returns the
-real status (400/401) rather than a stream that opens `200 OK` and then carries
-an error event.
+This holds for **streaming** requests too: the credential and any required
+unpinned vLLM identity are resolved before the `200 OK` / SSE headers are
+flushed. Context-window metadata is reporting-only and is never a pre-dispatch
+gate.
 
 One streaming case is unavoidable today: an error that surfaces only when the
 backend is actually called — the backend **rejecting the credential** (401), or
@@ -74,7 +120,7 @@ incrementally. Such failures arrive as an error *event* inside the already-open
 status; and the direct `WorkflowRunner` library path streams incrementally, so
 this is specific to the buffered proxy.)
 
-**Cross-protocol relocation.** forge moves the one credential into the target
+**Cross-protocol relocation.** forge moves a supplied credential into the target
 backend's canonical auth slot (it never reads the secret value):
 
 | Target backend | forge writes |
@@ -93,9 +139,10 @@ OpenAI backend — relocates `x-api-key` → `Authorization: Bearer` unambiguous
 > Anthropic. Coherent setups never hit this — OAuth callers use the Anthropic
 > endpoint (`/v1/messages`), which is same-protocol passthrough.
 
-forge forwards **only** the one credential header; it does not forward the rest
-of the inbound header set (so client-set `anthropic-beta`, `OpenAI-Organization`,
-etc. do not reach the backend — a future `--backend-header` may add this).
+forge forwards **only** the resolved credential header, if present; it does not
+forward the rest of the inbound header set (so client-set `anthropic-beta`,
+`OpenAI-Organization`, etc. do not reach the backend — a future
+`--backend-header` may add this).
 
 ### Notes
 
@@ -103,10 +150,10 @@ etc. do not reach the backend — a future `--backend-header` may add this).
   Anthropic SDK only for *direct* `AnthropicClient()` use (the eval path) — your
   deliberate single credential. The **proxy** neutralizes these env vars at
   construction so an ambient value can't become a hidden second credential.
-- **Keyless passthrough to an auth-required backend:** the proxy discovers the
-  backend's context length at startup, before any inbound credential exists. If
-  that endpoint requires auth, pass `--budget-tokens` so startup doesn't need to
-  call it.
+- **Keyless passthrough to an auth-required backend:** unmanaged startup makes
+  no metadata request. Supply one credential on inference. An unpinned
+  vLLM resolves required served identity on its first request; other missing
+  context metadata only makes `/forge/usage` unavailable.
 - **DEBUG logging** (proxy `-v`) emits the forwarded credential's header *name*
   with the value redacted (`x-api-key: ***`). A raw secret is never logged.
 
@@ -172,7 +219,7 @@ llamafile --server --nobrowser -m path/to/model.gguf --port 8080 -ngl 999
 
 `LlamafileClient` is **native-first**: `mode="native"` (the default) forwards tools via the backend's `tools` parameter and requires native function calling (llama.cpp with `--jinja`). For a backend without native FC, declare `mode="prompt"` to inject tool descriptions into the prompt and parse the JSON call back out. The capability is declared at construction and frozen — there is no runtime auto-detection. Native-first is the default because local-model FC support has matured into the more reliable path; prompt-injection stays fully supported as an explicit opt-in, but note that on more complex, multi-step interactions models tend to struggle to drive the prompt-injected protocol reliably, so reach for it only when the backend leaves no alternative.
 
-> **Proxy note:** the OpenAI-compatible proxy is **native-first**. By default (`--backend-capability native`) it forwards the client's tools verbatim to an FC-capable backend (llama.cpp with `--jinja`, vLLM, Ollama, Anthropic) — the recommended setup. For a non-FC llama.cpp/llamafile backend, opt into prompt-injection with `--backend-capability prompt` (strips tools into the prompt, parses the JSON call back; reuses the same prompt path as the WorkflowRunner). The choice is frozen at startup — there is no runtime auto-detect in the proxy. Reasoning replay is controlled separately with `--reasoning-replay {full,keep-last,none}`; the default `none` keeps captured reasoning out of backend-facing history (`keep-last` replays only the latest captured reasoning block, `full` replays everything). See ADR-012.
+> **Proxy note:** the OpenAI-compatible proxy is **native-first**. By default (`--backend-capability native`) it uses the backend's structured tool API (llama.cpp with `--jinja`, vLLM, Ollama, Anthropic) — the recommended setup. Raw tool fields are preserved on compatible clean paths and converted or rebuilt where the backend adapter or protocol requires it. For a non-FC llama.cpp/llamafile backend, opt into prompt-injection with `--backend-capability prompt` (strips tools into the prompt, parses the JSON call back; reuses the same prompt path as the WorkflowRunner). The choice is frozen at startup — there is no runtime auto-detect in the proxy. Reasoning replay is controlled separately with `--reasoning-replay {full,keep-last,none}`; the default `none` keeps captured reasoning out of backend-facing history (`keep-last` replays only the latest captured reasoning block, `full` replays everything). See ADR-012.
 
 Smoke-test:
 
@@ -272,7 +319,7 @@ from forge.clients import VLLMClient
 client = VLLMClient(model_path="/path/to/awq-dir")  # or a HuggingFace repo id
 ```
 
-`model_path` is the canonical identity — a directory of safetensors/config or a HuggingFace repo id; its trailing segment is used for sampling-defaults lookup and the wire `model` field. Unlike llama.cpp, vLLM validates that field against its `--served-model-name`, so in proxy external mode forge auto-discovers the served name from `/v1/models` (pass `--backend vllm`). An explicit `--model` pins the identity and overrides discovery — the recipe for hosted multi-model gateways, where `/v1/models` lists many models and `data[0]` is arbitrary: `--backend vllm --model <name> --budget-tokens <n> --backend-api-key <key>` (with `--budget-tokens` set, no metadata probe runs at all; without it, the budget is discovered from the pinned model's own `/v1/models` entry and fails loud if the backend doesn't list it).
+`model_path` is the canonical identity — a directory of safetensors/config or a HuggingFace repo id; its trailing segment is used for sampling-defaults lookup and the wire `model` field. Unlike llama.cpp, vLLM validates that field against its `--served-model-name`, so external Proxy mode uses `--backend vllm` and lazily discovers an unpinned identity on the first inference request. An explicit `--model` pins identity. `--budget-tokens` is independent: it supplies an operator-known reporting denominator and does not suppress required unpinned identity discovery. Conversely, a pin does not fabricate a context window. Public `GET /v1/models` forwards the honest catalog without changing private routing identity.
 
 ---
 
@@ -299,6 +346,11 @@ client = AnthropicClient(model="claude-sonnet-4-6")
 ```
 
 No server to smoke-test — first inference call surfaces auth/network issues.
+Direct `get_context_length()` queries exact-model metadata only when the SDK
+client targets the canonical official `https://api.anthropic.com` root and has
+a pinned model. Custom gateways, noncanonical Anthropic URLs, and
+unpinned/request-routed clients return `None` without a metadata request. Forge
+does not fabricate 200K or 8192-token Anthropic defaults.
 
 ---
 
@@ -330,7 +382,7 @@ client = OpenAICompatClient(
 ```
 
 Notes:
-- **`get_context_length()` returns `None`.** Hosted providers don't expose `max_model_len`. Pass `budget_tokens` explicitly when constructing the `ContextManager` (or `--budget-tokens` to the proxy).
+- **`get_context_length()` returns `None`.** Hosted providers don't expose `max_model_len`. Pass `budget_tokens` explicitly when constructing a native `ContextManager`; Proxy `--budget-tokens` is a reporting denominator only and never compacts or enforces the window.
 - **Native function calling is per-model, not per-provider.** Many hosted providers serve dozens of models; only the ones with a tool-calling chat template will return structured `tool_calls`. Check the provider's per-model capability docs.
 - **Sampling defaults are opt-in.** `recommended_sampling=False` (default) skips the registry lookup, since hosted-provider model identifiers usually aren't in forge's per-model sampling map. Pass explicit `temperature` / `top_p` / etc. as needed.
 

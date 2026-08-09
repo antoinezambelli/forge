@@ -8,10 +8,18 @@ from typing import Any
 
 import httpx
 
+from forge._endpoint_layouts import (
+    BackendOperation,
+    ConnectionInputKind,
+    EndpointLayout,
+    normalize_connection,
+    resolve_endpoint,
+)
 from forge.clients.base import (
     ChunkType,
     StreamChunk,
     TokenUsage,
+    _record_captured_usage,
     decode_tool_args,
     flatten_content_to_text,
     format_tool,
@@ -112,6 +120,10 @@ class OllamaClient:
         extra_headers: dict[str, str] | None = None,
     ) -> None:
         self.base_url = base_url
+        connection = normalize_connection(base_url, ConnectionInputKind.OLLAMA_DAEMON_ROOT)
+        self._chat_url = resolve_endpoint(
+            EndpointLayout.OLLAMA_NATIVE, BackendOperation.INFERENCE, connection,
+        )
         self.model = model
         # sampling_key is the registry-lookup key. For Ollama the wire "model"
         # field and the lookup key are the same string (the model tag).
@@ -219,11 +231,13 @@ class OllamaClient:
             return
         prompt = prompt or 0
         completion = completion or 0
-        self.last_usage[0] = TokenUsage(
+        normalized = TokenUsage(
             prompt_tokens=prompt,
             completion_tokens=completion,
             total_tokens=prompt + completion,
         )
+        self.last_usage[0] = normalized
+        _record_captured_usage(normalized)
 
     async def send(
         self,
@@ -257,12 +271,14 @@ class OllamaClient:
             body["think"] = True
         if tools:
             body["tools"] = [format_tool(t) for t in tools]
+        if passthrough is not None and "litellm_session_id" in passthrough:
+            body["litellm_session_id"] = passthrough["litellm_session_id"]
 
         # One credential per request: resolve once and reuse for the retry.
         req_headers = self._request_headers(extra_headers)
         try:
             resp = await self._http.post(
-                f"{self.base_url}/api/chat", json=body, headers=req_headers,
+                self._chat_url, json=body, headers=req_headers,
             )
         except httpx.ReadTimeout as exc:
             raise BackendError(408, "Read timeout") from exc
@@ -275,7 +291,7 @@ class OllamaClient:
             self._think_resolved = True
             del body["think"]
             resp = await self._http.post(
-                f"{self.base_url}/api/chat", json=body, headers=req_headers,
+                self._chat_url, json=body, headers=req_headers,
             )
 
         if resp.status_code == 500:
@@ -339,11 +355,13 @@ class OllamaClient:
             body["think"] = True
         if tools:
             body["tools"] = [format_tool(t) for t in tools]
+        if passthrough is not None and "litellm_session_id" in passthrough:
+            body["litellm_session_id"] = passthrough["litellm_session_id"]
 
         # One credential per request: resolve once and reuse for the retry.
         req_headers = self._request_headers(extra_headers)
         async with self._http.stream(
-            "POST", f"{self.base_url}/api/chat", json=body, headers=req_headers,
+            "POST", self._chat_url, json=body, headers=req_headers,
         ) as response:
             # Think unsupported: fail fast if explicit, fall back if auto-detected
             if response.status_code == 400:
@@ -373,7 +391,7 @@ class OllamaClient:
 
         # Retry stream without think
         async with self._http.stream(
-            "POST", f"{self.base_url}/api/chat", json=body, headers=req_headers,
+            "POST", self._chat_url, json=body, headers=req_headers,
         ) as response:
             async for chunk in self._iter_stream(response):
                 yield chunk
@@ -453,16 +471,5 @@ class OllamaClient:
         """Return num_ctx if set via set_num_ctx(), None otherwise.
 
         Budget resolution lives in ServerManager, not here.
-        """
-        return self._num_ctx
-
-    async def discover_backend_metadata(
-        self, extra_headers: dict[str, str] | None = None,
-    ) -> int | None:
-        """Return the configured num_ctx, no probe and no identity to adopt.
-
-        Ollama runs managed (forge owns the local backend), so it is never on
-        the proxy's deferred external path; this exists for Protocol uniformity
-        and ignores ``extra_headers``.
         """
         return self._num_ctx

@@ -48,27 +48,42 @@ Why raise on opt-in + unknown model: when the caller declares "I want recommende
 
 Client constructors only call `apply_sampling_defaults`; `get_sampling_defaults` is the clean primitive for callers who want to introspect the map without triggering policy (e.g. proxy callers building request bodies).
 
-### 3. Proxy plumbs body sampling through
+### 3. Proxy delegates body sampling by adapter
 
-`proxy/handler.py` extracts OpenAI-compatible sampling fields from the request body (`temperature`, `top_p`, `top_k`, `min_p`, `repeat_penalty`, `presence_penalty`, `seed`) and threads them as a per-call `sampling` dict through `client.send()` and `run_inference()`.
+`proxy/handler.py` extracts OpenAI-compatible sampling fields from the request
+body (`temperature`, `top_p`, `top_k`, `min_p`, `repeat_penalty`,
+`presence_penalty`, `seed`) and threads them as a per-call `sampling` dict
+through `client.send()` and `run_inference()`.
 
 The new `sampling: dict | None = None` kwarg on `LLMClient.send` / `send_stream` and `run_inference` overrides the client's stored sampling **for that call only** — `self` is never mutated. Two proxy requests with different sampling don't see each other.
 
-The proxy's pre-built client stays "blank slate." Body params are the only sampling source in proxy mode. To get card-recommended sampling in proxy mode, the calling client looks up `get_sampling_defaults(model)` and includes the values in the request body.
+The proxy's pre-built client stays a blank slate and never consults the
+recommendations map. Generic OpenAI/llama and vLLM adapters apply the
+OpenAI-shaped dictionary. Ollama translates supported values into native
+options. `AnthropicClient` ignores that dictionary; clean
+Anthropic-to-Anthropic requests instead preserve caller-authored Anthropic body
+fields. To get card-recommended sampling in proxy mode, the caller looks up
+`get_sampling_defaults(model)` and sends values supported by its selected
+adapter.
 
 ## Alternatives Considered
 
 - **Auto-apply recommended params if model is in map.** Rejected — silently changes behavior on upgrade. Failed Principle #1: if the consumer didn't ask for it, forge shouldn't silently flip a knob.
 - **Single `apply_sampling_defaults` function with `default=True`.** Rejected — entangles lookup with policy. Doc-generation, debugging, and proxy callers all need the lookup primitive without policy side effects.
 - **Auto-detect model from a backend probe at construction time.** Rejected — out-of-scope. Consumers always know their model name at construction. Adds runtime dependency and failure modes.
-- **Make proxy consult the map.** Rejected — the proxy is meant to be OpenAI-compatible. OpenAI honors body sampling; forge proxy should too. Map consultation in the proxy would surprise callers and create asymmetry between managed-mode and proxy-mode behavior.
+- **Make proxy consult the map.** Rejected — map consultation would surprise
+  callers and create asymmetry between managed and unmanaged Proxy behavior.
+  Sampling semantics remain those of the selected adapter/protocol rather than
+  a universal OpenAI pass-through promise.
 - **One PR per issue.** Rejected — the three issues touch overlapping files (clients, sampling_defaults, MODEL_GUIDE, USER_GUIDE, tests). A split would mean reviewing the same files three times. Single PR with three commits in dependency order: drop hardcoded temp → opt-in flag → proxy pass-through.
 
 ## Consequences
 
 - Caller-facing API is now explicit: `recommended_sampling=True` says "I want the card-recommended params" and either gets them or fails loud. `False` (default) is identical to pre-v0.6.0 behavior modulo the one-shot info log.
 - Pre-v0.6.0 code that constructed clients without sampling kwargs sees one behavior change: `temperature=0.7` is no longer sent. Anything depending on that exact value must pass it explicitly. CHANGELOG calls this out.
-- Proxy callers can now pass per-request sampling and have it actually take effect. The proxy is a true OpenAI-compatible pass-through for sampling fields.
+- Proxy callers can pass per-request sampling to adapters that support those
+  fields. Generic OpenAI/llama and vLLM apply them, Ollama translates supported
+  values, and Anthropic follows its own body-field semantics.
 - External consumers (forge-code, NORA, etc.) need a one-line update: `**get_sampling_defaults(m)` → `recommended_sampling=True`.
 - Eval surface (`tests/eval/batch_eval.py`, `tests/eval/eval_runner.py`) migrated to `recommended_sampling=True`. Now goes through the policy layer — unknown models in the eval list raise instead of silently running with backend defaults.
 - The pre-v0.6.0 hardcoded `T=0.7` was a real handicap on eval data: the v0.6.0 dataset (with per-model sampling) shows 3-8 point jumps over the v0.5.0 dataset on most 8B-class configs, attributable to this fix alone.

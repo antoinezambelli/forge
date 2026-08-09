@@ -22,7 +22,8 @@ Forge takes an 8B local model from single digits to 84% across forge's 26-scenar
 
 - **Guardrails middleware** — Use forge's reliability stack ([composable middleware](examples/foreign_loop.py)) inside your own orchestration loop. You control the loop; forge validates responses, rescues malformed tool calls, and enforces required steps.
 
-Supports Ollama, llama-server (llama.cpp), Llamafile, vLLM, and Anthropic as backends.
+Supports generic OpenAI-compatible endpoints, Ollama, llama-server (llama.cpp),
+Llamafile, vLLM, and Anthropic as backends.
 
 ## Requirements
 
@@ -126,15 +127,22 @@ For multi-step workflows, multi-turn conversations, and backend auto-management,
 
 ## Proxy Server
 
+**Upgrading from pre-0.9:** 0.9.0 is one intentional breaking Proxy update.
+See [Migrating to Forge 0.9](docs/MIGRATING_TO_0.9.md) for the complete
+old/new/action table.
+
 Drop-in proxy that sits between any client and a local model server, speaking both the OpenAI chat-completions API and the Anthropic Messages API (`/v1/messages`). Point your client at the proxy (e.g. `http://localhost:8081/v1`) and forge applies its guardrails transparently — the client thinks it's talking to a smarter model.
 
 This is the path for **using forge with an existing harness** (opencode, Continue, aider, Cline, anything that speaks the OpenAI chat-completions schema — or Claude Code, which speaks the Anthropic Messages API). No Python rewrite. Reasoning replay defaults to `none`: Forge still captures reasoning for observability, but keeps it out of backend-facing history on later turns — the most token-efficient policy, and statistically indistinguishable from replay-all on the eval suite (see [reasoning-replay results](docs/results/raw/reasoning-replay.md)). Use `--reasoning-replay keep-last` to replay only the latest reasoning block, or `--reasoning-replay full` for the historical replay-all behavior.
 
 ```bash
-# External mode — you manage the backend, forge proxies it
-python -m forge.proxy --backend-url http://localhost:8080 --port 8081
+# External llama-server — you manage the backend, forge proxies it
+python -m forge.proxy --backend-url http://localhost:8080 --backend llamaserver --port 8081
 
-# Managed mode — forge starts the backend and the proxy together
+# External Anthropic-shaped downstream
+python -m forge.proxy --backend-url https://gateway.example --backend anthropic --model claude-route --port 8081
+
+# Managed mode — forge spawns or attaches to the backend, then starts the proxy
 python -m forge.proxy --backend llamaserver --gguf path/to/model.gguf --port 8081
 
 # Managed vLLM — pass a model directory or HF repo id via --model-path
@@ -147,25 +155,37 @@ Then configure your client to use `http://localhost:8081/v1` as the API base URL
 
 **Backend compatibility:**
 
-- **Managed mode** spins up the backend for you. Supported backends: `llamaserver`, `llamafile`, `ollama`, `vllm` (use `--backend <name>` with `--gguf` for the GGUF-based backends, `--model-path` for vllm, or `--model` for ollama).
-- **External mode** is backend-agnostic — forge talks `POST /v1/chat/completions` to whatever you point `--backend-url` at, as long as it speaks the OpenAI schema. Tool calls must come back in OpenAI `tool_calls` format or in one of forge's rescue-parsed formats (Mistral `[TOOL_CALLS]`, Qwen `<tool_call>` XML, fenced JSON). For a vLLM server, add `--backend vllm` so the proxy adopts vLLM's `--served-model-name` (vLLM 404s on a mismatched `model` field, unlike llama.cpp). An explicit `--model` overrides that discovery — for hosted multi-model gateways (one `/v1/models` endpoint listing many models), pin your model and skip discovery entirely: `--backend vllm --model <name> --budget-tokens <n> --backend-api-key <key>`.
+- **Managed mode** spawns llama-server, llamafile, or vLLM, or attaches to an existing Ollama daemon. Supported selectors are `llamaserver`, `llamafile`, `ollama`, and `vllm` (use `--gguf` for the GGUF-based backends, `--model-path` for vLLM, or `--model` for Ollama). Stopping Forge unloads the selected Ollama model but does not stop or own the daemon.
+- **External mode** uses `--backend-url`. Omission or `--backend openai` selects generic OpenAI compatibility; the complete explicit selector set is `openai`, `anthropic`, `llamaserver`, `llamafile`, `ollama`, and `vllm`. The specialized selectors choose the corresponding adapter and metadata behavior. On the generic OpenAI/llama profile, `--model` is a fallback used only when the inbound request omits `model`; an inbound value wins. On Anthropic and vLLM profiles, `--model` pins the wire identity. For unpinned vLLM, the first inference request discovers the served identity. `--budget-tokens` independently supplies only a reporting denominator and never suppresses required unpinned identity discovery.
 
 ### What proxy mode fortifies
 
-On every `POST /v1/chat/completions`, forge applies (in order):
+On tool-bearing inference requests, forge applies (in order):
 
 1. **Response validation** — each tool call in the model's response is checked against the `tools` array in the request. Calls to unknown tool names or with malformed shapes are caught before the response returns to your client.
 2. **Rescue parsing** — when the model emits tool calls in the wrong format (JSON in a code fence, Mistral's `[TOOL_CALLS]name{args}`, Qwen's `<tool_call>...</tool_call>` XML), forge extracts the structured call and re-emits it in the canonical OpenAI `tool_calls` schema. Biggest practical lift for Mistral-family models.
 3. **Retry loop with error tracking** — if validation fails, forge retries inference up to `--max-retries` (default 3) with a corrective tool-result message on the canonical channel, rather than returning a malformed response. From your client's perspective the proxy looks like a single request that just took a few extra ms.
-4. **Synthetic `respond` tool injection** — when tools are present in the request, forge injects a synthetic `respond` tool the model calls instead of producing bare text. The `respond` call is stripped from the outbound response — the client sees a normal text response (`finish_reason: "stop"`) and never knows the tool exists. Essential for small local models (~8B) that can't be trusted to choose correctly between text and tool calls. See [ADR-013](docs/decisions/013-text-response-intent.md) for the full analysis.
+4. **Optional synthetic `respond` tool injection** — `--inject-respond-tool` opts into a synthetic `respond` tool when tools are present. It defaults off. When enabled, the call is stripped from the outbound response and becomes normal text. See [ADR-013](docs/decisions/013-text-response-intent.md) for the rationale.
+
+Tool-free requests bypass validation, rescue, and retry and go directly to the
+selected backend adapter.
 
 ### What proxy mode does *not* do
 
 Proxy mode is single-shot per request; some forge features need multi-turn workflow state that the OpenAI chat-completions schema doesn't carry:
 
 - **Prerequisite enforcement and step-ordering** — these need a workflow definition spanning turns. Available in `WorkflowRunner`.
-- **Context compaction and session memory** — proxy mode forwards the inbound message list as-is; managing the rolling window is the client's job.
-- **VRAM-aware budget detection** — opt in with `--budget-mode forge-full` or `--budget-mode forge-fast`; otherwise proxy uses the backend's reported budget.
+- **Context compaction and session memory** — proxy mode never compacts or deletes caller history. The preserved llama/OpenAI adapter normalization may merge consecutive visible same-role messages for backend template compatibility; that is distinct from budget-driven compaction. Managing the rolling window is the client's job.
+- **Unmanaged backend operation** — metadata and `--budget-tokens` are reporting-only. The operator owns model allocation/swaps, overflow rejection, readiness, and backend failures. Managed Proxy modes retain `backend`, `manual`, `forge-full`, and `forge-fast` allocation behavior.
+
+Read-only backend metadata is forwarded only on `GET /health`, `/v1/health`,
+`/v1/models`, `/models`, and `/props`. Use `/forge/health` for Forge liveness.
+Forwarding is transparent: if the selected backend does not implement a route,
+Forge returns its status unchanged, including Ollama's `404` for `/health`.
+`/forge/usage` reports one last-completed process-local snapshot or 204; it is
+not a live meter, ledger, or persistent session API. Forge Proxy is a
+per-operator sidecar and does not authenticate callers; `--backend-api-key`
+authenticates Forge to the backend, not callers to Forge.
 
 For the full guardrail surface, use `WorkflowRunner` directly. The proxy trades depth for "use forge with your existing setup, no rewrite."
 
@@ -175,9 +195,13 @@ For the full guardrail surface, use `WorkflowRunner` directly. The proxy trades 
 |---|---|---|
 | `--max-retries N` | 3 | Retry budget per validation failure |
 | `--no-rescue` | (rescue on) | Disable rescue parsing (debugging only) |
-| `--budget-mode {backend,manual,forge-full,forge-fast}` | `backend` | Context budget source |
-| `--budget-tokens N` | — | Manual token budget (requires `--budget-mode manual`) |
+| `--budget-mode {backend,manual,forge-full,forge-fast}` | `backend` | Managed backend allocation/reporting mode; Proxy never compacts caller history |
+| `--budget-tokens N` | — | Positive manual allocation with managed `--budget-mode manual`; reporting denominator only in unmanaged mode |
 | `--serialize` / `--no-serialize` | auto | Force request serialization (single-slot backends) |
+| `--extra-flags ...` | — | Terminal argv remainder for Forge-spawned llama-server, llamafile, or vLLM; rejected for Ollama and unmanaged mode |
+
+Managed Ollama also rejects process/KV controls it cannot apply:
+`cache_type_k`, `cache_type_v`, `n_slots`, and `kv_unified`.
 
 ### Docker
 
@@ -193,7 +217,7 @@ docker build -t forge-proxy .
 
 ```bash
 # Connect to an external backend (e.g. vLLM hosted on the same machine)
-docker run -p 8081:8081 forge-proxy --backend-url http://host.docker.internal:8000 --backend vllm --budget-mode manual --budget-tokens 8192
+docker run -p 8081:8081 forge-proxy --backend-url http://host.docker.internal:8000 --backend vllm --budget-tokens 8192
 ```
 
 Note: If your backend is running on `localhost` of the host machine, use `http://host.docker.internal:PORT` (on macOS/Windows) or the host's IP address to allow the container to reach it.
@@ -202,9 +226,10 @@ Note: If your backend is running on `localhost` of the host machine, use `http:/
 
 | Backend | Best for | Native FC? |
 |---------|----------|------------|
+| **OpenAI-compatible** | Existing local or hosted OpenAI-shaped endpoints | Yes |
 | **Ollama** | Easiest setup, model management built-in | Yes |
 | **llama-server** | Best performance, full control | Yes (with `--jinja`) |
-| **Llamafile** | Single binary, zero dependencies | No (prompt-injected) |
+| **Llamafile** | Single binary, zero dependencies | Yes, or prompt-injected |
 | **vLLM** | High-throughput serving, AWQ/GPTQ weights | Yes (server-side parser) |
 | **Anthropic** | Frontier baseline, hybrid workflows | Yes |
 
@@ -220,9 +245,15 @@ python -m pytest tests/ -v --tb=short
 python -m pytest tests/ --cov=forge --cov-report=term-missing
 ```
 
+For proxy changes, also run the deterministic proxy smoke test and the manual
+real-backend sanity check described in [Contributing](CONTRIBUTING.md#proxy-verification).
+
 ## Eval Harness
 
-26 scenarios measuring how reliably a model + backend combo navigates multi-step tool-calling workflows — split into an OG-18 baseline tier and an 8-scenario advanced_reasoning tier for top-end separation. See [Eval Guide](docs/EVAL_GUIDE.md) for full CLI reference.
+Scenarios measuring how reliably a model + backend combo navigates multi-step
+tool-calling workflows, with a baseline tier and an `advanced_reasoning` tier
+for top-end separation. See [Eval Guide](docs/EVAL_GUIDE.md) for the current
+scenario inventory and full CLI reference.
 
 ```bash
 # llama-server (start in another terminal first; see Eval Guide)
@@ -261,6 +292,8 @@ src/forge/
     base.py            # ChunkType, StreamChunk, LLMClient protocol
     ollama.py          # OllamaClient (native FC)
     llamafile.py       # LlamafileClient (native FC or prompt-injected)
+    openai_compat.py   # OpenAICompatClient (generic OpenAI-shaped endpoints)
+    vllm.py            # VLLMClient (vLLM-specific identity and response handling)
     anthropic.py       # AnthropicClient (frontier baseline)
   context/
     manager.py         # ContextManager, CompactEvent
@@ -278,7 +311,7 @@ src/forge/
     handler.py         # Request handler — bridge between HTTP and run_inference
     convert.py         # OpenAI messages ↔ forge Messages conversion
 tests/
-  unit/                # 865 deterministic tests — no LLM backend required
+  unit/                # Deterministic tests — no LLM backend required
   eval/                # Eval harness — model qualification against real backends
 ```
 

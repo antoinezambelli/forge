@@ -1,7 +1,7 @@
 """ProxyServer — programmatic API for the forge proxy.
 
 Two modes:
-- Managed: forge starts and manages the backend via ServerManager.
+- Managed: forge spawns or attaches to the backend according to its profile.
 - External: user manages the backend, proxy connects to it.
 """
 
@@ -9,28 +9,30 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import math
 import threading
 from pathlib import Path
 from typing import Literal
 
+from forge._backend_profiles import (
+    ArtifactIdentity,
+    ClientAdapter,
+    ManagedBackendProfile,
+    MetadataFormat,
+    UnmanagedBackendProfile,
+    parse_vllm_model_catalog,
+)
+from forge._endpoint_layouts import BackendOperation
 from forge.clients.base import LLMClient
 from forge.clients.llamafile import LlamafileClient
 from forge.clients.ollama import OllamaClient
 from forge.clients.vllm import VLLMClient
 from forge.context.manager import ContextManager
-from forge.context.strategies import TieredCompact
-from forge.core.reasoning import DEFAULT_REASONING_REPLAY, ReasoningReplay, validate_reasoning_replay
+from forge.context.strategies import NoCompact
+from forge.core.reasoning import DEFAULT_REASONING_REPLAY, ReasoningReplay
+from forge.proxy._config import _RawProxyConfig, _normalize_proxy_config
 from forge.proxy.handler import LazyDiscovery
 from forge.proxy.server import HTTPServer
-from forge.server import BudgetMode, ServerManager, setup_backend
-
-# Placeholder budget for a context manager whose real budget is discovered
-# lazily on the first request (external passthrough). It is never read before
-# discovery overwrites it — the discovery hook runs before any compaction —
-# but it's set large so an accidental early read degrades safe (no compaction)
-# rather than over-compacting on a tiny budget.
-_DEFERRED_BUDGET_PLACEHOLDER = 1_000_000
+from forge.server import BudgetMode, ServerManager, _setup_managed_backend
 
 logger = logging.getLogger("forge.proxy")
 
@@ -38,20 +40,20 @@ logger = logging.getLogger("forge.proxy")
 class ProxyServer:
     """OpenAI- and Anthropic-compatible proxy that applies forge guardrails transparently.
 
-    Managed mode — forge starts the backend::
+    Managed mode — forge spawns or attaches according to the backend profile::
 
         ProxyServer(backend="llamaserver", gguf="model.gguf")
         ProxyServer(backend="vllm", model_path="/path/to/awq-dir")
         ProxyServer(backend="ollama", model="ministral-3:14b")
-        proxy.start()   # starts the backend on :8080 + proxy on :8081
-        proxy.stop()    # stops both
+        proxy.start()   # starts or attaches per profile; proxy listens on :8081
+        proxy.stop()    # stops the proxy and any backend process forge started
 
     External mode — user manages the backend::
 
         ProxyServer(backend_url="http://localhost:8080")                  # llama.cpp (default)
         ProxyServer(backend_url="http://localhost:8000", backend="vllm")  # vLLM
         ProxyServer(backend_url="https://api.anthropic.com",
-                    backend_protocol="anthropic")                         # Anthropic-shape
+                    backend="anthropic")                                  # Anthropic-shape
         proxy.start()   # starts proxy on :8081 only
         proxy.stop()
 
@@ -66,8 +68,8 @@ class ProxyServer:
         model: str | None = None,
         gguf: str | Path | None = None,
         model_path: str | Path | None = None,
-        backend_port: int = 8080,
-        budget_mode: BudgetMode = BudgetMode.BACKEND,
+        backend_port: int | None = None,
+        budget_mode: BudgetMode | None = None,
         budget_tokens: int | None = None,
         extra_flags: list[str] | None = None,
         # Proxy settings
@@ -79,7 +81,6 @@ class ProxyServer:
         rescue_enabled: bool = True,
         backend_capability: Literal["native", "prompt"] = "native",
         inject_respond_tool: bool = False,
-        backend_protocol: Literal["openai", "anthropic"] = "openai",
         backend_timeout: float = 300.0,
         reasoning_replay: ReasoningReplay = DEFAULT_REASONING_REPLAY,
         backend_api_key: str | None = None,
@@ -87,19 +88,26 @@ class ProxyServer:
         """
         Args:
             backend_url: URL of an externally managed backend (external mode).
-            backend: Backend type — "llamaserver", "llamafile", "ollama", or
-                "vllm". Required for managed mode; in external mode it selects
-                the client adapter ("vllm" for a vLLM server, otherwise the
-                OpenAI-compatible llama.cpp adapter).
+            backend: Backend selector. Managed mode supports "llamaserver",
+                "llamafile", "ollama", and "vllm". In external mode, omission
+                or "openai" selects the generic OpenAI-compatible profile;
+                "llamaserver", "llamafile", "ollama", "vllm", and
+                "anthropic" select their corresponding unmanaged profiles.
             model: Model name (managed mode, required for ollama).
             gguf: Path to GGUF file (managed mode, llamaserver/llamafile).
             model_path: Path to a model directory or HF repo id (managed mode,
                 vllm only).
-            backend_port: Port for the managed backend (default 8080).
-            budget_mode: How to determine context budget.
-            budget_tokens: Explicit token budget. In external mode this is
-                required if the backend doesn't report its context length.
-            extra_flags: Additional CLI flags for the managed backend.
+            backend_port: Backend target port. Omission selects the managed
+                profile default or preserves an unmanaged URL authority.
+            budget_mode: Managed context mode. Omission selects ``backend``.
+            budget_tokens: Positive manual allocation, valid in managed mode
+                only with ``budget_mode=manual``. In external mode it is only
+                an operator-supplied reporting denominator; omission leaves
+                the reporting window unavailable when it cannot be discovered
+                and inference remains available.
+            extra_flags: Opaque argv tail for a Forge-spawned llama-server,
+                llamafile, or vLLM process. Rejected for managed Ollama and
+                external mode.
             host: Proxy listen host.
             port: Proxy listen port.
             serialize: Serialize requests via lock. None = auto (True for
@@ -109,24 +117,23 @@ class ProxyServer:
                 before exhaustion. Default 2.
             rescue_enabled: Attempt rescue parsing of text responses.
             backend_capability: Tool-calling protocol for the backend.
-                ``native`` (default) forwards the client's OpenAI tools/messages
-                verbatim to a function-calling-capable backend (transparent
-                passthrough). ``prompt`` opts into prompt-injection for a non-FC
-                llama.cpp/llamafile backend — tools are stripped into the prompt
-                and the JSON tool call is parsed back out (the same path the
-                WorkflowRunner uses). Only valid for llama.cpp/llamafile
-                backends; rejected for vllm/ollama and the anthropic protocol.
-                Selected once at construction and frozen — never probed or
-                switched mid-stream.
+                ``native`` (default) uses the selected adapter's structured
+                tool path. Compatible generic OpenAI/llama and vLLM clean
+                paths preserve raw caller fields; Ollama and Anthropic convert
+                or rebuild their downstream shapes, and retries rebuild the
+                request. The llama/OpenAI adapter may still merge consecutive
+                visible same-role messages for template compatibility; it does
+                not compact or delete history. ``prompt`` opts into
+                prompt-injection for a non-FC llama.cpp/llamafile backend —
+                tools are stripped into the prompt and the JSON tool call is
+                parsed back out (the same path the WorkflowRunner uses). Only
+                valid for llama.cpp/llamafile backends; rejected for vllm/ollama
+                and the anthropic protocol. Selected once at construction and
+                frozen — never probed or switched mid-stream.
             inject_respond_tool: When True, inject forge's synthetic respond()
                 tool into requests that already carry tools (keeps the model in
                 tool-calling mode). Default False. Orthogonal to
                 backend_capability — works in both native and prompt modes.
-            backend_protocol: Wire format of the external backend.
-                ``openai`` (default) for llama.cpp, vLLM, Ollama. ``anthropic``
-                for Anthropic-shape downstreams (the official Anthropic API,
-                LiteLLM's /v1/messages, a self-hosted Anthropic proxy).
-                Only meaningful in external mode; ignored in managed mode.
             backend_timeout: Timeout in seconds for requests from the proxy to
                 the downstream backend.
             reasoning_replay: How much captured reasoning to replay to the
@@ -135,87 +142,61 @@ class ProxyServer:
                 its native auth header (LM Studio / hosted providers / service
                 accounts). Baked into the backend client at construction. When
                 set, an inbound auth header is a second credential and the
-                request is refused (one credential per request). Leave None for
-                pure inbound-credential passthrough.
+                request is refused (at most one credential per request). Leave
+                None for pure inbound-credential passthrough.
         """
-        # A blank/whitespace --model is not an identity: normalize it to None
-        # BEFORE validation (mirrors --backend-api-key below) so the managed
-        # "requires model" check catches it as missing, and so the
-        # "or 'default'" fallbacks and the is-None pin logic (external vLLM,
-        # issue #122) can't disagree about whether a model was given.
-        model = model if (model and model.strip()) else None
-        if backend_url is None and backend is None:
-            raise ValueError("Provide either backend_url (external) or backend (managed)")
-        if backend_protocol == "anthropic" and backend_url is None:
-            raise ValueError(
-                "backend_protocol='anthropic' requires external mode (backend_url=...). "
-                "Managed mode launches local llama.cpp / Ollama, which only speak OpenAI."
-            )
-        if backend == "vllm" and backend_protocol == "anthropic":
-            raise ValueError(
-                "backend='vllm' speaks the OpenAI protocol; backend_protocol='anthropic' "
-                "is not applicable."
-            )
+        config = _normalize_proxy_config(_RawProxyConfig(
+            backend_url=backend_url,
+            backend=backend,
+            model=model,
+            gguf=gguf,
+            model_path=model_path,
+            backend_port=backend_port,
+            budget_mode=budget_mode,
+            budget_tokens=budget_tokens,
+            extra_flags=extra_flags,
+            host=host,
+            port=port,
+            serialize=serialize,
+            max_retries=max_retries,
+            max_tool_errors=max_tool_errors,
+            rescue_enabled=rescue_enabled,
+            backend_capability=backend_capability,
+            inject_respond_tool=inject_respond_tool,
+            backend_timeout=backend_timeout,
+            reasoning_replay=reasoning_replay,
+            backend_api_key=backend_api_key,
+        ))
         # Prompt-injection is a llama.cpp/llamafile capability only. vLLM and
-        # Ollama clients are native-only (they accept-ignore raw tools and have
-        # no prompt path); the anthropic protocol does its own tool conversion.
+        # Ollama clients are native-only (vLLM preserves raw tools;
+        # Ollama rebuilds them, and neither has a prompt path); the anthropic
+        # protocol does its own tool conversion.
         # backend=None (external) defaults to the llama.cpp adapter, which
         # supports prompt — so only vllm/ollama and anthropic are rejected.
-        if backend_capability == "prompt":
-            if backend_protocol == "anthropic":
-                raise ValueError(
-                    "backend_capability='prompt' is not supported with the "
-                    "anthropic protocol (native tool calling only)."
-                )
-            if backend in ("vllm", "ollama"):
-                raise ValueError(
-                    f"backend_capability='prompt' is only supported for "
-                    f"llama.cpp/llamafile backends, not backend={backend!r}."
-                )
-        if not math.isfinite(backend_timeout) or backend_timeout <= 0:
-            raise ValueError("backend_timeout must be a finite value greater than 0")
-        # Managed mode: each backend requires its own identity field. Fail
-        # fast at construction with a clear message (mirrors setup_backend).
-        if backend_url is None:
-            if backend == "ollama" and model is None:
-                raise ValueError("backend='ollama' requires model")
-            if backend in ("llamaserver", "llamafile") and gguf is None:
-                raise ValueError(f"backend={backend!r} requires gguf")
-            if backend == "vllm" and model_path is None:
-                raise ValueError("backend='vllm' requires model_path")
+        self._backend_url = config.backend_url
+        self._backend = config.backend
+        self._profile = config.profile
+        self._model = config.model
+        self._gguf = config.gguf
+        self._model_path = config.model_path
+        self._backend_port = config.backend_port
+        self._budget_mode = config.budget_mode
+        self._budget_tokens = config.budget_tokens
+        self._extra_flags = list(config.extra_flags) if config.extra_flags else None
+        self._host = config.host
+        self._port = config.port
+        self._max_retries = config.max_retries
+        self._max_tool_errors = config.max_tool_errors
+        self._rescue_enabled = config.rescue_enabled
+        self._backend_capability = config.backend_capability
+        self._inject_respond_tool = config.inject_respond_tool
+        self._backend_protocol = config.protocol
+        self._backend_timeout = config.backend_timeout
+        self._reasoning_replay = config.reasoning_replay
+        self._backend_api_key = config.backend_api_key
+        self._resolved_backend = config.resolved_backend
 
-        self._backend_url = backend_url
-        self._backend = backend
-        self._model = model
-        self._gguf = gguf
-        self._model_path = model_path
-        self._backend_port = backend_port
-        self._budget_mode = budget_mode
-        self._budget_tokens = budget_tokens
-        self._extra_flags = extra_flags
-        self._host = host
-        self._port = port
-        self._max_retries = max_retries
-        self._max_tool_errors = max_tool_errors
-        self._rescue_enabled = rescue_enabled
-        self._backend_capability = backend_capability
-        self._inject_respond_tool = inject_respond_tool
-        self._backend_protocol = backend_protocol
-        self._backend_timeout = backend_timeout
-        self._reasoning_replay = validate_reasoning_replay(reasoning_replay)
-        # A blank/whitespace --backend-api-key is not a credential: normalize it
-        # to None so it neither rides the wire as garbage nor disables lazy
-        # discovery (which keys off "is a static key present").
-        self._backend_api_key = (
-            backend_api_key if (backend_api_key and backend_api_key.strip()) else None
-        )
-
-        # Auto-detect serialization: managed (no external url) = single local
-        # GPU = serialize. External callers manage their own concurrency.
-        if serialize is None:
-            self._serialize = backend_url is None
-        else:
-            self._serialize = serialize
+        self._serialize = config.serialize
 
         self._server_manager: ServerManager | None = None
         self._http_server: HTTPServer | None = None
@@ -230,7 +211,7 @@ class ProxyServer:
         return f"http://{self._host}:{self._port}"
 
     def start(self) -> None:
-        """Start the proxy (and managed backend if applicable).
+        """Start the proxy, spawning or attaching to its managed backend.
 
         Blocks until the proxy is ready to accept connections.
         """
@@ -254,7 +235,7 @@ class ProxyServer:
         )
 
     def stop(self) -> None:
-        """Stop the proxy (and managed backend if applicable)."""
+        """Stop the proxy, stopping a spawned process or unloading Ollama."""
         if not self._started or self._loop is None:
             return
 
@@ -277,7 +258,8 @@ class ProxyServer:
 
     async def _async_start(self, ready: threading.Event) -> None:
         """Async startup: backend + HTTP server."""
-        if self._backend_url is not None:
+        assert self._resolved_backend is not None
+        if isinstance(self._profile, UnmanagedBackendProfile):
             client, context_manager, lazy_discovery = await self._setup_external()
         else:
             client, context_manager, lazy_discovery = await self._setup_managed()
@@ -296,8 +278,47 @@ class ProxyServer:
             inject_respond_tool=self._inject_respond_tool,
             reasoning_replay=self._reasoning_replay,
             backend_protocol=self._backend_protocol,
+            client_adapter=self._profile.family_profile.client_adapter,
             backend_api_key_present=bool(self._backend_api_key),
             lazy_discovery=lazy_discovery,
+        )
+        metadata_format = self._profile.family_profile.metadata_format
+        uses_official_anthropic = getattr(
+            client, "_uses_official_metadata_root", None,
+        )
+        if (
+            self._profile.family_profile.client_adapter == ClientAdapter.ANTHROPIC
+            and callable(uses_official_anthropic)
+            and uses_official_anthropic()
+        ):
+            metadata_format = MetadataFormat.ANTHROPIC_MODELS
+        metadata_url: str | None = None
+        if metadata_format == MetadataFormat.VLLM_MODELS:
+            metadata_url = self._resolved_backend.address(
+                BackendOperation.MODEL_CATALOG,
+            )
+        elif metadata_format == MetadataFormat.LLAMA_PROPERTIES:
+            metadata_url = self._resolved_backend.address(
+                BackendOperation.PROPERTIES,
+            )
+        self._http_server._configure_metadata_courier(
+            mount_root=self._resolved_backend.connection.mount_root,
+            backend_api_key=self._backend_api_key,
+            timeout=self._backend_timeout,
+            private_catalog_url=(
+                metadata_url
+                if metadata_format == MetadataFormat.VLLM_MODELS else None
+            ),
+            catalog_parser=(
+                parse_vllm_model_catalog
+                if metadata_format == MetadataFormat.VLLM_MODELS else None
+            ),
+        )
+        self._http_server._configure_context_reporting(
+            managed=isinstance(self._profile, ManagedBackendProfile),
+            context_window_tokens=context_manager.budget_tokens,
+            metadata_format=metadata_format,
+            metadata_url=metadata_url,
         )
         await self._http_server.start()
         self._started = True
@@ -313,8 +334,12 @@ class ProxyServer:
         request (external passthrough; see Path 2 below).
         """
         assert self._backend_url is not None
+        assert self._resolved_backend is not None
+        profile = self._profile
+        assert isinstance(profile, UnmanagedBackendProfile)
+        adapter = profile.family_profile.client_adapter
 
-        if self._backend_protocol == "anthropic":
+        if adapter == ClientAdapter.ANTHROPIC:
             # Path 1 — downstream speaks the Anthropic Messages API
             # (LiteLLM /v1/messages, real Anthropic, self-hosted proxy).
             # AnthropicClient handles base_url and SDK retries; forge
@@ -327,34 +352,28 @@ class ProxyServer:
                 from forge.clients.anthropic import AnthropicClient
             except ImportError as exc:
                 raise RuntimeError(
-                    "backend_protocol='anthropic' requires the anthropic SDK. "
+                    "backend='anthropic' requires the anthropic SDK. "
                     "Install it with: pip install 'forge-guardrails[anthropic]'"
                 ) from exc
             client: LLMClient = AnthropicClient(
                 model=self._model,
-                base_url=self._backend_url.rstrip("/"),
+                base_url=self._resolved_backend.adapter_base_url,
                 timeout=self._backend_timeout,
                 # Explicit key (or "" for pure passthrough) so an ambient
                 # ANTHROPIC_* env var can't become a silent second credential.
                 api_key=self._backend_api_key or "",
             )
-            # Anthropic models report a known context length; keep the legacy
-            # 8192 fallback rather than failing the well-behaved Path-1 case.
-            budget = self._budget_tokens or await client.get_context_length() or 8192
             context_manager = ContextManager(
-                strategy=TieredCompact(),
-                budget_tokens=budget,
+                strategy=NoCompact(),
+                budget_tokens=self._budget_tokens,
             )
-            # Anthropic reports a static context length with no network call, so
-            # there's nothing to defer.
+            # Protocol alone supplies no trustworthy reporting denominator.
             return client, context_manager, None
 
         # Path 2 / default — OpenAI-shape downstream (llama.cpp or vLLM).
-        base = self._backend_url.rstrip("/")
-        if not base.endswith("/v1"):
-            base = base + "/v1"
+        base = self._resolved_backend.adapter_base_url
 
-        if self._backend == "vllm":
+        if adapter == ClientAdapter.VLLM:
             # An explicit --model pins the wire identity (issue #122): it seeds
             # (model, sampling_key) at construction and suppresses served-name
             # adoption in both discovery paths below. Without it, "default" is
@@ -379,90 +398,32 @@ class ProxyServer:
                 api_key=self._backend_api_key or "",
             )
 
-        # Decide eager vs deferred discovery. A static --backend-api-key
-        # authenticates the startup probe, so discover now and keep boot-time
-        # fail-fast. Pure passthrough (no static key) can't probe at startup —
-        # the probe would be unauthenticated against a gated backend (finding
-        # #2) — so defer it to the first request, which carries the credential.
-        # vLLM needs deferral when passthrough (its served-identity probe is
-        # unauthenticated too) — unless the identity was pinned via --model, in
-        # which case there is nothing to discover beyond the budget; llama.cpp
-        # only needs it to discover a budget. Pinned identity + explicit budget
-        # means zero probes: passthrough vLLM starts serving with no metadata
-        # round-trip at all.
-        static_key = bool(self._backend_api_key)
-        defer = (not static_key) and (
-            self._budget_tokens is None
-            or (self._backend == "vllm" and self._model is None)
-        )
+        # Profiles without identity discovery do not probe merely for context.
+        # Context metadata is reporting-only, so no budget-only probe may block
+        # startup or a first inference request.
+        if not profile.identity_discovery:
+            context_manager = ContextManager(
+                strategy=NoCompact(),
+                budget_tokens=self._budget_tokens,
+            )
+            return client, context_manager, None
 
-        if defer:
-            apply_budget = self._budget_tokens is None
-            budget = (
-                _DEFERRED_BUDGET_PLACEHOLDER
-                if apply_budget
-                else self._budget_tokens
-            )
-            lazy_discovery: LazyDiscovery | None = LazyDiscovery(
-                deferred=True,
-                apply_budget=apply_budget,
-                adopt_model_identity=(
-                    self._backend == "vllm" and self._model is None
-                ),
-            )
-        else:
-            lazy_discovery = None
-            if self._backend == "vllm" and self._budget_tokens is None:
-                # One credentialed probe yields both roles: the served identity
-                # (adopted only when --model didn't pin it) and the context
-                # budget — read from the pinned model's own /v1/models entry
-                # when pinned, so a multi-model gateway's arbitrary data[0]
-                # never sizes the window.
-                budget = await client.discover_backend_metadata()
-            elif self._backend == "vllm":
-                budget = self._budget_tokens
-                if self._model is None:
-                    # Unlike llama.cpp, vLLM validates the wire `model` field
-                    # against its --served-model-name aliases (404 on mismatch).
-                    # External mode has no model path to send, so discover the
-                    # served identity from /v1/models instead of shipping the
-                    # "default" placeholder. (Skipped when --model pinned the
-                    # identity: an explicit name is never overwritten by
-                    # discovery.)
-                    served = await client.get_served_model_name()
-                    if served:
-                        logger.info("Discovered vLLM served model name: %s", served)
-                        client._set_model_identity(served)
-                    else:
-                        logger.warning(
-                            "Could not discover a served model name from "
-                            "%s/models; sending placeholder 'default' (vLLM "
-                            "will 404 if it validates the model field)",
-                            base,
-                        )
-            elif self._budget_tokens is not None:
-                budget = self._budget_tokens
-            else:
-                ctx_len = await client.get_context_length()
-                if ctx_len is None:
-                    raise RuntimeError(
-                        f"backend at {self._backend_url} did not report a context "
-                        "length; pass budget_tokens explicitly"
-                    )
-                budget = ctx_len
+        lazy_discovery = LazyDiscovery() if self._model is None else None
 
         context_manager = ContextManager(
-            strategy=TieredCompact(),
-            budget_tokens=budget,
+            strategy=NoCompact(),
+            budget_tokens=self._budget_tokens,
         )
         return client, context_manager, lazy_discovery
 
     async def _setup_managed(
         self,
     ) -> tuple[LLMClient, ContextManager, LazyDiscovery | None]:
-        """Managed mode: forge starts the backend via setup_backend."""
+        """Managed mode: spawn or attach, then compose Proxy context policy."""
         assert self._backend is not None
-        client = self._build_managed_client()
+        profile = self._profile
+        assert isinstance(profile, ManagedBackendProfile)
+        client = self._build_managed_client(profile)
 
         # The backend process is always launched in native mode (--jinja enables
         # the native tools API). This is independent of backend_capability: in
@@ -470,35 +431,60 @@ class ProxyServer:
         # native-launched backend (jinja template present but unused) serves the
         # prompt-injected request fine. Keeping launch native avoids changing
         # backend startup flags for the opt-in path. Pass each backend only its
-        # own identity field — setup_backend enforces mutual exclusivity.
-        server, context_manager = await setup_backend(
+        # own identity field — the shared setup seam enforces exclusivity.
+        assert self._backend_port is not None
+        assert self._budget_mode is not None
+        managed_setup = await _setup_managed_backend(
             backend=self._backend,
-            model=self._model if self._backend == "ollama" else None,
-            gguf_path=self._gguf if self._backend in ("llamaserver", "llamafile") else None,
-            model_path=self._model_path if self._backend == "vllm" else None,
+            model=(
+                self._model
+                if profile.required_identity == ArtifactIdentity.MODEL_TAG else None
+            ),
+            gguf_path=(
+                self._gguf
+                if profile.required_identity == ArtifactIdentity.GGUF_PATH else None
+            ),
+            model_path=(
+                self._model_path
+                if profile.required_identity == ArtifactIdentity.MODEL_PATH else None
+            ),
             mode="native",
             budget_mode=self._budget_mode,
             manual_tokens=self._budget_tokens,
             client=client,
             port=self._backend_port,
             extra_flags=self._extra_flags,
+            allow_missing_backend_window=True,
         )
+        server = managed_setup.server
+        context_manager = ContextManager(
+            strategy=NoCompact(),
+            budget_tokens=managed_setup.context_window_tokens,
+        )
+        if (
+            profile.family_profile.client_adapter == ClientAdapter.OLLAMA
+            and isinstance(server, ServerManager)
+        ):
+            server._set_resolved_daemon_target(self._resolved_backend)
         self._server_manager = server
         # Managed mode probes its own ungated local backend at startup — never
         # deferred.
         return client, context_manager, None
 
-    def _build_managed_client(self) -> LLMClient:
+    def _build_managed_client(self, profile: ManagedBackendProfile) -> LLMClient:
         """Construct the right client for the managed backend."""
-        base_url = f"http://localhost:{self._backend_port}/v1"
-        if self._backend == "ollama":
+        assert self._resolved_backend is not None
+        adapter = profile.family_profile.client_adapter
+        base_url = self._resolved_backend.adapter_base_url
+        if adapter == ClientAdapter.OLLAMA:
             assert self._model is not None
             return OllamaClient(
                 model=self._model,
+                base_url=base_url,
                 timeout=self._backend_timeout,
                 api_key=self._backend_api_key or "",
             )
-        if self._backend in ("llamaserver", "llamafile"):
+        if adapter == ClientAdapter.LLAMAFILE:
             # gguf_path may be a real GGUF file path or a bare model name
             # (proxy external mode); the client handles both via the same
             # extension-stripping logic.
@@ -509,7 +495,7 @@ class ProxyServer:
                 timeout=self._backend_timeout,
                 api_key=self._backend_api_key or "",
             )
-        if self._backend == "vllm":
+        if adapter == ClientAdapter.VLLM:
             assert self._model_path is not None
             return VLLMClient(
                 model_path=self._model_path,

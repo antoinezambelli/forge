@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from forge._backend_profiles import ClientAdapter
 from forge.context.manager import ContextManager
 from forge.context.strategies import NoCompact
 from forge.core.workflow import TextResponse, ToolCall
@@ -18,6 +19,7 @@ from forge.proxy.auth import (
     extract_inbound_credential,
     relocate_credential,
     resolve_inbound_credential,
+    _resolve_metadata_credential,
 )
 from forge.proxy.handler import handle_chat_completions
 
@@ -162,6 +164,63 @@ class TestResolveInboundCredential:
         ) is None
 
 
+class TestResolveMetadataCredential:
+    @pytest.mark.parametrize(
+        ("headers", "target", "expected"),
+        [
+            (
+                {"authorization": "Bearer TOKEN"},
+                "openai",
+                {"authorization": "Bearer TOKEN"},
+            ),
+            ({"x-api-key": "TOKEN"}, "anthropic", {"x-api-key": "TOKEN"}),
+            (
+                {"authorization": "Bearer TOKEN"},
+                "anthropic",
+                {"x-api-key": "TOKEN"},
+            ),
+            (
+                {"x-api-key": "TOKEN"},
+                "openai",
+                {"Authorization": "Bearer TOKEN"},
+            ),
+        ],
+    )
+    def test_four_cell_matrix(self, headers, target, expected):
+        assert _resolve_metadata_credential(headers, target, None) == expected
+
+    @pytest.mark.parametrize(
+        ("target", "expected"),
+        [
+            ("openai", {"Authorization": "Bearer STATIC"}),
+            ("anthropic", {"x-api-key": "STATIC"}),
+            ("ollama", {"Authorization": "Bearer STATIC"}),
+        ],
+    )
+    def test_static_key_uses_target_slot(self, target, expected):
+        assert _resolve_metadata_credential({}, target, "STATIC") == expected
+
+    def test_no_key_sends_no_auth(self):
+        assert _resolve_metadata_credential({}, "openai", None) is None
+
+    def test_static_plus_inbound_and_duplicate_inbound_raise(self):
+        with pytest.raises(MultipleCredentialsError):
+            _resolve_metadata_credential(
+                {"authorization": "Bearer INBOUND"}, "openai", "STATIC",
+            )
+        with pytest.raises(MultipleCredentialsError):
+            _resolve_metadata_credential(
+                {"authorization": "Bearer ONE", DUPLICATE_AUTH_MARKER: "1"},
+                "openai",
+                None,
+            )
+
+    def test_unknown_target_preserves_inbound_slot_verbatim(self):
+        assert _resolve_metadata_credential(
+            {"authorization": "Bearer TOKEN"}, "future", None,
+        ) == {"authorization": "Bearer TOKEN"}
+
+
 # ── handler threading ────────────────────────────────────────────────
 
 
@@ -198,6 +257,7 @@ async def test_handler_no_tools_relocates_inbound_credential():
         body=_body(),
         client=client,
         context_manager=_ctx(),
+        client_adapter=ClientAdapter.ANTHROPIC,
         protocol="openai",
         backend_protocol="anthropic",
         headers={"authorization": "Bearer INBOUND"},
@@ -213,6 +273,7 @@ async def test_handler_with_tools_threads_credential_via_run_inference():
         body=_body(tools=_SEARCH_TOOL),
         client=client,
         context_manager=_ctx(),
+        client_adapter=ClientAdapter.LLAMAFILE,
         protocol="anthropic",
         backend_protocol="openai",
         headers={"x-api-key": "INBOUND"},
@@ -228,6 +289,7 @@ async def test_handler_no_inbound_credential_forwards_none():
         body=_body(),
         client=client,
         context_manager=_ctx(),
+        client_adapter=ClientAdapter.LLAMAFILE,
         protocol="openai",
         backend_protocol="openai",
         headers={},
@@ -245,6 +307,7 @@ async def test_handler_logs_redacted_credential(caplog):
             body=_body(),
             client=client,
             context_manager=_ctx(),
+            client_adapter=ClientAdapter.ANTHROPIC,
             protocol="openai",
             backend_protocol="anthropic",
             headers={"authorization": "Bearer SUPERSECRET"},
@@ -263,6 +326,7 @@ async def test_handler_inbound_plus_static_key_raises():
             body=_body(),
             client=client,
             context_manager=_ctx(),
+            client_adapter=ClientAdapter.LLAMAFILE,
             protocol="openai",
             backend_protocol="openai",
             headers={"authorization": "Bearer INBOUND"},

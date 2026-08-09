@@ -12,10 +12,6 @@ Verifies:
 
 from __future__ import annotations
 
-from tests.eval.scenarios import (
-    argument_transformation,
-    argument_transformation_stateful,
-)
 from tests.eval.scenarios._model_reasoning import (
     _argument_transformation_tools,
     _validate_argument_transformation,
@@ -203,30 +199,6 @@ class TestValidator:
         assert not _validate_argument_transformation(args)
 
 
-# ── Scenario shape ──────────────────────────────────────────────
-
-
-class TestScenarioShape:
-    def test_lambda_scenario_has_7_tools(self) -> None:
-        assert len(argument_transformation.workflow.tools) == 7
-
-    def test_lambda_scenario_terminal_is_submit_audit_report(self) -> None:
-        assert argument_transformation.workflow.terminal_tool == "submit_audit_report"
-
-    def test_lambda_scenario_required_steps(self) -> None:
-        assert argument_transformation.workflow.required_steps == [
-            "list_transactions", "get_approved_vendors",
-        ]
-
-    def test_lambda_scenario_iteration_budget(self) -> None:
-        assert argument_transformation.ideal_iterations == 5
-        assert argument_transformation.max_iterations == 15
-
-    def test_lambda_scenario_tags(self) -> None:
-        assert "model_quality" in argument_transformation.tags
-        assert "reasoning" in argument_transformation.tags
-
-
 # ── Stateful backend ────────────────────────────────────────────
 
 
@@ -380,18 +352,3 @@ class TestStatefulValidator:
             "top_vendor": "Wonka Industries",
         }
         assert not _validate_argument_transformation_stateful(args)
-
-
-# ── Scenario registered in ALL_SCENARIOS ────────────────────────
-
-
-class TestRegistration:
-    def test_lambda_in_all_scenarios(self) -> None:
-        from tests.eval.scenarios import ALL_SCENARIOS
-        names = [s.name for s in ALL_SCENARIOS]
-        assert "argument_transformation" in names
-
-    def test_stateful_in_all_scenarios(self) -> None:
-        from tests.eval.scenarios import ALL_SCENARIOS
-        names = [s.name for s in ALL_SCENARIOS]
-        assert "argument_transformation_stateful" in names

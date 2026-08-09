@@ -243,7 +243,7 @@ class StreamError(ForgeError):
 class MultipleCredentialsError(ForgeError):
     """More than one auth credential was present for a single backend call.
 
-    forge carries exactly one credential to the backend (Design Principle #1:
+    forge carries at most one credential to the backend (Design Principle #1:
     fail loud, no silent merge). This is raised when a client holds a static
     auth credential (set at construction) AND a per-call ``extra_headers``
     also carries an auth header, or when a single inbound proxy request
@@ -282,26 +282,17 @@ class MissingCredentialError(ForgeError):
 
 
 class BackendDiscoveryError(ForgeError):
-    """Deferred external-mode backend discovery failed on the first request.
+    """Required first-request vLLM served-identity discovery failed.
 
-    In external passthrough mode the proxy defers its startup backend probe
-    (context length, and vLLM's served model identity) to the first request so
-    it can authenticate with that request's inbound credential. When that probe
-    fails — the backend rejected the credential, was unreachable, or returned a
-    shape with no usable context length — forge fails the request loud rather
-    than guessing a budget (Design Principle #1). It does not latch, so a later
-    well-credentialed request retries discovery.
-
-    ``status_code`` carries the backend's HTTP status when the failure was an
-    HTTP rejection (else None), letting the proxy distinguish an auth rejection
-    (401/403 → surfaced as 401) from a backend/connectivity fault (→ 502).
+    Startup remains metadata-free. An unpinned unmanaged vLLM request must
+    obtain a usable wire identity before inference or streaming headers.
+    Failures do not latch, so a later request retries.
     """
 
     def __init__(self, status_code: int | None = None):
         super().__init__(
-            "Could not discover the backend's context length / model identity "
-            "on the first request: the backend rejected or did not answer the "
-            "probe. Provide --backend-api-key (to authenticate discovery at "
-            "startup) or --budget-tokens (to skip context discovery entirely)."
+            "The first unpinned vLLM request could not obtain a usable served "
+            "identity. Check the backend credential, availability, and "
+            "/v1/models catalog; a later request will retry."
         )
         self.status_code = status_code

@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import json
-from collections.abc import AsyncIterator, Mapping
+from collections.abc import AsyncIterator, Iterator, Mapping
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass
 from enum import Enum
 from typing import Any, Protocol, runtime_checkable
@@ -20,7 +22,7 @@ RawOpenAIMessages = list[dict[str, Any]]
 
 # ── Auth credential helpers ──────────────────────────────────────────
 #
-# forge carries exactly ONE credential to the backend, placed in the
+# forge carries at most one credential to the backend, placed in the
 # backend's native auth header. It does not validate the credential, manage
 # its lifecycle, or form any opinion on its value — it only detects presence
 # and relocates the header to the target protocol's canonical slot. Two
@@ -127,7 +129,7 @@ def count_auth_credentials(headers: Mapping[str, str] | None) -> int:
     """Number of headers that actually carry an auth credential.
 
     Counts recognized auth headers whose value resolves to a non-empty token;
-    blank or scheme-only auth headers do not count. forge carries exactly one
+    blank or scheme-only auth headers do not count. forge carries at most one
     credential, so callers refuse a bag that yields more than one.
     """
     if not headers:
@@ -160,6 +162,43 @@ class TokenUsage:
     total_tokens: int
     cache_creation_input_tokens: int = 0
     cache_read_input_tokens: int = 0
+
+    def __post_init__(self) -> None:
+        # Also lets small third-party/test adapters participate in the private
+        # capture seam simply by constructing the existing public value type.
+        _record_captured_usage(self)
+
+
+@dataclass
+class _UsageCapture:
+    """Private request-local sink for one client attempt's normalized usage."""
+
+    usage: TokenUsage | None = None
+
+
+_active_usage_capture: ContextVar[_UsageCapture | None] = ContextVar(
+    "forge_active_usage_capture", default=None,
+)
+
+
+@contextmanager
+def _capture_usage() -> Iterator[_UsageCapture]:
+    """Capture usage recorded in this task while restoring any outer sink."""
+
+    capture = _UsageCapture()
+    token = _active_usage_capture.set(capture)
+    try:
+        yield capture
+    finally:
+        _active_usage_capture.reset(token)
+
+
+def _record_captured_usage(usage: TokenUsage) -> None:
+    """Publish normalized usage to the active attempt without shared state."""
+
+    capture = _active_usage_capture.get()
+    if capture is not None:
+        capture.usage = usage
 
 
 # Both Ollama and llama-server use the OpenAI tool schema format today.
@@ -264,10 +303,13 @@ class LLMClient(Protocol):
     """Wire format for Message.to_api_dict(): 'ollama' or 'openai'."""
 
     model: str | None
-    """The backend model identity, sent verbatim as the wire "model" field
-    (the served-model-name, gguf stem, or model tag depending on backend), or
-    None for a request-routed client whose identity is supplied per call.
-    Distinct from any sampling-registry lookup key a client also derives."""
+    """The adapter's configured backend identity.
+
+    Depending on the adapter, this may be a wire-model pin, a fallback used
+    only when a request omits ``model``, an identity adopted from backend
+    discovery, or ``None`` for a request-routed client. Distinct from any
+    sampling-registry lookup key a client also derives.
+    """
 
     async def send(
         self,
@@ -304,21 +346,21 @@ class LLMClient(Protocol):
             inbound_anthropic_body: Path-1 only — when set, the AnthropicClient
                 will send this body verbatim (bypassing its deconstruct/rebuild
                 path) to preserve block-level Anthropic fields like
-                ``cache_control``. The runner clears this kwarg on any
-                forge-mutation (retry / compaction / context warning) so
-                only the clean first-attempt call rides verbatim. Other
-                clients accept and ignore. See ADR-015.
-            raw_openai_tools: Proxy-only — the client's verbatim OpenAI
-                ``tools`` array. When set, LlamafileClient's native path sends
-                it as-is instead of re-emitting ``format_tool(spec)``, so the
-                backend sees the original schema (no name/schema drift). Other
-                clients accept and ignore.
+                ``cache_control``. The shared inference primitive clears this
+                kwarg after a Forge mutation; in Proxy, which is permanently
+                ``NoCompact``, retries are the applicable mutation. Other
+                clients accept and ignore it. See ADR-015.
+            raw_openai_tools: Proxy-only raw OpenAI ``tools`` array. Compatible
+                generic llama/OpenAI and vLLM clean paths may send it as-is to
+                avoid schema drift. Adapters or protocols that require another
+                wire shape convert, rebuild, or ignore it; retries use parsed
+                ``ToolSpec`` values instead.
             extra_headers: Per-call HTTP headers, primarily the one credential
                 forge forwards to the backend (proxy: a relocated inbound auth
                 header; WorkflowRunner: a rotating SSO token). Applied per call
                 over the construction headers (request wins). If the client
                 already holds a static auth credential, supplying an auth
-                header here raises ``MultipleCredentialsError`` — exactly one
+                header here raises ``MultipleCredentialsError`` — at most one
                 credential reaches the backend. None = no per-call headers.
         """
         ...
@@ -356,21 +398,6 @@ class LLMClient(Protocol):
 
     async def get_context_length(self) -> int | None:
         """Query the backend for its configured context window size."""
-        ...
-
-    async def discover_backend_metadata(
-        self, extra_headers: dict[str, str] | None = None,
-    ) -> int | None:
-        """Probe the backend once, credentialed by ``extra_headers``.
-
-        The deferred counterpart to startup discovery: adopt any backend-owned
-        wire identity into this client (e.g. vLLM's served model name) as a
-        side effect, and return the discovered context budget — or None when the
-        backend exposes no context length. Carrying ``extra_headers`` lets the
-        proxy run this lazily on the first request so it authenticates with that
-        request's inbound credential (external passthrough mode). Raises
-        ``BackendError`` if the probe is rejected or returns an unusable shape.
-        """
         ...
 
     async def aclose(self) -> None:

@@ -2,18 +2,25 @@
 
 from __future__ import annotations
 
-import asyncio
 import subprocess
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, call, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
 import pytest
 
+from forge._backend_profiles import managed_profile
+from forge._endpoint_layouts import ConnectionInputKind
+from forge._resolved_backend import resolve_backend
 from forge.context.manager import ContextManager
 from forge.context.strategies import TieredCompact
-from forge.errors import BackendError, BudgetResolutionError
-from forge.server import BudgetMode, ServerManager, setup_backend
+from forge.errors import BudgetResolutionError
+from forge.server import (
+    BudgetMode,
+    ServerManager,
+    _setup_managed_backend,
+    setup_backend,
+)
 
 
 # ── BudgetMode ──────────────────────────────────────────────────
@@ -175,7 +182,7 @@ class TestServerManagerStart:
         with (
             patch("forge.server.subprocess.Popen", return_value=mock_proc) as mock_popen,
             patch.object(sm, "_wait_healthy", new_callable=AsyncMock),
-            patch.object(sm, "stop", new_callable=AsyncMock) as mock_stop,
+            patch.object(sm, "stop", new_callable=AsyncMock),
         ):
             await sm.start("llama3", gguf_path="/models/llama3.gguf")
             sm._current_model = "llama3"
@@ -192,7 +199,7 @@ class TestServerManagerStart:
         with (
             patch("forge.server.subprocess.Popen", return_value=mock_proc) as mock_popen,
             patch.object(sm, "_wait_healthy", new_callable=AsyncMock),
-            patch.object(sm, "stop", new_callable=AsyncMock) as mock_stop,
+            patch.object(sm, "stop", new_callable=AsyncMock),
         ):
             await sm.start("llama3", gguf_path="/models/llama3.gguf", mode="native")
             sm._current_model = "llama3"
@@ -229,9 +236,31 @@ class TestServerManagerStart:
     async def test_start_noop_for_ollama(self) -> None:
         sm = ServerManager(backend="ollama")
         with patch("forge.server.subprocess.Popen") as mock_popen:
-            await sm.start("llama3", gguf_path="/models/llama3.gguf")
+            await sm.start(
+                "llama3",
+                gguf_path="/models/llama3.gguf",
+                mode="prompt",
+            )
 
         mock_popen.assert_not_called()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("kwargs", "message"),
+        [
+            ({"extra_flags": ["--flag"]}, "extra_flags"),
+            ({"cache_type_k": "q8_0"}, "cache_type_k"),
+            ({"cache_type_v": "q8_0"}, "cache_type_k"),
+            ({"n_slots": 2}, "n_slots"),
+            ({"kv_unified": True}, "kv_unified"),
+        ],
+    )
+    async def test_start_ollama_rejects_ignored_controls(
+        self, kwargs: dict[str, object], message: str,
+    ) -> None:
+        sm = ServerManager(backend="ollama")
+        with pytest.raises(ValueError, match=message):
+            await sm.start("llama3", **kwargs)
 
     @pytest.mark.asyncio
     async def test_start_llamafile_uses_runtime_binary(self, tmp_path: Path) -> None:
@@ -641,6 +670,48 @@ class TestGetServerContextVllm:
             result = await sm.get_server_context()
 
         assert result == 113000
+        mock_client.get.assert_awaited_once_with("http://localhost:8000/v1/models")
+
+
+class TestServerOperationAddresses:
+    @pytest.mark.asyncio
+    async def test_query_props_uses_shared_llama_address(self) -> None:
+        sm = ServerManager(backend="llamaserver", port=9090)
+        response = MagicMock(status_code=200)
+        response.json.return_value = {"default_generation_settings": {"n_ctx": 1}}
+        with patch("forge.server.httpx.AsyncClient") as client_cls:
+            client = AsyncMock()
+            client.__aenter__.return_value = client
+            client.get.return_value = response
+            client_cls.return_value = client
+            await sm.query_props()
+        client.get.assert_awaited_once_with("http://localhost:9090/props")
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("backend", "port", "body", "expected"),
+        [
+            (
+                "llamaserver", 9090,
+                {"default_generation_settings": {}},
+                "http://localhost:9090/props",
+            ),
+            ("vllm", 8000, {"data": [{"id": "m"}]}, "http://localhost:8000/v1/models"),
+        ],
+    )
+    async def test_readiness_uses_shared_startup_probe_address(
+        self, backend: str, port: int, body: dict, expected: str,
+    ) -> None:
+        sm = ServerManager(backend=backend, port=port)
+        response = MagicMock(status_code=200)
+        response.json.return_value = body
+        with patch("forge.server.httpx.AsyncClient") as client_cls:
+            client = AsyncMock()
+            client.__aenter__.return_value = client
+            client.get.return_value = response
+            client_cls.return_value = client
+            await sm._wait_healthy(timeout=0.1)
+        client.get.assert_awaited_once_with(expected)
 
     @pytest.mark.asyncio
     async def test_raises_on_empty_data(self) -> None:
@@ -755,6 +826,15 @@ class TestResolveBudget:
         with pytest.raises(ValueError, match="manual mode requires manual_tokens"):
             await sm.resolve_budget(BudgetMode.MANUAL)
 
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("manual_tokens", [0, -1])
+    async def test_resolve_budget_manual_requires_positive_tokens(
+        self, manual_tokens: int,
+    ) -> None:
+        sm = ServerManager(backend="llamaserver")
+        with pytest.raises(ValueError, match="manual_tokens > 0"):
+            await sm.resolve_budget(BudgetMode.MANUAL, manual_tokens=manual_tokens)
+
     # -- forge-full mode --
 
     @pytest.mark.asyncio
@@ -859,6 +939,37 @@ class TestStartWithBudget:
                 "llama3", gguf_path="/models/llama3.gguf",
                 budget_mode=BudgetMode.MANUAL,
             )
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("manual_tokens", [0, -1])
+    async def test_start_with_budget_manual_requires_positive_tokens(
+        self, manual_tokens: int,
+    ) -> None:
+        sm = ServerManager(backend="llamaserver")
+        with pytest.raises(ValueError, match="manual_tokens > 0"):
+            await sm.start_with_budget(
+                "llama3",
+                gguf_path="/models/llama3.gguf",
+                budget_mode=BudgetMode.MANUAL,
+                manual_tokens=manual_tokens,
+            )
+
+    @pytest.mark.asyncio
+    async def test_nonmanual_dormant_manual_tokens_are_ignored(self) -> None:
+        sm = ServerManager(backend="ollama")
+        with patch("forge.server.detect_hardware", return_value=None):
+            result = await sm.start_with_budget(
+                "llama3",
+                budget_mode=BudgetMode.BACKEND,
+                manual_tokens=-1,
+            )
+        assert result == 4096
+
+    @pytest.mark.asyncio
+    async def test_start_with_budget_ollama_forwards_option_validation(self) -> None:
+        sm = ServerManager(backend="ollama")
+        with pytest.raises(ValueError, match="backend='ollama' does not support"):
+            await sm.start_with_budget("llama3", extra_flags=["--flag"])
 
     @pytest.mark.asyncio
     async def test_start_with_budget_forge_full(self) -> None:
@@ -1206,6 +1317,27 @@ class TestSetupBackend:
         assert ctx.on_compact is callback
 
     @pytest.mark.asyncio
+    async def test_setup_backend_preserves_phase_and_context_callbacks(self) -> None:
+        threshold_callback = MagicMock(return_value=None)
+        with patch.object(
+            ServerManager,
+            "start_with_budget",
+            new_callable=AsyncMock,
+            return_value=13568,
+        ):
+            _, ctx = await setup_backend(
+                backend="llamaserver",
+                gguf_path="/models/llama3.gguf",
+                phase_thresholds=(0.5, 0.7, 0.9),
+                context_thresholds=[0.4, 0.8],
+                on_context_threshold=threshold_callback,
+            )
+
+        assert ctx.strategy._phase_triggers == (0.5, 0.7, 0.9)
+        assert ctx._context_thresholds == [0.4, 0.8]
+        assert ctx._on_context_threshold is threshold_callback
+
+    @pytest.mark.asyncio
     async def test_setup_backend_ollama_wires_num_ctx(self) -> None:
         """setup_backend sets client.set_num_ctx(budget) for Ollama."""
         mock_client = MagicMock()
@@ -1250,6 +1382,35 @@ class TestSetupBackend:
                 model="llama3",
             )
         assert ctx.budget_tokens == 4096
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("manual_tokens", [None, 0, -1])
+    async def test_setup_backend_manual_requires_positive_tokens(
+        self, manual_tokens: int | None,
+    ) -> None:
+        with pytest.raises(ValueError, match="manual_tokens > 0"):
+            await setup_backend(
+                backend="ollama",
+                model="llama3",
+                budget_mode=BudgetMode.MANUAL,
+                manual_tokens=manual_tokens,
+            )
+
+    @pytest.mark.asyncio
+    async def test_setup_backend_ollama_forwards_option_validation(self) -> None:
+        with pytest.raises(ValueError, match="backend='ollama' does not support"):
+            await setup_backend(backend="ollama", model="llama3", n_slots=2)
+
+    @pytest.mark.asyncio
+    async def test_setup_backend_ollama_preserves_mode_noop(self) -> None:
+        with patch.object(
+            ServerManager,
+            "start_with_budget",
+            new_callable=AsyncMock,
+            return_value=4096,
+        ) as start:
+            await setup_backend(backend="ollama", model="llama3", mode="prompt")
+        assert start.await_args.kwargs["mode"] == "prompt"
 
     @pytest.mark.asyncio
     async def test_setup_backend_ollama_rejects_gguf_path(self) -> None:
@@ -1329,6 +1490,78 @@ class TestSetupBackend:
         assert ctx.budget_tokens == 113000
 
 
+class TestPrivateManagedSetup:
+    @pytest.mark.asyncio
+    async def test_backend_mode_can_report_an_unavailable_non_ollama_window(
+        self,
+    ) -> None:
+        with patch.object(
+            ServerManager,
+            "start_with_budget",
+            new_callable=AsyncMock,
+            side_effect=BudgetResolutionError(),
+        ):
+            result = await _setup_managed_backend(
+                backend="llamaserver",
+                gguf_path="/models/x.gguf",
+                budget_mode=BudgetMode.BACKEND,
+                allow_missing_backend_window=True,
+            )
+        assert isinstance(result.server, ServerManager)
+        assert result.context_window_tokens is None
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "budget_mode",
+        [BudgetMode.MANUAL, BudgetMode.FORGE_FULL, BudgetMode.FORGE_FAST],
+    )
+    async def test_explicit_policy_window_failure_remains_loud(
+        self, budget_mode: BudgetMode,
+    ) -> None:
+        with patch.object(
+            ServerManager,
+            "start_with_budget",
+            new_callable=AsyncMock,
+            side_effect=BudgetResolutionError(),
+        ), pytest.raises(BudgetResolutionError):
+            await _setup_managed_backend(
+                backend="llamaserver",
+                gguf_path="/models/x.gguf",
+                budget_mode=budget_mode,
+                manual_tokens=8192 if budget_mode == BudgetMode.MANUAL else None,
+                allow_missing_backend_window=True,
+            )
+
+    @pytest.mark.asyncio
+    async def test_native_facade_never_suppresses_backend_window_failure(self) -> None:
+        with patch.object(
+            ServerManager,
+            "start_with_budget",
+            new_callable=AsyncMock,
+            side_effect=BudgetResolutionError(),
+        ), pytest.raises(BudgetResolutionError):
+            await setup_backend(
+                backend="llamaserver",
+                gguf_path="/models/x.gguf",
+                budget_mode=BudgetMode.BACKEND,
+            )
+
+    @pytest.mark.asyncio
+    async def test_ollama_backend_window_failure_is_never_suppressed(self) -> None:
+        with patch.object(
+            ServerManager,
+            "start_with_budget",
+            new_callable=AsyncMock,
+            side_effect=BudgetResolutionError(),
+        ), pytest.raises(BudgetResolutionError):
+            await _setup_managed_backend(
+                backend="ollama",
+                model="llama3",
+                budget_mode=BudgetMode.BACKEND,
+                allow_missing_backend_window=True,
+            )
+
+
 # ── Full workflow wiring (integration-style, mocked) ─────────────
 
 
@@ -1357,3 +1590,45 @@ class TestFullWorkflowWiring:
 
         assert runner is not None
         assert ctx.budget_tokens == 4096
+
+
+class TestOllamaDaemonTarget:
+    @pytest.mark.asyncio
+    async def test_proxy_override_is_used_for_target_aware_stop(self) -> None:
+        manager = ServerManager(backend="ollama")
+        target = resolve_backend(
+            managed_profile("ollama"),
+            "http://localhost:22445",
+            ConnectionInputKind.OLLAMA_DAEMON_ROOT,
+        )
+        manager._set_resolved_daemon_target(target)
+        manager._current_model = "tag"
+        process = MagicMock()
+        process.wait = AsyncMock()
+        with patch(
+            "forge.server.asyncio.create_subprocess_exec",
+            new_callable=AsyncMock,
+            return_value=process,
+        ) as create:
+            await manager.stop()
+        assert create.await_args.args == ("ollama", "stop", "tag")
+        assert create.await_args.kwargs["env"]["OLLAMA_HOST"] == (
+            "http://localhost:22445"
+        )
+
+    @pytest.mark.asyncio
+    async def test_native_setup_ignores_common_port_for_ollama(self) -> None:
+        with patch.object(
+            ServerManager,
+            "start_with_budget",
+            new_callable=AsyncMock,
+            return_value=4096,
+        ):
+            server, _ = await setup_backend(
+                backend="ollama", model="tag", port=22445,
+            )
+        assert server._resolved_backend is not None
+        assert server._resolved_backend.connection.mount_root == (
+            "http://localhost:11434"
+        )
+        assert server._daemon_target_overridden is False

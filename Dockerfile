@@ -44,7 +44,7 @@ HEALTHCHECK \
     --timeout=5s \
     --start-period=5s \
     --retries=3 \
-    CMD ["wget", "--no-verbose", "--tries=1", "--spider", "http://127.0.0.1:8081/health"]
+    CMD ["wget", "--no-verbose", "--tries=1", "--spider", "http://127.0.0.1:8081/forge/health"]
 
 EXPOSE 8081
 

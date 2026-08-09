@@ -11,10 +11,6 @@ Verifies:
 
 from __future__ import annotations
 
-from tests.eval.scenarios import (
-    grounded_synthesis,
-    grounded_synthesis_stateful,
-)
 from tests.eval.scenarios._model_reasoning import (
     _GS_CANDIDATES,
     _grounded_synthesis_tools,
@@ -23,7 +19,6 @@ from tests.eval.scenarios._model_reasoning import (
 from tests.eval.scenarios._stateful_model_reasoning import (
     HiringDecisionSystem,
     _build_grounded_synthesis_stateful,
-    _validate_grounded_synthesis_stateful,
 )
 
 
@@ -320,33 +315,10 @@ class TestValidator:
         assert _validate_grounded_synthesis({}) is False
 
 
-# ── Scenario shape ──────────────────────────────────────────────
+# ── Candidate pool design ───────────────────────────────────────
 
 
-class TestScenarioShape:
-    def test_lambda_metadata(self) -> None:
-        assert grounded_synthesis.name == "grounded_synthesis"
-        assert "advanced_reasoning" in grounded_synthesis.tags
-        assert grounded_synthesis.workflow.terminal_tool == "submit_hiring_decision"
-        assert "get_open_role" in grounded_synthesis.workflow.required_steps
-        assert "get_candidate_pool" in grounded_synthesis.workflow.required_steps
-        assert grounded_synthesis.ideal_iterations == 10
-        assert grounded_synthesis.max_iterations == 20
-
-    def test_lambda_has_six_tools(self) -> None:
-        tools = grounded_synthesis.workflow.tools
-        expected = {
-            "get_open_role", "get_candidate_pool", "get_skill_summary",
-            "get_compatibility_check", "get_team_dynamics",
-            "submit_hiring_decision",
-        }
-        assert set(tools.keys()) == expected
-
-    def test_stateful_metadata(self) -> None:
-        assert grounded_synthesis_stateful.name == "grounded_synthesis_stateful"
-        assert "stateful" in grounded_synthesis_stateful.tags
-        assert grounded_synthesis_stateful.build_workflow is not None
-
+class TestCandidatePoolDesign:
     def test_pool_data_has_all_five_with_soft_signals(self) -> None:
         # Sanity check on the pool design — blockers are encoded as
         # soft, qualitative signals (no numeric timelines or

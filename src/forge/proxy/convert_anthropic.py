@@ -187,6 +187,8 @@ def anthropic_to_openai_passthrough(body: dict[str, Any]) -> dict[str, Any]:
 
     if "model" in body:
         out["model"] = body["model"]
+    if "litellm_session_id" in body:
+        out["litellm_session_id"] = body["litellm_session_id"]
     if "max_tokens" in body:
         out["max_tokens"] = body["max_tokens"]
     if "temperature" in body:

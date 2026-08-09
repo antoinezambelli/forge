@@ -8,33 +8,43 @@ managed setup paths (including vLLM).
 
 from __future__ import annotations
 
+from dataclasses import replace
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from forge._backend_profiles import (
+    ClientAdapter,
+    MetadataFormat,
+    UnmanagedBackendProfile,
+)
 from forge.clients.llamafile import LlamafileClient
 from forge.clients.ollama import OllamaClient
 from forge.clients.vllm import VLLMClient
-from forge.context.manager import ContextManager
-from forge.errors import BackendError
+from forge.context.strategies import NoCompact
 from forge.proxy.proxy import ProxyServer
-from forge.server import BudgetMode
+from forge.server import BudgetMode, ServerManager, _ManagedBackendSetup
+
+
+pytestmark = pytest.mark.usefixtures("mock_httpx_client_constructor")
 
 
 class TestConstructorValidation:
-    """__init__ validation: protocol guards and managed identity rules."""
+    """__init__ validation: selector and managed identity rules."""
 
     def test_neither_url_nor_backend_rejected(self) -> None:
         with pytest.raises(ValueError, match="Provide either backend_url"):
             ProxyServer()
 
-    def test_anthropic_requires_external(self) -> None:
-        with pytest.raises(ValueError, match="requires external mode"):
-            ProxyServer(backend="llamaserver", gguf="m.gguf", backend_protocol="anthropic")
+    @pytest.mark.parametrize("backend", ["openai", "anthropic"])
+    def test_wire_family_selectors_require_unmanaged_mode(self, backend: str) -> None:
+        with pytest.raises(ValueError, match="requires backend_url"):
+            ProxyServer(backend=backend)
 
-    def test_vllm_rejects_anthropic_protocol(self) -> None:
-        with pytest.raises(ValueError, match="speaks the OpenAI protocol"):
-            ProxyServer(backend_url="http://x:8000", backend="vllm", backend_protocol="anthropic")
+    def test_unknown_selector_rejected(self) -> None:
+        with pytest.raises(ValueError, match="unsupported backend"):
+            ProxyServer(backend_url="http://x:8000", backend="unknown")
 
     # Managed identity rules
     def test_managed_ollama_requires_model(self) -> None:
@@ -93,7 +103,7 @@ class TestConstructorValidation:
 
 
 class TestSetupExternal:
-    """External mode constructs the right client and resolves budget."""
+    """External setup is metadata-free; only unpinned vLLM gets a latch."""
 
     @pytest.mark.asyncio
     async def test_llamaserver_uses_llamafile_client(self) -> None:
@@ -107,385 +117,189 @@ class TestSetupExternal:
         assert client.base_url == "http://localhost:8080/v1"
         assert client._http.timeout.read == 1800.0
         assert ctx.budget_tokens == 8192
-        # llama.cpp + explicit budget + no key → nothing to probe → not deferred.
+        assert lazy is None
+
+    @pytest.mark.asyncio
+    async def test_external_vllm_retains_mount_port_and_prefix(self) -> None:
+        proxy = ProxyServer(
+            backend_url="https://gateway.example:9443/team/v1",
+            backend="vllm",
+            model="served",
+            budget_tokens=8192,
+        )
+        client, _, _ = await proxy._setup_external()
+        assert isinstance(client, VLLMClient)
+        assert client._chat_url == (
+            "https://gateway.example:9443/team/v1/chat/completions"
+        )
+        assert client._models_url == "https://gateway.example:9443/team/v1/models"
+
+    @pytest.mark.asyncio
+    async def test_anthropic_has_no_protocol_context_fallback(self) -> None:
+        proxy = ProxyServer(
+            backend_url="https://anthropic-gateway.example/service/",
+            backend="anthropic",
+        )
+        fake_client = MagicMock()
+        fake_client.get_context_length = AsyncMock(return_value=200_000)
+        with patch(
+            "forge.clients.anthropic.AnthropicClient", return_value=fake_client,
+        ):
+            _, ctx, lazy = await proxy._setup_external()
+        fake_client.get_context_length.assert_not_awaited()
+        assert ctx.budget_tokens is None
+        assert lazy is None
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("static_key", [None, "K"])
+    @pytest.mark.parametrize("budget", [None, 4096])
+    async def test_unpinned_vllm_all_auth_budget_cells_are_lazy(
+        self, static_key: str | None, budget: int | None,
+    ) -> None:
+        proxy = ProxyServer(
+            backend_url="http://localhost:8000/deploy",
+            backend="vllm",
+            backend_api_key=static_key,
+            budget_tokens=budget,
+        )
+        with patch.object(
+            VLLMClient, "get_served_model_name", new_callable=AsyncMock,
+        ) as served, patch.object(
+            VLLMClient, "get_context_length", new_callable=AsyncMock,
+        ) as context:
+            client, ctx, lazy = await proxy._setup_external()
+        served.assert_not_awaited()
+        context.assert_not_awaited()
+        assert client.model == "default"
+        assert lazy is not None and lazy.done is False
+        assert ctx.budget_tokens == budget
+
+    @pytest.mark.asyncio
+    async def test_profile_identity_discovery_flag_owns_latch_creation(self) -> None:
+        proxy = ProxyServer(
+            backend_url="http://localhost:8000",
+            backend="vllm",
+        )
+        assert isinstance(proxy._profile, UnmanagedBackendProfile)
+        proxy._profile = replace(proxy._profile, identity_discovery=False)
+        assert proxy._resolved_backend is not None
+        proxy._resolved_backend = replace(
+            proxy._resolved_backend,
+            profile=proxy._profile,
+        )
+
+        client, _, lazy = await proxy._setup_external()
+
+        assert isinstance(client, VLLMClient)
+        assert lazy is None
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("static_key", [None, "K"])
+    @pytest.mark.parametrize("budget", [None, 4096])
+    async def test_pinned_vllm_never_creates_identity_work(
+        self, static_key: str | None, budget: int | None,
+    ) -> None:
+        proxy = ProxyServer(
+            backend_url="http://localhost:8000",
+            backend="vllm",
+            backend_api_key=static_key,
+            budget_tokens=budget,
+            model="pinned",
+        )
+        client, ctx, lazy = await proxy._setup_external()
+        assert client.model == "pinned"
+        assert lazy is None
+        assert ctx.budget_tokens == budget
+
+    @pytest.mark.asyncio
+    async def test_generic_missing_budget_does_not_probe(self) -> None:
+        proxy = ProxyServer(backend_url="http://localhost:8080")
+        with patch.object(
+            LlamafileClient, "get_context_length", new_callable=AsyncMock,
+        ) as probe:
+            _, ctx, lazy = await proxy._setup_external()
+        probe.assert_not_awaited()
+        assert ctx.budget_tokens is None
         assert lazy is None
 
     @pytest.mark.asyncio
     async def test_explicit_llamafile_backend_uses_llamafile_client(self) -> None:
         proxy = ProxyServer(
-            backend_url="http://localhost:8080", backend="llamafile", budget_tokens=8192,
+            backend_url="http://localhost:8080",
+            backend="llamafile",
+            budget_tokens=8192,
         )
         client, _, _ = await proxy._setup_external()
         assert isinstance(client, LlamafileClient)
 
     @pytest.mark.asyncio
-    async def test_vllm_uses_vllm_client(self) -> None:
-        # Static key → eager startup discovery path.
+    async def test_nested_terminal_v1_mount_preserves_prefix(self) -> None:
+        proxy = ProxyServer(
+            backend_url="https://gateway.example/team/deploy/v1/",
+            budget_tokens=8192,
+        )
+        client, _, _ = await proxy._setup_external()
+        assert client._chat_url == (
+            "https://gateway.example/team/deploy/v1/chat/completions"
+        )
+        assert client._props_url == "https://gateway.example/team/deploy/props"
+
+    @pytest.mark.asyncio
+    async def test_external_ollama_retains_openai_compatibility(self) -> None:
+        proxy = ProxyServer(
+            backend_url="http://ollama-gateway:11434/root",
+            backend="ollama",
+            budget_tokens=8192,
+        )
+        client, _, lazy = await proxy._setup_external()
+        assert isinstance(client, LlamafileClient)
+        assert client._chat_url == (
+            "http://ollama-gateway:11434/root/v1/chat/completions"
+        )
+        assert lazy is None
+
+    @pytest.mark.asyncio
+    async def test_pinned_repo_id_keeps_wire_path_and_registry_key(self) -> None:
         proxy = ProxyServer(
             backend_url="http://localhost:8000",
             backend="vllm",
-            budget_tokens=8192,
-            backend_api_key="K",
-            backend_timeout=1800.0,
-        )
-        with patch.object(
-            VLLMClient, "get_served_model_name", new_callable=AsyncMock, return_value=None,
-        ):
-            client, ctx, _ = await proxy._setup_external()
-        assert isinstance(client, VLLMClient)
-        assert client.base_url == "http://localhost:8000/v1"
-        assert client._http.timeout.read == 1800.0
-        assert ctx.budget_tokens == 8192
-
-    @pytest.mark.asyncio
-    async def test_vllm_adopts_served_model_name(self) -> None:
-        # Static key authenticates the startup probe → eager served-name adoption.
-        proxy = ProxyServer(
-            backend_url="http://localhost:8000", backend="vllm",
-            budget_tokens=8192, backend_api_key="K",
-        )
-        with patch.object(
-            VLLMClient, "get_served_model_name",
-            new_callable=AsyncMock, return_value="my-awq-model",
-        ):
-            client, _, _ = await proxy._setup_external()
-        assert client.model == "my-awq-model"
-        assert client.sampling_key == "my-awq-model"
-
-    @pytest.mark.asyncio
-    async def test_vllm_served_repo_id_keeps_wire_path_derives_registry_key(self) -> None:
-        # An HF-repo-id served name must reach the wire verbatim (vLLM validates
-        # it), while the registry key is the derived stem — the (model,
-        # sampling_key) invariant, applied to served-name adoption.
-        proxy = ProxyServer(
-            backend_url="http://localhost:8000", backend="vllm",
-            budget_tokens=8192, backend_api_key="K",
-        )
-        with patch.object(
-            VLLMClient, "get_served_model_name",
-            new_callable=AsyncMock, return_value="google/gemma-4-26B-A4B-it",
-        ):
-            client, _, _ = await proxy._setup_external()
-        assert client.model == "google/gemma-4-26B-A4B-it"
-        assert client.sampling_key == "gemma-4-26B-A4B-it"
-
-    @pytest.mark.asyncio
-    async def test_llamafile_proxy_bare_model_name_preserves_identity(self) -> None:
-        # Proxy external mode: a bare dotted model name (no .gguf suffix) flows
-        # through gguf_path unchanged — the actual repro path from issue #121.
-        # client.model == client.sampling_key is the llamafile invariant.
-        proxy = ProxyServer(
-            backend_url="http://localhost:8080",
-            backend="llamafile",
-            budget_tokens=8192,
-            backend_api_key="K",
-            model="mimo-v2.5",
-        )
-        with patch.object(
-            LlamafileClient, "get_context_length",
-            new_callable=AsyncMock, return_value=32768,
-        ):
-            client, _, _ = await proxy._setup_external()
-        assert client.model == "mimo-v2.5"
-        assert client.sampling_key == "mimo-v2.5"
-
-    @pytest.mark.asyncio
-    async def test_vllm_keeps_placeholder_when_discovery_fails(self) -> None:
-        proxy = ProxyServer(
-            backend_url="http://localhost:8000", backend="vllm",
-            budget_tokens=8192, backend_api_key="K",
-        )
-        with patch.object(
-            VLLMClient, "get_served_model_name", new_callable=AsyncMock, return_value=None,
-        ):
-            client, _, _ = await proxy._setup_external()
-        assert client.model == "default"
-
-    @pytest.mark.asyncio
-    async def test_vllm_eager_pinned_no_budget_single_discovery_probe(self) -> None:
-        # Static key + pinned model + no explicit budget: the eager path takes
-        # ONE credentialed discover_backend_metadata probe (which honors the
-        # pin and reads the pinned entry's budget) — never the separate
-        # served-name/context-length probes that read data[0].
-        proxy = ProxyServer(
-            backend_url="http://localhost:8000", backend="vllm",
-            backend_api_key="K", model="nv-mistral-large",
-        )
-        with patch.object(
-            VLLMClient, "discover_backend_metadata",
-            new_callable=AsyncMock, return_value=128000,
-        ) as discover, patch.object(
-            VLLMClient, "get_served_model_name", new_callable=AsyncMock,
-        ) as served, patch.object(
-            VLLMClient, "get_context_length", new_callable=AsyncMock,
-        ) as ctxlen:
-            client, ctx, lazy = await proxy._setup_external()
-        discover.assert_awaited_once()
-        served.assert_not_awaited()
-        ctxlen.assert_not_awaited()
-        assert lazy is None
-        assert ctx.budget_tokens == 128000
-        assert client.model == "nv-mistral-large"
-
-    @pytest.mark.asyncio
-    async def test_vllm_eager_unpinned_no_budget_single_discovery_probe(self) -> None:
-        # Same single-probe collapse without a pin: identity adoption happens
-        # inside discover_backend_metadata (client-level tested).
-        proxy = ProxyServer(
-            backend_url="http://localhost:8000", backend="vllm",
-            backend_api_key="K",
-        )
-        with patch.object(
-            VLLMClient, "discover_backend_metadata",
-            new_callable=AsyncMock, return_value=113000,
-        ) as discover, patch.object(
-            VLLMClient, "get_served_model_name", new_callable=AsyncMock,
-        ) as served:
-            _, ctx, lazy = await proxy._setup_external()
-        discover.assert_awaited_once()
-        served.assert_not_awaited()
-        assert lazy is None
-        assert ctx.budget_tokens == 113000
-
-    @pytest.mark.asyncio
-    async def test_vllm_eager_pinned_unlisted_raise_propagates(self) -> None:
-        # The fail-loud raise for a pinned-but-unlisted model must surface at
-        # startup — _setup_external must not swallow it into a soft fallback.
-        proxy = ProxyServer(
-            backend_url="http://localhost:8000", backend="vllm",
-            backend_api_key="K", model="nv-mistral-large",
-        )
-        with patch.object(
-            VLLMClient, "discover_backend_metadata",
-            new_callable=AsyncMock,
-            side_effect=BackendError(
-                500, "explicit model 'nv-mistral-large' is not among ...",
-            ),
-        ), pytest.raises(BackendError, match="not among"):
-            await proxy._setup_external()
-
-    @pytest.mark.asyncio
-    async def test_vllm_empty_model_is_not_a_pin(self) -> None:
-        # A blank --model is normalized away: discovery behaves exactly as if
-        # no model was given (placeholder + adoption), instead of pinning
-        # "default" with adoption suppressed.
-        proxy = ProxyServer(
-            backend_url="http://localhost:8000", backend="vllm",
-            budget_tokens=8192, backend_api_key="K",
-            model="  ",
-        )
-        with patch.object(
-            VLLMClient, "get_served_model_name",
-            new_callable=AsyncMock, return_value="my-awq-model",
-        ):
-            client, _, _ = await proxy._setup_external()
-        assert client.model == "my-awq-model"
-        assert client._adopt_served_identity is True
-
-    @pytest.mark.asyncio
-    async def test_vllm_explicit_model_skips_eager_adoption(self) -> None:
-        # Issue #122: an explicit --model pins the identity — the eager
-        # served-name probe is skipped entirely, never adopted over the pin.
-        proxy = ProxyServer(
-            backend_url="http://localhost:8000", backend="vllm",
-            budget_tokens=8192, backend_api_key="K",
-            model="nv-mistral-large",
-        )
-        with patch.object(
-            VLLMClient, "get_served_model_name", new_callable=AsyncMock,
-        ) as served:
-            client, _, _ = await proxy._setup_external()
-        served.assert_not_awaited()
-        assert client.model == "nv-mistral-large"
-        assert client.sampling_key == "nv-mistral-large"
-        assert client._adopt_served_identity is False
-
-    @pytest.mark.asyncio
-    async def test_vllm_explicit_repo_id_model_derives_registry_key(self) -> None:
-        # A pinned HF-repo-id reaches the wire verbatim; the registry key is
-        # the derived stem — the (model, sampling_key) invariant, applied at
-        # construction instead of served-name adoption.
-        proxy = ProxyServer(
-            backend_url="http://localhost:8000", backend="vllm",
-            budget_tokens=8192, backend_api_key="K",
             model="google/gemma-4-26B-A4B-it",
         )
-        with patch.object(
-            VLLMClient, "get_served_model_name", new_callable=AsyncMock,
-        ) as served:
-            client, _, _ = await proxy._setup_external()
-        served.assert_not_awaited()
+        client, _, lazy = await proxy._setup_external()
         assert client.model == "google/gemma-4-26B-A4B-it"
         assert client.sampling_key == "gemma-4-26B-A4B-it"
-
-    @pytest.mark.asyncio
-    async def test_url_v1_suffix_preserved(self) -> None:
-        proxy = ProxyServer(backend_url="http://localhost:8080/v1", budget_tokens=8192)
-        client, _, _ = await proxy._setup_external()
-        assert client.base_url == "http://localhost:8080/v1"
-
-    @pytest.mark.asyncio
-    async def test_url_trailing_slash_stripped(self) -> None:
-        proxy = ProxyServer(backend_url="http://localhost:8080/", budget_tokens=8192)
-        client, _, _ = await proxy._setup_external()
-        assert client.base_url == "http://localhost:8080/v1"
-
-    @pytest.mark.asyncio
-    async def test_budget_from_backend_when_unspecified(self) -> None:
-        # Static key → eager budget discovery from the backend at startup.
-        proxy = ProxyServer(backend_url="http://localhost:8080", backend_api_key="K")
-        with patch.object(
-            LlamafileClient, "get_context_length",
-            new_callable=AsyncMock, return_value=32768,
-        ):
-            _, ctx, _ = await proxy._setup_external()
-        assert ctx.budget_tokens == 32768
-
-    @pytest.mark.asyncio
-    async def test_budget_unresolvable_raises(self) -> None:
-        # Eager path (static key): an unresolvable context length fails at startup.
-        proxy = ProxyServer(backend_url="http://localhost:8080", backend_api_key="K")
-        with patch.object(
-            LlamafileClient, "get_context_length",
-            new_callable=AsyncMock, return_value=None,
-        ), pytest.raises(RuntimeError, match="did not report a context length"):
-            await proxy._setup_external()
-
-
-class TestExternalDeferredDiscovery:
-    """External passthrough defers startup backend probes to the first request.
-
-    Without a static --backend-api-key the startup probe would be unauthenticated
-    against a gated backend (finding #2), so _setup_external skips it and returns
-    a LazyDiscovery latch; the handler runs the probe on the first request with
-    that request's inbound credential.
-    """
-
-    @pytest.mark.asyncio
-    async def test_llamacpp_passthrough_no_budget_defers(self) -> None:
-        proxy = ProxyServer(backend_url="http://localhost:8080")
-        with patch.object(
-            LlamafileClient, "get_context_length", new_callable=AsyncMock,
-        ) as probe:
-            _, _, lazy = await proxy._setup_external()
-        probe.assert_not_awaited()  # no unauthenticated startup probe
-        assert lazy is not None
-        assert lazy.deferred is True
-        assert lazy.apply_budget is True  # no explicit budget → discovery sets it
-        assert lazy.adopt_model_identity is False
-        assert lazy.done is False
-
-    @pytest.mark.asyncio
-    async def test_vllm_passthrough_no_budget_defers_both_probes(self) -> None:
-        proxy = ProxyServer(backend_url="http://localhost:8000", backend="vllm")
-        with patch.object(
-            VLLMClient, "get_served_model_name", new_callable=AsyncMock,
-        ) as served, patch.object(
-            VLLMClient, "get_context_length", new_callable=AsyncMock,
-        ) as ctxlen:
-            client, _, lazy = await proxy._setup_external()
-        served.assert_not_awaited()
-        ctxlen.assert_not_awaited()
-        assert client.model == "default"  # identity deferred → still placeholder
-        assert lazy.deferred is True
-        assert lazy.apply_budget is True
-        assert lazy.adopt_model_identity is True
-
-    @pytest.mark.asyncio
-    async def test_vllm_passthrough_with_budget_still_defers_for_identity(self) -> None:
-        # Explicit budget but no key: the served-name probe is still
-        # unauthenticated, so vLLM defers — but the discovered budget must NOT
-        # override the explicit one (apply_budget False).
-        proxy = ProxyServer(
-            backend_url="http://localhost:8000", backend="vllm", budget_tokens=4096,
-        )
-        with patch.object(
-            VLLMClient, "get_served_model_name", new_callable=AsyncMock,
-        ) as served:
-            _, ctx, lazy = await proxy._setup_external()
-        served.assert_not_awaited()
-        assert ctx.budget_tokens == 4096
-        assert lazy.deferred is True
-        assert lazy.apply_budget is False
-        assert lazy.adopt_model_identity is True
-
-    @pytest.mark.asyncio
-    async def test_llamacpp_passthrough_with_budget_not_deferred(self) -> None:
-        # llama.cpp has no served-name probe, so an explicit budget leaves
-        # nothing to defer even without a key.
-        proxy = ProxyServer(backend_url="http://localhost:8080", budget_tokens=4096)
-        _, ctx, lazy = await proxy._setup_external()
         assert lazy is None
-        assert ctx.budget_tokens == 4096
 
     @pytest.mark.asyncio
-    async def test_vllm_passthrough_pinned_model_and_budget_not_deferred(self) -> None:
-        # Issue #122: pinned identity + explicit budget = nothing left to
-        # discover — passthrough vLLM starts with zero metadata probes.
+    async def test_whitespace_vllm_model_remains_an_explicit_pin(self) -> None:
         proxy = ProxyServer(
-            backend_url="http://localhost:8000", backend="vllm",
-            budget_tokens=4096, model="nv-mistral-large",
+            backend_url="http://localhost:8000",
+            backend="vllm",
+            model="  ",
         )
-        with patch.object(
-            VLLMClient, "get_served_model_name", new_callable=AsyncMock,
-        ) as served, patch.object(
-            VLLMClient, "get_context_length", new_callable=AsyncMock,
-        ) as ctxlen:
-            client, ctx, lazy = await proxy._setup_external()
-        served.assert_not_awaited()
-        ctxlen.assert_not_awaited()
-        assert lazy is None
-        assert ctx.budget_tokens == 4096
-        assert client.model == "nv-mistral-large"
-
-    @pytest.mark.asyncio
-    async def test_vllm_passthrough_pinned_model_no_budget_still_defers(self) -> None:
-        # Pinned identity but no budget and no key: deferral still happens for
-        # budget discovery; the pin survives it (adopt_served_identity False).
-        proxy = ProxyServer(
-            backend_url="http://localhost:8000", backend="vllm",
-            model="nv-mistral-large",
-        )
-        with patch.object(
-            VLLMClient, "get_served_model_name", new_callable=AsyncMock,
-        ) as served:
-            client, _, lazy = await proxy._setup_external()
-        served.assert_not_awaited()
-        assert lazy is not None
-        assert lazy.deferred is True
-        assert lazy.apply_budget is True
-        assert lazy.adopt_model_identity is False
-        assert client.model == "nv-mistral-large"
+        client, _, lazy = await proxy._setup_external()
+        assert client.model == "  "
         assert client._adopt_served_identity is False
-
-    @pytest.mark.asyncio
-    async def test_static_key_is_eager_not_deferred(self) -> None:
-        proxy = ProxyServer(backend_url="http://localhost:8080", backend_api_key="K")
-        with patch.object(
-            LlamafileClient, "get_context_length",
-            new_callable=AsyncMock, return_value=32768,
-        ) as probe:
-            _, ctx, lazy = await proxy._setup_external()
-        probe.assert_awaited_once()  # static key authenticates the eager probe
         assert lazy is None
-        assert ctx.budget_tokens == 32768
 
     @pytest.mark.asyncio
-    async def test_blank_static_key_treated_as_passthrough(self) -> None:
-        # A whitespace --backend-api-key is not a credential: it must normalize
-        # to None and still defer (bool("   ") would have made it eager).
-        proxy = ProxyServer(backend_url="http://localhost:8080", backend_api_key="   ")
-        assert proxy._backend_api_key is None
-        with patch.object(
-            LlamafileClient, "get_context_length", new_callable=AsyncMock,
-        ) as probe:
-            _, _, lazy = await proxy._setup_external()
-        probe.assert_not_awaited()
-        assert lazy is not None and lazy.deferred is True
+    @pytest.mark.parametrize(
+        "backend_url, expected",
+        [
+            ("http://localhost:8080/v1", "http://localhost:8080/v1"),
+            ("http://localhost:8080/", "http://localhost:8080/v1"),
+        ],
+    )
+    async def test_openai_base_suffix_normalization(
+        self, backend_url: str, expected: str,
+    ) -> None:
+        proxy = ProxyServer(backend_url=backend_url, budget_tokens=8192)
+        client, _, _ = await proxy._setup_external()
+        assert client.base_url == expected
 
 
 class TestSetupManaged:
-    """Managed mode delegates to setup_backend with the right identity field."""
+    """Managed mode delegates lifecycle setup then applies NoCompact."""
 
     @pytest.mark.asyncio
     async def test_llamaserver_wiring(self) -> None:
@@ -497,13 +311,12 @@ class TestSetupManaged:
             extra_flags=["-ngl", "99"],
             backend_timeout=1800.0,
         )
-        mock_ctx = ContextManager.__new__(ContextManager)
-        mock_ctx.budget_tokens = 16384
         mock_server = MagicMock()
 
         with patch(
-            "forge.proxy.proxy.setup_backend",
-            new_callable=AsyncMock, return_value=(mock_server, mock_ctx),
+            "forge.proxy.proxy._setup_managed_backend",
+            new_callable=AsyncMock,
+            return_value=_ManagedBackendSetup(mock_server, 16384),
         ) as mock_setup:
             client, ctx, _ = await proxy._setup_managed()
 
@@ -520,8 +333,10 @@ class TestSetupManaged:
         assert kwargs["budget_mode"] == BudgetMode.FORGE_FAST
         assert kwargs["extra_flags"] == ["-ngl", "99"]
         assert kwargs["client"] is client
+        assert kwargs["allow_missing_backend_window"] is True
         assert proxy._server_manager is mock_server
-        assert ctx is mock_ctx
+        assert isinstance(ctx.strategy, NoCompact)
+        assert ctx.budget_tokens == 16384
 
     @pytest.mark.asyncio
     async def test_vllm_wiring(self) -> None:
@@ -530,13 +345,12 @@ class TestSetupManaged:
             budget_tokens=113000, budget_mode=BudgetMode.MANUAL,
             backend_timeout=1800.0,
         )
-        mock_ctx = ContextManager.__new__(ContextManager)
-        mock_ctx.budget_tokens = 113000
         with patch(
-            "forge.proxy.proxy.setup_backend",
-            new_callable=AsyncMock, return_value=(MagicMock(), mock_ctx),
+            "forge.proxy.proxy._setup_managed_backend",
+            new_callable=AsyncMock,
+            return_value=_ManagedBackendSetup(MagicMock(), 113000),
         ) as mock_setup:
-            client, _, _ = await proxy._setup_managed()
+            client, ctx, _ = await proxy._setup_managed()
 
         assert isinstance(client, VLLMClient)
         assert client.base_url == "http://localhost:8000/v1"
@@ -548,6 +362,7 @@ class TestSetupManaged:
         assert kwargs["model"] is None
         assert kwargs["manual_tokens"] == 113000
         assert kwargs["budget_mode"] == BudgetMode.MANUAL
+        assert isinstance(ctx.strategy, NoCompact)
 
     @pytest.mark.asyncio
     async def test_ollama_wiring(self) -> None:
@@ -556,33 +371,54 @@ class TestSetupManaged:
             model="ministral-3:14b",
             backend_timeout=1800.0,
         )
-        mock_ctx = ContextManager.__new__(ContextManager)
-        mock_ctx.budget_tokens = 4096
         with patch(
-            "forge.proxy.proxy.setup_backend",
-            new_callable=AsyncMock, return_value=(MagicMock(), mock_ctx),
+            "forge.proxy.proxy._setup_managed_backend",
+            new_callable=AsyncMock,
+            return_value=_ManagedBackendSetup(MagicMock(), 4096),
         ) as mock_setup:
-            client, _, _ = await proxy._setup_managed()
+            client, ctx, _ = await proxy._setup_managed()
         assert isinstance(client, OllamaClient)
+        assert client.base_url == "http://localhost:11434"
+        assert client._chat_url == "http://localhost:11434/api/chat"
         assert client._http.timeout.read == 1800.0
         kwargs = mock_setup.await_args.kwargs
         assert kwargs["backend"] == "ollama"
         assert kwargs["model"] == "ministral-3:14b"
         assert kwargs["gguf_path"] is None
         assert kwargs["model_path"] is None
-        # Client is passed through so setup_backend can wire num_ctx.
+        # Client is passed through so shared managed setup can wire num_ctx.
         assert kwargs["client"] is client
+        assert isinstance(ctx.strategy, NoCompact)
+
+    @pytest.mark.asyncio
+    async def test_ollama_custom_port_wires_client_and_daemon_target(self) -> None:
+        proxy = ProxyServer(
+            backend="ollama", model="tag", backend_port=22445,
+        )
+        server = ServerManager("ollama")
+        with patch(
+            "forge.proxy.proxy._setup_managed_backend",
+            new_callable=AsyncMock,
+            return_value=_ManagedBackendSetup(server, 4096),
+        ):
+            client, _, _ = await proxy._setup_managed()
+        assert isinstance(client, OllamaClient)
+        assert client.base_url == "http://localhost:22445"
+        assert server._resolved_backend is not None
+        assert server._resolved_backend.connection.mount_root == (
+            "http://localhost:22445"
+        )
+        assert server._daemon_target_overridden is True
 
     @pytest.mark.asyncio
     async def test_managed_llamafile_client_is_native(self) -> None:
         # The proxy is native-only: the managed LlamafileClient is built in
         # native mode and the backend process is launched native too.
         proxy = ProxyServer(backend="llamafile", gguf="/m/x.gguf")
-        mock_ctx = ContextManager.__new__(ContextManager)
-        mock_ctx.budget_tokens = 8192
         with patch(
-            "forge.proxy.proxy.setup_backend",
-            new_callable=AsyncMock, return_value=(MagicMock(), mock_ctx),
+            "forge.proxy.proxy._setup_managed_backend",
+            new_callable=AsyncMock,
+            return_value=_ManagedBackendSetup(MagicMock(), 8192),
         ) as mock_setup:
             client, _, _ = await proxy._setup_managed()
         assert isinstance(client, LlamafileClient)
@@ -611,11 +447,11 @@ class TestBackendCapability:
         with pytest.raises(ValueError, match="only supported for"):
             ProxyServer(backend="ollama", model="m", backend_capability="prompt")
 
-    def test_prompt_rejects_anthropic_protocol(self) -> None:
-        with pytest.raises(ValueError, match="not supported with the anthropic"):
+    def test_prompt_rejects_anthropic(self) -> None:
+        with pytest.raises(ValueError, match="only supported for llama-shaped"):
             ProxyServer(
                 backend_url="http://x:8080",
-                backend_protocol="anthropic",
+                backend="anthropic",
                 backend_capability="prompt",
             )
 
@@ -649,11 +485,10 @@ class TestBackendCapability:
         proxy = ProxyServer(
             backend="llamafile", gguf="/m/x.gguf", backend_capability="prompt",
         )
-        mock_ctx = ContextManager.__new__(ContextManager)
-        mock_ctx.budget_tokens = 8192
         with patch(
-            "forge.proxy.proxy.setup_backend",
-            new_callable=AsyncMock, return_value=(MagicMock(), mock_ctx),
+            "forge.proxy.proxy._setup_managed_backend",
+            new_callable=AsyncMock,
+            return_value=_ManagedBackendSetup(MagicMock(), 8192),
         ) as mock_setup:
             client, _, _ = await proxy._setup_managed()
         assert isinstance(client, LlamafileClient)
@@ -684,3 +519,135 @@ class TestLifecycle:
         proxy._started = True
         proxy.start()  # returns immediately without spawning a thread
         assert proxy._thread is None
+
+    def test_start_and_stop_own_event_loop_thread(self) -> None:
+        proxy = ProxyServer(backend_url="http://localhost:8000")
+
+        async def signal_ready(ready) -> None:
+            proxy._started = True
+            ready.set()
+
+        with patch.object(proxy, "_async_start", side_effect=signal_ready) as start:
+            proxy.start()
+            thread = proxy._thread
+            loop = proxy._loop
+
+            try:
+                assert thread is not None and thread.is_alive()
+                assert loop is not None and loop.is_running()
+            finally:
+                proxy.stop()
+
+        start.assert_awaited_once()
+        assert not thread.is_alive()
+        assert loop.is_closed()
+        assert proxy._started is False
+
+    @pytest.mark.asyncio
+    async def test_managed_async_start_keeps_serialization_with_private_setup(
+        self,
+    ) -> None:
+        proxy = ProxyServer(backend="llamaserver", gguf="/models/x.gguf")
+        backend_manager = MagicMock()
+        http_server = MagicMock()
+        http_server.start = AsyncMock()
+        ready = MagicMock()
+        with patch(
+            "forge.proxy.proxy._setup_managed_backend",
+            new_callable=AsyncMock,
+            return_value=_ManagedBackendSetup(backend_manager, 8192),
+        ), patch("forge.proxy.proxy.HTTPServer", return_value=http_server) as server_cls:
+            await proxy._async_start(ready)
+
+        kwargs = server_cls.call_args.kwargs
+        assert kwargs["serialize_requests"] is True
+        assert kwargs["backend_protocol"] == "openai"
+        assert kwargs["client_adapter"] == ClientAdapter.LLAMAFILE
+        http_server._configure_metadata_courier.assert_called_once_with(
+            mount_root=proxy._resolved_backend.connection.mount_root,
+            backend_api_key=None,
+            timeout=300.0,
+            private_catalog_url=None,
+            catalog_parser=None,
+        )
+        assert isinstance(kwargs["context_manager"].strategy, NoCompact)
+        assert proxy._server_manager is backend_manager
+        ready.set.assert_called_once_with()
+        assert proxy._client is not None
+        await proxy._client.aclose()
+
+    @pytest.mark.asyncio
+    async def test_official_anthropic_wires_models_metadata_reporting(self) -> None:
+        proxy = ProxyServer(
+            backend_url="https://api.anthropic.com",
+            backend="anthropic",
+            model="claude-exact",
+            backend_api_key="key",
+        )
+        http_server = MagicMock()
+        http_server.start = AsyncMock()
+        ready = MagicMock()
+        with patch("forge.proxy.proxy.HTTPServer", return_value=http_server):
+            await proxy._async_start(ready)
+
+        http_server._configure_context_reporting.assert_called_once_with(
+            managed=False,
+            context_window_tokens=None,
+            metadata_format=MetadataFormat.ANTHROPIC_MODELS,
+            metadata_url=None,
+        )
+        ready.set.assert_called_once_with()
+        await proxy._client.aclose()
+
+    @pytest.mark.asyncio
+    async def test_managed_ollama_wires_resolved_window_reporting(self) -> None:
+        proxy = ProxyServer(backend="ollama", model="tag")
+        backend_manager = MagicMock()
+        http_server = MagicMock()
+        http_server.start = AsyncMock()
+        ready = MagicMock()
+        with patch(
+            "forge.proxy.proxy._setup_managed_backend",
+            new_callable=AsyncMock,
+            return_value=_ManagedBackendSetup(backend_manager, 32768),
+        ), patch("forge.proxy.proxy.HTTPServer", return_value=http_server):
+            await proxy._async_start(ready)
+
+        http_server._configure_context_reporting.assert_called_once_with(
+            managed=True,
+            context_window_tokens=32768,
+            metadata_format=MetadataFormat.NONE,
+            metadata_url=None,
+        )
+        ready.set.assert_called_once_with()
+        await proxy._client.aclose()
+
+    @pytest.mark.asyncio
+    async def test_async_stop_preserves_http_backend_client_order(self) -> None:
+        proxy = ProxyServer(backend="llamaserver", gguf="/models/x.gguf")
+        order: list[str] = []
+
+        async def stop_http() -> None:
+            order.append("http")
+
+        async def stop_backend() -> None:
+            order.append("backend")
+
+        async def close_client() -> None:
+            order.append("client")
+
+        proxy._http_server = MagicMock()
+        proxy._http_server.stop = AsyncMock(side_effect=stop_http)
+        proxy._server_manager = MagicMock()
+        proxy._server_manager.stop = AsyncMock(side_effect=stop_backend)
+        proxy._client = MagicMock()
+        proxy._client.aclose = AsyncMock(side_effect=close_client)
+
+        await proxy._async_stop()
+
+        assert order == ["http", "backend", "client"]
+
+    def test_docker_liveness_uses_forge_namespace(self) -> None:
+        dockerfile = Path("Dockerfile").read_text(encoding="utf-8")
+        assert "http://127.0.0.1:8081/forge/health" in dockerfile
+        assert "http://127.0.0.1:8081/health\"]" not in dockerfile

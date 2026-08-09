@@ -9,6 +9,7 @@ from forge.context.hardware import (
     detect_hardware,
 )
 from forge.context.manager import CompactEvent, ContextManager, default_context_warning
+from forge.context.observations import ContextSession, ContextUsage
 from forge.context.strategies import (
     CompactStrategy,
     NoCompact,
@@ -20,6 +21,8 @@ __all__ = [
     "CompactEvent",
     "CompactStrategy",
     "ContextManager",
+    "ContextUsage",
+    "ContextSession",
     "default_context_warning",
     "HardwareProfile",
     "NoCompact",

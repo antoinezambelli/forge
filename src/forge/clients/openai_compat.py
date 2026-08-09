@@ -18,10 +18,18 @@ from typing import Any
 
 import httpx
 
+from forge._endpoint_layouts import (
+    BackendOperation,
+    ConnectionInputKind,
+    EndpointLayout,
+    normalize_connection,
+    resolve_endpoint,
+)
 from forge.clients.base import (
     ChunkType,
     StreamChunk,
     TokenUsage,
+    _record_captured_usage,
     decode_tool_args,
     format_tool,
     resolve_request_headers,
@@ -68,6 +76,12 @@ class OpenAICompatClient:
         recommended_sampling: bool = False,
     ) -> None:
         self.base_url = base_url.rstrip("/")
+        connection = normalize_connection(
+            self.base_url, ConnectionInputKind.OPENAI_API_BASE,
+        )
+        self._chat_url = resolve_endpoint(
+            EndpointLayout.OPENAI_COMPAT, BackendOperation.INFERENCE, connection,
+        )
         self.model = model
         # sampling_key is the registry-lookup key. For OpenAI-compat backends
         # the wire "model" field and the lookup key are the same string.
@@ -171,11 +185,13 @@ class OpenAICompatClient:
             return
         prompt = usage.get("prompt_tokens") or 0
         completion = usage.get("completion_tokens") or 0
-        self.last_usage[0] = TokenUsage(
+        normalized = TokenUsage(
             prompt_tokens=prompt,
             completion_tokens=completion,
             total_tokens=usage.get("total_tokens") or (prompt + completion),
         )
+        self.last_usage[0] = normalized
+        _record_captured_usage(normalized)
 
     @staticmethod
     def _structured_reasoning(source: dict[str, Any]) -> str:
@@ -276,7 +292,7 @@ class OpenAICompatClient:
         body = self._build_body(messages, tools, sampling, stream=False, passthrough=passthrough)
         try:
             resp = await self._http.post(
-                f"{self.base_url}/chat/completions",
+                self._chat_url,
                 json=body,
                 headers=self._request_headers(extra_headers),
             )
@@ -335,7 +351,7 @@ class OpenAICompatClient:
 
         async with self._http.stream(
             "POST",
-            f"{self.base_url}/chat/completions",
+            self._chat_url,
             json=body,
             headers=self._request_headers(extra_headers),
         ) as response:
@@ -432,13 +448,4 @@ class OpenAICompatClient:
 
     async def get_context_length(self) -> int | None:
         """OpenAI-compatible endpoints don't expose context length. Returns None."""
-        return None
-
-    async def discover_backend_metadata(
-        self, extra_headers: dict[str, str] | None = None,
-    ) -> int | None:
-        """OpenAI-compatible endpoints expose neither context length nor a
-        discoverable identity. Returns None (Protocol uniformity); not wired
-        into the proxy's deferred external path.
-        """
         return None

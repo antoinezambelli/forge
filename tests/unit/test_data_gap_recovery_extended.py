@@ -11,10 +11,6 @@ Verifies:
 
 from __future__ import annotations
 
-from tests.eval.scenarios import (
-    data_gap_recovery_extended,
-    data_gap_recovery_extended_stateful,
-)
 from tests.eval.scenarios._model_reasoning import (
     _data_gap_recovery_extended_tools,
     _validate_data_gap_recovery_extended,
@@ -230,24 +226,6 @@ class TestValidator:
         assert _validate_data_gap_recovery_extended(args)
 
 
-# ── Scenario shape ──────────────────────────────────────────────
-
-
-class TestScenarioShape:
-    def test_lambda_scenario_has_12_tools(self) -> None:
-        assert len(data_gap_recovery_extended.workflow.tools) == 12
-
-    def test_lambda_scenario_terminal_is_submit_report(self) -> None:
-        assert data_gap_recovery_extended.workflow.terminal_tool == "submit_report"
-
-    def test_lambda_scenario_required_steps(self) -> None:
-        assert data_gap_recovery_extended.workflow.required_steps == ["get_employee"]
-
-    def test_lambda_scenario_has_extended_iteration_budget(self) -> None:
-        assert data_gap_recovery_extended.max_iterations == 20
-        assert data_gap_recovery_extended.ideal_iterations == 8
-
-
 # ── Stateful backend ────────────────────────────────────────────
 
 
@@ -372,18 +350,3 @@ class TestStatefulValidator:
             ),
         }
         assert not _validate_data_gap_recovery_extended_stateful(args)
-
-
-# ── Scenario registered in ALL_SCENARIOS ────────────────────────
-
-
-class TestRegistration:
-    def test_lambda_in_all_scenarios(self) -> None:
-        from tests.eval.scenarios import ALL_SCENARIOS
-        names = [s.name for s in ALL_SCENARIOS]
-        assert "data_gap_recovery_extended" in names
-
-    def test_stateful_in_all_scenarios(self) -> None:
-        from tests.eval.scenarios import ALL_SCENARIOS
-        names = [s.name for s in ALL_SCENARIOS]
-        assert "data_gap_recovery_extended_stateful" in names

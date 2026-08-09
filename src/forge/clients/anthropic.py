@@ -12,6 +12,7 @@ import logging
 import os
 from collections.abc import AsyncIterator, Iterator
 from typing import Any
+from urllib.parse import urlsplit
 
 import anthropic
 
@@ -19,6 +20,7 @@ from forge.clients.base import (
     ChunkType,
     StreamChunk,
     TokenUsage,
+    _record_captured_usage,
     decode_tool_args,
     has_auth_header,
     resolve_request_headers,
@@ -53,6 +55,7 @@ _SDK_CONTROL_KWARGS = ("extra_headers", "extra_body", "extra_query", "timeout")
 # ambient value can't inject a hidden second credential the per-request gate
 # never sees.
 _AMBIENT_ANTHROPIC_ENV = ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN")
+_MISSING = object()
 
 
 @contextlib.contextmanager
@@ -177,10 +180,10 @@ class AnthropicClient:
         else:
             self._client = anthropic.AsyncAnthropic(**sdk_kwargs)
         # Populated after each send()/send_stream() call. Slot-keyed
-        # ``{slot_id: TokenUsage}`` to match LlamafileClient / OllamaClient so
-        # ``inference._get_usage`` reads every client uniformly. The Anthropic
-        # SDK is per-call (no shared inference slot), so we always use slot 0 —
-        # same convention as OllamaClient.
+        # ``{slot_id: TokenUsage}`` to preserve the direct-client compatibility
+        # mirror used by LlamafileClient / OllamaClient. The Anthropic SDK is
+        # per-call (no shared inference slot), so we always use slot 0 — same
+        # convention as OllamaClient.
         self.last_usage: dict[int, TokenUsage] = {}
 
     async def aclose(self) -> None:
@@ -219,6 +222,24 @@ class AnthropicClient:
             and not has_auth_header(sdk_headers)
         ):
             raise MissingCredentialError("Anthropic backend")
+
+    def _prepare_sdk_kwargs(
+        self,
+        kwargs: dict[str, Any],
+        extra_headers: dict[str, str] | None,
+    ) -> dict[str, Any]:
+        """Strip caller SDK controls and install Forge-owned request fields."""
+
+        litellm_session_id = kwargs.pop("litellm_session_id", _MISSING)
+        for control_kwarg in _SDK_CONTROL_KWARGS:
+            kwargs.pop(control_kwarg, None)
+        if litellm_session_id is not _MISSING:
+            kwargs["extra_body"] = {"litellm_session_id": litellm_session_id}
+        sdk_headers = self._sdk_extra_headers(extra_headers)
+        self._ensure_credential(sdk_headers)
+        if sdk_headers:
+            kwargs["extra_headers"] = sdk_headers
+        return kwargs
 
     # ── Tool schema conversion ───────────────────────────────────
 
@@ -502,33 +523,26 @@ class AnthropicClient:
         kwargs = self._build_kwargs(
             messages, tools, passthrough, inbound_anthropic_body,
         )
-        # Strip SDK control kwargs that a verbatim/passthrough body could carry
-        # before forge installs its own per-call credential.
-        for control_kwarg in _SDK_CONTROL_KWARGS:
-            kwargs.pop(control_kwarg, None)
-        sdk_headers = self._sdk_extra_headers(extra_headers)
-        self._ensure_credential(sdk_headers)
-        if sdk_headers:
-            kwargs["extra_headers"] = sdk_headers
+        kwargs = self._prepare_sdk_kwargs(kwargs, extra_headers)
         try:
             response = await self._client.messages.create(**kwargs)
         except anthropic.APIError as exc:
             raise BackendError(
                 getattr(exc, "status_code", 0), str(exc)
             ) from exc
-        self.last_usage = {
-            0: TokenUsage(
-                prompt_tokens=response.usage.input_tokens,
-                completion_tokens=response.usage.output_tokens,
-                total_tokens=response.usage.input_tokens + response.usage.output_tokens,
-                cache_creation_input_tokens=getattr(
-                    response.usage, "cache_creation_input_tokens", 0
-                ) or 0,
-                cache_read_input_tokens=getattr(
-                    response.usage, "cache_read_input_tokens", 0
-                ) or 0,
-            )
-        }
+        normalized = TokenUsage(
+            prompt_tokens=response.usage.input_tokens,
+            completion_tokens=response.usage.output_tokens,
+            total_tokens=response.usage.input_tokens + response.usage.output_tokens,
+            cache_creation_input_tokens=getattr(
+                response.usage, "cache_creation_input_tokens", 0
+            ) or 0,
+            cache_read_input_tokens=getattr(
+                response.usage, "cache_read_input_tokens", 0
+            ) or 0,
+        )
+        self.last_usage = {0: normalized}
+        _record_captured_usage(normalized)
         return self._parse_response(response)
 
     async def send_stream(
@@ -557,14 +571,7 @@ class AnthropicClient:
         kwargs = self._build_kwargs(
             messages, tools, passthrough, inbound_anthropic_body,
         )
-        # Strip SDK control kwargs that a verbatim/passthrough body could carry
-        # before forge installs its own per-call credential.
-        for control_kwarg in _SDK_CONTROL_KWARGS:
-            kwargs.pop(control_kwarg, None)
-        sdk_headers = self._sdk_extra_headers(extra_headers)
-        self._ensure_credential(sdk_headers)
-        if sdk_headers:
-            kwargs["extra_headers"] = sdk_headers
+        kwargs = self._prepare_sdk_kwargs(kwargs, extra_headers)
 
         accumulated_text = ""
         # Track multiple tool_use blocks by index.
@@ -614,36 +621,74 @@ class AnthropicClient:
                         )
                 # Grab usage from the final accumulated message.
                 final_message = await stream.get_final_message()
-                self.last_usage = {
-                    0: TokenUsage(
-                        prompt_tokens=final_message.usage.input_tokens,
-                        completion_tokens=final_message.usage.output_tokens,
-                        total_tokens=final_message.usage.input_tokens
-                        + final_message.usage.output_tokens,
-                        cache_creation_input_tokens=getattr(
-                            final_message.usage, "cache_creation_input_tokens", 0
-                        ) or 0,
-                        cache_read_input_tokens=getattr(
-                            final_message.usage, "cache_read_input_tokens", 0
-                        ) or 0,
-                    )
-                }
+                normalized = TokenUsage(
+                    prompt_tokens=final_message.usage.input_tokens,
+                    completion_tokens=final_message.usage.output_tokens,
+                    total_tokens=final_message.usage.input_tokens
+                    + final_message.usage.output_tokens,
+                    cache_creation_input_tokens=getattr(
+                        final_message.usage, "cache_creation_input_tokens", 0
+                    ) or 0,
+                    cache_read_input_tokens=getattr(
+                        final_message.usage, "cache_read_input_tokens", 0
+                    ) or 0,
+                )
+                self.last_usage = {0: normalized}
+                _record_captured_usage(normalized)
         except anthropic.APIError as exc:
             raise BackendError(
                 getattr(exc, "status_code", 0), str(exc)
             ) from exc
 
     async def get_context_length(self) -> int | None:
-        """Claude models have 200K context."""
-        return 200_000
+        """Return exact official model metadata when the SDK exposes it."""
+        if not self.model:
+            return None
+        return await self._get_context_length_for_model(self.model, None)
 
-    async def discover_backend_metadata(
-        self, extra_headers: dict[str, str] | None = None,
+    async def _get_context_length_for_model(
+        self,
+        model: str,
+        extra_headers: dict[str, str] | None,
     ) -> int | None:
-        """Static 200K context, no probe and no identity to adopt.
+        """Return canonical Anthropic metadata for one exact request model."""
 
-        The Anthropic path reports a known context length without a network
-        call, so it is never deferred — this exists for Protocol uniformity and
-        ignores ``extra_headers``.
-        """
-        return 200_000
+        if not self._uses_official_metadata_root():
+            return None
+        models = getattr(self._client, "models", None)
+        retrieve = getattr(models, "retrieve", None)
+        if not callable(retrieve):
+            return None
+        sdk_headers = self._sdk_extra_headers(extra_headers)
+        if extra_headers is not None:
+            self._ensure_credential(sdk_headers)
+        kwargs = {"extra_headers": sdk_headers} if sdk_headers else {}
+        try:
+            metadata = await retrieve(model, **kwargs)
+        except anthropic.APIError as exc:
+            raise BackendError(
+                getattr(exc, "status_code", 0) or 502,
+                "Anthropic model metadata request failed",
+            ) from exc
+        window = getattr(metadata, "max_input_tokens", None)
+        if (
+            not isinstance(window, int)
+            or isinstance(window, bool)
+            or window <= 0
+        ):
+            return None
+        return window
+
+    def _uses_official_metadata_root(self) -> bool:
+        """Whether the constructed SDK client targets canonical Anthropic."""
+        target = urlsplit(str(self._client.base_url))
+        return (
+            target.scheme.lower() == "https"
+            and target.hostname == "api.anthropic.com"
+            and target.port in (None, 443)
+            and target.path.rstrip("/") == ""
+            and not target.query
+            and not target.fragment
+            and target.username is None
+            and target.password is None
+        )

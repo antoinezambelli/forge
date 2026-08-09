@@ -8,15 +8,17 @@ import os
 import signal
 import sys
 import time
+from collections.abc import Sequence
 
+from forge._backend_profiles import proxy_backend_selectors
 from forge.core.reasoning import DEFAULT_REASONING_REPLAY, REASONING_REPLAY_CHOICES
 from forge.proxy.proxy import ProxyServer
 from forge.server import BudgetMode
 
 
-def main() -> None:
+def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="forge proxy — OpenAI-compatible proxy with guardrails",
+        description="forge proxy — OpenAI- and Anthropic-compatible proxy with guardrails",
     )
 
     # Mode selection. External mode uses --backend-url; managed mode uses
@@ -29,44 +31,55 @@ def main() -> None:
     )
     parser.add_argument(
         "--backend",
-        choices=["llamaserver", "llamafile", "ollama", "vllm"],
-        help="Backend type. Required for managed mode; in external mode use "
-             "'vllm' to select the vLLM adapter (default adapter is llama.cpp).",
+        choices=proxy_backend_selectors(),
+        help="Managed backend or unmanaged wire/profile selector.",
     )
 
     # Managed mode options
     parser.add_argument(
         "--model",
-        help="Model name (required for ollama). In external mode this pins the "
-             "wire model identity and overrides served-model-name discovery; on "
-             "hosted multi-model backends pair it with --budget-tokens (the "
-             "discovered budget comes from the backend's model list).",
+        help="Model name (required for managed ollama). External generic "
+             "OpenAI/llama profiles use it as a fallback when the request "
+             "omits model; external vLLM and Anthropic profiles use it as a "
+             "wire-model pin. It does not provide or suppress context-window "
+             "reporting metadata.",
     )
     parser.add_argument("--gguf", help="Path to GGUF file (llamaserver/llamafile)")
     parser.add_argument("--model-path", help="Model directory or HF repo id (vllm, managed mode)")
-    parser.add_argument("--backend-port", type=int, default=8080, help="Backend port (default: 8080)")
+    parser.add_argument("--backend-port", type=int, help="Backend target port")
     parser.add_argument(
         "--budget-mode",
         choices=["backend", "manual", "forge-full", "forge-fast"],
-        default="backend",
-        help="Context budget mode (default: backend)",
+        help="Managed context budget mode (default: backend)",
     )
-    parser.add_argument("--budget-tokens", type=int, help="Manual token budget")
-    parser.add_argument("--extra-flags", nargs="*", help="Additional backend CLI flags")
     parser.add_argument(
-        "--backend-protocol",
-        choices=["openai", "anthropic"],
-        default="openai",
-        help="Wire format of the external backend (default: openai). Use "
-             "'anthropic' for Anthropic-shape downstreams (LiteLLM /v1/messages, "
-             "real Anthropic API, self-hosted Anthropic proxy). External mode only.",
+        "--budget-tokens",
+        type=int,
+        help="Positive managed manual allocation with --budget-mode manual; "
+             "in unmanaged mode, reporting denominator only (never compacts "
+             "or enforces caller history)",
+    )
+    parser.add_argument(
+        "--extra-flags",
+        nargs=argparse.REMAINDER,
+        help="Terminal argv tail for a Forge-spawned llama-server, llamafile, "
+             "or vLLM backend; rejected for Ollama and unmanaged mode; all "
+             "Forge options must precede it.",
     )
 
     # Proxy options
     parser.add_argument("--host", default="127.0.0.1", help="Proxy listen host (default: 127.0.0.1)")
     parser.add_argument("--port", type=int, default=8081, help="Proxy listen port (default: 8081)")
-    parser.add_argument("--serialize", action="store_true", default=None, help="Force request serialization")
-    parser.add_argument("--no-serialize", action="store_true", help="Disable request serialization")
+    serialization = parser.add_mutually_exclusive_group()
+    serialization.add_argument(
+        "--serialize", dest="serialize", action="store_true",
+        help="Force request serialization",
+    )
+    serialization.add_argument(
+        "--no-serialize", dest="serialize", action="store_false",
+        help="Disable request serialization",
+    )
+    parser.set_defaults(serialize=None)
     parser.add_argument("--max-retries", type=int, default=3, help="Max retries per request (default: 3)")
     parser.add_argument("--max-tool-errors", type=int, default=2, help="Max consecutive tool-call errors per request (default: 2)")
     parser.add_argument(
@@ -82,16 +95,20 @@ def main() -> None:
         help="Static credential forge sends to the backend in its native auth "
              "header (LM Studio, hosted providers, service accounts). forge "
              "relocates it to the backend's protocol slot. When set, an inbound "
-             "auth header is refused as a second credential (one credential per "
-             "request). Defaults to the FORGE_BACKEND_API_KEY env var.",
+             "auth header is refused as a second credential (at most one "
+             "credential per "
+             "request). This is backend authentication, not caller authorization; "
+             "Proxy does not authenticate callers. Defaults to the "
+             "FORGE_BACKEND_API_KEY env var.",
     )
     parser.add_argument(
         "--backend-capability",
         choices=["native", "prompt"],
         default="native",
         help="Tool-calling protocol for the backend (default: native). "
-             "'native' forwards the client's tools verbatim to a "
-             "function-calling-capable backend. 'prompt' opts into "
+             "'native' uses the selected adapter's structured-tool path; "
+             "compatible OpenAI-shaped clean paths preserve raw tool fields, "
+             "while other adapters convert or rebuild them. 'prompt' opts into "
              "prompt-injection for non-FC llama.cpp/llamafile backends "
              "(strips tools into the prompt, parses the JSON call back). "
              "Frozen at startup — never probed or switched mid-stream.",
@@ -111,7 +128,44 @@ def main() -> None:
     )
     parser.add_argument("--verbose", "-v", action="store_true", help="Verbose logging")
 
-    args = parser.parse_args()
+    return parser
+
+
+def _proxy_from_args(
+    parser: argparse.ArgumentParser,
+    args: argparse.Namespace,
+) -> ProxyServer:
+    try:
+        return ProxyServer(
+            backend_url=args.backend_url,
+            backend=args.backend,
+            model=args.model,
+            gguf=args.gguf,
+            model_path=args.model_path,
+            backend_port=args.backend_port,
+            budget_mode=(BudgetMode(args.budget_mode) if args.budget_mode else None),
+            budget_tokens=args.budget_tokens,
+            extra_flags=args.extra_flags,
+            host=args.host,
+            port=args.port,
+            serialize=args.serialize,
+            max_retries=args.max_retries,
+            max_tool_errors=args.max_tool_errors,
+            rescue_enabled=not args.no_rescue,
+            backend_capability=args.backend_capability,
+            inject_respond_tool=args.inject_respond_tool,
+            backend_timeout=args.backend_timeout,
+            reasoning_replay=args.reasoning_replay,
+            backend_api_key=args.backend_api_key,
+        )
+    except ValueError as exc:
+        parser.error(str(exc))
+
+
+def main(argv: Sequence[str] | None = None) -> None:
+    parser = _build_parser()
+    args = parser.parse_args(argv)
+    proxy = _proxy_from_args(parser, args)
 
     # Logging
     level = logging.DEBUG if args.verbose else logging.INFO
@@ -119,37 +173,6 @@ def main() -> None:
         level=level,
         format="%(asctime)s [%(name)s] %(levelname)s: %(message)s",
         datefmt="%H:%M:%S",
-    )
-
-    # Resolve serialize flag
-    serialize = None
-    if args.serialize:
-        serialize = True
-    elif args.no_serialize:
-        serialize = False
-
-    proxy = ProxyServer(
-        backend_url=args.backend_url,
-        backend=args.backend,
-        model=args.model,
-        gguf=args.gguf,
-        model_path=args.model_path,
-        backend_port=args.backend_port,
-        budget_mode=BudgetMode(args.budget_mode),
-        budget_tokens=args.budget_tokens,
-        extra_flags=args.extra_flags,
-        host=args.host,
-        port=args.port,
-        serialize=serialize,
-        max_retries=args.max_retries,
-        max_tool_errors=args.max_tool_errors,
-        rescue_enabled=not args.no_rescue,
-        backend_capability=args.backend_capability,
-        inject_respond_tool=args.inject_respond_tool,
-        backend_protocol=args.backend_protocol,
-        backend_timeout=args.backend_timeout,
-        reasoning_replay=args.reasoning_replay,
-        backend_api_key=args.backend_api_key,
     )
 
     def _shutdown(sig: int, _frame: object) -> None:

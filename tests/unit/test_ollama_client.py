@@ -10,9 +10,12 @@ from pydantic import BaseModel, Field
 from unittest.mock import AsyncMock, MagicMock
 
 from forge.clients.ollama import OllamaClient
-from forge.core.workflow import TextResponse, ToolCall, ToolSpec
+from forge.core.workflow import TextResponse, ToolSpec
 from forge.clients.base import ChunkType, format_tool
 from forge.errors import BackendError, ThinkingNotSupportedError
+
+
+pytestmark = pytest.mark.usefixtures("mock_httpx_client_constructor")
 
 
 class PartParams(BaseModel):
@@ -29,12 +32,7 @@ def _make_spec(name: str = "get_pricing") -> ToolSpec:
 
 def _make_client(model: str = "test-model", think: bool | None = None) -> OllamaClient:
     """Create an OllamaClient with a mocked HTTP client."""
-    client = OllamaClient(base_url="http://test:11434", model=model, think=think)
-    mock_http = AsyncMock()
-    # stream() is a sync method returning an async context manager, not a coroutine
-    mock_http.stream = MagicMock()
-    client._http = mock_http
-    return client
+    return OllamaClient(base_url="http://test:11434", model=model, think=think)
 
 
 def _mock_response(data: dict, status_code: int = 200) -> MagicMock:
@@ -51,6 +49,39 @@ def _mock_response(data: dict, status_code: int = 200) -> MagicMock:
 
 class TestOllamaSend:
     @pytest.mark.asyncio
+    async def test_litellm_session_id_preserved_by_key_presence(self) -> None:
+        client = _make_client()
+        client._http.post.return_value = _mock_response({
+            "message": {"role": "assistant", "content": "ok"},
+        })
+
+        await client.send(
+            [{"role": "user", "content": "test"}],
+            passthrough={"litellm_session_id": None, "ignored": "value"},
+        )
+
+        body = client._http.post.await_args.kwargs["json"]
+        assert "litellm_session_id" in body
+        assert body["litellm_session_id"] is None
+        assert "ignored" not in body
+
+    @pytest.mark.asyncio
+    async def test_custom_daemon_root_is_literal_on_wire(self) -> None:
+        client = OllamaClient(
+            base_url="https://gateway.example/deploy/ollama",
+            model="model",
+            think=False,
+        )
+        client._http = AsyncMock()
+        client._http.post.return_value = _mock_response({
+            "message": {"role": "assistant", "content": "ok"},
+        })
+        await client.send([{"role": "user", "content": "test"}])
+        assert client._http.post.await_args.args[0] == (
+            "https://gateway.example/deploy/ollama/api/chat"
+        )
+
+    @pytest.mark.asyncio
     async def test_returns_tool_call(self) -> None:
         client = _make_client()
         client._http.post.return_value = _mock_response({
@@ -66,6 +97,7 @@ class TestOllamaSend:
             [{"role": "user", "content": "test"}],
             tools=[_make_spec()],
         )
+        assert client._http.post.await_args.args[0] == "http://test:11434/api/chat"
         assert isinstance(result, list)
         assert len(result) == 1
         assert result[0].tool == "get_pricing"
@@ -329,6 +361,10 @@ class TestOllamaSend:
         # State is now resolved
         assert client._think is False
         assert client._think_resolved is True
+        assert [call.args[0] for call in client._http.post.call_args_list] == [
+            "http://test:11434/api/chat",
+            "http://test:11434/api/chat",
+        ]
 
     @pytest.mark.asyncio
     async def test_think_true_explicit_raises_on_unsupported(self) -> None:
@@ -736,6 +772,10 @@ class TestOllamaSendStream:
         assert chunks[0].response.content == "ok"
         assert client._think is False
         assert client._think_resolved is True
+        assert [call.args[:2] for call in client._http.stream.call_args_list] == [
+            ("POST", "http://test:11434/api/chat"),
+            ("POST", "http://test:11434/api/chat"),
+        ]
 
     @pytest.mark.asyncio
     async def test_streaming_read_timeout_raises_backend_error(self) -> None:

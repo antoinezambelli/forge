@@ -1,22 +1,36 @@
-"""Server lifecycle management and budget resolution.
+"""Managed backend lifecycle, allocation, and native budget resolution.
 
-ServerManager owns backend lifecycle (start/stop processes, health polling)
-and resolves context budgets based on BudgetMode.  It is the single point
-of truth for "how much context can I use?" — clients just send messages.
+ServerManager spawns llama-server, llamafile, and vLLM processes, but attaches
+to an existing Ollama daemon and unloads only the selected model on stop. It
+resolves context allocation based on BudgetMode for native Forge and managed
+Proxy. Native callers may use that value for ContextManager compaction; Proxy
+always uses NoCompact and treats it only as allocation/reporting metadata.
 """
 
 from __future__ import annotations
 
 import asyncio
+import os
 import subprocess
 import time
 from collections.abc import Callable
+from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
 from typing import Any
 
 import httpx
 
+from forge._backend_profiles import (
+    ArtifactIdentity,
+    BackendFamily,
+    LifecycleOwnership,
+    MetadataFormat,
+    find_managed_profile,
+    managed_profile,
+)
+from forge._endpoint_layouts import BackendOperation, ConnectionInputKind
+from forge._resolved_backend import ResolvedBackend, resolve_backend
 from forge.context.hardware import detect_hardware
 from forge.context.manager import CompactEvent, ContextManager
 from forge.context.strategies import TieredCompact
@@ -24,7 +38,11 @@ from forge.errors import BackendError, BudgetResolutionError
 
 
 class BudgetMode(str, Enum):
-    """How to determine the context budget for compaction."""
+    """How managed backends resolve context allocation/reporting metadata.
+
+    Native Forge may also use the resolved value as a compaction budget. Proxy
+    never compacts caller history.
+    """
 
     BACKEND = "backend"  # Trust the backend's default. No override sent.
     MANUAL = "manual"  # User specifies exact token count.
@@ -32,12 +50,21 @@ class BudgetMode(str, Enum):
     FORGE_FAST = "forge-fast"  # Half of full. Trades context for faster attention.
 
 
+@dataclass(frozen=True)
+class _ManagedBackendSetup:
+    """Shared managed lifecycle result before context-policy composition."""
+
+    server: ServerManager
+    context_window_tokens: int | None
+
+
 class ServerManager:
-    """Manages backend lifecycle and resolves context budgets.
+    """Manages or attaches to a backend and resolves context budgets.
 
     For llama-server/llamafile: starts/stops processes, health polling,
     /props query for actual n_ctx.
-    For Ollama: ``ollama stop`` for clean VRAM unloads between model switches.
+    For Ollama: attaches to the existing daemon and uses ``ollama stop`` for
+    clean model/VRAM unloads without owning or terminating the daemon.
     """
 
     def __init__(
@@ -57,6 +84,17 @@ class ServerManager:
         self._backend = backend
         self._port = port
         self._models_dir = Path(models_dir) if models_dir is not None else None
+        self._profile = find_managed_profile(backend)
+        self._resolved_backend: ResolvedBackend | None = None
+        self._daemon_target_overridden = False
+        if self._profile is not None:
+            if self._profile.lifecycle == LifecycleOwnership.ATTACHED_DAEMON:
+                root = f"http://localhost:{self._profile.default_port}"
+                input_kind = ConnectionInputKind.OLLAMA_DAEMON_ROOT
+            else:
+                root = f"http://localhost:{port}"
+                input_kind = ConnectionInputKind.PROXY_MOUNT_ROOT
+            self._resolved_backend = resolve_backend(self._profile, root, input_kind)
 
         self._proc: subprocess.Popen | None = None
         self._current_model: str | None = None
@@ -67,6 +105,19 @@ class ServerManager:
         self._current_cache_type_v: str | None = None
         self._current_n_slots: int | None = None
         self._current_kv_unified: bool = False
+
+    def _set_resolved_daemon_target(self, target: ResolvedBackend) -> None:
+        """Use Proxy's already-normalized attached-daemon target."""
+
+        if (
+            self._profile is None
+            or self._profile.lifecycle != LifecycleOwnership.ATTACHED_DAEMON
+        ):
+            raise ValueError("resolved daemon targets apply only to attached daemons")
+        if target.profile != self._profile:
+            raise ValueError("resolved daemon target profile does not match manager")
+        self._resolved_backend = target
+        self._daemon_target_overridden = True
 
     # ── start / stop ────────────────────────────────────────────
 
@@ -123,11 +174,21 @@ class ServerManager:
             kv_unified: If True, use a single unified KV cache shared
                         across all slots. llama-server / llamafile only.
         """
-        if self._backend == "ollama":
+        if self._profile is None:
+            raise ValueError(f"unsupported backend: {self._backend!r}")
+        self._validate_start_options(
+            extra_flags=extra_flags,
+            cache_type_k=cache_type_k,
+            cache_type_v=cache_type_v,
+            n_slots=n_slots,
+            kv_unified=kv_unified,
+        )
+        family = self._profile.family_profile.family
+        if self._profile.lifecycle == LifecycleOwnership.ATTACHED_DAEMON:
             return
 
         # Per-backend path validation (fail-fast on misuse).
-        if self._backend in ("llamaserver", "llamafile"):
+        if self._profile.required_identity == ArtifactIdentity.GGUF_PATH:
             if model_path is not None:
                 raise ValueError(
                     f"backend={self._backend!r} does not accept model_path "
@@ -137,7 +198,7 @@ class ServerManager:
                 raise ValueError(
                     f"backend={self._backend!r} requires gguf_path"
                 )
-        elif self._backend == "vllm":
+        elif self._profile.required_identity == ArtifactIdentity.MODEL_PATH:
             if gguf_path is not None:
                 raise ValueError(
                     "backend='vllm' does not accept gguf_path (use model_path)"
@@ -154,8 +215,6 @@ class ServerManager:
                     "backend='vllm' does not support n_slots/kv_unified "
                     "(vLLM has its own scheduler concepts)"
                 )
-        else:
-            raise ValueError(f"unsupported backend: {self._backend!r}")
 
         # Reuse if same configuration is already running
         flags = tuple(extra_flags) if extra_flags else ()
@@ -173,7 +232,7 @@ class ServerManager:
 
         await self.stop()
 
-        if self._backend == "llamafile":
+        if family == BackendFamily.LLAMAFILE:
             runtime = self._find_llamafile_runtime(Path(gguf_path).parent)
             cmd: list[str] = [
                 str(runtime),
@@ -200,7 +259,7 @@ class ServerManager:
                 cmd.extend(["--parallel", str(n_slots)])
             if kv_unified:
                 cmd.append("--kv-unified")
-        elif self._backend == "llamaserver":
+        elif family == BackendFamily.LLAMA_SERVER:
             cmd = [
                 "llama-server",
                 "-m",
@@ -253,10 +312,19 @@ class ServerManager:
 
     async def stop(self) -> None:
         """Stop the current server / unload the Ollama model."""
-        if self._backend == "ollama":
+        if (
+            self._profile is not None
+            and self._profile.lifecycle == LifecycleOwnership.ATTACHED_DAEMON
+        ):
             if self._current_model is not None:
+                kwargs: dict[str, Any] = {}
+                if self._daemon_target_overridden:
+                    assert self._resolved_backend is not None
+                    env = os.environ.copy()
+                    env["OLLAMA_HOST"] = self._resolved_backend.connection.mount_root
+                    kwargs["env"] = env
                 wombat = await asyncio.create_subprocess_exec(
-                    "ollama", "stop", self._current_model
+                    "ollama", "stop", self._current_model, **kwargs,
                 )
                 await wombat.wait()
                 self._current_model = None
@@ -291,7 +359,8 @@ class ServerManager:
         Raises:
             BackendError: On non-200 response.
         """
-        url = f"http://localhost:{self._port}/props"
+        assert self._resolved_backend is not None
+        url = self._resolved_backend.address(BackendOperation.PROPERTIES)
         async with httpx.AsyncClient(timeout=10.0) as client:
             resp = await client.get(url)
             if resp.status_code != 200:
@@ -311,8 +380,12 @@ class ServerManager:
             BudgetResolutionError: Server unreachable, returned an error,
                 or response missing the expected field.
         """
-        if self._backend == "vllm":
-            url = f"http://localhost:{self._port}/v1/models"
+        if (
+            self._profile is not None
+            and self._profile.family_profile.metadata_format == MetadataFormat.VLLM_MODELS
+        ):
+            assert self._resolved_backend is not None
+            url = self._resolved_backend.address(BackendOperation.MODEL_CATALOG)
             try:
                 async with httpx.AsyncClient(timeout=10.0) as client:
                     resp = await client.get(url)
@@ -349,25 +422,30 @@ class ServerManager:
 
         Args:
             mode: The budget mode to use.
-            manual_tokens: Required when ``mode`` is ``MANUAL`` and
-                           backend is ``"ollama"``.
+            manual_tokens: Positive token allocation required in ``MANUAL``.
 
         Returns:
             Budget in tokens.
 
         Raises:
-            ValueError: ``MANUAL`` mode without ``manual_tokens``.
+            ValueError: ``MANUAL`` mode without a positive ``manual_tokens``.
             BudgetResolutionError: Server can't provide a context value.
         """
         if mode == BudgetMode.MANUAL:
-            if self._backend == "ollama":
-                if manual_tokens is None:
-                    raise ValueError("manual mode requires manual_tokens")
+            if manual_tokens is None or manual_tokens <= 0:
+                raise ValueError("manual mode requires manual_tokens > 0")
+            if (
+                self._profile is not None
+                and self._profile.family_profile.family == BackendFamily.OLLAMA
+            ):
                 return manual_tokens
             # llamaserver / llamafile: server was started with -c
             return await self.get_server_context()
 
-        if self._backend == "ollama":
+        if (
+            self._profile is not None
+            and self._profile.family_profile.family == BackendFamily.OLLAMA
+        ):
             full = self._ollama_vram_tier_budget()
             if mode == BudgetMode.FORGE_FAST:
                 return full // 2
@@ -430,13 +508,26 @@ class ServerManager:
             Resolved budget in tokens (ready for ContextManager).
 
         Raises:
-            ValueError: MANUAL mode without manual_tokens.
+            ValueError: MANUAL mode without positive manual_tokens.
             BudgetResolutionError: Server can't provide context info.
         """
-        if budget_mode == BudgetMode.MANUAL and manual_tokens is None:
-            raise ValueError("manual mode requires manual_tokens")
+        if budget_mode == BudgetMode.MANUAL and (
+            manual_tokens is None or manual_tokens <= 0
+        ):
+            raise ValueError("manual mode requires manual_tokens > 0")
 
-        if self._backend == "ollama":
+        self._validate_start_options(
+            extra_flags=extra_flags,
+            cache_type_k=cache_type_k,
+            cache_type_v=cache_type_v,
+            n_slots=n_slots,
+            kv_unified=kv_unified,
+        )
+
+        if (
+            self._profile is not None
+            and self._profile.family_profile.family == BackendFamily.OLLAMA
+        ):
             self._current_model = model
             return await self.resolve_budget(budget_mode, manual_tokens)
 
@@ -475,6 +566,32 @@ class ServerManager:
             n_slots=n_slots, kv_unified=kv_unified,
         )
         return await self.resolve_budget(budget_mode, manual_tokens)
+
+    def _validate_start_options(
+        self,
+        *,
+        extra_flags: list[str] | None,
+        cache_type_k: str | None,
+        cache_type_v: str | None,
+        n_slots: int | None,
+        kv_unified: bool,
+    ) -> None:
+        """Reject backend-specific controls that would otherwise be ignored."""
+        if (
+            self._profile is None
+            or self._profile.family_profile.family != BackendFamily.OLLAMA
+        ):
+            return
+        if extra_flags:
+            raise ValueError("backend='ollama' does not support extra_flags")
+        if cache_type_k is not None or cache_type_v is not None:
+            raise ValueError(
+                "backend='ollama' does not support cache_type_k/cache_type_v"
+            )
+        if n_slots is not None:
+            raise ValueError("backend='ollama' does not support n_slots")
+        if kv_unified:
+            raise ValueError("backend='ollama' does not support kv_unified")
 
     def _ollama_vram_tier_budget(self) -> int:
         """Published Ollama defaults based on total VRAM."""
@@ -516,14 +633,20 @@ class ServerManager:
         Raises:
             RuntimeError: If the server doesn't become ready within *timeout*.
         """
-        if self._backend == "vllm":
-            url = f"http://localhost:{self._port}/v1/models"
+        assert self._profile is not None
+        assert self._resolved_backend is not None
+        if self._profile.family_profile.metadata_format == MetadataFormat.VLLM_MODELS:
+            url = self._resolved_backend.address(BackendOperation.STARTUP_READINESS)
             effective_timeout = timeout if timeout is not None else 300.0
-            readiness_check = lambda data: bool(data.get("data"))
+
+            def readiness_check(data: dict[str, Any]) -> bool:
+                return bool(data.get("data"))
         else:
-            url = f"http://localhost:{self._port}/props"
+            url = self._resolved_backend.address(BackendOperation.STARTUP_READINESS)
             effective_timeout = timeout if timeout is not None else 180.0
-            readiness_check = lambda data: "default_generation_settings" in data
+
+            def readiness_check(data: dict[str, Any]) -> bool:
+                return "default_generation_settings" in data
 
         deadline = time.monotonic() + effective_timeout
         async with httpx.AsyncClient(timeout=5.0) as client:
@@ -540,6 +663,93 @@ class ServerManager:
         raise RuntimeError(
             f"Server did not become ready within {effective_timeout}s"
         )
+
+
+async def _setup_managed_backend(
+    backend: str,
+    model: str | None = None,
+    budget_mode: BudgetMode = BudgetMode.BACKEND,
+    manual_tokens: int | None = None,
+    client: Any | None = None,
+    gguf_path: str | Path | None = None,
+    model_path: str | Path | None = None,
+    mode: str = "native",
+    port: int = 8080,
+    extra_flags: list[str] | None = None,
+    cache_type_k: str | None = None,
+    cache_type_v: str | None = None,
+    n_slots: int | None = None,
+    kv_unified: bool = False,
+    *,
+    allow_missing_backend_window: bool = False,
+) -> _ManagedBackendSetup:
+    """Spawn or attach to a managed backend and return lifecycle plus window facts."""
+    profile = managed_profile(backend)
+    if profile.required_identity == ArtifactIdentity.MODEL_TAG:
+        if gguf_path is not None:
+            raise ValueError("backend='ollama' does not accept gguf_path (use model)")
+        if model_path is not None:
+            raise ValueError("backend='ollama' does not accept model_path (use model)")
+        if not model:
+            raise ValueError("backend='ollama' requires model")
+        identity = model
+    elif profile.required_identity == ArtifactIdentity.MODEL_PATH:
+        if gguf_path is not None:
+            raise ValueError("backend='vllm' does not accept gguf_path (use model_path)")
+        if model is not None:
+            raise ValueError("backend='vllm' does not accept model (use model_path)")
+        if not model_path:
+            raise ValueError("backend='vllm' requires model_path")
+        identity = str(model_path)
+    elif profile.required_identity == ArtifactIdentity.GGUF_PATH:
+        if model is not None:
+            raise ValueError(f"backend={backend!r} does not accept model (use gguf_path)")
+        if model_path is not None:
+            raise ValueError(
+                f"backend={backend!r} does not accept model_path (use gguf_path)"
+            )
+        if not gguf_path:
+            raise ValueError(f"backend={backend!r} requires gguf_path")
+        # ServerManager's cache-equality check keys off the identity string.
+        # The non-Ollama artifact path is therefore its lifecycle identity.
+        identity = str(gguf_path)
+
+    server = ServerManager(backend=backend, port=port)
+    try:
+        context_window_tokens = await server.start_with_budget(
+            model=identity,
+            gguf_path=gguf_path,
+            model_path=model_path,
+            mode=mode,
+            budget_mode=budget_mode,
+            manual_tokens=manual_tokens,
+            extra_flags=extra_flags,
+            cache_type_k=cache_type_k,
+            cache_type_v=cache_type_v,
+            n_slots=n_slots,
+            kv_unified=kv_unified,
+        )
+    except BudgetResolutionError:
+        if not (
+            allow_missing_backend_window
+            and budget_mode == BudgetMode.BACKEND
+            and profile.family_profile.family != BackendFamily.OLLAMA
+        ):
+            raise
+        context_window_tokens = None
+
+    if (
+        profile.family_profile.family == BackendFamily.OLLAMA
+        and client is not None
+        and hasattr(client, "set_num_ctx")
+    ):
+        assert context_window_tokens is not None
+        client.set_num_ctx(context_window_tokens)
+
+    return _ManagedBackendSetup(
+        server=server,
+        context_window_tokens=context_window_tokens,
+    )
 
 
 async def setup_backend(
@@ -563,7 +773,7 @@ async def setup_backend(
     context_thresholds: list[float] | None = None,
     on_context_threshold: Callable[[int, int, float], str | None] | None = None,
 ) -> tuple[ServerManager, ContextManager]:
-    """One-call setup: start backend, resolve budget, create ContextManager.
+    """One-call setup: spawn or attach, resolve budget, create ContextManager.
 
     Identity rules (mutually exclusive, enforced at call time):
 
@@ -609,56 +819,24 @@ async def setup_backend(
         (ServerManager, ContextManager) tuple. Caller is responsible
         for calling ``server.stop()`` when done.
     """
-    if backend == "ollama":
-        if gguf_path is not None:
-            raise ValueError("backend='ollama' does not accept gguf_path (use model)")
-        if model_path is not None:
-            raise ValueError("backend='ollama' does not accept model_path (use model)")
-        if not model:
-            raise ValueError("backend='ollama' requires model")
-        identity = model
-    elif backend == "vllm":
-        if gguf_path is not None:
-            raise ValueError("backend='vllm' does not accept gguf_path (use model_path)")
-        if model is not None:
-            raise ValueError("backend='vllm' does not accept model (use model_path)")
-        if not model_path:
-            raise ValueError("backend='vllm' requires model_path")
-        identity = str(model_path)
-    elif backend in ("llamaserver", "llamafile"):
-        if model is not None:
-            raise ValueError(f"backend={backend!r} does not accept model (use gguf_path)")
-        if model_path is not None:
-            raise ValueError(f"backend={backend!r} does not accept model_path (use gguf_path)")
-        if not gguf_path:
-            raise ValueError(f"backend={backend!r} requires gguf_path")
-        # ServerManager's cache-equality check keys off the identity string.
-        # For non-Ollama backends the GGUF path *is* the identity, so feed
-        # str(gguf_path) into ServerManager's `model` param. The wire format
-        # 'model' field is set elsewhere (LlamafileClient derives it from
-        # gguf_path stem); ServerManager only needs equality semantics.
-        identity = str(gguf_path)
-    else:
-        raise ValueError(f"unsupported backend: {backend!r}")
-
-    server = ServerManager(backend=backend, port=port)
-    budget = await server.start_with_budget(
-        model=identity,
+    managed_setup = await _setup_managed_backend(
+        backend=backend,
+        model=model,
+        budget_mode=budget_mode,
+        manual_tokens=manual_tokens,
+        client=client,
         gguf_path=gguf_path,
         model_path=model_path,
         mode=mode,
-        budget_mode=budget_mode,
-        manual_tokens=manual_tokens,
+        port=port,
         extra_flags=extra_flags,
         cache_type_k=cache_type_k,
         cache_type_v=cache_type_v,
         n_slots=n_slots,
         kv_unified=kv_unified,
     )
-
-    # Ollama: wire num_ctx so every request uses the resolved budget
-    if backend == "ollama" and client is not None and hasattr(client, "set_num_ctx"):
-        client.set_num_ctx(budget)
+    budget = managed_setup.context_window_tokens
+    assert budget is not None
 
     ctx_manager = ContextManager(
         strategy=TieredCompact(
@@ -670,4 +848,4 @@ async def setup_backend(
         context_thresholds=context_thresholds,
         on_context_threshold=on_context_threshold,
     )
-    return server, ctx_manager
+    return managed_setup.server, ctx_manager

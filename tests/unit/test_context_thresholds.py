@@ -174,6 +174,21 @@ class TestCheckThresholds:
         from forge import default_context_warning
         assert callable(default_context_warning)
 
+    def test_observed_usage_drives_threshold_callback(self) -> None:
+        calls = []
+        ctx = ContextManager(
+            strategy=NoCompact(),
+            budget_tokens=100,
+            context_thresholds=[0.5],
+            on_context_threshold=lambda tokens, budget, pct: calls.append(
+                (tokens, budget, pct)
+            ) or "observed",
+        )
+        ctx.update_token_count(60)
+
+        assert ctx.check_thresholds([_msg("tiny")]) == "observed"
+        assert calls == [(60, 100, 0.6)]
+
 
 # ── Integration: injection into run_inference ─────────────────────
 
@@ -216,7 +231,7 @@ class TestInferenceInjection:
         validator = ResponseValidator(tool_names=["done"], rescue_enabled=False)
         error_tracker = ErrorTracker(max_retries=1)
 
-        result = await run_inference(
+        await run_inference(
             messages=msgs,
             client=mock_client,
             context_manager=ctx,

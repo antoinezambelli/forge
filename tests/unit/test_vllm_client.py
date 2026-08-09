@@ -1,6 +1,7 @@
 """Tests for forge.clients.vllm — VLLMClient with mocked HTTP."""
 
 import json
+from copy import deepcopy
 from unittest.mock import AsyncMock, MagicMock
 
 import httpx
@@ -11,6 +12,9 @@ from forge.clients.base import ChunkType
 from forge.clients.vllm import VLLMClient
 from forge.core.workflow import TextResponse, ToolCall, ToolSpec
 from forge.errors import BackendError
+
+
+pytestmark = pytest.mark.usefixtures("mock_httpx_client_constructor")
 
 
 # ── helpers ────────────────────────────────────────────────────
@@ -25,15 +29,11 @@ def _make_spec(name: str = "get_weather") -> ToolSpec:
 
 
 def _make_client(*, think: bool = True) -> VLLMClient:
-    client = VLLMClient(
+    return VLLMClient(
         model_path="/models/gemma-4-26B-A4B-it-AWQ-4bit",
         base_url="http://test:8000/v1",
         think=think,
     )
-    mock_http = AsyncMock()
-    mock_http.stream = MagicMock()
-    client._http = mock_http
-    return client
 
 
 def _mock_response(data: dict, status_code: int = 200) -> MagicMock:
@@ -121,12 +121,27 @@ class TestConstructor:
 
 class TestSend:
     @pytest.mark.asyncio
+    async def test_custom_direct_api_base_is_literal_on_wire(self) -> None:
+        client = VLLMClient(
+            model_path="model", base_url="https://gateway.example/deploy/api",
+        )
+        client._http = AsyncMock()
+        client._http.post.return_value = _mock_response(_text_response("ok"))
+        await client.send([{"role": "user", "content": "test"}])
+        assert client._http.post.await_args.args[0] == (
+            "https://gateway.example/deploy/api/chat/completions"
+        )
+
+    @pytest.mark.asyncio
     async def test_returns_tool_call(self) -> None:
         client = _make_client()
         client._http.post.return_value = _mock_response(_tool_call_response())
         result = await client.send(
             [{"role": "user", "content": "weather in paris?"}],
             tools=[_make_spec()],
+        )
+        assert client._http.post.await_args.args[0] == (
+            "http://test:8000/v1/chat/completions"
         )
         assert isinstance(result, list)
         assert result[0].tool == "get_weather"
@@ -303,6 +318,87 @@ class TestSend:
         assert "tools" not in body
         assert "tool_choice" not in body
 
+    @pytest.mark.asyncio
+    async def test_passthrough_raw_tools_and_owned_fields_are_applied(self) -> None:
+        client = _make_client()
+        client._http.post.return_value = _mock_response(_text_response())
+        messages = [{"role": "user", "content": "actual"}]
+        nested_extension = {"route": "fast"}
+        passthrough = {
+            "model": "caller-alias",
+            "messages": [{"role": "user", "content": "stale"}],
+            "stream": True,
+            "stream_options": {"include_usage": False},
+            "max_tokens": 321,
+            "stop": ["END"],
+            "provider_extension": nested_extension,
+            "temperature": 1.5,
+            "tool_choice": "none",
+            "tools": [{"stale": True}],
+        }
+        passthrough_before = deepcopy(passthrough)
+        raw_tools = [{
+            "type": "function",
+            "function": {
+                "name": "custom",
+                "parameters": {"type": "object", "x-provider": "kept"},
+            },
+        }]
+
+        await client.send(
+            messages,
+            tools=[_make_spec()],
+            sampling={"temperature": 0.25},
+            passthrough=passthrough,
+            raw_openai_tools=raw_tools,
+        )
+
+        body = client._http.post.call_args.kwargs["json"]
+        assert body["model"] == client.model
+        assert body["messages"] is messages
+        assert body["stream"] is False
+        assert "stream_options" not in body
+        assert body["max_tokens"] == 321
+        assert body["stop"] == ["END"]
+        assert body["provider_extension"] is nested_extension
+        assert body["temperature"] == 0.25
+        assert body["tools"] is raw_tools
+        assert body["tool_choice"] == "none"
+        assert passthrough == passthrough_before
+
+    @pytest.mark.asyncio
+    async def test_authoritative_empty_raw_tools_does_not_default_choice(self) -> None:
+        client = _make_client()
+        client._http.post.return_value = _mock_response(_text_response())
+
+        await client.send(
+            [{"role": "user", "content": "x"}],
+            tools=[_make_spec()],
+            passthrough={"tools": [{"stale": True}]},
+            raw_openai_tools=[],
+        )
+
+        body = client._http.post.call_args.kwargs["json"]
+        assert body["tools"] == []
+        assert "tool_choice" not in body
+
+    @pytest.mark.asyncio
+    async def test_no_tool_source_removes_stale_tools_but_keeps_choice(self) -> None:
+        client = _make_client()
+        client._http.post.return_value = _mock_response(_text_response())
+
+        await client.send(
+            [{"role": "user", "content": "x"}],
+            passthrough={
+                "tools": [{"stale": True}],
+                "tool_choice": {"type": "function", "function": {"name": "later"}},
+            },
+        )
+
+        body = client._http.post.call_args.kwargs["json"]
+        assert "tools" not in body
+        assert body["tool_choice"]["function"]["name"] == "later"
+
 
 # ── send_stream ──────────────────────────────────────────────
 
@@ -341,12 +437,51 @@ class TestSendStream:
         chunks = []
         async for chunk in client.send_stream([{"role": "user", "content": "x"}]):
             chunks.append(chunk)
+        assert client._http.stream.call_args.args[:2] == (
+            "POST", "http://test:8000/v1/chat/completions",
+        )
         deltas = [c for c in chunks if c.type == ChunkType.TEXT_DELTA]
         finals = [c for c in chunks if c.type == ChunkType.FINAL]
         assert [c.content for c in deltas] == ["PO", "NG"]
         assert len(finals) == 1
         assert isinstance(finals[0].response, TextResponse)
         assert finals[0].response.content == "PONG"
+
+    @pytest.mark.asyncio
+    async def test_passthrough_raw_tools_and_stream_state_are_applied(self) -> None:
+        client = _make_client()
+        client._http.stream.return_value = _MockStreamResponse([
+            _sse({"choices": [{"delta": {"content": "ok"}}]}),
+            "data: [DONE]",
+        ])
+        nested_extension = {"priority": 7}
+        passthrough = {
+            "model": "caller-alias",
+            "stream": False,
+            "stream_options": {"include_usage": False, "stale": True},
+            "max_tokens": 222,
+            "provider_extension": nested_extension,
+            "tool_choice": "required",
+        }
+        passthrough_before = deepcopy(passthrough)
+        raw_tools = [{"type": "function", "function": {"name": "raw"}}]
+
+        async for _ in client.send_stream(
+            [{"role": "user", "content": "x"}],
+            passthrough=passthrough,
+            raw_openai_tools=raw_tools,
+        ):
+            pass
+
+        body = client._http.stream.call_args.kwargs["json"]
+        assert body["model"] == client.model
+        assert body["stream"] is True
+        assert body["stream_options"] == {"include_usage": True}
+        assert body["max_tokens"] == 222
+        assert body["provider_extension"] is nested_extension
+        assert body["tools"] is raw_tools
+        assert body["tool_choice"] == "required"
+        assert passthrough == passthrough_before
 
     @pytest.mark.asyncio
     async def test_yields_tool_call_delta_then_final(self) -> None:
@@ -490,28 +625,64 @@ class TestSendStream:
 
 class TestGetContextLength:
     @pytest.mark.asyncio
-    async def test_reads_max_model_len_from_models_endpoint(self) -> None:
+    async def test_exact_matches_model_in_multi_entry_catalog(self) -> None:
         client = _make_client()
         client._http.get.return_value = _mock_response({
-            "data": [{"id": "/models/x", "max_model_len": 113000}],
+            "data": [
+                {"id": "other", "max_model_len": 8192},
+                {
+                    "id": "/models/gemma-4-26B-A4B-it-AWQ-4bit",
+                    "max_model_len": 113000,
+                },
+            ],
         })
-        ctx = await client.get_context_length()
-        assert ctx == 113000
+        assert await client.get_context_length() == 113000
 
     @pytest.mark.asyncio
-    async def test_empty_data_raises(self) -> None:
+    async def test_missing_exact_model_returns_none(self) -> None:
+        client = _make_client()
+        client._http.get.return_value = _mock_response({
+            "data": [{"id": "other", "max_model_len": 8192}],
+        })
+        assert await client.get_context_length() is None
+
+    @pytest.mark.asyncio
+    async def test_empty_catalog_returns_none(self) -> None:
         client = _make_client()
         client._http.get.return_value = _mock_response({"data": []})
-        with pytest.raises(BackendError, match="no entries"):
-            await client.get_context_length()
+        assert await client.get_context_length() is None
 
     @pytest.mark.asyncio
-    async def test_missing_max_model_len_raises(self) -> None:
+    async def test_context_lookup_is_independent_of_invalid_first_identity(self) -> None:
         client = _make_client()
         client._http.get.return_value = _mock_response({
-            "data": [{"id": "/models/x"}],  # no max_model_len
+            "data": [
+                {"max_model_len": 8192},
+                {
+                    "id": "/models/gemma-4-26B-A4B-it-AWQ-4bit",
+                    "max_model_len": 113000,
+                },
+            ],
         })
-        with pytest.raises(BackendError, match="missing max_model_len"):
+        assert await client.get_context_length() == 113000
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("window", [None, 0, -1, True, "113000", 1.5])
+    async def test_unusable_exact_window_returns_none(self, window: object) -> None:
+        client = _make_client()
+        client._http.get.return_value = _mock_response({
+            "data": [{
+                "id": "/models/gemma-4-26B-A4B-it-AWQ-4bit",
+                "max_model_len": window,
+            }],
+        })
+        assert await client.get_context_length() is None
+
+    @pytest.mark.asyncio
+    async def test_malformed_envelope_raises_safe_backend_error(self) -> None:
+        client = _make_client()
+        client._http.get.return_value = _mock_response({"models": []})
+        with pytest.raises(BackendError, match="malformed data"):
             await client.get_context_length()
 
 
@@ -526,6 +697,7 @@ class TestGetServedModelName:
             "data": [{"id": "local-primary", "max_model_len": 262144}],
         })
         assert await client.get_served_model_name() == "local-primary"
+        client._http.get.assert_awaited_once_with("http://test:8000/v1/models")
 
     @pytest.mark.asyncio
     async def test_empty_data_returns_none(self) -> None:
@@ -540,160 +712,11 @@ class TestGetServedModelName:
         assert await client.get_served_model_name() is None
 
 
-# ── discover_backend_metadata (deferred discovery) ─────────────
+# ── removed proxy discovery helper ─────────────────────────────
 
 
-class TestDiscoverBackendMetadata:
-    @pytest.mark.asyncio
-    async def test_discovers_budget_and_adopts_identity(self) -> None:
-        client = _make_client()
-        client._http.get.return_value = _mock_response({
-            "data": [{"id": "google/gemma-4-26B-A4B-it", "max_model_len": 113000}],
-        })
-        budget = await client.discover_backend_metadata()
-        assert budget == 113000
-        # served id reaches the wire verbatim; registry key is the derived stem
-        assert client.model == "google/gemma-4-26B-A4B-it"
-        assert client.sampling_key == "gemma-4-26B-A4B-it"
-
-    @pytest.mark.asyncio
-    async def test_missing_id_raises(self) -> None:
-        client = _make_client()
-        client._http.get.return_value = _mock_response({
-            "data": [{"max_model_len": 113000}],  # no id
-        })
-        with pytest.raises(BackendError, match="missing id"):
-            await client.discover_backend_metadata()
-
-    @pytest.mark.asyncio
-    async def test_missing_max_model_len_raises(self) -> None:
-        client = _make_client()
-        client._http.get.return_value = _mock_response({
-            "data": [{"id": "local-primary"}],  # no max_model_len
-        })
-        with pytest.raises(BackendError, match="missing max_model_len"):
-            await client.discover_backend_metadata()
-
-    @pytest.mark.asyncio
-    async def test_empty_data_raises(self) -> None:
-        client = _make_client()
-        client._http.get.return_value = _mock_response({"data": []})
-        with pytest.raises(BackendError, match="no entries"):
-            await client.discover_backend_metadata()
-
-    @pytest.mark.asyncio
-    async def test_non_200_raises_with_status_code(self) -> None:
-        client = _make_client()
-        client._http.get.return_value = _mock_response({"error": "unauthorized"}, status_code=401)
-        with pytest.raises(BackendError) as exc_info:
-            await client.discover_backend_metadata()
-        # status_code is carried so the proxy maps a 401 rejection → 401, not 502
-        assert exc_info.value.status_code == 401
-
-    @pytest.mark.asyncio
-    async def test_connection_error_raises_502(self) -> None:
-        client = _make_client()
-        client._http.get.side_effect = httpx.ConnectError("refused")
-        with pytest.raises(BackendError) as exc_info:
-            await client.discover_backend_metadata()
-        assert exc_info.value.status_code == 502
-
-
-# ── discover_backend_metadata with a pinned identity (issue #122) ─────────────
-
-
-def _make_pinned_client(model: str = "nv-mistral-large") -> VLLMClient:
-    client = VLLMClient(
-        model_path=model,
-        base_url="http://test:8000/v1",
-        adopt_served_identity=False,
-    )
-    client._http = AsyncMock()
-    client._http.stream = MagicMock()
-    return client
-
-
-class TestDiscoverBackendMetadataPinned:
-    @pytest.mark.asyncio
-    async def test_pinned_identity_survives_discovery(self) -> None:
-        # Explicit --model wins: data[0]'s id is NOT adopted over the pin.
-        client = _make_pinned_client()
-        client._http.get.return_value = _mock_response({
-            "data": [
-                {"id": "some-other-model", "max_model_len": 8192},
-                {"id": "nv-mistral-large", "max_model_len": 32768},
-            ],
-        })
-        budget = await client.discover_backend_metadata()
-        assert budget == 32768
-        assert client.model == "nv-mistral-large"
-        assert client.sampling_key == "nv-mistral-large"
-
-    @pytest.mark.asyncio
-    async def test_budget_read_from_pinned_models_entry(self) -> None:
-        # Multi-model gateway: data[0] is arbitrary; the budget must come from
-        # the pinned model's own entry when the backend lists it.
-        client = _make_pinned_client()
-        client._http.get.return_value = _mock_response({
-            "data": [
-                {"id": "some-other-model", "max_model_len": 8192},
-                {"id": "nv-mistral-large", "max_model_len": 128000},
-            ],
-        })
-        assert await client.discover_backend_metadata() == 128000
-        assert client.model == "nv-mistral-large"
-
-    @pytest.mark.asyncio
-    async def test_pinned_absent_from_list_raises(self) -> None:
-        # Fail loud: another entry's max_model_len has wrong provenance, so a
-        # pinned model the backend doesn't list cannot yield a budget. The
-        # error names the escape hatch (--budget-tokens skips this probe).
-        client = _make_pinned_client()
-        client._http.get.return_value = _mock_response({
-            "data": [{"id": "some-other-model", "max_model_len": 32768}],
-        })
-        with pytest.raises(BackendError, match="cannot discover its context budget"):
-            await client.discover_backend_metadata()
-        # The pin itself is untouched by the failed probe.
-        assert client.model == "nv-mistral-large"
-
-    @pytest.mark.asyncio
-    async def test_pinned_present_in_list_succeeds_quietly(self, caplog) -> None:
-        client = _make_pinned_client()
-        client._http.get.return_value = _mock_response({
-            "data": [{"id": "nv-mistral-large", "max_model_len": 128000}],
-        })
-        with caplog.at_level("WARNING", logger="forge.clients.vllm"):
-            assert await client.discover_backend_metadata() == 128000
-        assert not caplog.records
-
-    @pytest.mark.asyncio
-    async def test_pinned_missing_max_model_len_still_raises(self) -> None:
-        # Budget discovery stays loud when pinned: the escape hatch is an
-        # explicit --budget-tokens, not a guessed budget.
-        client = _make_pinned_client()
-        client._http.get.return_value = _mock_response({
-            "data": [{"id": "nv-mistral-large"}],
-        })
-        with pytest.raises(BackendError, match="missing max_model_len"):
-            await client.discover_backend_metadata()
-
-    def test_adopt_defaults_true(self) -> None:
-        # Direct (non-proxy) construction keeps today's adopt-on-discovery
-        # contract unless explicitly opted out.
-        client = _make_client()
-        assert client._adopt_served_identity is True
-
-    @pytest.mark.asyncio
-    async def test_extra_headers_threaded_into_probe(self) -> None:
-        client = _make_client()
-        client._http.get.return_value = _mock_response({
-            "data": [{"id": "m", "max_model_len": 4096}],
-        })
-        extra = {"Authorization": "Bearer inbound-token"}
-        await client.discover_backend_metadata(extra_headers=extra)
-        # the per-request credential reaches the probe GET
-        assert client._http.get.await_args.kwargs["headers"] == client._request_headers(extra)
+def test_proxy_discovery_helper_is_absent() -> None:
+    assert not hasattr(VLLMClient, "_discover_proxy_backend_metadata")
 
 
 # ── edge cases ─────────────────────────────────────────────────

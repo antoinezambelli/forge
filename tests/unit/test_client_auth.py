@@ -33,6 +33,7 @@ from forge.clients.ollama import OllamaClient
 from forge.clients.openai_compat import OpenAICompatClient
 from forge.clients.vllm import VLLMClient
 from forge.errors import MissingCredentialError, MultipleCredentialsError
+from tests.http_mocks import build_with_mock_http
 
 _USER_MSG = [{"role": "user", "content": "hi"}]
 
@@ -168,7 +169,7 @@ def _wire(build):
     client captures the merged request headers."""
 
     def factory(**kw) -> tuple[object, dict]:
-        c = build(**kw)
+        c = build_with_mock_http(build, **kw)
         cap: dict = {}
         c._http = _capturing_http(c._http.headers, cap)
         return c, cap
@@ -471,11 +472,9 @@ def test_anthropic_construction_default_headers_recased_for_sdk() -> None:
 
 @pytest.mark.asyncio
 async def test_anthropic_verbatim_body_cannot_smuggle_extra_headers() -> None:
-    # The real hole (review finding #4): a verbatim inbound body carrying a
-    # top-level ``extra_headers`` with NO forge per-call credential. Unfixed
-    # code left it in kwargs → it reached the wire. Use a static key so the
-    # request is authenticated (and proceeds); assert the smuggled header is
-    # gone and only the static credential rides.
+    # A verbatim inbound body may carry top-level ``extra_headers`` without a
+    # Forge per-call credential. Use a static key so the request proceeds, then
+    # assert that only the static credential reaches the wire.
     client = AnthropicClient(model="claude", api_key="STATIC")
     cap: dict = {}
     _anthropic_capturing(client, cap, api_key="STATIC")

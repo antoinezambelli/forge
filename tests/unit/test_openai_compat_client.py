@@ -8,8 +8,11 @@ from unittest.mock import AsyncMock, MagicMock
 
 from forge.clients.openai_compat import OpenAICompatClient
 from forge.clients.base import ChunkType
-from forge.core.workflow import TextResponse, ToolCall, ToolSpec
+from forge.core.workflow import TextResponse, ToolSpec
 from forge.errors import BackendError, MultipleCredentialsError
+
+
+pytestmark = pytest.mark.usefixtures("mock_httpx_client_constructor")
 
 
 class PartParams(BaseModel):
@@ -21,13 +24,9 @@ def _make_spec(name: str = "get_pricing") -> ToolSpec:
 
 
 def _make_client(model: str = "test-model", api_key: str = "tok") -> OpenAICompatClient:
-    client = OpenAICompatClient(
+    return OpenAICompatClient(
         base_url="https://api.example.com/v1", model=model, api_key=api_key
     )
-    mock_http = AsyncMock()
-    mock_http.stream = MagicMock()  # sync method returning async context manager
-    client._http = mock_http
-    return client
 
 
 def _mock_response(data: dict, status_code: int = 200) -> MagicMock:

@@ -14,10 +14,6 @@ from __future__ import annotations
 
 import json
 
-from tests.eval.scenarios import (
-    inconsistent_api_recovery,
-    inconsistent_api_recovery_stateful,
-)
 from tests.eval.scenarios._model_reasoning import (
     _inconsistent_api_recovery_tools,
     _validate_inconsistent_api_recovery,
@@ -25,7 +21,6 @@ from tests.eval.scenarios._model_reasoning import (
 from tests.eval.scenarios._stateful_model_reasoning import (
     LegacyAPISystem,
     _build_inconsistent_api_recovery_stateful,
-    _validate_inconsistent_api_recovery_stateful,
 )
 
 
@@ -244,37 +239,6 @@ class TestValidator:
 
     def test_empty_args_fail(self) -> None:
         assert _validate_inconsistent_api_recovery({}) is False
-
-
-# ── Scenario shape ──────────────────────────────────────────────
-
-
-class TestScenarioShape:
-    def test_lambda_scenario_metadata(self) -> None:
-        assert inconsistent_api_recovery.name == "inconsistent_api_recovery"
-        assert "advanced_reasoning" in inconsistent_api_recovery.tags
-        assert "error_recovery" in inconsistent_api_recovery.tags
-        assert inconsistent_api_recovery.workflow.terminal_tool == "legacy_submit_audit"
-        assert "legacy_list_accounts" in inconsistent_api_recovery.workflow.required_steps
-        assert inconsistent_api_recovery.ideal_iterations == 8
-        assert inconsistent_api_recovery.max_iterations == 20
-
-    def test_lambda_scenario_has_seven_tools(self) -> None:
-        tools = inconsistent_api_recovery.workflow.tools
-        expected = {
-            "legacy_list_accounts", "legacy_get_balance",
-            "legacy_get_transactions", "legacy_categorize_spend",
-            "legacy_check_compliance", "legacy_aggregate_subtotal",
-            "legacy_submit_audit",
-        }
-        assert set(tools.keys()) == expected
-
-    def test_stateful_scenario_metadata(self) -> None:
-        assert inconsistent_api_recovery_stateful.name == "inconsistent_api_recovery_stateful"
-        assert "stateful" in inconsistent_api_recovery_stateful.tags
-        assert "advanced_reasoning" in inconsistent_api_recovery_stateful.tags
-        assert "error_recovery" in inconsistent_api_recovery_stateful.tags
-        assert inconsistent_api_recovery_stateful.build_workflow is not None
 
 
 # ── Stateful backend ────────────────────────────────────────────

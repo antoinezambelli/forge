@@ -2,6 +2,7 @@
 
 from forge.core.messages import Message, MessageMeta, MessageRole, MessageType
 from forge.context.strategies import (
+    CompactStrategy,
     NoCompact,
     SlidingWindowCompact,
     TieredCompact,
@@ -126,6 +127,23 @@ def _all_phases(keep_recent: int = 2) -> TieredCompact:
 BIG = 999999
 
 
+class MinimalCustomStrategy(CompactStrategy):
+    """A pre-existing custom strategy implementing only the public method."""
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def compact(
+        self,
+        messages: list[Message],
+        budget_tokens: int,
+        *,
+        step_hint: str = "",
+    ) -> tuple[list[Message], int]:
+        self.calls += 1
+        return list(messages), 0
+
+
 # ── NoCompact ────────────────────────────────────────────────────
 
 
@@ -146,6 +164,15 @@ class TestNoCompact:
         result, phase = NoCompact().compact(msgs, budget_tokens=BIG)
         assert len(result) == 2
         assert phase == 0
+
+    def test_minimal_custom_strategy_uses_unchanged_public_contract(self) -> None:
+        from forge.context.manager import ContextManager
+
+        strategy = MinimalCustomStrategy()
+        msgs = _build_history(1)
+
+        assert ContextManager(strategy, budget_tokens=10).maybe_compact(msgs) is msgs
+        assert strategy.calls == 1
 
 
 # ── SlidingWindowCompact ─────────────────────────────────────────
@@ -443,3 +470,36 @@ class TestTieredEscalation:
         # All phases
         _, phase = _all_phases().compact(msgs, budget_tokens=BIG)
         assert phase == 3
+
+    def test_observed_usage_survives_phase1_noop_until_phase2_rewrite(self) -> None:
+        msgs = _build_history(4)
+        strategy = TieredCompact(
+            keep_recent=1,
+            phase_thresholds=(0.5, 0.7, 0.9),
+        )
+
+        result, phase = strategy._compact_with_initial_usage(
+            msgs,
+            budget_tokens=100,
+            initial_tokens=80,
+        )
+
+        assert phase == 2
+        assert result != msgs
+
+    def test_real_phase1_rewrite_switches_to_heuristic(self) -> None:
+        msgs = _build_history(4, long_results=True)
+        strategy = TieredCompact(
+            keep_recent=1,
+            phase_thresholds=(0.5, 0.5, 0.9),
+        )
+
+        result, phase = strategy._compact_with_initial_usage(
+            msgs,
+            budget_tokens=1000,
+            initial_tokens=600,
+        )
+
+        assert result != msgs
+        assert _estimate_tokens(result) < 500
+        assert phase == 1

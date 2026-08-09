@@ -1,4 +1,4 @@
-"""OpenAI-compatible proxy server with forge guardrails."""
+"""OpenAI- and Anthropic-compatible proxy server with forge guardrails."""
 
 from forge.proxy.proxy import ProxyServer
 

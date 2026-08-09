@@ -2,7 +2,7 @@
 
 Practical usage patterns for forge — from single-turn tool calling to multi-turn conversations.
 
-For model and backend selection, see [MODEL_GUIDE.md](MODEL_GUIDE.md). For backend installation, see [BACKEND_SETUP.md](BACKEND_SETUP.md).
+For model and backend selection, see [MODEL_GUIDE.md](MODEL_GUIDE.md). For backend installation, see [BACKEND_SETUP.md](BACKEND_SETUP.md). Upgrading a Proxy deployment from pre-0.9? Start with [Migrating to Forge 0.9](MIGRATING_TO_0.9.md).
 
 ---
 
@@ -18,18 +18,24 @@ Each mode trades control for convenience. WorkflowRunner handles everything; the
 |---------|:-:|:-:|:-:|
 | Validation + rescue parsing | Yes | Yes | Yes |
 | Retry nudges | Yes | Yes | Yes |
-| Respond tool | Caller adds | Auto-injected | Caller adds |
+| Respond tool | Caller adds | Opt-in flag | Caller adds |
 | Step enforcement | Yes | No | Yes (caller wires) |
 | Prerequisites | Yes | No | Yes (caller wires) |
 | Max iterations | Yes | Bounded by max_retries | Caller's responsibility |
-| Context compaction | Yes | Yes | Caller wires ContextManager |
+| Context compaction | Yes | No | Caller wires ContextManager |
+| Last-completed context reporting | Caller observes | `/forge/usage` | Caller observes |
 | Context threshold warnings | Yes | No | Caller wires ContextManager |
 | Cancellation | Between iterations | Between retries | Caller's responsibility |
 | Streaming (token-by-token) | Yes | Post-hoc SSE | Caller's responsibility |
 | Tool execution | Yes | No (client executes) | No (caller executes) |
 | Callbacks (on_message, on_compact) | Yes | No | No |
 
-The proxy is intentionally bare-bones — it applies response-quality guardrails (validation, rescue, retry, respond tool) without requiring workflow knowledge. Features like step enforcement and prerequisites require workflow structure that doesn't exist in the OpenAI chat completions API. See [Proxy design boundaries](#proxy-design-boundaries) for details.
+The proxy is intentionally bare-bones — it applies response-quality guardrails
+(validation, rescue, retry, optional respond tool) to tool-bearing requests
+without requiring workflow knowledge. Tool-free requests bypass those
+guardrails and call the selected backend directly. Features like step
+enforcement and prerequisites require workflow structure that doesn't exist in
+the OpenAI chat completions API. See [Proxy design boundaries](#proxy-design-boundaries) for details.
 
 ### Mode 1: Standalone Runner (batteries included)
 
@@ -46,7 +52,11 @@ result = await runner.run(workflow, "What's the weather in Paris?")
 
 ### Mode 2: Proxy Server (drop-in, zero code changes)
 
-Forge sits between any client and your model server, intercepting requests and applying guardrails transparently. It speaks both the OpenAI chat-completions API and the Anthropic Messages API (`/v1/messages`), so OpenAI-compatible tools and Claude Code both work. The client doesn't know forge is there.
+Forge sits between any client and your model server, applying guardrails to
+tool-bearing requests and directly relaying tool-free inference through the
+selected adapter. It speaks both the OpenAI chat-completions API and the
+Anthropic Messages API (`/v1/messages`), so OpenAI-compatible tools and Claude
+Code both work. The client doesn't know Forge is there.
 
 ```bash
 # External mode — you manage the backend
@@ -65,7 +75,7 @@ client = OpenAI(base_url="http://localhost:8081/v1")
 
 **Best for:** Adding guardrails to existing tools without modifying them. Works with any tool that speaks the OpenAI-compatible API, plus Claude Code via the Anthropic Messages API — no per-client wrappers needed.
 
-**Reliability note:** The proxy automatically injects a synthetic `respond` tool when tools are present in the request. The model calls `respond(message="...")` instead of producing bare text, keeping it in tool-calling mode where forge's full guardrail stack applies. The `respond` call is stripped from the outbound response — the client sees a normal text response and never knows the tool exists. This is essential for small local models (~8B), which cannot be trusted to choose correctly between text and tool calls — eval testing showed that trusting the model's text intent dropped workflow completion from 100% to as low as 4%. Guiding the model to a tool is a must. See [ADR-013](decisions/013-text-response-intent.md) for the full analysis.
+**Reliability note:** `--inject-respond-tool` explicitly opts into Forge's synthetic `respond` tool when tools are present; the default is off. When enabled, the call is stripped from the outbound response and the client sees normal text. See [ADR-013](decisions/013-text-response-intent.md) for the rationale and eval evidence.
 
 #### Using forge with Claude Code
 
@@ -81,20 +91,27 @@ ANTHROPIC_AUTH_TOKEN=forge \
 claude
 ```
 
-`ANTHROPIC_AUTH_TOKEN` can be any non-empty string — forge ignores it. The model name Claude Code sends is also ignored; forge serves whatever backend the proxy was started with.
+For an ungated local backend, `ANTHROPIC_AUTH_TOKEN` may be any non-empty
+placeholder required by Claude Code. Forge still applies its one-credential
+forwarding rules; it does not authenticate the caller. Response `model` is the
+effective configured, pinned, discovered, or request-routed backend identity,
+not a fabricated Forge alias.
 
 **Function-calling capability.** `--backend-capability native` (default) uses the backend's chat-template tool-calling and is the smoother default for Claude Code's heavy multi-turn tool use. `--backend-capability prompt` injects the tool surface into the prompt for llama.cpp/llamafile backends without a tool-calling template; whether a model stays coherent across multi-turn tool results in prompt mode varies by model — and tends to degrade on more complex, multi-step interactions — so prefer native whenever the backend supports it. The capability is declared at startup and frozen.
 
 **Reasoning replay.** Reasoning-capable backends may return hidden reasoning alongside tool calls. Forge captures that reasoning for observability, then controls how much is replayed to the backend on later turns with `--reasoning-replay {full,keep-last,none}`. The default is `none`: captured reasoning stays out of backend-facing history entirely. This is the most token-efficient policy, and on forge's eval suite it is statistically indistinguishable from replay-all (no aggregate score cost; see [reasoning-replay results](results/raw/reasoning-replay.md)). `keep-last` replays only the latest captured reasoning block. `full` preserves the historical behavior and replays every captured reasoning block. In OpenAI-compatible proxy responses, `keep-last` exposes current reasoning as `reasoning_content` instead of normal assistant `content` so clients that preserve reasoning fields can replay only the latest block without turning it into plain text; under the default `none`, proxy responses omit captured reasoning. Anthropic proxy responses only emit reasoning text under `full`; Forge does not synthesize signed Anthropic thinking blocks, so default Anthropic proxy responses do not expose replayable reasoning. See [ADR-017](decisions/017-reasoning-replay-policy.md) for the policy design and the eval evidence behind the default.
 
-**Downstream protocol.**
+**Downstream profile.**
 
-- **Local model (default, `--backend-protocol openai`)** — forge translates Claude Code's Anthropic requests to OpenAI for llama.cpp / Ollama and converts the reply back to Anthropic SSE. Anthropic-only fields with no OpenAI analog (`cache_control`, `thinking`, `document` blocks) are dropped at that boundary; see [ADR-015](decisions/015-cache-control-preservation-path1.md).
-- **Anthropic-shape downstream (`--backend-protocol anthropic`, external mode)** — forge forwards to an Anthropic Messages endpoint (e.g. LiteLLM or the Anthropic API), passing unknown fields through verbatim and preserving `cache_control` on clean turns. This path uses the Anthropic SDK: `pip install forge-guardrails[anthropic]`.
+- **Local/OpenAI-shaped downstream (external omission or `--backend openai`)** — forge translates Claude Code's Anthropic requests to OpenAI and converts the reply back to Anthropic SSE. Anthropic-only fields with no OpenAI analog (`cache_control`, `thinking`, `document` blocks) are dropped at that boundary; see [ADR-015](decisions/015-cache-control-preservation-path1.md).
+- **Anthropic-shaped downstream (`--backend anthropic`, external mode)** — forge forwards to an Anthropic Messages endpoint (for example LiteLLM or the Anthropic API), preserving applicable unknown fields and `litellm_session_id`. This path uses the Anthropic SDK: `pip install forge-guardrails[anthropic]`.
 
 #### Proxy design boundaries
 
-The proxy is intentionally bare-bones: it applies response-quality guardrails without requiring workflow knowledge. The following features are available in WorkflowRunner but not in the proxy, by design:
+The proxy is intentionally bare-bones: it applies response-quality guardrails
+to tool-bearing requests without requiring workflow knowledge; tool-free
+requests bypass validation, rescue, and retry. The following features are
+available in WorkflowRunner but not in the proxy, by design:
 
 - **Step enforcement and prerequisites.** These require workflow structure (required steps, terminal tool, tool dependencies) that doesn't exist in the OpenAI chat completions API. The proxy receives tool definitions per request but has no concept of workflow progression. If you need step enforcement, use WorkflowRunner or the middleware directly.
 
@@ -102,9 +119,21 @@ The proxy is intentionally bare-bones: it applies response-quality guardrails wi
 
 - **Real streaming.** The proxy accepts `stream=true` and returns SSE events, but the full inference completes before SSE conversion. Token-by-token streaming during inference would require validating partial responses, which is incompatible with guardrails that need complete responses (rescue parsing, retry nudges). The guardrail-first design is the proxy's value proposition.
 
-- **Context threshold warnings.** The proxy is stateless — the client sends the full conversation history in every request and decides what to include. Context pressure is the client's concern. Compaction still fires when the budget is exceeded.
+- **Context mutation.** The client sends the full conversation history in every request and decides what to include. Proxy always uses `NoCompact`; budgets and metadata report context but never trim caller history. `/forge/usage` exposes only the one last-completed eligible process-local snapshot (or 204), not session memory or a persistent ledger. In unmanaged mode the operator owns overflow, model swaps, and backend failures.
 
 - **Cancellation on disconnect.** Client disconnects are detected but do not cancel in-flight inference. This is the same granularity as WorkflowRunner, which checks `cancel_event` between loop iterations but does not interrupt a running LLM call. The worst case is `max_retries + 1` wasted calls (default 4) for a disconnected client.
+
+**Operations and observability.** Use `/forge/health` for Forge liveness and
+the forwarded `/health` for backend readiness. The honest backend catalog is
+forwarded at `/v1/models`; `/v1/health`, `/models`, and `/props` are also on the
+closed read-only forwarding allowlist. `/forge/usage` is a last-completed
+process-local snapshot, not a live meter, ledger, or durable session API.
+
+Forge Proxy is a per-operator sidecar and does not authenticate callers.
+`--backend-api-key` is a convenience for authenticating Forge to its backend,
+not caller authorization. Put an authentication gateway in front for a
+centralized or multi-tenant deployment. See [Backend Setup](BACKEND_SETUP.md)
+for the zero-or-one credential rule.
 
 ### Mode 3: Middleware (composable guardrails)
 
@@ -195,7 +224,8 @@ A forge workflow has four main pieces:
 
 - **Tools** — Python functions the LLM can call, each described by a `ToolSpec` with typed parameters.
 - **Workflow** — A named bundle of tools, with optional `required_steps` (tools the LLM *must* call) and a `terminal_tool` (the tool or tools that end the workflow — accepts `str` or `list[str]`).
-- **Client** — An LLM backend adapter (`OllamaClient`, `LlamafileClient`, `AnthropicClient`).
+- **Client** — An LLM backend adapter (`OpenAICompatClient`, `OllamaClient`,
+  `LlamafileClient`, `VLLMClient`, or `AnthropicClient`).
 - **Runner** — `WorkflowRunner` drives the agentic loop: send messages, parse tool calls, execute tools, enforce guardrails, manage compaction.
 
 ---
@@ -385,7 +415,13 @@ The flag is opt-in. Default behavior (`recommended_sampling=False`) leaves sampl
 
 #### Proxy mode
 
-The proxy does not consult the recommendations map. It plumbs whatever sampling params the inbound request body carries (OpenAI-compatible fields: `temperature`, `top_p`, `top_k`, `min_p`, `repeat_penalty`, `presence_penalty`, `seed`) through to the backend on a per-call basis. The proxy's pre-built client is treated as a "blank slate" — body fields are the only sampling source.
+The proxy does not consult the recommendations map. For generic OpenAI/llama
+and vLLM adapters, the OpenAI-shaped per-call dictionary carries
+`temperature`, `top_p`, `top_k`, `min_p`, `repeat_penalty`,
+`presence_penalty`, and `seed`. Ollama translates supported values into its
+native options. `AnthropicClient` ignores this OpenAI-shaped dictionary; on a
+clean Anthropic-to-Anthropic request, caller-authored Anthropic body fields are
+preserved instead. The proxy's pre-built client remains a blank slate.
 
 ```bash
 curl http://localhost:8081/v1/chat/completions \
@@ -399,7 +435,9 @@ curl http://localhost:8081/v1/chat/completions \
   }'
 ```
 
-To get card-recommended sampling in proxy mode, the calling client looks up `forge.clients.get_sampling_defaults(model)` and includes the values in the request body — the proxy is intentionally pure pass-through.
+To get card-recommended sampling in proxy mode, the calling client looks up
+`forge.clients.get_sampling_defaults(model)` and supplies values supported by
+the selected adapter. Forge does not apply the recommendations map itself.
 
 See [MODEL_GUIDE.md#sampling-parameters](MODEL_GUIDE.md#sampling-parameters) for the supported-models table, source citations, and override patterns.
 
@@ -407,7 +445,7 @@ See [MODEL_GUIDE.md#sampling-parameters](MODEL_GUIDE.md#sampling-parameters) for
 
 ## Context Management
 
-Forge automatically manages the context window. When the conversation approaches the budget limit, tiered compaction fires:
+Native `WorkflowRunner`/`ContextManager` integrations can automatically manage the context window. This section does not describe Proxy, which is always no-compaction. When a native conversation approaches the budget limit, tiered compaction fires:
 
 - **Phase 1** — Summarize older tool results, keep recent messages intact.
 - **Phase 2** — Compress mid-conversation exchanges, preserve system prompt and recent context.
@@ -583,4 +621,3 @@ await service_worker.start()
 async def query_calendar(**kwargs):
     return await service_worker.submit(calendar_wf, kwargs["query"], priority=0)
 ```
-

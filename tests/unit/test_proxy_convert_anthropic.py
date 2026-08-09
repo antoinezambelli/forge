@@ -19,6 +19,12 @@ from forge.proxy.convert_anthropic import (
 # ── Inbound: Anthropic → forge ─────────────────────────────
 
 
+def test_litellm_session_id_preserved_by_key_presence():
+    assert anthropic_to_openai_passthrough(
+        {"litellm_session_id": None},
+    )["litellm_session_id"] is None
+
+
 class TestAnthropicToMessages:
     def test_system_string_becomes_system_message(self):
         msgs = anthropic_to_messages(
@@ -28,7 +34,6 @@ class TestAnthropicToMessages:
         assert msgs[0].role == MessageRole.SYSTEM
         assert msgs[0].content == "You are helpful."
         assert msgs[0].metadata.type == MessageType.SYSTEM_PROMPT
-
     def test_system_block_list_concatenated(self):
         msgs = anthropic_to_messages(
             [{"role": "user", "content": "hi"}],

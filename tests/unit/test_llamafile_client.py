@@ -8,11 +8,14 @@ from unittest.mock import AsyncMock, MagicMock
 
 import httpx
 
-from forge.clients.llamafile import LlamafileClient, _extract_think_tags, _merge_consecutive
-from forge.core.workflow import TextResponse, ToolCall, ToolSpec
+from forge.clients.llamafile import LlamafileClient, _merge_consecutive
+from forge.core.workflow import TextResponse, ToolSpec
 from forge.errors import BackendError
 from pydantic import BaseModel, Field
 from forge.clients.base import ChunkType
+
+
+pytestmark = pytest.mark.usefixtures("mock_httpx_client_constructor")
 
 
 class PartParams(BaseModel):
@@ -97,14 +100,9 @@ def _make_spec(name: str = "get_pricing") -> ToolSpec:
 
 def _make_client(mode: str = "native", think: bool | None = None) -> LlamafileClient:
     """Create a LlamafileClient with a mocked HTTP client."""
-    client = LlamafileClient(
+    return LlamafileClient(
         base_url="http://test:8080/v1", gguf_path="test-model", mode=mode, think=think
     )
-    mock_http = AsyncMock()
-    # stream() is a sync method returning an async context manager, not a coroutine
-    mock_http.stream = MagicMock()
-    client._http = mock_http
-    return client
 
 
 def _mock_response(data: dict, status_code: int = 200) -> MagicMock:
@@ -164,6 +162,20 @@ def _openai_text_response(content: str = "Hello") -> dict:
 
 class TestLlamafileNativeSend:
     @pytest.mark.asyncio
+    async def test_custom_direct_api_base_is_literal_on_wire(self) -> None:
+        client = LlamafileClient(
+            base_url="https://gateway.example/deploy/custom-api",
+            gguf_path="model.gguf",
+            mode="native",
+        )
+        client._http = AsyncMock()
+        client._http.post.return_value = _mock_response(_openai_text_response("ok"))
+        await client.send([{"role": "user", "content": "test"}])
+        assert client._http.post.await_args.args[0] == (
+            "https://gateway.example/deploy/custom-api/chat/completions"
+        )
+
+    @pytest.mark.asyncio
     async def test_returns_tool_call(self) -> None:
         client = _make_client("native")
         client._http.post.return_value = _mock_response(
@@ -171,6 +183,9 @@ class TestLlamafileNativeSend:
         )
         result = await client.send(
             [{"role": "user", "content": "test"}], tools=[_make_spec()]
+        )
+        assert client._http.post.await_args.args[0] == (
+            "http://test:8080/v1/chat/completions"
         )
         assert isinstance(result, list)
         assert result[0].tool == "get_pricing"
@@ -753,8 +768,7 @@ class TestLlamafileGetContextLength:
         await client.get_context_length()
         call_args = client._http.get.call_args
         url = call_args[0][0] if call_args[0] else call_args.kwargs.get("url", "")
-        assert "/v1" not in url
-        assert url.endswith("/props")
+        assert url == "http://test:8080/props"
 
     @pytest.mark.asyncio
     async def test_returns_none_on_missing_data(self) -> None:
@@ -771,83 +785,8 @@ class TestLlamafileGetContextLength:
             await client.get_context_length()
 
 
-# ── discover_backend_metadata (deferred discovery) ───────────────
 
 
-class TestLlamafileDiscoverBackendMetadata:
-    @pytest.mark.asyncio
-    async def test_returns_budget_no_identity(self) -> None:
-        client = _make_client()
-        client._http.get.return_value = _mock_response({
-            "default_generation_settings": {"n_ctx": 32768}
-        })
-        model_before = client.model
-        budget = await client.discover_backend_metadata()
-        assert budget == 32768
-        # llama.cpp ignores the wire model field → no identity adopted/changed
-        assert client.model == model_before
-
-    @pytest.mark.asyncio
-    async def test_probes_props_not_v1(self) -> None:
-        client = _make_client()
-        client._http.get.return_value = _mock_response({
-            "default_generation_settings": {"n_ctx": 4096}
-        })
-        await client.discover_backend_metadata()
-        url = client._http.get.await_args.args[0]
-        assert "/v1" not in url and url.endswith("/props")
-
-    @pytest.mark.asyncio
-    async def test_returns_none_when_no_n_ctx(self) -> None:
-        client = _make_client()
-        client._http.get.return_value = _mock_response({})
-        assert await client.discover_backend_metadata() is None
-
-    @pytest.mark.asyncio
-    async def test_malformed_settings_returns_none(self) -> None:
-        # default_generation_settings present but not a dict → treat as no n_ctx
-        # (fail loud upstream), never an uncaught AttributeError.
-        client = _make_client()
-        client._http.get.return_value = _mock_response(
-            {"default_generation_settings": "not-a-dict"},
-        )
-        assert await client.discover_backend_metadata() is None
-
-    @pytest.mark.asyncio
-    async def test_non_int_n_ctx_raises_502(self) -> None:
-        client = _make_client()
-        client._http.get.return_value = _mock_response(
-            {"default_generation_settings": {"n_ctx": "huge"}},
-        )
-        with pytest.raises(BackendError) as exc_info:
-            await client.discover_backend_metadata()
-        assert exc_info.value.status_code == 502
-
-    @pytest.mark.asyncio
-    async def test_non_200_raises_with_status_code(self) -> None:
-        client = _make_client()
-        client._http.get.return_value = _mock_response({"error": "nope"}, status_code=401)
-        with pytest.raises(BackendError) as exc_info:
-            await client.discover_backend_metadata()
-        assert exc_info.value.status_code == 401
-
-    @pytest.mark.asyncio
-    async def test_connection_error_raises_502(self) -> None:
-        client = _make_client()
-        client._http.get.side_effect = httpx.ConnectError("refused")
-        with pytest.raises(BackendError) as exc_info:
-            await client.discover_backend_metadata()
-        assert exc_info.value.status_code == 502
-
-    @pytest.mark.asyncio
-    async def test_extra_headers_threaded_into_probe(self) -> None:
-        client = _make_client()
-        client._http.get.return_value = _mock_response({
-            "default_generation_settings": {"n_ctx": 4096}
-        })
-        extra = {"Authorization": "Bearer inbound-token"}
-        await client.discover_backend_metadata(extra_headers=extra)
-        assert client._http.get.await_args.kwargs["headers"] == client._request_headers(extra)
 
 
 # ── send_stream ──────────────────────────────────────────────────
@@ -921,6 +860,9 @@ class TestLlamafileSendStream:
             [{"role": "user", "content": "hi"}]
         ):
             chunks.append(chunk)
+        assert client._http.stream.call_args.args[:2] == (
+            "POST", "http://test:8080/v1/chat/completions",
+        )
 
         text_deltas = [c for c in chunks if c.type == ChunkType.TEXT_DELTA]
         assert len(text_deltas) == 2
@@ -1024,7 +966,7 @@ class TestLlamafileSendStream:
         assert isinstance(final.response, list)
         assert final.response[0].reasoning is None
 
-    # ── send_stream — malformed-500 rescue (streaming twins) ──────────
+    # ── send_stream — malformed-500 transport boundaries ──────────
 
     @pytest.mark.asyncio
     async def test_stream_malformed_500_stutter_returns_only_complete(self) -> None:
@@ -1068,42 +1010,6 @@ class TestLlamafileSendStream:
         assert client.rescued_tool_calls == 0
 
     @pytest.mark.asyncio
-    async def test_stream_malformed_500_no_blocks_keeps_generic_nudge(self) -> None:
-        # Fingerprint matches but no <tool_call> block visible → generic nudge.
-        client = _make_client("native")
-        client._http.stream.return_value = _MockSSE500Response(
-            _malformed_500_body("<function=write> garbled fragment")
-        )
-        chunks = [
-            c async for c in client.send_stream(
-                [{"role": "user", "content": "test"}], tools=[_make_write_spec()]
-            )
-        ]
-        final = [c for c in chunks if c.type == ChunkType.FINAL][0]
-        assert isinstance(final.response, TextResponse)
-        assert "Re-emitting a single, complete, well-formed tool call" in final.response.content
-        assert client.rescued_tool_calls == 0
-
-    @pytest.mark.asyncio
-    async def test_stream_malformed_500_unknown_tool_not_fabricated(self) -> None:
-        # A block naming a tool absent from the request → never fabricated.
-        client = _make_client("native")
-        client._http.stream.return_value = _MockSSE500Response(
-            _malformed_500_body(
-                "<tool_call>\n<function=rm_rf>\n<parameter=path>\n/\n</parameter>\n"
-                "</function>\n</tool_call>"
-            )
-        )
-        chunks = [
-            c async for c in client.send_stream(
-                [{"role": "user", "content": "test"}], tools=[_make_write_spec()]
-            )
-        ]
-        final = [c for c in chunks if c.type == ChunkType.FINAL][0]
-        assert isinstance(final.response, TextResponse)
-        assert client.rescued_tool_calls == 0
-
-    @pytest.mark.asyncio
     async def test_stream_malformed_500_reassembles_multiline_body(self) -> None:
         # The one path unique to streaming: error_body is reassembled from
         # aiter_lines() by concatenation. Deliver the body across multiple
@@ -1125,25 +1031,6 @@ class TestLlamafileSendStream:
         assert client.rescued_tool_calls == 1
 
     @pytest.mark.asyncio
-    async def test_stream_malformed_500_rescued_without_parse_phrase(self) -> None:
-        # Streaming twin: the shared gate is structural, so a renamed-phrase
-        # body embedding a complete block rescues on the streaming path too.
-        client = _make_client("native")
-        client._http.stream.return_value = _MockSSE500Response(
-            _renamed_500_body(_COMPLETE_BLOCK)
-        )
-        chunks = [
-            c async for c in client.send_stream(
-                [{"role": "user", "content": "test"}], tools=[_make_write_spec()]
-            )
-        ]
-        finals = [c for c in chunks if c.type == ChunkType.FINAL]
-        assert len(finals) == 1
-        assert isinstance(finals[0].response, list)
-        assert len(finals[0].response) == 1
-        assert client.rescued_tool_calls == 1
-
-    @pytest.mark.asyncio
     async def test_stream_arbitrary_500_cascades(self) -> None:
         # A real backend 500 must cascade; raw body kept off the message but on
         # exc.body (same guarantee as the native path).
@@ -1158,46 +1045,6 @@ class TestLlamafileSendStream:
                 pass
         assert "CUDA out of memory" not in str(excinfo.value)
         assert "CUDA out of memory" in excinfo.value.body
-
-    @pytest.mark.asyncio
-    async def test_stream_truncated_open_tag_500_returns_generic_nudge(self) -> None:
-        # Streaming twin: a mid-open-tag truncation stays retryable here too.
-        client = _make_client("native")
-        client._http.stream.return_value = _MockSSE500Response(
-            json.dumps({
-                "error": {
-                    "code": 500,
-                    "message": "Failed to parse input at pos 84: <tool_call",
-                    "type": "server_error",
-                }
-            })
-        )
-        chunks = [
-            c async for c in client.send_stream(
-                [{"role": "user", "content": "test"}], tools=[_make_write_spec()]
-            )
-        ]
-        finals = [c for c in chunks if c.type == ChunkType.FINAL]
-        assert len(finals) == 1
-        assert isinstance(finals[0].response, TextResponse)
-        assert "ONE complete" not in finals[0].response.content
-        assert client.rescued_tool_calls == 0
-
-    @pytest.mark.asyncio
-    async def test_stream_b9656_generic_parse_500_cascades(self) -> None:
-        # Streaming twin: the no-echo b9656+ parse rejection cascades on the
-        # streaming path too (shared structural gate).
-        client = _make_client("native")
-        client._http.stream.return_value = _MockSSE500Response(
-            _b9656_generic_parse_500_body()
-        )
-        with pytest.raises(BackendError):
-            async for _ in client.send_stream(
-                [{"role": "user", "content": "test"}], tools=[_make_write_spec()]
-            ):
-                pass
-        assert client.rescued_tool_calls == 0
-
 
 # ── mode ─────────────────────────────────────────────────────────
 
@@ -1381,82 +1228,6 @@ class TestMergeConsecutive:
         assert len(user_msgs) == 1
         assert "go" in user_msgs[0]["content"]
         assert "step nudge" in user_msgs[0]["content"]
-
-
-# ── _extract_think_tags ──────────────────────────────────────────
-
-
-class TestExtractThinkTags:
-    def test_extracts_single_block(self) -> None:
-        text = "[THINK]I need to check pricing.[/THINK]Let me call the tool."
-        reasoning, remaining = _extract_think_tags(text)
-        assert reasoning == "I need to check pricing."
-        assert remaining == "Let me call the tool."
-
-    def test_extracts_multiple_blocks(self) -> None:
-        text = "[THINK]First thought.[/THINK] middle [THINK]Second thought.[/THINK] end"
-        reasoning, remaining = _extract_think_tags(text)
-        assert reasoning == "First thought.\n\nSecond thought."
-        assert remaining == "middle  end"
-
-    def test_no_tags_returns_original(self) -> None:
-        text = "Just plain content with no tags."
-        reasoning, remaining = _extract_think_tags(text)
-        assert reasoning == ""
-        assert remaining == text
-
-    def test_multiline_think_block(self) -> None:
-        text = "[THINK]Line 1\nLine 2\nLine 3[/THINK]Result"
-        reasoning, remaining = _extract_think_tags(text)
-        assert "Line 1" in reasoning
-        assert "Line 3" in reasoning
-        assert remaining == "Result"
-
-    def test_empty_think_block(self) -> None:
-        text = "[THINK][/THINK]Content"
-        reasoning, remaining = _extract_think_tags(text)
-        assert reasoning == ""
-        assert remaining == "Content"
-
-    def test_empty_string(self) -> None:
-        reasoning, remaining = _extract_think_tags("")
-        assert reasoning == ""
-        assert remaining == ""
-
-    # ── <think> tag format (Qwen/DeepSeek) ──
-
-    def test_extracts_xml_think_block(self) -> None:
-        text = "<think>I should analyze the data.</think>Let me call the tool."
-        reasoning, remaining = _extract_think_tags(text)
-        assert reasoning == "I should analyze the data."
-        assert remaining == "Let me call the tool."
-
-    def test_extracts_multiple_xml_think_blocks(self) -> None:
-        text = "<think>First.</think> middle <think>Second.</think> end"
-        reasoning, remaining = _extract_think_tags(text)
-        assert reasoning == "First.\n\nSecond."
-        assert remaining == "middle  end"
-
-    def test_multiline_xml_think_block(self) -> None:
-        text = "<think>Line 1\nLine 2\nLine 3</think>Result"
-        reasoning, remaining = _extract_think_tags(text)
-        assert "Line 1" in reasoning
-        assert "Line 3" in reasoning
-        assert remaining == "Result"
-
-    def test_empty_xml_think_block(self) -> None:
-        text = "<think></think>Content"
-        reasoning, remaining = _extract_think_tags(text)
-        assert reasoning == ""
-        assert remaining == "Content"
-
-    def test_mixed_tag_formats(self) -> None:
-        """Both [THINK] and <think> in same text (unlikely but should work)."""
-        text = "[THINK]Mistral thought.[/THINK] <think>Qwen thought.</think> end"
-        reasoning, remaining = _extract_think_tags(text)
-        assert "Mistral thought." in reasoning
-        assert "Qwen thought." in reasoning
-        assert remaining == "end"
 
 
 # ── think flag behavior — sync ────────────────────────────────────

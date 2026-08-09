@@ -33,12 +33,16 @@ forge exactly as today. The pool is a generalization, not a replacement.
 
 ### What works today
 
-- All three clients accept `base_url` as a constructor parameter —
-  `OllamaClient(base_url="http://localhost:11434")`,
-  `LlamafileClient(base_url="http://localhost:8080/v1")`,
-  `AnthropicClient(model="claude-haiku-4-5-20251001")`
+- All five built-in client adapters accept `base_url` as a constructor
+  parameter —
+  `OpenAICompatClient(model="route", base_url="http://localhost:1234/v1")`,
+  `OllamaClient(model="model:tag", base_url="http://localhost:11434")`,
+  `LlamafileClient(gguf_path="model.gguf", base_url="http://localhost:8080/v1")`,
+  `VLLMClient(model_path="org/model", base_url="http://localhost:8000/v1")`,
+  `AnthropicClient(model="claude-haiku-4-5-20251001", base_url="https://api.anthropic.com")`
 - Multiple client instances can coexist in the same process
-- `ServerManager` accepts a `port` parameter for llama-server/llamafile
+- `ServerManager` accepts a `port` parameter for spawned
+  llama-server/llamafile/vLLM profiles
 
 ### What doesn't work
 
@@ -240,7 +244,8 @@ Could be built incrementally:
 ## References
 
 - `src/forge/server.py` — ServerManager, BudgetMode, setup_backend()
-- `src/forge/clients/` — OllamaClient, LlamafileClient, AnthropicClient
+- `src/forge/clients/` — OpenAICompatClient, OllamaClient, LlamafileClient,
+  VLLMClient, AnthropicClient
 - `src/forge/core/runner.py` — WorkflowRunner
 - `tests/eval/batch_eval.py` — current sequential model switching
 - `src/forge/context/hardware.py` — detect_hardware(), HardwareProfile

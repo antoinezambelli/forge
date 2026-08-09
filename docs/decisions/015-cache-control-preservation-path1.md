@@ -1,13 +1,18 @@
 # ADR-015: `cache_control` preservation in the Anthropic proxy (path 1)
 
-**Status:** accepted (v0.7.1)
+**Status:** accepted (v0.7.1); selector and compaction details superseded by v0.9.0
+
+> **v0.9.0 update:** select an Anthropic-shaped downstream with
+> `--backend anthropic`; `--backend-protocol` was removed. Forge Proxy now
+> always uses `NoCompact` and emits no context-threshold mutations. The clean
+> first-attempt preservation and retry-rebuild behavior below remains current.
 
 ## Context
 
 forge's proxy accepts Anthropic Messages API requests on `/v1/messages` and runs forge guardrails over the inference loop. Two paths exist:
 
 - **Path 2** (default): inbound Anthropic → translate to OpenAI shape → run against an OpenAI-compatible backend (llama.cpp, vLLM, Ollama, etc.).
-- **Path 1** (`--backend-protocol anthropic`): inbound Anthropic → run against an Anthropic-shape downstream (LiteLLM `/v1/messages`, the real Anthropic API, a self-hosted Anthropic proxy).
+- **Path 1** (`--backend anthropic`, external mode): inbound Anthropic → run against an Anthropic-shape downstream (LiteLLM `/v1/messages`, the real Anthropic API, a self-hosted Anthropic proxy).
 
 Anthropic's prompt caching is opt-in per content block: callers tag a block (typically the last block of a stable system prompt or tool definition) with `cache_control: {type: "ephemeral"}`. Anthropic hashes the prefix up to that block and reuses the cached prefix at ~10% of base input cost. Claude Code uses this aggressively to keep large stable contexts cheap across turns.
 
@@ -23,11 +28,11 @@ On path 2 this loss is intrinsic: OpenAI Chat Completions has no `cache_control`
 
 For path 1 only, the proxy passes the **original inbound Anthropic body** through to `AnthropicClient` as a separate kwarg. When forge has not mutated the message list during the inference call, the client bypasses `_convert_messages` and sends the inbound body verbatim — preserving `cache_control` (and every other block-level Anthropic field).
 
-The runner clears the verbatim opt-in on any forge-side mutation:
-
-- `ContextManager.maybe_compact()` modifying the message list
-- A context-threshold warning being injected
-- A retry being triggered (rescue parse, unknown tool, step enforcement, etc.)
+The shared inference primitive clears the verbatim opt-in on any forge-side
+mutation: compaction, a context-threshold warning, or a retry. In v0.9.0 Proxy,
+the first two cannot occur because Proxy supplies `NoCompact` and no threshold
+callbacks. A retry remains the Proxy mutation that switches to the rebuilt
+request shape.
 
 On those calls, the client falls back to the existing `_convert_messages` rebuild path. The next clean turn (next CC request) resumes verbatim emit.
 
@@ -37,7 +42,7 @@ On those calls, the client falls back to the existing `_convert_messages` rebuil
 |---|---|
 | Clean turn, no forge mutation | Verbatim emit. `cache_control` preserved. Anthropic cache hit when prefix matches. |
 | Forge retry (append-style mutation) | Rebuild on the retry call. Cache miss on **that call**. Anthropic's stored cache entry persists; next clean turn hits again. |
-| Forge compaction (early-message removal) | Rebuild on calls after compaction. Cache miss on those calls. |
+| Proxy compaction or context warning | Not applicable in v0.9.0: Proxy is permanently `NoCompact` and does not inject threshold warnings. |
 | Path 2 (OpenAI-shape downstream) | `cache_control` lost at the protocol boundary. Documented loss; no downstream support exists. |
 
 Cost shape: a single CC turn that triggers a forge retry pays full price for that one retry call (no cache lookup), bounded per-call rather than per-session. Anthropic's content-hash cache on the server side is unaffected.

@@ -1,6 +1,13 @@
 # ADR-012: OpenAI-Compatible Proxy Server
 
-**Status:** Draft (March 2026) -- architecture revised after prototype
+**Status:** accepted historical architecture; partially superseded by v0.9.0
+
+> **v0.9.0 update:** this ADR explains the Proxy's origin, but its compaction,
+> native-fidelity, and statelessness claims are no longer the complete current
+> contract. Proxy now always uses `NoCompact`; clean-path fidelity depends on
+> the selected adapter/protocol; and `/forge/usage` retains one bounded
+> last-completed process-local snapshot. See
+> [Migrating to Forge 0.9](../MIGRATING_TO_0.9.md) for the current contract.
 
 ## Problem
 
@@ -21,7 +28,7 @@ Extract WorkflowRunner's input processing into a reusable component that both th
 ### WorkflowRunner's two halves
 
 **Front half** (reusable -- proxy needs this):
-1. Context compaction (`ContextManager.maybe_compact`)
+1. Context policy (`ContextManager`; Proxy supplies `NoCompact` in v0.9.0)
 2. Reasoning folding (standalone REASONING msg into TOOL_CALL content field)
 3. Serialization (`to_api_dict` with format-appropriate handling)
 4. Consecutive message merging (strict role alternation for Jinja templates)
@@ -44,7 +51,7 @@ client  --POST /v1/chat/completions-->  forge proxy (:8081)
                                             |
                                             +-- convert OpenAI messages to forge Messages
                                             +-- run WorkflowRunner front half:
-                                            |     compact -> fold -> serialize -> merge
+                                            |     observe -> fold -> serialize -> merge
                                             |     -> send to backend -> validate
                                             |     -> retry with nudge if needed
                                             +-- convert clean response to OpenAI format
@@ -60,7 +67,7 @@ client  <--SSE stream (clean)----------  forge proxy
 | **Rescue parsing** | Yes | Model returns tool call as text, proxy extracts it |
 | **Retry with nudge** | Yes | Model returns garbage, proxy injects feedback and re-requests |
 | **Unknown tool check** | Yes | Model calls nonexistent tool, proxy nudges |
-| **Context compaction** | Yes | Message history approaching budget, proxy compacts |
+| **Context compaction** | No | Proxy never compacts or deletes caller history; the caller owns its rolling window |
 | **Reasoning folding** | Yes | REASONING messages folded into TOOL_CALL for Jinja parity |
 | **Message merging** | Yes | Consecutive same-role messages merged for strict alternation |
 | **Step enforcement** | No | Proxy doesn't know the workflow |
@@ -74,12 +81,15 @@ When tools are present but the model responds with text (e.g. user says "hi"), s
 
 Two modes, mirroring standalone:
 
-**Managed mode** -- forge starts and manages the backend via ServerManager:
+**Managed mode** -- Forge spawns or attaches according to the selected profile:
 ```python
 proxy = ProxyServer(backend="llamaserver", gguf="path/to/model.gguf")
 proxy.start()   # starts llama-server + proxy
 proxy.stop()    # stops both
 ```
+
+For managed Ollama, Forge attaches to the existing daemon and unloads the
+selected model on stop; it does not own or terminate the daemon.
 
 **External mode** -- user manages the backend:
 ```python
@@ -107,9 +117,9 @@ The proxy fully buffers each response from the backend before deciding what to d
 ### Revision: native-first, with opt-in prompt capability
 
 The proxy is **native-first**. By default (`--backend-capability native`) it
-targets backends that speak the native OpenAI tools API (llama.cpp with a
-tool-calling chat template / `--jinja`, vLLM, Ollama, Anthropic) and forwards
-the client's request verbatim (below).
+targets backends that speak a structured tool API (llama.cpp with a
+tool-calling chat template / `--jinja`, vLLM, Ollama, Anthropic) and preserves
+compatible caller-authored fields on clean paths (below).
 
 Prompt-injection is available as an **explicit opt-in**
 (`--backend-capability prompt`, llama.cpp/llamafile only) for non-FC backends —
@@ -128,23 +138,25 @@ native-first is a cleaner story than a backwards-incompatible drop, and non-FC
 backends (e.g. llamafile) stay usable through the proxy.
 
 Rationale: the proxy is a transparent layer for an external agent that already
-speaks native FC to a native-FC backend. A traced capture showed the native
-path forwards the client's request byte-for-byte. The earlier eval regression
-(prompt-mode proxy underperforming) was a prompt-injection artifact on an
-FC-capable backend, not proxy overhead.
+speaks native FC to a native-FC backend. Generic OpenAI/llama and vLLM clean
+paths preserve compatible raw request fields; Ollama and Anthropic convert to
+their native downstream shapes. The earlier eval regression (prompt-mode proxy
+underperforming) was a prompt-injection artifact on an FC-capable backend, not
+proxy overhead.
 
-To preserve that transparency, the proxy forwards the client's **verbatim
-OpenAI `tools` and `messages`** to the backend on the clean first attempt
-(`raw_openai_tools` / `raw_openai_messages`), bypassing the lossy
-`ToolSpec.from_json_schema` → `format_tool` round-trip that dropped schema
-detail and leaked empty tool names. The parsed `ToolSpec` list is kept only as
-forge's validation sidecar. On any forge mutation (retry / compaction / context
-warning) the proxy falls back to the folded/serialized form — see the
-`use_raw_messages` gate in `run_inference`, which mirrors the ADR-015
-`inbound_anthropic_body` drop-on-mutation logic.
+On compatible generic OpenAI/llama and vLLM clean paths, the proxy supplies the
+client's raw OpenAI `tools` and `messages` (`raw_openai_tools` /
+`raw_openai_messages`) so those adapters can avoid a lossy schema round-trip.
+The parsed `ToolSpec` list remains Forge's validation sidecar. Ollama rebuilds
+its native tool schema, Anthropic conversion changes protocol shape, and a
+retry uses Forge's folded/serialized request. The shared inference primitive
+also drops raw inputs after compaction or a context warning, but those
+mutations are inactive in v0.9.0 Proxy because it always uses `NoCompact` and
+no threshold callbacks.
 
 The synthetic `respond` tool is **opt-in** (`--inject-respond-tool`, default
-off): the proxy forwards the client's tools untouched unless asked to inject it.
+off). Without injection, the selected adapter keeps its ordinary clean-path
+preservation or conversion behavior.
 
 If a backend lacking native FC is placed behind the proxy, it degrades to
 passing the model's text through (no auto-downgrade) — **bring an FC-capable
@@ -155,4 +167,6 @@ backend.**
 - **Not a model server.** Forge sits in front of one.
 - **Not a router.** One backend per proxy instance.
 - **Not a tool executor.** Client executes tools.
-- **Not a session manager.** Stateless per-request.
+- **Not a session manager.** Request handling is independent; `/forge/usage`
+  retains only one bounded last-completed process-local snapshot, not history
+  or authoritative session state.

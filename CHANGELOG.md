@@ -2,6 +2,81 @@
 
 All notable changes to forge are documented here.
 
+## [0.9.0] — 2026-08-08
+
+One intentional breaking Proxy update. Forge 0.9.0 replaces the pre-0.9
+configuration, metadata, inference-fidelity, and context behavior atomically;
+see [Migrating to Forge 0.9](docs/MIGRATING_TO_0.9.md) for the complete
+old/new/action table.
+
+### Breaking — ordinary Proxy deployments
+
+- External Anthropic selection moves from removed `backend_protocol` /
+  `--backend-protocol` to `backend="anthropic"` / `--backend anthropic`.
+  Generic external omission remains OpenAI-compatible, with explicit
+  `backend="openai"` also supported.
+- `/health` now forwards backend readiness; Forge liveness is
+  `/forge/health`. `/v1/models` is the backend's honest catalog rather than a
+  synthesized Forge one-model list, and public catalog reads never mutate
+  private vLLM routing identity.
+- Response `model` reports the actual pinned, discovered, configured, or
+  request-routed wire identity.
+- Proxy is unconditionally no-compaction and never mutates caller history.
+  Missing context-window metadata no longer blocks inference.
+- Unmanaged startup performs no metadata query. Static-credential unpinned
+  vLLM identity discovery moves to first inference and remains retryable.
+
+### Added
+
+- Closed authenticated read-only forwarding for `/health`, `/v1/health`,
+  `/v1/models`, `/models`, and `/props`, preserving exact path/query,
+  backend status/body/content type, recalculated length, and Forge CORS;
+  transport failures map to 502.
+- Local `/forge/health` liveness and `/forge/usage`, which exposes one
+  last-completed eligible process-local context snapshot or 204. Session
+  attribution prefers a non-empty Claude Code session header over a non-empty
+  string LiteLLM body ID; subagent requests do not replace the snapshot.
+- Canonical unmanaged `openai` and `anthropic` backend profile selectors.
+
+### Breaking — specialized valid configurations
+
+- Unmanaged `budget_tokens` is a reporting denominator only. Managed
+  `backend`, `manual`, `forge-full`, and `forge-fast` remain allocation modes,
+  distinct from preserved native compaction.
+- Explicit unmanaged/Ollama ports replace the URL authority port while keeping
+  normalized prefixes. CLI `--extra-flags` is now the terminal argv remainder.
+- vLLM served identity and reporting window are independent. A model ID without
+  `max_model_len` permits inference; a pin settles identity only, while an
+  explicit budget settles reporting only. Clean vLLM passthrough/raw tools and
+  tool choice now reach the backend instead of being accepted and dropped.
+- `litellm_session_id` is preserved through applicable conversion/adapters.
+- Constructor default introspection may observe omission as `None` rather than
+  old concrete values.
+
+### Breaking — direct Python and low-value invalid inputs
+
+- Removed the exported combined `discover_backend_metadata()` method. Direct
+  consumers use `get_served_model_name()` for vLLM identity and
+  `get_context_length()` for an honest window. vLLM exact-matches the selected
+  model; Anthropic no longer fabricates 200K/8192 context defaults.
+- Native context accounting prefers backend usage. After compaction invalidates
+  that observation, `CompactEvent.tokens_after` reports a fresh character/4
+  heuristic until another backend result supplies usage.
+- Profile-invalid identity fields, unmanaged `budget_mode`, ineffective
+  Ollama/unmanaged `extra_flags`, conflicting managed flags, contradictory
+  serialization switches, invalid manual budgets, and negative limits now fail
+  before side effects. Python raises `ValueError`; CLI validation exits 2.
+
+### Preserved boundaries
+
+- Flat CLI and `ProxyServer`, inference aliases, global CORS, closed unknown
+  routes, retry/exhaustion behavior, credential isolation, streaming shape,
+  managed ownership/shutdown, and managed/unmanaged serialization defaults are
+  preserved.
+- Native `setup_backend()`, `ContextManager`, `WorkflowRunner`, and built-in or
+  custom compaction remain supported and distinct from Proxy no-compaction.
+- The optional Anthropic integration now has an `anthropic>=0.86.0` floor.
+
 ## [0.8.3] — 2026-08-03
 
 A proxy-correctness and evaluation-publication release. Forge restores model identity handling across vLLM and Anthropic proxy paths while making evaluation collection and publication deterministic and provenance-safe.

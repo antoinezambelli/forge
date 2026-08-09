@@ -1,7 +1,7 @@
 """Path-1 tests — Anthropic-protocol downstream + cache_control verbatim emit.
 
 Covers:
-- ProxyServer init-time validation of backend_protocol + mode combinations.
+- ProxyServer init-time validation of the Anthropic selector + mode.
 - AnthropicClient verbatim path when inbound_anthropic_body is set.
 - AnthropicClient falling back to _convert_messages rebuild when None.
 - End-to-end: cache_control on inbound blocks reaches the underlying
@@ -16,8 +16,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from forge._backend_profiles import ClientAdapter
 from forge.clients.anthropic import AnthropicClient
-from forge.core.workflow import TextResponse
+from forge.context.strategies import NoCompact
 from forge.proxy.handler import handle_chat_completions
 from forge.proxy.proxy import ProxyServer
 
@@ -27,18 +28,14 @@ from forge.proxy.proxy import ProxyServer
 
 class TestProxyServerValidation:
     def test_anthropic_in_managed_mode_rejected(self):
-        with pytest.raises(ValueError, match="external mode"):
-            ProxyServer(
-                backend="llamaserver",
-                gguf="x.gguf",
-                backend_protocol="anthropic",
-            )
+        with pytest.raises(ValueError, match="requires backend_url"):
+            ProxyServer(backend="anthropic")
 
     def test_anthropic_external_default_mode_ok(self):
         # Should construct without raising
         proxy = ProxyServer(
             backend_url="http://localhost:8080",
-            backend_protocol="anthropic",
+            backend="anthropic",
         )
         assert proxy._backend_protocol == "anthropic"
 
@@ -52,7 +49,7 @@ class TestProxyServerValidation:
     async def test_anthropic_external_receives_backend_timeout(self):
         proxy = ProxyServer(
             backend_url="http://localhost:8080",
-            backend_protocol="anthropic",
+            backend="anthropic",
             backend_timeout=1800.0,
         )
         with patch("forge.clients.anthropic.AnthropicClient") as mock_client_cls:
@@ -63,7 +60,9 @@ class TestProxyServerValidation:
             client, ctx, lazy = await proxy._setup_external()
 
         assert client is mock_client
-        assert ctx.budget_tokens == 200000
+        mock_client.get_context_length.assert_not_awaited()
+        assert isinstance(ctx.strategy, NoCompact)
+        assert ctx.budget_tokens is None
         assert lazy is None  # Anthropic path is never deferred
         mock_client_cls.assert_called_once_with(
             model=None,
@@ -78,7 +77,7 @@ class TestProxyServerValidation:
     async def test_anthropic_external_literal_claude_pin_is_preserved(self):
         proxy = ProxyServer(
             backend_url="http://localhost:8080",
-            backend_protocol="anthropic",
+            backend="anthropic",
             model="claude",
         )
         with patch("forge.clients.anthropic.AnthropicClient") as mock_client_cls:
@@ -361,6 +360,7 @@ class TestRequestLocalModelSurvivesMutation:
                 maybe_compact=MagicMock(side_effect=lambda messages, **_: messages),
                 check_thresholds=MagicMock(return_value=None),
             ),
+            client_adapter=ClientAdapter.ANTHROPIC,
             protocol="anthropic", backend_protocol="anthropic", max_retries=2,
         )
 
@@ -392,6 +392,7 @@ class TestRequestLocalModelSurvivesMutation:
 
         result = await handle_chat_completions(
             self._body(inbound_model), client, context_manager,
+            client_adapter=ClientAdapter.ANTHROPIC,
             protocol="anthropic", backend_protocol="anthropic",
         )
 

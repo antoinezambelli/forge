@@ -3,11 +3,9 @@
 from __future__ import annotations
 
 import asyncio
-from unittest.mock import MagicMock
-
 import pytest
 
-from forge.clients.base import ChunkType, LLMClient, StreamChunk
+from forge.clients.base import ChunkType, StreamChunk, TokenUsage
 from forge.context.manager import ContextManager
 from forge.context.strategies import NoCompact
 from forge.core.messages import Message, MessageMeta, MessageRole, MessageType, ToolCallInfo
@@ -35,7 +33,10 @@ class EmptyParams(BaseModel):
 def _make_tool(name: str, fn=None) -> ToolDef:
     """Create a minimal ToolDef for testing."""
     if fn is None:
-        fn = lambda **kwargs: f"{name}_result"
+        def default_fn(**kwargs):
+            return f"{name}_result"
+
+        fn = default_fn
     return ToolDef(
         spec=ToolSpec(name=name, description=f"Tool {name}", parameters=EmptyParams),
         callable=fn,
@@ -143,6 +144,53 @@ class TestHappyPath:
         runner = _make_runner(client)
         await runner.run(wf, "go", prompt_vars={"role": "agent"})
         assert received_args == {"key": "value", "count": 42}
+
+    @pytest.mark.asyncio
+    async def test_latest_usage_drives_next_iteration_and_reused_run(self):
+        class RecordingNoCompact(NoCompact):
+            def __init__(self) -> None:
+                self.initial_usages: list[int] = []
+
+            def _compact_with_initial_usage(
+                self, messages, budget_tokens, *, initial_tokens, step_hint="",
+            ):
+                self.initial_usages.append(initial_tokens)
+                return list(messages), 0
+
+        class UsageClient(MockClient):
+            def __init__(self):
+                super().__init__([
+                    ToolCall(tool="fetch", args={}),
+                    ToolCall(tool="submit", args={}),
+                    ToolCall(tool="fetch", args={}),
+                    ToolCall(tool="submit", args={}),
+                ])
+                self.last_usage = {}
+                self._slot_id = 0
+
+            async def send(self, *args, **kwargs):
+                response = await super().send(*args, **kwargs)
+                prompt_tokens = self._call_index * 111
+                self.last_usage[0] = TokenUsage(
+                    prompt_tokens=prompt_tokens,
+                    completion_tokens=9,
+                    total_tokens=prompt_tokens + 9,
+                )
+                return response
+
+        client = UsageClient()
+        strategy = RecordingNoCompact()
+        ctx = ContextManager(strategy=strategy, budget_tokens=100_000)
+        runner = WorkflowRunner(client=client, context_manager=ctx)
+
+        await runner.run(_make_workflow(), "go", prompt_vars={"role": "agent"})
+        await runner.run(_make_workflow(), "again", prompt_vars={"role": "agent"})
+
+        assert strategy.initial_usages[1] == 111
+        assert strategy.initial_usages[2] == 222
+        assert strategy.initial_usages[3] == 333
+        assert ctx.usage is not None
+        assert ctx.usage.current_usage_tokens == 444
 
 
 # ── Retry logic ──────────────────────────────────────────────────
@@ -2026,7 +2074,7 @@ class TestCancellation:
 
     @pytest.mark.asyncio
     async def test_cancel_mid_workflow(self):
-        """Cancel event set after first tool fires on next iteration."""
+        """Mid-workflow cancellation reports progress and conversation history."""
         cancel = asyncio.Event()
 
         def cancel_after_fetch(**kwargs):
@@ -2049,30 +2097,6 @@ class TestCancellation:
 
         assert "fetch" in exc_info.value.completed_steps
         assert exc_info.value.iteration == 1
-
-    @pytest.mark.asyncio
-    async def test_cancel_preserves_messages(self):
-        """Cancelled error includes conversation history."""
-        cancel = asyncio.Event()
-
-        def cancel_after_fetch(**kwargs):
-            cancel.set()
-            return "fetch_result"
-
-        tools = {
-            "fetch": _make_tool("fetch", fn=cancel_after_fetch),
-            "submit": _make_tool("submit"),
-        }
-        client = MockClient([
-            ToolCall(tool="fetch", args={}),
-            ToolCall(tool="submit", args={}),
-        ])
-        wf = _make_workflow(tools=tools, required_steps=["fetch"])
-        runner = _make_runner(client)
-
-        with pytest.raises(WorkflowCancelledError) as exc_info:
-            await runner.run(wf, "go", prompt_vars={"role": "dev"}, cancel_event=cancel)
-
         messages = exc_info.value.messages
         assert len(messages) > 0
         # Should have system prompt, user input, tool call, tool result
@@ -2080,18 +2104,6 @@ class TestCancellation:
         assert MessageType.SYSTEM_PROMPT in types
         assert MessageType.USER_INPUT in types
         assert MessageType.TOOL_RESULT in types
-
-    @pytest.mark.asyncio
-    async def test_no_cancel_event_runs_normally(self):
-        """None cancel_event has no effect."""
-        client = MockClient([
-            ToolCall(tool="fetch", args={}),
-            ToolCall(tool="submit", args={}),
-        ])
-        wf = _make_workflow()
-        runner = _make_runner(client)
-        result = await runner.run(wf, "go", prompt_vars={"role": "dev"}, cancel_event=None)
-        assert result == "submit_result"
 
     @pytest.mark.asyncio
     async def test_unset_cancel_event_runs_normally(self):
@@ -2126,7 +2138,7 @@ class TestCustomRetryNudge:
         runner = _make_runner(client)
         runner.on_message = collected.append
         runner._retry_nudge_fn = lambda _raw: "Wrap in respond tool."
-        result = await runner.run(wf, "go", prompt_vars={"role": "dev"})
+        await runner.run(wf, "go", prompt_vars={"role": "dev"})
 
         nudges = [m for m in collected if m.metadata.type == MessageType.RETRY_NUDGE]
         assert len(nudges) == 1
@@ -2148,7 +2160,7 @@ class TestCustomRetryNudge:
             retry_nudge=lambda raw: f"Please use a tool. You said: {raw[:10]}",
         )
         runner.on_message = collected.append
-        result = await runner.run(wf, "go", prompt_vars={"role": "dev"})
+        await runner.run(wf, "go", prompt_vars={"role": "dev"})
 
         nudges = [m for m in collected if m.metadata.type == MessageType.RETRY_NUDGE]
         assert len(nudges) == 1

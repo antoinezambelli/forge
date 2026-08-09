@@ -26,10 +26,19 @@ from typing import Any
 
 import httpx
 
+from forge._backend_profiles import parse_vllm_model_catalog
+from forge._endpoint_layouts import (
+    BackendOperation,
+    ConnectionInputKind,
+    EndpointLayout,
+    normalize_connection,
+    resolve_endpoint,
+)
 from forge.clients.base import (
     ChunkType,
     StreamChunk,
     TokenUsage,
+    _record_captured_usage,
     decode_tool_args,
     format_tool,
     resolve_request_headers,
@@ -75,6 +84,13 @@ class VLLMClient:
         adopt_served_identity: bool = True,
     ) -> None:
         self.base_url = base_url
+        connection = normalize_connection(base_url, ConnectionInputKind.OPENAI_API_BASE)
+        self._chat_url = resolve_endpoint(
+            EndpointLayout.VLLM_OPENAI, BackendOperation.INFERENCE, connection,
+        )
+        self._models_url = resolve_endpoint(
+            EndpointLayout.VLLM_OPENAI, BackendOperation.MODEL_CATALOG, connection,
+        )
         # Two identity roles, set together (see _set_model_identity):
         #   self.model        — the wire "model" field, sent verbatim. For vLLM
         #                       this is the model path / HF repo id (or the
@@ -200,11 +216,52 @@ class VLLMClient:
         usage = data.get("usage")
         if not usage:
             return
-        self.last_usage[0] = TokenUsage(
+        normalized = TokenUsage(
             prompt_tokens=usage.get("prompt_tokens", 0),
             completion_tokens=usage.get("completion_tokens", 0),
             total_tokens=usage.get("total_tokens", 0),
         )
+        self.last_usage[0] = normalized
+        _record_captured_usage(normalized)
+
+    def _build_request_body(
+        self,
+        messages: list[dict[str, str]],
+        tools: list[ToolSpec] | None,
+        sampling: dict[str, Any] | None,
+        passthrough: dict[str, Any] | None,
+        raw_openai_tools: list[dict[str, Any]] | None,
+        *,
+        stream: bool,
+    ) -> dict[str, Any]:
+        """Build one OpenAI-shaped vLLM request without mutating inputs."""
+        body: dict[str, Any] = dict(passthrough or {})
+        body.update({
+            "model": self.model,
+            "messages": messages,
+            "stream": stream,
+        })
+        if stream:
+            body["stream_options"] = {"include_usage": True}
+        else:
+            body.pop("stream_options", None)
+
+        if raw_openai_tools is not None:
+            body["tools"] = raw_openai_tools
+            selected_tools = raw_openai_tools
+        elif tools:
+            selected_tools = [format_tool(tool) for tool in tools]
+            body["tools"] = selected_tools
+        else:
+            selected_tools = None
+            body.pop("tools", None)
+
+        if selected_tools and "tool_choice" not in body:
+            body["tool_choice"] = "auto"
+
+        # Sampling is forge-owned and therefore wins over passthrough values.
+        self._apply_sampling(body, sampling)
+        return body
 
     def _resolve_reasoning(self, reasoning: str, content: str) -> str | None:
         """Build final reasoning from the structured field and content, gated
@@ -239,24 +296,24 @@ class VLLMClient:
     ) -> LLMResponse:
         """Send messages via /v1/chat/completions and parse the response.
 
-        ``passthrough`` / ``inbound_anthropic_body`` / ``raw_openai_tools`` are
-        accepted for protocol symmetry and ignored — vLLM parses tools and
-        reasoning server-side and is native-only. ``extra_headers`` carries the
-        per-call credential, applied over the construction headers.
+        ``passthrough`` supplies caller-owned OpenAI fields and
+        ``raw_openai_tools`` preserves the caller's original tools array.
+        ``inbound_anthropic_body`` is accepted for protocol symmetry and
+        ignored. ``extra_headers`` carries the per-call credential, applied
+        over the construction headers.
         """
-        body: dict[str, Any] = {
-            "model": self.model,
-            "messages": messages,
-            "stream": False,
-        }
-        if tools:
-            body["tools"] = [format_tool(t) for t in tools]
-            body["tool_choice"] = "auto"
-        self._apply_sampling(body, sampling)
+        body = self._build_request_body(
+            messages,
+            tools,
+            sampling,
+            passthrough,
+            raw_openai_tools,
+            stream=False,
+        )
 
         try:
             resp = await self._http.post(
-                f"{self.base_url}/chat/completions",
+                self._chat_url,
                 json=body,
                 headers=self._request_headers(extra_headers),
             )
@@ -300,20 +357,18 @@ class VLLMClient:
     ) -> AsyncIterator[StreamChunk]:
         """Stream via SSE from /v1/chat/completions.
 
-        ``passthrough`` / ``inbound_anthropic_body`` / ``raw_openai_tools``
-        accepted for protocol symmetry and ignored (see ``send``).
+        ``passthrough`` and ``raw_openai_tools`` follow ``send``. The
+        ``inbound_anthropic_body`` compatibility argument remains ignored.
         ``extra_headers`` carries the per-call credential.
         """
-        body: dict[str, Any] = {
-            "model": self.model,
-            "messages": messages,
-            "stream": True,
-            "stream_options": {"include_usage": True},
-        }
-        if tools:
-            body["tools"] = [format_tool(t) for t in tools]
-            body["tool_choice"] = "auto"
-        self._apply_sampling(body, sampling)
+        body = self._build_request_body(
+            messages,
+            tools,
+            sampling,
+            passthrough,
+            raw_openai_tools,
+            stream=True,
+        )
 
         accumulated_content = ""
         accumulated_reasoning = ""
@@ -323,7 +378,7 @@ class VLLMClient:
 
         async with self._http.stream(
             "POST",
-            f"{self.base_url}/chat/completions",
+            self._chat_url,
             json=body,
             headers=self._request_headers(extra_headers),
         ) as response:
@@ -429,24 +484,21 @@ class VLLMClient:
         ]
 
     async def get_context_length(self) -> int | None:
-        """Query the vLLM /v1/models endpoint for max_model_len.
+        """Return this client's exact model window from /v1/models.
 
-        vLLM exposes the configured context window via the OpenAI-compat
-        models endpoint. Single endpoint, single field — raises on
-        unexpected response shape.
+        A different catalog entry never supplies the denominator. Missing or
+        unusable exact-model window metadata returns None; transport, status,
+        and malformed-catalog failures remain loud.
         """
-        resp = await self._http.get(f"{self.base_url}/models")
-        resp.raise_for_status()
-        data = resp.json()
-        models = data.get("data") or []
-        if not models:
-            raise BackendError(500, f"/v1/models returned no entries: {data}")
-        max_model_len = models[0].get("max_model_len")
-        if max_model_len is None:
-            raise BackendError(
-                500, f"/v1/models entry missing max_model_len: {models[0]}",
-            )
-        return int(max_model_len)
+        try:
+            resp = await self._http.get(self._models_url)
+            resp.raise_for_status()
+            catalog = parse_vllm_model_catalog(resp.json())
+        except httpx.HTTPError:
+            raise
+        except (TypeError, ValueError) as exc:
+            raise BackendError(500, "vLLM /v1/models returned malformed data") from exc
+        return catalog.context_length_for(str(self.model))
 
     async def get_served_model_name(self) -> str | None:
         """Query /v1/models for the name vLLM is actually serving.
@@ -461,84 +513,9 @@ class VLLMClient:
         which case the caller keeps its placeholder identity.
         """
         try:
-            resp = await self._http.get(f"{self.base_url}/models")
+            resp = await self._http.get(self._models_url)
             resp.raise_for_status()
-        except httpx.HTTPError:
+            catalog = parse_vllm_model_catalog(resp.json())
+        except (httpx.HTTPError, TypeError, ValueError):
             return None
-        models = resp.json().get("data") or []
-        if not models:
-            return None
-        return models[0].get("id")
-
-    async def discover_backend_metadata(
-        self, extra_headers: dict[str, str] | None = None,
-    ) -> int | None:
-        """Probe /v1/models once for both budget and served identity.
-
-        vLLM exposes ``max_model_len`` (context budget) and the served model
-        ``id`` (the wire ``model`` field it validates) on the same endpoint, so
-        one credentialed GET yields both — collapsing the two separate startup
-        round-trips. When ``adopt_served_identity`` (construction), the served
-        id is adopted into this client immediately (``_set_model_identity``);
-        when the identity was pinned explicitly it is never overwritten. The
-        budget is returned for the caller to apply to the context manager —
-        when pinned, it is read from the pinned model's OWN entry (on
-        multi-model gateways ``data[0]`` is arbitrary), and a pinned name the
-        backend doesn't list raises: any other entry's budget would have wrong
-        provenance, and this method is only called when a budget is actually
-        needed (an explicit budget skips the probe entirely).
-
-        Both fields are required: vLLM 404s every request without a valid served
-        id, and a missing ``max_model_len`` leaves the budget undiscoverable —
-        either is a loud failure (no silent ``"default"`` / no guessed budget).
-        """
-        try:
-            resp = await self._http.get(
-                f"{self.base_url}/models",
-                headers=self._request_headers(extra_headers),
-            )
-        except httpx.HTTPError as exc:
-            raise BackendError(502, f"vLLM /v1/models unreachable: {exc}") from exc
-        if resp.status_code != 200:
-            raise BackendError(resp.status_code, raw_body=resp.text)
-
-        models = resp.json().get("data") or []
-        if not models:
-            raise BackendError(500, "vLLM /v1/models returned no entries")
-
-        if self._adopt_served_identity:
-            entry = models[0]
-            served = entry.get("id")
-            if not served:
-                raise BackendError(500, f"vLLM /v1/models entry missing id: {entry}")
-            logger.info("Discovered vLLM served model name: %s", served)
-            self._set_model_identity(served)
-        else:
-            # Identity pinned at construction (proxy --model): never overwrite.
-            # The budget must come from the pinned model's own entry — on a
-            # multi-model gateway data[0] is arbitrary, so a fallback budget
-            # would silently mis-size the context window. No entry, no budget:
-            # fail loud and name the escape hatch.
-            entry_or_none = next(
-                (m for m in models if m.get("id") == self.model), None,
-            )
-            if entry_or_none is None:
-                raise BackendError(
-                    500,
-                    f"explicit model {self.model!r} is not among the "
-                    f"{len(models)} backend-served ids (first ids: "
-                    f"{[m.get('id') for m in models[:5]]}); cannot discover its "
-                    "context budget — pass an explicit budget (--budget-tokens) "
-                    "or fix the model name",
-                )
-            entry = entry_or_none
-
-        max_model_len = entry.get("max_model_len")
-        if max_model_len is None:
-            raise BackendError(
-                500,
-                f"vLLM /v1/models entry missing max_model_len: {entry} — pass "
-                "an explicit budget (--budget-tokens) if the backend doesn't "
-                "report one",
-            )
-        return int(max_model_len)
+        return catalog.first_served_id

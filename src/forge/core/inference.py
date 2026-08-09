@@ -20,6 +20,7 @@ from forge.clients.base import (
     RawOpenAITools,
     StreamChunk,
     TokenUsage,
+    _capture_usage,
 )
 from forge.context.manager import ContextManager
 from forge.core.messages import Message, MessageMeta, MessageRole, MessageType, ToolCallInfo
@@ -44,20 +45,32 @@ _NUDGE_KIND_TO_TYPE: dict[str, MessageType] = {
 }
 
 
-def _get_usage(client: LLMClient) -> TokenUsage | None:
-    """Extract actual token count from the client."""
-    last_usage = getattr(client, "last_usage", None)
-    if not isinstance(last_usage, dict):
-        return None
-    slot_id = getattr(client, "_slot_id", None) or 0
-    return last_usage.get(slot_id)
+class _ToolCallExhausted(ToolCallError):
+    """Internal exhaustion carrier for the final attempt's request-owned usage."""
+
+    def __init__(
+        self,
+        message: str,
+        raw_response: str | None,
+        usage: TokenUsage | None,
+    ) -> None:
+        super().__init__(message, raw_response=raw_response)
+        self.usage = usage
 
 
-def _sync_token_count(client: LLMClient, context_manager: ContextManager) -> None:
-    """Feed actual token count from the client into the context manager."""
-    usage = _get_usage(client)
-    if usage is not None:
-        context_manager.update_token_count(usage.total_tokens)
+def _sync_token_count(
+    usage: TokenUsage | None,
+    context_manager: ContextManager,
+) -> None:
+    """Record attempt-local prompt occupancy, or invalidate stale usage."""
+    if usage is None:
+        context_manager.invalidate_usage()
+        return
+    context_manager.update_token_count(
+        usage.prompt_tokens
+        + usage.cache_creation_input_tokens
+        + usage.cache_read_input_tokens
+    )
 
 
 @dataclass
@@ -69,7 +82,8 @@ class InferenceResult:
         new_messages: Messages generated during this call (assistant text from
             failed attempts, nudges, and the final assistant response). The
             caller should append these to their message history.
-        usage: Token usage for the final successful attempt.
+        usage: Backend-reported usage associated with the logical inference
+            result.
         tool_call_counter: Updated counter for generating unique call IDs.
     """
 
@@ -305,26 +319,33 @@ async def run_inference(
         if extra_headers is not None:
             extra_headers_kwarg["extra_headers"] = extra_headers
 
-        # Send
-        if stream:
-            response = await _send_streaming(
-                client, api_messages, tool_specs, on_chunk, sampling, passthrough,
-                inbound_anthropic_body=verbatim_body,
-                **raw_tools_kwarg,
-                **extra_headers_kwarg,
-            )
-        else:
-            response = await client.send(
-                api_messages, tools=tool_specs, sampling=sampling, passthrough=passthrough,
-                inbound_anthropic_body=verbatim_body,
-                **raw_tools_kwarg,
-                **extra_headers_kwarg,
-            )
+        # Capture normalized usage in this request/task for exactly one attempt.
+        # Built-in clients still update ``last_usage`` as a direct-client
+        # compatibility mirror, but Proxy ownership never depends on that
+        # shared mutable dictionary.
+        with _capture_usage() as usage_capture:
+            if stream:
+                response = await _send_streaming(
+                    client, api_messages, tool_specs, on_chunk, sampling, passthrough,
+                    inbound_anthropic_body=verbatim_body,
+                    **raw_tools_kwarg,
+                    **extra_headers_kwarg,
+                )
+            else:
+                response = await client.send(
+                    api_messages, tools=tool_specs, sampling=sampling,
+                    passthrough=passthrough,
+                    inbound_anthropic_body=verbatim_body,
+                    **raw_tools_kwarg,
+                    **extra_headers_kwarg,
+                )
         # Subsequent attempts (retries) are mutations regardless of outcome.
         verbatim_body = None
 
-        # Update context manager with real token count if available.
-        _sync_token_count(client, context_manager)
+        attempt_usage = usage_capture.usage
+
+        # Update context manager with attempt-local prompt occupancy.
+        _sync_token_count(attempt_usage, context_manager)
 
         # Validate
         validation = validator.validate(response)
@@ -336,7 +357,7 @@ async def run_inference(
             return InferenceResult(
                 response=validated,
                 new_messages=new_messages,
-                usage=_get_usage(client),
+                usage=attempt_usage,
                 tool_call_counter=tool_call_counter,
                 attempts=attempts,
             )
@@ -361,9 +382,10 @@ async def run_inference(
             raw = response.content if isinstance(response, TextResponse) else str(
                 [(tc.tool, tc.args) for tc in response]
             )
-            raise ToolCallError(
+            raise _ToolCallExhausted(
                 f"Exhausted after {budget_label} consecutive failed attempts ({nudge.kind})",
                 raw_response=raw,
+                usage=attempt_usage,
             )
 
         # Emit the assistant's failed output, then the corrective signal.
@@ -429,6 +451,10 @@ async def run_inference(
                 )
                 messages.append(err_msg)
                 new_messages.append(err_msg)
+
+        # Retry corrections rewrite the prompt observed by the completed
+        # attempt. The next policy decision must estimate the changed history.
+        context_manager.invalidate_usage()
 
     # max_attempts exhausted without valid response — signal to caller
     return None

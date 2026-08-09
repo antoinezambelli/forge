@@ -2,11 +2,22 @@
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Iterator
 from typing import Literal
+from unittest.mock import MagicMock
+
+import pytest
 
 from forge.clients.base import ChunkType, StreamChunk
 from forge.core.workflow import LLMResponse, TextResponse, ToolCall, ToolSpec
+from tests.http_mocks import patch_httpx_client_constructor
+
+
+@pytest.fixture
+def mock_httpx_client_constructor() -> Iterator[MagicMock]:
+    """Keep client-focused unit tests from opening unused connection pools."""
+    with patch_httpx_client_constructor() as constructor:
+        yield constructor
 
 
 # ── Shared LLM client double ─────────────────────────────────────

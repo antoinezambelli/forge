@@ -1,14 +1,15 @@
 """Inbound credential handling for the proxy (forge v0.8.0).
 
-forge forwards exactly ONE credential to the backend, in the backend's native
-auth header. The proxy either relocates a single inbound auth header into the
-target protocol's canonical slot, or (when ``--backend-api-key`` is configured)
-uses that static credential — never both. Two credentials anywhere is a hard
-error (Design Principle #1: fail loud, no silent merge).
+forge forwards at most one credential to the backend, in the backend's native
+auth header. Zero is valid for an ungated backend. The proxy either relocates a
+single inbound auth header into the target protocol's canonical slot, or (when
+``--backend-api-key`` is configured) uses that static credential — never both.
+Two credentials anywhere is a hard error (Design Principle #1: fail loud, no
+silent merge).
 
-Only the single relocated credential is forwarded to the backend; the rest of
-the inbound header set is NOT forwarded (httpx recomputes transport headers for
-the re-serialized body, so there is nothing to strip).
+Only a single relocated credential, when present, is forwarded to the backend;
+the rest of the inbound header set is NOT forwarded (httpx recomputes transport
+headers for the re-serialized body, so there is nothing to strip).
 """
 
 from __future__ import annotations
@@ -115,4 +116,34 @@ def resolve_inbound_credential(
         raise MultipleCredentialsError(
             "inbound auth header + --backend-api-key (static backend credential)"
         )
+    return relocate_credential(slot, value, source_protocol, target_protocol)
+
+
+def _resolve_metadata_credential(
+    headers: Mapping[str, str] | None,
+    target_protocol: str,
+    backend_api_key: str | None,
+) -> dict[str, str] | None:
+    """Resolve the one credential for a protocol-neutral metadata request.
+
+    The inbound header slot identifies its caller-side wire shape. A selected
+    backend profile supplies the target wire shape. Static keys have no source
+    shape and are placed directly in the target's canonical slot. Unknown
+    future target protocols preserve an inbound credential verbatim.
+    """
+    slot, value = extract_inbound_credential(headers)
+    if slot is not None and backend_api_key is not None:
+        raise MultipleCredentialsError(
+            "inbound auth header + --backend-api-key (static backend credential)"
+        )
+    if slot is None:
+        if backend_api_key is None:
+            return None
+        if target_protocol == "anthropic":
+            return {"x-api-key": backend_api_key}
+        return {"Authorization": f"Bearer {backend_api_key}"}
+
+    if target_protocol not in {"openai", "anthropic", "ollama"}:
+        return {slot: value}
+    source_protocol = "openai" if slot == "authorization" else "anthropic"
     return relocate_credential(slot, value, source_protocol, target_protocol)

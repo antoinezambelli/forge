@@ -144,7 +144,7 @@ EXAMPLES_WORKFLOW = [
 # on conversational turns, no accuracy loss on tool-calling turns.
 #
 # For WorkflowRunner consumers: use respond_tool() from forge.tools.
-# For proxy consumers: respond is injected automatically.
+# For proxy consumers: opt in with --inject-respond-tool.
 # For middleware consumers: include "respond" in tool_names and handle
 # the respond tool call in your execution logic.
 # =====================================================================

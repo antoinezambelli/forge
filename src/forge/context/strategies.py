@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 
-from forge.core.messages import Message, MessageMeta, MessageRole, MessageType
+from forge.core.messages import Message, MessageType
 
 
 def _estimate_tokens(messages: list[Message]) -> int:
@@ -47,6 +47,17 @@ class CompactStrategy(ABC):
         """
         ...
 
+    def _compact_with_initial_usage(
+        self,
+        messages: list[Message],
+        budget_tokens: int,
+        *,
+        initial_tokens: int,
+        step_hint: str = "",
+    ) -> tuple[list[Message], int]:
+        """Internal manager path; custom strategies retain the public contract."""
+        return self.compact(messages, budget_tokens, step_hint=step_hint)
+
 
 class NoCompact(CompactStrategy):
     """Passthrough strategy. Returns messages unchanged.
@@ -82,8 +93,23 @@ class SlidingWindowCompact(CompactStrategy):
         *,
         step_hint: str = "",
     ) -> tuple[list[Message], int]:
+        return self._compact_with_initial_usage(
+            messages,
+            budget_tokens,
+            initial_tokens=_estimate_tokens(messages),
+            step_hint=step_hint,
+        )
+
+    def _compact_with_initial_usage(
+        self,
+        messages: list[Message],
+        budget_tokens: int,
+        *,
+        initial_tokens: int,
+        step_hint: str = "",
+    ) -> tuple[list[Message], int]:
         trigger = int(budget_tokens * self.compact_threshold)
-        if _estimate_tokens(messages) < trigger:
+        if initial_tokens < trigger:
             return list(messages), 0
         eligible_end = TieredCompact._find_eligible_end(messages, self.keep_recent)
         if eligible_end <= 2:
@@ -174,7 +200,22 @@ class TieredCompact(CompactStrategy):
         Each phase has its own threshold (fraction of budget_tokens).
         A phase only runs if estimated tokens exceed its threshold.
         """
-        tokens = _estimate_tokens(messages)
+        return self._compact_with_initial_usage(
+            messages,
+            budget_tokens,
+            initial_tokens=_estimate_tokens(messages),
+            step_hint=step_hint,
+        )
+
+    def _compact_with_initial_usage(
+        self,
+        messages: list[Message],
+        budget_tokens: int,
+        *,
+        initial_tokens: int,
+        step_hint: str = "",
+    ) -> tuple[list[Message], int]:
+        tokens = initial_tokens
         t1 = int(budget_tokens * self._phase_triggers[0])
         t2 = int(budget_tokens * self._phase_triggers[1])
         t3 = int(budget_tokens * self._phase_triggers[2])
@@ -189,17 +230,20 @@ class TieredCompact(CompactStrategy):
 
         # Phase 1: Drop nudges/retries, truncate tool_results to first line
         result = self._phase1(messages, eligible_end)
-        if _estimate_tokens(result) < t2:
+        if result != messages:
+            tokens = _estimate_tokens(result)
+        if tokens < t2:
             return result, 1
 
         # Phase 2: Phase 1 + drop tool_results entirely
-        result = self._phase2(messages, eligible_end)
-        if _estimate_tokens(result) < t3:
-            return result, 2
+        phase2_result = self._phase2(messages, eligible_end)
+        if phase2_result != result:
+            tokens = _estimate_tokens(phase2_result)
+        if tokens < t3:
+            return phase2_result, 2
 
         # Phase 3: Phase 2 + drop reasoning and text_response (tool_call skeleton only)
-        result = self._phase3(messages, eligible_end)
-        return result, 3
+        return self._phase3(messages, eligible_end), 3
 
     def _phase1(
         self, messages: list[Message], eligible_end: int

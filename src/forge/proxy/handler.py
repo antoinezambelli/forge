@@ -3,13 +3,26 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Awaitable, Callable
 from copy import deepcopy
 from dataclasses import dataclass
 from typing import Any, Literal
 
-from forge.clients.base import LLMClient, format_tool, redact_auth_headers
+from forge._backend_profiles import ClientAdapter, ModelCatalog
+from forge.clients.base import (
+    LLMClient,
+    TokenUsage,
+    _capture_usage,
+    format_tool,
+    redact_auth_headers,
+)
 from forge.context.manager import ContextManager
-from forge.core.inference import _get_usage, prepare_backend_messages, run_inference
+from forge.context.observations import ContextSession
+from forge.core.inference import (
+    _sync_token_count,
+    prepare_backend_messages,
+    run_inference,
+)
 from forge.core.reasoning import (
     DEFAULT_REASONING_REPLAY,
     ReasoningReplay,
@@ -63,79 +76,78 @@ _FORGE_OWNED = frozenset({"messages", "tools", "stream", "stream_options", "syst
 
 
 @dataclass
+class RequestFacts:
+    """Facts owned by one HTTP request and discarded when that call completes."""
+
+    model_catalog: ModelCatalog | None = None
+    effective_model: Any | None = None
+    session: ContextSession | None = None
+    reporting_eligible: bool = True
+    completed: bool = False
+    usage: TokenUsage | None = None
+
+
+def observe_request_context(
+    body: dict[str, Any],
+    headers: dict[str, str],
+    facts: RequestFacts,
+) -> None:
+    """Extract neutral session and caller classification without consuming wire data."""
+
+    claude_session = headers.get("x-claude-code-session-id")
+    litellm_session = body.get("litellm_session_id")
+    if isinstance(claude_session, str) and claude_session.strip():
+        facts.session = ContextSession(claude_session, "claude_code")
+    elif isinstance(litellm_session, str) and litellm_session.strip():
+        facts.session = ContextSession(litellm_session, "litellm")
+    else:
+        facts.session = None
+
+    facts.reporting_eligible = not any(
+        isinstance(headers.get(name), str) and bool(headers[name].strip())
+        for name in (
+            "x-claude-code-agent-id",
+            "x-claude-code-parent-agent-id",
+        )
+    )
+
+
+@dataclass
 class LazyDiscovery:
-    """Cross-request latch for deferred external-mode backend discovery.
+    """Process-lifetime success latch for unmanaged unpinned vLLM identity."""
 
-    In external passthrough mode the proxy can't probe the backend at startup
-    (the probe would be unauthenticated against a gated backend), so discovery
-    is deferred to the first request — where the inbound credential authenticates
-    it. This object, created once at setup and shared across requests, holds:
-
-    - ``deferred``: whether lazy discovery is active at all (False for managed,
-      Anthropic, and eager static-key external — those probe at startup).
-    - ``apply_budget``: whether the discovered context length should be written
-      to the context manager. False when ``--budget-tokens`` was given explicitly
-      (the discovery still runs, but only to adopt vLLM's served identity).
-    - ``adopt_model_identity``: whether the deferred work includes adopting
-      vLLM's served-model identity. Unlike ``apply_budget``, this is False for
-      pinned vLLM and llama.cpp budget-only discovery.
-    - ``done``: latched True once discovery succeeds. Only success latches; a
-      failed probe leaves it False so a later credentialed request retries.
-    """
-
-    deferred: bool
-    apply_budget: bool
     done: bool = False
-    adopt_model_identity: bool = False
+
+
+CatalogFetcher = Callable[[dict[str, str]], Awaitable[ModelCatalog]]
 
 
 async def run_lazy_discovery(
     client: LLMClient,
-    context_manager: ContextManager,
     lazy_discovery: LazyDiscovery | None,
-    extra_headers: dict[str, str] | None,
+    inbound_headers: dict[str, str],
+    fetch_catalog: CatalogFetcher | None,
+    request_facts: RequestFacts,
 ) -> None:
-    """Run deferred external-mode backend discovery once, if pending.
-
-    No-op when discovery isn't deferred or has already latched. Probes the
-    backend with the per-request credential, adopts any backend-owned identity
-    (vLLM served-model-name) into the client, applies the discovered budget to
-    the context manager (when ``apply_budget``), and latches ``done`` — on
-    SUCCESS only, so a failed probe retries on the next request. Raises
-    ``BackendDiscoveryError`` on failure (auth rejection vs fault distinguished
-    by ``status_code``).
-
-    Called before BOTH dispatch paths (a vLLM request needs its served identity
-    on every call, not just the compacting tool path), and optionally by the
-    proxy before flushing a streaming response's headers so a failure can be a
-    real HTTP status instead of an SSE error event.
-
-    Concurrency & a load-bearing assumption (external mode is unserialized, so
-    two first requests can race here):
-      - No lock by design. The probe is idempotent and the commit below is a
-        single await-free block (set client identity, set budget, set done) —
-        asyncio runs it without interleaving, so a concurrent second probe at
-        worst overwrites with identical values. There is no torn state.
-      - This assumes the backend's metadata (served model name, context length)
-        is the SAME regardless of which credential probes it — i.e. one backend
-        URL serves one model. That holds for a single llama.cpp/vLLM server. It
-        does NOT hold for a multi-tenant gateway that routes to different models
-        per API key behind one URL; there, a single shared client identity is
-        the wrong model. That topology is out of scope for the proxy (one
-        backend, one identity); a per-credential client would be required.
-    """
-    if lazy_discovery is None or not lazy_discovery.deferred or lazy_discovery.done:
+    """Adopt an unmanaged served identity once, leaving context policy untouched."""
+    if lazy_discovery is None or lazy_discovery.done:
         return
+    if fetch_catalog is None:
+        raise BackendDiscoveryError(status_code=None)
     try:
-        budget = await client.discover_backend_metadata(extra_headers=extra_headers)
+        catalog = await fetch_catalog(inbound_headers)
     except BackendError as exc:
-        # Auth rejection (401/403) vs backend/connectivity fault carried via
-        # status_code; the server maps it to the right client status.
         raise BackendDiscoveryError(status_code=exc.status_code) from exc
-    if lazy_discovery.apply_budget:
-        if budget is None:
-            raise BackendDiscoveryError(status_code=None)
-        context_manager.budget_tokens = budget
+
+    # Identity selection has its own failure policy: an unusable first row is
+    # fatal here even though later entries remain valid context facts. The
+    # await-free mutation/latch block keeps model and sampling key atomic while
+    # retaining lock-free, duplicate-safe concurrent first discovery.
+    served_id = catalog.first_served_id
+    if served_id is None:
+        raise BackendDiscoveryError(status_code=None)
+    client._set_model_identity(served_id)  # type: ignore[attr-defined]
+    request_facts.model_catalog = catalog
     lazy_discovery.done = True
 
 
@@ -165,19 +177,36 @@ def _extract_passthrough(body: dict[str, Any]) -> dict[str, Any] | None:
     return extras or None
 
 
+def validate_request_model(
+    body: dict[str, Any],
+    client: LLMClient,
+    client_adapter: ClientAdapter,
+) -> None:
+    """Validate request-local model requirements before response headers."""
+    if client_adapter != ClientAdapter.ANTHROPIC:
+        return
+    model = client.model if client.model not in (None, "") else body.get("model")
+    if model in (None, ""):
+        raise MissingModelError()
+
+
 def resolve_effective_model(
     body: dict[str, Any],
     client: LLMClient,
-    backend_protocol: str,
+    client_adapter: ClientAdapter,
 ) -> Any:
-    """Resolve this request's downstream and response model identity.
+    """Resolve the exact adapter-selected model sent downstream.
 
     Anthropic-shaped downstreams may be request-routed: a configured client
-    model is a pin, otherwise the inbound model remains request-local. Other
-    backends retain the proxy's existing response-label behavior.
+    model is a pin, otherwise the inbound model remains request-local. vLLM
+    and Ollama always use their configured/discovered client identity. Generic
+    llama-shaped requests retain an inbound identity and otherwise fall back
+    to the configured client identity.
     """
-    if backend_protocol != "anthropic":
-        return body.get("model", "forge")
+    if client_adapter in (ClientAdapter.VLLM, ClientAdapter.OLLAMA):
+        return client.model
+    if client_adapter != ClientAdapter.ANTHROPIC:
+        return body["model"] if "model" in body else client.model
 
     model = client.model if client.model not in (None, "") else body.get("model")
     if model in (None, ""):
@@ -212,7 +241,7 @@ def _extract_tool_names(tool_specs: list[ToolSpec]) -> list[str]:
 
 def _raw_openai_tools(request_tools: Any) -> list[dict[str, Any]] | None:
     """Return a detached deep copy of the inbound OpenAI tools array."""
-    if not isinstance(request_tools, list) or not request_tools:
+    if not isinstance(request_tools, list):
         return None
     return [deepcopy(tool) for tool in request_tools if isinstance(tool, dict)]
 
@@ -228,6 +257,7 @@ async def handle_chat_completions(
     body: dict[str, Any],
     client: LLMClient,
     context_manager: ContextManager,
+    client_adapter: ClientAdapter,
     max_retries: int = 3,
     max_tool_errors: int = 2,
     rescue_enabled: bool = True,
@@ -239,6 +269,8 @@ async def handle_chat_completions(
     backend_protocol: str = "openai",
     backend_api_key_present: bool = False,
     lazy_discovery: LazyDiscovery | None = None,
+    request_facts: RequestFacts | None = None,
+    catalog_fetcher: CatalogFetcher | None = None,
 ) -> dict[str, Any] | list[dict[str, Any]]:
     """Handle an inbound completions request.
 
@@ -249,22 +281,28 @@ async def handle_chat_completions(
     Args:
         body: Parsed JSON request body.
         client: The forge LLM client for the backend.
-        context_manager: For context compaction.
+        context_manager: Shared usage observation/policy primitive. Proxy
+            supplies ``NoCompact`` and never mutates caller history by budget.
         max_retries: Max consecutive retries for bad responses.
         max_tool_errors: Max consecutive tool-call errors (malformed args).
         rescue_enabled: Whether to attempt rescue parsing.
-        native_passthrough: When True (default, native capability), forward the
-            client's verbatim OpenAI tools/messages to the backend on the clean
-            first attempt (transparent passthrough). When False (prompt
-            capability), suppress the raw passthrough so the request folds
-            normally and the client's prompt path injects the tool prompt and
-            downgrades tool history — the raw passthrough is meaningless when
-            tools are serialized into the prompt text.
+        native_passthrough: When True (default, native capability), make the
+            client's raw OpenAI tools/message content available to compatible
+            adapters on the clean first attempt. Generic OpenAI/llama and vLLM
+            paths preserve applicable fields; Ollama and Anthropic convert or
+            rebuild their downstream shapes. The llama/OpenAI adapter may merge
+            consecutive visible same-role messages for template compatibility;
+            this is not compaction or deletion. When False (prompt capability), suppress
+            the raw passthrough so the request folds normally and the client's
+            prompt path injects the tool prompt and downgrades tool history —
+            the raw passthrough is meaningless when tools are serialized into
+            the prompt text.
         inject_respond_tool: When True and the client request supplies tools,
             inject forge's synthetic respond() tool so the model stays in
             tool-calling mode (the call is stripped from the outbound
-            response). Default False — the proxy forwards the client's tools
-            untouched unless explicitly opted in.
+            response). Default False; without injection, tool handling remains
+            the selected adapter's ordinary clean-path preservation or
+            conversion behavior.
         protocol: Inbound wire format. ``openai`` for
             ``/v1/chat/completions``; ``anthropic`` for ``/v1/messages``.
         reasoning_replay: How much captured reasoning to replay to the
@@ -274,6 +312,8 @@ async def handle_chat_completions(
             forwarded; no other inbound header is forwarded.
         backend_protocol: Wire protocol of the backend (relocation target):
             ``openai`` or ``anthropic``.
+        client_adapter: Normalized private adapter policy supplied by the
+            selected backend profile.
         backend_api_key_present: Whether a static ``--backend-api-key`` is
             configured. When True, an inbound auth header is a second credential
             and the request is refused.
@@ -283,8 +323,10 @@ async def handle_chat_completions(
         If stream=true: a list of SSE event dicts (protocol-shaped).
     """
     reasoning_replay = validate_reasoning_replay(reasoning_replay)
+    request_facts = request_facts or RequestFacts()
+    observe_request_context(body, headers or {}, request_facts)
     is_stream = body.get("stream", False)
-    model_name = resolve_effective_model(body, client, backend_protocol)
+    validate_request_model(body, client, client_adapter)
 
     # Resolve the single credential forge forwards to the backend: relocate an
     # inbound auth header into the backend's canonical slot, or None when the
@@ -305,12 +347,28 @@ async def handle_chat_completions(
             redact_auth_headers(extra_headers),
         )
 
-    # Deferred external-mode backend discovery (finding #2): runs once on the
+    # Deferred external-mode backend discovery runs once on the
     # first request, before BOTH dispatch paths. The proxy may also run this
     # earlier (before flushing a streaming response's headers) so a discovery
     # failure surfaces as a real HTTP status; in that case this is a no-op
     # (already latched).
-    await run_lazy_discovery(client, context_manager, lazy_discovery, extra_headers)
+    await run_lazy_discovery(
+        client,
+        lazy_discovery,
+        headers or {},
+        catalog_fetcher,
+        request_facts,
+    )
+    if request_facts.effective_model is None:
+        request_facts.effective_model = resolve_effective_model(
+            body, client, client_adapter,
+        )
+    model_name = request_facts.effective_model
+
+    # Each HTTP call supplies a standalone transcript. Exact usage left by the
+    # preceding request is not an observation of this request; request-scoped
+    # Proxy publication is handled separately.
+    context_manager.invalidate_usage()
 
     # Inbound parse + sampling/passthrough extraction (protocol-specific)
     if protocol == "anthropic":
@@ -394,20 +452,30 @@ async def handle_chat_completions(
             raw_openai_messages=raw_messages_for_backend,
             use_raw_messages=raw_messages_for_backend is not None,
         )
-        response = await client.send(
-            api_messages, tools=None, sampling=sampling, passthrough=passthrough,
-            inbound_anthropic_body=inbound_anthropic_body,
-            extra_headers=extra_headers,
-        )
-        usage = _get_usage(client)
+        raw_tools_kwarg: dict[str, Any] = {}
+        if raw_tools_for_backend is not None:
+            raw_tools_kwarg["raw_openai_tools"] = raw_tools_for_backend
+        with _capture_usage() as usage_capture:
+            response = await client.send(
+                api_messages, tools=None, sampling=sampling, passthrough=passthrough,
+                inbound_anthropic_body=inbound_anthropic_body,
+                extra_headers=extra_headers,
+                **raw_tools_kwarg,
+            )
+        usage = usage_capture.usage
+        _sync_token_count(usage, context_manager)
+        request_facts.usage = usage
+        request_facts.completed = True
         text = response.content if isinstance(response, TextResponse) else ""
-        return _emit_text(text, model_name, protocol, is_stream, usage=usage)
+        return _emit_text(
+            text, model_name, protocol, is_stream, usage=usage,
+        )
 
     # Set up guardrails
     validator = ResponseValidator(tool_names, rescue_enabled=rescue_enabled)
     error_tracker = ErrorTracker(max_retries=max_retries, max_tool_errors=max_tool_errors)
 
-    # Run inference (compact → fold → serialize → send → validate → retry)
+    # Run the shared guardrail inference path; Proxy supplies NoCompact.
     try:
         result = await run_inference(
             messages=messages,
@@ -430,8 +498,12 @@ async def handle_chat_completions(
         # error. The client's own agentic loop can decide what to do.
         raw = exc.raw_response or ""
         logger.warning("Retries exhausted, passing through text: %.120s", raw)
-        usage = _get_usage(client)
-        return _emit_text(raw, model_name, protocol, is_stream, usage=usage)
+        usage = getattr(exc, "usage", None)
+        request_facts.usage = usage
+        request_facts.completed = True
+        return _emit_text(
+            raw, model_name, protocol, is_stream, usage=usage,
+        )
 
     # run_inference returns None when max_attempts exhausted
     if result is None:
@@ -439,6 +511,8 @@ async def handle_chat_completions(
 
     tool_calls = result.response
     usage = result.usage
+    request_facts.usage = usage
+    request_facts.completed = True
 
     # Strip respond() calls — convert to plain text for the client.
     # If the model called respond(message="..."), the client sees a

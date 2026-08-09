@@ -217,7 +217,11 @@ flowchart TD
 
 ## Client Adapter Flow
 
-The `LLMClient` protocol abstracts backend differences. The runner never sees raw HTTP — it gets `list[ToolCall] | TextResponse`. All clients also expose `get_context_length()` for budget discovery.
+The `LLMClient` protocol abstracts backend differences. The runner never sees
+raw HTTP — it gets `list[ToolCall] | TextResponse`. Built-in adapters cover
+generic OpenAI-compatible endpoints, Ollama, llama-server/llamafile, vLLM, and
+Anthropic. The protocol also requires an honest `get_context_length()` result
+for budget discovery (`None` when unavailable).
 
 ```mermaid
 flowchart LR
@@ -245,6 +249,17 @@ flowchart LR
             LF_PROMPT --> LF_DOWN
         end
 
+        subgraph OAI["OpenAICompatClient"]
+            OAI_API["api_format = 'openai'"]
+            OAI_NATIVE["Generic OpenAI<br/>chat completions"]
+        end
+
+        subgraph VL["VLLMClient"]
+            VL_API["api_format = 'openai'"]
+            VL_NATIVE["Native FC + server-side<br/>tool/reasoning parsing"]
+            VL_ID["Served identity + context<br/>via /v1/models"]
+        end
+
         subgraph AN["AnthropicClient"]
             AN_API["api_format = 'openai'"]
             AN_CONV["Convert OpenAI → Anthropic<br/>format before each call"]
@@ -253,12 +268,16 @@ flowchart LR
 
     subgraph Backends["Backends"]
         OLLAMA_SVC["Ollama Service<br/>localhost:11434"]
-        LLAMA_SRV["llama-server<br/>localhost:8080"]
+        LLAMA_SRV["llama-server / llamafile<br/>localhost:8080"]
+        OPENAI_SVC["Generic OpenAI-compatible<br/>endpoint"]
+        VLLM_SVC["vLLM<br/>localhost:8000"]
         ANTHROPIC["Anthropic API<br/>api.anthropic.com"]
     end
 
     SEND_CALL --> OL --> OLLAMA_SVC
     SEND_CALL --> LF --> LLAMA_SRV
+    SEND_CALL --> OAI --> OPENAI_SVC
+    SEND_CALL --> VL --> VLLM_SVC
     SEND_CALL --> AN --> ANTHROPIC
 ```
 
@@ -297,6 +316,12 @@ sequenceDiagram
 ## Budget Resolution
 
 `ServerManager` resolves context budgets before the agentic loop starts. The budget flows into `ContextManager`, which uses it as the compaction threshold.
+
+This diagram describes native `setup_backend()`/`WorkflowRunner` composition.
+Proxy keeps the same managed allocation modes but always composes `NoCompact`;
+it never mutates caller history. In unmanaged Proxy mode, `budget_tokens` and
+metadata are reporting-only inputs for `/forge/usage`, and the backend
+operator owns allocation, overflow, model swaps, and failures.
 
 ```mermaid
 flowchart TD
@@ -373,6 +398,8 @@ flowchart TB
             BASE["base.py<br/>LLMClient protocol"]
             OLLAMA["ollama.py<br/>OllamaClient"]
             LLAMAFILE["llamafile.py<br/>LlamafileClient"]
+            OPENAI_COMPAT["openai_compat.py<br/>OpenAICompatClient"]
+            VLLM["vllm.py<br/>VLLMClient"]
             ANTHROPIC["anthropic.py<br/>AnthropicClient"]
         end
 
@@ -386,7 +413,7 @@ flowchart TB
     end
 
     subgraph eval["tests/eval/"]
-        SCENARIOS["scenarios/<br/>20 scenarios across<br/>plumbing, model_quality,<br/>compaction, stateful"]
+        SCENARIOS["scenarios/<br/>plumbing, model_quality,<br/>compaction, stateful"]
         EVAL_RUN["eval_runner.py<br/>CLI + runner"]
         METRICS["metrics.py<br/>Aggregate stats"]
         BATCH["batch_eval.py<br/>Multi-config runner"]

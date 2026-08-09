@@ -7,7 +7,7 @@ The *why* of forge. For *what* lives where, see [WORKFLOW.md](WORKFLOW.md) and t
 A reusable Python library for self-hosted LLM tool-calling and multi-step agentic workflows. Forge owns the tool-calling loop — retry logic, context management, step enforcement, and client adapters. It does not own intent routing, model selection, or domain logic; downstream projects build those on top.
 
 **Target hardware:** 12–32GB VRAM (consumer GPUs).
-**Backends:** llama-server (llama.cpp), Llamafile, Ollama, Anthropic.
+**Backends:** llama-server (llama.cpp), Llamafile, Ollama, vLLM, generic OpenAI-compatible, Anthropic.
 **Surfaced three ways:** `WorkflowRunner` (own the loop), OpenAI-compatible proxy (drop-in for existing harnesses), middleware (`Guardrails` facade for foreign loops).
 
 ---
@@ -80,7 +80,7 @@ forge.proxy          forge.core.runner
 ```
 
 - **`WorkflowRunner`** (forge owns the loop) — full feature set: step enforcement, prerequisites, context compaction, threshold callbacks, cancellation, streaming, on_message observability. Best when building on forge directly.
-- **Proxy server** (drop-in) — OpenAI-compatible `/v1/chat/completions` endpoint. Applies validation, rescue parsing, retry loop, and synthetic `respond` injection per request. Single-shot — workflow-spanning features (step enforcement, prerequisites, session memory) are out by design because the OpenAI chat-completions schema doesn't carry that state. See [ADR-012](decisions/012-openai-proxy.md).
+- **Proxy server** (drop-in) — OpenAI-compatible `/v1/chat/completions` plus Anthropic `/v1/messages`. Applies validation, rescue parsing, and retries to tool-bearing requests; tool-free requests call the selected backend directly. Synthetic `respond` injection is explicit opt-in. Proxy never compacts caller history. Its `/forge/usage` surface is one last-completed process-local usage snapshot, not session memory or a persistent ledger. See [ADR-012](decisions/012-openai-proxy.md) and the current [migration contract](MIGRATING_TO_0.9.md).
 - **Middleware** (`Guardrails` facade) — for callers running their own loop. Two-method API (`check()` / `record()`) wrapping `ResponseValidator`, `StepEnforcer`, `ErrorTracker`. Returns `Nudge` objects the caller routes however its framework expects. See [ADR-011](decisions/011-guardrail-middleware.md).
 
 The middleware is the foundation; proxy and runner compose the same components.
@@ -149,7 +149,13 @@ The flag is opt-in (`recommended_sampling=True`):
 - **On, model known** — values applied; caller's explicit non-None kwargs win field-by-field.
 - **On, model unknown** — raises `UnsupportedModelError`. Falling through to backend defaults silently would defeat the explicit opt-in.
 
-Proxy mode doesn't consult the map — it plumbs whatever sampling params arrive in the request body. The calling client is expected to look up `get_sampling_defaults(model)` and include them in the body.
+Proxy mode doesn't consult the map. Generic OpenAI/llama and vLLM adapters
+apply the OpenAI-shaped per-call sampling dictionary. Ollama translates the
+fields it supports into native options. `AnthropicClient` ignores that
+OpenAI-shaped dictionary, while a clean Anthropic-to-Anthropic request retains
+its caller-authored Anthropic body fields. Callers that want Forge's card
+recommendations must still look up `get_sampling_defaults(model)` and send
+values appropriate for the selected downstream adapter.
 
 Full rationale: [ADR-014](decisions/014-recommended-sampling-opt-in.md). For supported models, citation links, and override patterns: [MODEL_GUIDE.md § Sampling Parameters](MODEL_GUIDE.md#sampling-parameters).
 

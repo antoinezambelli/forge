@@ -5,18 +5,32 @@ No API calls or mocks needed.
 """
 
 import asyncio
-import json
+from collections.abc import AsyncIterator
+from pathlib import Path
+import tomllib
+from types import SimpleNamespace
 from typing import Literal
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+import anthropic
+import httpx
 from pydantic import BaseModel, Field
 
 from forge.clients.anthropic import AnthropicClient
-from forge.clients.base import TokenUsage
-from forge.core.inference import _get_usage
+from forge.clients.base import ChunkType, TokenUsage
 from forge.core.workflow import TextResponse, ToolCall, ToolSpec
-from forge.errors import MissingModelError
+from forge.errors import BackendError, MissingModelError
+
+
+def test_anthropic_dependency_floor_exposes_exact_context_metadata() -> None:
+    config = tomllib.loads(
+        (Path(__file__).parents[2] / "pyproject.toml").read_text(encoding="utf-8"),
+    )
+    extras = config["project"]["optional-dependencies"]
+
+    assert extras["anthropic"] == ["anthropic>=0.86.0"]
+    assert "anthropic>=0.86.0" in extras["dev"]
 
 
 class CityParams(BaseModel):
@@ -31,6 +45,69 @@ def _make_spec(name: str = "get_weather") -> ToolSpec:
     )
 
 
+class _FakeAnthropicStream:
+    """Minimal SDK stream surface for deterministic event-parser tests."""
+
+    def __init__(
+        self,
+        events: list[SimpleNamespace],
+        *,
+        usage: SimpleNamespace | None = None,
+        error: Exception | None = None,
+    ) -> None:
+        self._events = events
+        self._usage = usage or SimpleNamespace(
+            input_tokens=1,
+            output_tokens=1,
+            cache_creation_input_tokens=0,
+            cache_read_input_tokens=0,
+        )
+        self._error = error
+
+    async def __aenter__(self) -> "_FakeAnthropicStream":
+        return self
+
+    async def __aexit__(self, *args: object) -> bool:
+        return False
+
+    def __aiter__(self) -> AsyncIterator[SimpleNamespace]:
+        async def iterate() -> AsyncIterator[SimpleNamespace]:
+            for event in self._events:
+                yield event
+            if self._error is not None:
+                raise self._error
+
+        return iterate()
+
+    async def get_final_message(self) -> SimpleNamespace:
+        return SimpleNamespace(usage=self._usage)
+
+
+def _stream_event(event_type: str, **fields: object) -> SimpleNamespace:
+    return SimpleNamespace(type=event_type, **fields)
+
+
+def _text_delta(text: str) -> SimpleNamespace:
+    return _stream_event(
+        "content_block_delta",
+        delta=SimpleNamespace(type="text_delta", text=text),
+    )
+
+
+def _tool_start(name: str) -> SimpleNamespace:
+    return _stream_event(
+        "content_block_start",
+        content_block=SimpleNamespace(type="tool_use", name=name),
+    )
+
+
+def _json_delta(partial_json: str) -> SimpleNamespace:
+    return _stream_event(
+        "content_block_delta",
+        delta=SimpleNamespace(type="input_json_delta", partial_json=partial_json),
+    )
+
+
 class SetUnitParams(BaseModel):
     unit: Literal["celsius", "fahrenheit"] = Field(description="Unit")
 
@@ -41,6 +118,13 @@ def _make_spec_with_enum() -> ToolSpec:
         description="Set temperature unit",
         parameters=SetUnitParams,
     )
+
+
+def test_direct_base_url_is_passed_to_sdk_unchanged() -> None:
+    service_root = "https://anthropic.example/deployment/"
+    with patch("forge.clients.anthropic.anthropic.AsyncAnthropic") as sdk:
+        AnthropicClient(model="claude-test", api_key="dummy", base_url=service_root)
+    assert sdk.call_args.kwargs["base_url"] == service_root
 
 
 # ── _convert_tools ───────────────────────────────────────────────
@@ -411,16 +495,124 @@ class TestParseResponse:
         assert result.content == ""
 
 
-# ── Usage reporting (slot-keyed last_usage) ──────────────────────
+# -- Streaming event parsing -----------------------------------------------
+
+
+class TestStreaming:
+    @pytest.mark.asyncio
+    async def test_text_stream_emits_deltas_final_response_and_usage(self) -> None:
+        client = AnthropicClient(model="claude-test", api_key="dummy")
+        events = [
+            _text_delta("Hello, "),
+            _text_delta("world!"),
+            _stream_event("message_stop"),
+        ]
+        usage = SimpleNamespace(
+            input_tokens=12,
+            output_tokens=4,
+            cache_creation_input_tokens=3,
+            cache_read_input_tokens=5,
+        )
+        client._client = MagicMock()
+        client._client.messages.stream.return_value = _FakeAnthropicStream(
+            events, usage=usage,
+        )
+
+        chunks = [
+            chunk
+            async for chunk in client.send_stream(
+                [{"role": "user", "content": "hello"}],
+            )
+        ]
+
+        assert [chunk.type for chunk in chunks] == [
+            ChunkType.TEXT_DELTA,
+            ChunkType.TEXT_DELTA,
+            ChunkType.FINAL,
+        ]
+        assert [chunk.content for chunk in chunks[:-1]] == ["Hello, ", "world!"]
+        assert chunks[-1].response == TextResponse(content="Hello, world!")
+        assert client.last_usage == {
+            0: TokenUsage(
+                prompt_tokens=12,
+                completion_tokens=4,
+                total_tokens=16,
+                cache_creation_input_tokens=3,
+                cache_read_input_tokens=5,
+            ),
+        }
+
+    @pytest.mark.asyncio
+    async def test_multi_tool_stream_keeps_fragment_and_block_boundaries(self) -> None:
+        client = AnthropicClient(model="claude-test", api_key="dummy")
+        events = [
+            _text_delta("Let me check both."),
+            _tool_start("get_weather"),
+            _json_delta('{"city":'),
+            _json_delta('"Paris"}'),
+            _stream_event("content_block_stop"),
+            _tool_start("set_unit"),
+            _json_delta('{"unit":"cel'),
+            _json_delta('sius"}'),
+            _stream_event("content_block_stop"),
+            _stream_event("message_stop"),
+        ]
+        client._client = MagicMock()
+        client._client.messages.stream.return_value = _FakeAnthropicStream(events)
+
+        chunks = [
+            chunk
+            async for chunk in client.send_stream(
+                [{"role": "user", "content": "weather and units"}],
+            )
+        ]
+
+        assert [
+            chunk.content
+            for chunk in chunks
+            if chunk.type == ChunkType.TOOL_CALL_DELTA
+        ] == ['{"city":', '"Paris"}', '{"unit":"cel', 'sius"}']
+        assert chunks[-1].type == ChunkType.FINAL
+        assert chunks[-1].response == [
+            ToolCall(
+                tool="get_weather",
+                args={"city": "Paris"},
+                reasoning="Let me check both.",
+            ),
+            ToolCall(tool="set_unit", args={"unit": "celsius"}, reasoning=None),
+        ]
+
+    @pytest.mark.asyncio
+    async def test_sdk_stream_failure_becomes_backend_error(self) -> None:
+        client = AnthropicClient(model="claude-test", api_key="dummy")
+        sdk_error = anthropic.APIError(
+            "stream failed",
+            httpx.Request("POST", "https://api.anthropic.com/v1/messages"),
+            body=None,
+        )
+        client._client = MagicMock()
+        client._client.messages.stream.return_value = _FakeAnthropicStream(
+            [], error=sdk_error,
+        )
+
+        with pytest.raises(BackendError, match="Backend returned 0: stream failed") as exc:
+            _ = [
+                chunk
+                async for chunk in client.send_stream(
+                    [{"role": "user", "content": "hello"}],
+                )
+            ]
+
+        assert exc.value.__cause__ is sdk_error
+
+
+# -- Usage reporting (slot-keyed last_usage) -------------------------------
 
 
 class TestUsageReporting:
     @pytest.mark.asyncio
     async def test_send_records_slot_keyed_usage(self) -> None:
-        """send() stores last_usage as {0: TokenUsage} so inference._get_usage
-        reads it the same way it reads LlamafileClient / OllamaClient — without
-        this, proxy path-1 (CC -> forge -> Anthropic/LiteLLM) reports zero usage.
-        """
+        """send() preserves the slot-keyed direct-client usage mirror."""
         client = AnthropicClient(model="claude-test", api_key="dummy")
 
         text_block = MagicMock()
@@ -445,8 +637,6 @@ class TestUsageReporting:
         assert isinstance(result, TextResponse)
         expected = TokenUsage(prompt_tokens=12, completion_tokens=7, total_tokens=19)
         assert client.last_usage == {0: expected}
-        # Cross-client contract: _get_usage resolves slot 0 to the TokenUsage.
-        assert _get_usage(client) == expected
 
 
 # ── Prompt caching (static tools+system breakpoint) ──────────────
@@ -635,3 +825,103 @@ class TestThinking:
         )
         kwargs = client._build_kwargs(self._MESSAGES, [_make_spec("a")])
         assert kwargs["tool_choice"] == {"type": "any"}
+
+
+class TestGetContextLength:
+    @pytest.mark.asyncio
+    async def test_official_pinned_model_uses_exact_sdk_metadata(self) -> None:
+        client = AnthropicClient(model="claude-test", api_key="dummy")
+        retrieve = AsyncMock(return_value=SimpleNamespace(max_input_tokens=123456))
+        client._client = SimpleNamespace(
+            base_url="https://api.anthropic.com/",
+            models=SimpleNamespace(retrieve=retrieve),
+        )
+        assert await client.get_context_length() == 123456
+        retrieve.assert_awaited_once_with("claude-test")
+
+    @pytest.mark.asyncio
+    async def test_unpinned_official_client_returns_none(self) -> None:
+        client = AnthropicClient(model=None, api_key="dummy")
+        retrieve = AsyncMock()
+        client._client = SimpleNamespace(
+            base_url="https://api.anthropic.com",
+            models=SimpleNamespace(retrieve=retrieve),
+        )
+        assert await client.get_context_length() is None
+        retrieve.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "base_url",
+        [
+            "https://gateway.example",
+            "http://api.anthropic.com",
+            "https://api.anthropic.com/deployment",
+            "https://api.anthropic.com/?version=1",
+        ],
+    )
+    async def test_untrusted_metadata_target_returns_none(self, base_url: str) -> None:
+        client = AnthropicClient(model="claude-test", api_key="dummy")
+        retrieve = AsyncMock()
+        client._client = SimpleNamespace(
+            base_url=base_url,
+            models=SimpleNamespace(retrieve=retrieve),
+        )
+        assert await client.get_context_length() is None
+        retrieve.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_older_sdk_without_models_resource_returns_none(self) -> None:
+        client = AnthropicClient(model="claude-test", api_key="dummy")
+        client._client = SimpleNamespace(base_url="https://api.anthropic.com")
+        assert await client.get_context_length() is None
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("window", [None, 0, -1, True, "200000"])
+    async def test_unusable_metadata_window_returns_none(self, window: object) -> None:
+        client = AnthropicClient(model="claude-test", api_key="dummy")
+        client._client = SimpleNamespace(
+            base_url="https://api.anthropic.com:443/",
+            models=SimpleNamespace(
+                retrieve=AsyncMock(
+                    return_value=SimpleNamespace(max_input_tokens=window),
+                ),
+            ),
+        )
+        assert await client.get_context_length() is None
+
+    @pytest.mark.asyncio
+    async def test_sdk_failure_maps_to_safe_backend_error(self) -> None:
+        client = AnthropicClient(model="claude-test", api_key="dummy")
+        request = httpx.Request("GET", "https://api.anthropic.com/v1/models/x")
+        client._client = SimpleNamespace(
+            base_url="https://api.anthropic.com",
+            models=SimpleNamespace(
+                retrieve=AsyncMock(
+                    side_effect=__import__("anthropic").APIConnectionError(
+                        request=request,
+                    ),
+                ),
+            ),
+        )
+        with pytest.raises(BackendError, match="metadata request failed"):
+            await client.get_context_length()
+
+
+def test_sdk_kwargs_owns_only_litellm_extra_body_and_strips_caller_controls():
+    client = AnthropicClient.__new__(AnthropicClient)
+    client._static_auth = False
+    client._client = SimpleNamespace(api_key=None, auth_token=None)
+    kwargs = {
+        "litellm_session_id": None,
+        "extra_body": {"caller": "must-not-survive"},
+        "extra_query": {"x": "y"},
+        "timeout": 1,
+    }
+
+    prepared = client._prepare_sdk_kwargs(kwargs, {"x-api-key": "secret"})
+
+    assert prepared["extra_body"] == {"litellm_session_id": None}
+    assert prepared["extra_headers"] == {"X-Api-Key": "secret"}
+    assert "extra_query" not in prepared
+    assert "timeout" not in prepared
