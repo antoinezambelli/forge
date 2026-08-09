@@ -9,6 +9,26 @@ compatibility class, and the required consumer action. Start with the ordinary
 deployment changes. Specialized valid configurations follow, and rejected
 contradictory or previously ineffective inputs are listed separately.
 
+## Common migrations
+
+Start here for common Proxy deployments. Commands omit unrelated flags for
+clarity; Python callers make the equivalent keyword substitution.
+
+| Before 0.9 | Forge 0.9 |
+|---|---|
+| **Generic external OpenAI, implicit profile**<br>`python -m forge.proxy --backend-url http://localhost:8080` | **No command change.** Omitting `--backend` still selects generic OpenAI compatibility. |
+| **Generic external OpenAI, explicit protocol**<br>`python -m forge.proxy --backend-url http://localhost:8080 --backend-protocol openai` | `python -m forge.proxy --backend-url http://localhost:8080 --backend openai`<br>You may also omit `--backend`. |
+| **Anthropic-compatible downstream (for example, LiteLLM)**<br>`python -m forge.proxy --backend-url http://litellm:4000 --backend-protocol anthropic` | `python -m forge.proxy --backend-url http://litellm:4000 --backend anthropic`<br>LiteLLM remains responsible for conversion to its target provider. |
+| **Forge process liveness**<br>`curl http://localhost:8081/health` | `curl http://localhost:8081/forge/health`<br>`/health` now reports the backend's own readiness response. |
+| **Unpinned external vLLM**<br>`python -m forge.proxy --backend-url http://localhost:8000 --backend vllm` | **No command change.** Served-model discovery now occurs on the first inference request rather than at startup. |
+| **Pinned external vLLM**<br>`python -m forge.proxy --backend-url http://localhost:8000 --backend vllm --model my-model` | **No command change.** `--model` remains the authoritative wire-model pin; reporting-budget configuration is independent. |
+| **External vLLM with the previously documented manual budget mode**<br>`python -m forge.proxy --backend-url http://localhost:8000 --backend vllm --budget-mode manual --budget-tokens 8192` | `python -m forge.proxy --backend-url http://localhost:8000 --backend vllm --budget-tokens 8192`<br>For unmanaged backends, the value is a reporting denominator; Forge does not allocate or compact the backend. |
+| **Managed llama-server with extra backend flags**<br>`--extra-flags` used ordinary option parsing, so normal dash-prefixed llama-server arguments could not be expressed reliably. | `python -m forge.proxy --backend llamaserver --gguf model.gguf --port 8081 --extra-flags --jinja -ngl 99`<br>`--extra-flags` now starts the terminal backend argv tail; put every Forge option before it. |
+
+Ordinary managed `llamaserver` and `ollama` startup commands also remain valid.
+Even when the command is unchanged, review the health, model-catalog, and
+response-identity rows below for observable behavior changes.
+
 ## Ordinary Proxy deployments
 
 | Pre-0.9 invocation or behavior | 0.9.0+ invocation or behavior | Class | Consumer action |
