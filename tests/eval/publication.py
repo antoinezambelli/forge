@@ -34,10 +34,18 @@ from tests.eval.generation import (
     selection_maximum_generation,
 )
 from tests.eval.provenance import GEN_INFO
+from tests.eval.outcomes import (
+    CANONICAL_DIALECT,
+    LEGACY_DIALECT,
+    OUTCOME_DIALECTS,
+    OutcomeDialect,
+    OutcomeSchemaError,
+    read_outcome,
+)
 
 
-CONTRACT_VERSION = "forge-eval-publication-v1"
-SCHEMA_VERSION = 1
+CONTRACT_VERSION = "forge-eval-publication-v2"
+SCHEMA_VERSION = 2
 REASONING_REPLAY_POLICIES = ("none", "keep-last", "full")
 SELECTION_STATUSES = (
     "latest",
@@ -52,6 +60,11 @@ PINNED_VIEW_COUNTS = {
     "history": 518_700,
     "snapshot": 378_300,
     "latest": 260_000,
+}
+PINNED_VIEW_METRIC_COUNTS = {
+    "history": (315_367, 429_648, 429_648),
+    "snapshot": (226_420, 313_105, 313_105),
+    "latest": (175_267, 228_420, 228_420),
 }
 PINNED_SNAPSHOT_SOURCE_IDENTITY_SHA256 = (
     "57618137e920a393e17a7c345b1bf97d8905d01584f16fef86befdc512de02ee"
@@ -80,16 +93,12 @@ class SourceField:
         return self.source_nullable or not self.source_required
 
 
-# The 22 common fields are required.  The remaining 11 fields are sparse
-# across releases.  Only fields observed with actual JSON null permit an
-# explicit null; omission and null are intentionally separate source states.
-SOURCE_SCHEMA: tuple[SourceField, ...] = (
+# Outcome aliases are dialect-specific; all other source fields are shared.
+COMMON_SOURCE_SCHEMA: tuple[SourceField, ...] = (
     SourceField("ablation", "string", True),
-    SourceField("accuracy", "bool", True, True),
     SourceField("backend", "string", True),
     SourceField("budget_tokens", "int64", True),
     SourceField("compaction_events", "int64", True),
-    SourceField("completeness", "bool", True),
     SourceField("elapsed_s", "float64", True),
     SourceField("error_message", "string", True, True),
     SourceField("error_type", "string", True, True),
@@ -119,6 +128,26 @@ SOURCE_SCHEMA: tuple[SourceField, ...] = (
     SourceField("stream_retries", "int64", False),
 )
 
+SOURCE_DIALECT_SCHEMAS: dict[OutcomeDialect, tuple[SourceField, ...]] = {
+    LEGACY_DIALECT: (
+        SourceField("accuracy", "bool", True, True),
+        SourceField("completeness", "bool", True),
+        SourceField("validate_error", "string", False, True),
+    ),
+    CANONICAL_DIALECT: (
+        SourceField("correct", "bool", True, True),
+        SourceField("completed", "bool", True),
+        SourceField("validation_error", "string", False, True),
+    ),
+}
+
+
+def source_schema(dialect: OutcomeDialect) -> tuple[SourceField, ...]:
+    try:
+        return COMMON_SOURCE_SCHEMA + SOURCE_DIALECT_SCHEMAS[dialect]
+    except KeyError as exc:  # pragma: no cover - guarded by SourceSpec validation
+        raise PublicationError(f"manifest:0: outcome dialect [unknown_dialect]") from exc
+
 
 @dataclass(frozen=True)
 class NormalizedField:
@@ -130,14 +159,35 @@ class NormalizedField:
     semantics: str
 
 
-_SOURCE_NORMALIZED_SCHEMA = tuple(
+_COMMON_NORMALIZED_SCHEMA = tuple(
     NormalizedField(
         source.name,
         source.logical_type,
         source.normalized_nullable,
         "Source value preserved; an omitted sparse source field becomes null.",
     )
-    for source in SOURCE_SCHEMA
+    for source in COMMON_SOURCE_SCHEMA
+)
+
+_OUTCOME_NORMALIZED_SCHEMA: tuple[NormalizedField, ...] = (
+    NormalizedField(
+        "correct",
+        "bool",
+        True,
+        "Usable correctness verdict; null means the run was not validated.",
+    ),
+    NormalizedField(
+        "completed",
+        "bool",
+        False,
+        "Whether the workflow returned normally, independent of correctness.",
+    ),
+    NormalizedField(
+        "validation_error",
+        "string",
+        True,
+        "Validator exception category; non-null implies correct is null.",
+    ),
 )
 
 _PROVENANCE_SCHEMA: tuple[NormalizedField, ...] = (
@@ -225,11 +275,8 @@ _PROVENANCE_SCHEMA: tuple[NormalizedField, ...] = (
 )
 
 NORMALIZED_SCHEMA: tuple[NormalizedField, ...] = (
-    _SOURCE_NORMALIZED_SCHEMA + _PROVENANCE_SCHEMA
+    _COMMON_NORMALIZED_SCHEMA + _OUTCOME_NORMALIZED_SCHEMA + _PROVENANCE_SCHEMA
 )
-
-_SOURCE_FIELDS = {field.name: field for field in SOURCE_SCHEMA}
-_SOURCE_FIELD_NAMES = frozenset(_SOURCE_FIELDS)
 
 
 @dataclass(frozen=True)
@@ -239,6 +286,7 @@ class SourceSpec:
     source_file: str
     release: str
     generation: int
+    outcome_dialect: OutcomeDialect
     row_count: int
     sha256: str
 
@@ -248,6 +296,7 @@ PINNED_SOURCES: tuple[SourceSpec, ...] = (
         "eval_results_v0.6.0.jsonl",
         "v0.6.0",
         1,
+        LEGACY_DIALECT,
         131_300,
         "2e6a0135b278752cc1a1dee20f2ce20f019c515ad28642ed241960d251112e4e",
     ),
@@ -255,6 +304,7 @@ PINNED_SOURCES: tuple[SourceSpec, ...] = (
         "eval_results_v0.7.0.jsonl",
         "v0.7.0",
         2,
+        LEGACY_DIALECT,
         96_200,
         "0dbe1ee5f76c283edf07f2c7ced3c3f410733b4e5566580bf0e8b69365baeaf7",
     ),
@@ -262,6 +312,7 @@ PINNED_SOURCES: tuple[SourceSpec, ...] = (
         "eval_results_v0.7.4.jsonl",
         "v0.7.4",
         2,
+        LEGACY_DIALECT,
         31_200,
         "879ea1c11eae6cde6b9edb0ac2fdfe91013eb21cdcad7b289ea2c48d970835f5",
     ),
@@ -269,6 +320,7 @@ PINNED_SOURCES: tuple[SourceSpec, ...] = (
         "eval_results_v0.7.5.jsonl",
         "v0.7.5",
         3,
+        LEGACY_DIALECT,
         185_900,
         "906ad20c816d3248a8b8218d39db8f5a04ff81dcb037b8244573244b2d20b107",
     ),
@@ -276,6 +328,7 @@ PINNED_SOURCES: tuple[SourceSpec, ...] = (
         "eval_results_v0.8.2.jsonl",
         "v0.8.2",
         3,
+        LEGACY_DIALECT,
         74_100,
         "65c6e3a453edc5b5abf438f6534b5dc7320e9717ee6e8c9b8472e9229b195fdf",
     ),
@@ -312,16 +365,30 @@ def canonical_json_bytes(value: Any, *, sort_keys: bool) -> bytes:
 
 def _schema_payload() -> dict[str, Any]:
     return {
-        "source_fields": [
-            {
-                "name": source.name,
-                "logical_type": source.logical_type,
-                "source_required": source.source_required,
-                "source_nullable": source.source_nullable,
-                "normalized_nullable": source.normalized_nullable,
+        "source_dialects": {
+            dialect: {
+                "fields": [
+                    {
+                        "name": source.name,
+                        "logical_type": source.logical_type,
+                        "source_required": source.source_required,
+                        "source_nullable": source.source_nullable,
+                    }
+                    for source in source_schema(dialect)
+                ],
+                "outcome_mapping": {
+                    source_name: canonical_name
+                    for source_name, canonical_name in zip(
+                        ("accuracy", "completeness", "validate_error")
+                        if dialect == LEGACY_DIALECT
+                        else ("correct", "completed", "validation_error"),
+                        ("correct", "completed", "validation_error"),
+                        strict=True,
+                    )
+                },
             }
-            for source in SOURCE_SCHEMA
-        ],
+            for dialect in OUTCOME_DIALECTS
+        },
         "normalized_fields": [
             {
                 "name": normalized.name,
@@ -332,6 +399,7 @@ def _schema_payload() -> dict[str, Any]:
             for normalized in NORMALIZED_SCHEMA
         ],
         "enums": {
+            "outcome_dialect": list(OUTCOME_DIALECTS),
             "reasoning_replay": list(REASONING_REPLAY_POLICIES),
             "selection_status": list(SELECTION_STATUSES),
             "supersession_scope": list(SUPERSESSION_SCOPES),
@@ -420,24 +488,34 @@ def _validate_value(
 
 
 def _validate_source_object(
-    value: Any, source_file: str, source_line: int
+    value: Any,
+    source_file: str,
+    source_line: int,
+    outcome_dialect: OutcomeDialect,
 ) -> dict[str, Any]:
     if not isinstance(value, dict):
         _error(source_file, source_line, "source row", "non_object")
 
+    schema = source_schema(outcome_dialect)
+    fields = {field.name: field for field in schema}
     names = set(value)
-    if names - _SOURCE_FIELD_NAMES:
+    if names - fields.keys():
         _error(source_file, source_line, "source schema", "unknown_field")
     missing = {
         field.name
-        for field in SOURCE_SCHEMA
+        for field in schema
         if field.source_required and field.name not in names
     }
     if missing:
         _error(source_file, source_line, "source schema", "missing_required_field")
 
     for name, field_value in value.items():
-        _validate_value(field_value, _SOURCE_FIELDS[name], source_file, source_line)
+        _validate_value(field_value, fields[name], source_file, source_line)
+
+    try:
+        read_outcome(value, expected_dialect=outcome_dialect)
+    except OutcomeSchemaError:
+        _error(source_file, source_line, "outcome schema", "invalid_outcome")
 
     replay = value.get("reasoning_replay")
     if replay is not None and replay not in REASONING_REPLAY_POLICIES:
@@ -446,7 +524,11 @@ def _validate_source_object(
 
 
 def parse_source_line(
-    line_bytes: bytes, source_file: str, source_line: int
+    line_bytes: bytes,
+    source_file: str,
+    source_line: int,
+    *,
+    outcome_dialect: OutcomeDialect,
 ) -> dict[str, Any]:
     """Strictly parse and validate one terminator-free physical source line."""
     if not line_bytes:
@@ -467,7 +549,9 @@ def parse_source_line(
         _error(source_file, source_line, "JSON number", "non_standard_constant")
     except (json.JSONDecodeError, RecursionError):
         _error(source_file, source_line, "source row", "malformed_json")
-    return _validate_source_object(value, source_file, source_line)
+    return _validate_source_object(
+        value, source_file, source_line, outcome_dialect
+    )
 
 
 @dataclass(frozen=True)
@@ -509,7 +593,12 @@ def _iter_validated_source(
             row_count = source_line
             file_digest.update(raw_line)
             row_bytes = _without_one_terminator(raw_line)
-            row = parse_source_line(row_bytes, spec.source_file, source_line)
+            row = parse_source_line(
+                row_bytes,
+                spec.source_file,
+                source_line,
+                outcome_dialect=spec.outcome_dialect,
+            )
             if effective_generation(row) != spec.generation:
                 _error(
                     spec.source_file,
@@ -534,6 +623,7 @@ class SourceFact:
     source_file: str
     release: str
     generation: int
+    outcome_dialect: OutcomeDialect
     generation_reference: str
     generation_date: str
     generation_note: str
@@ -547,6 +637,7 @@ class SourceFact:
             source_file=spec.source_file,
             release=spec.release,
             generation=spec.generation,
+            outcome_dialect=spec.outcome_dialect,
             generation_reference=info["commit"],
             generation_date=info["date"],
             generation_note=info["note"],
@@ -559,6 +650,7 @@ class SourceFact:
             "source_file": self.source_file,
             "release": self.release,
             "generation": self.generation,
+            "outcome_dialect": self.outcome_dialect,
             "generation_reference": self.generation_reference,
             "generation_date": self.generation_date,
             "generation_note": self.generation_note,
@@ -570,6 +662,11 @@ class SourceFact:
 @dataclass(frozen=True)
 class ViewStats:
     row_count: int
+    attempted_count: int
+    correct_count: int
+    validated_count: int
+    completed_count: int
+    validation_error_count: int
     source_identity_sha256: str
     source_payload_sha256: str
     normalized_logical_sha256: str
@@ -577,6 +674,11 @@ class ViewStats:
     def to_dict(self) -> dict[str, Any]:
         return {
             "row_count": self.row_count,
+            "attempted_count": self.attempted_count,
+            "correct_count": self.correct_count,
+            "validated_count": self.validated_count,
+            "completed_count": self.completed_count,
+            "validation_error_count": self.validation_error_count,
             "source_identity_sha256": self.source_identity_sha256,
             "source_payload_sha256": self.source_payload_sha256,
             "normalized_logical_sha256": self.normalized_logical_sha256,
@@ -659,10 +761,16 @@ def _normalize_row(
         else "legacy-inferred-full"
     )
     info = _generation_info(spec)
+    outcome = read_outcome(source, expected_dialect=spec.outcome_dialect)
 
-    normalized = {field.name: source.get(field.name) for field in SOURCE_SCHEMA}
+    normalized = {
+        field.name: source.get(field.name) for field in COMMON_SOURCE_SCHEMA
+    }
     normalized.update(
         {
+            "correct": outcome.correct,
+            "completed": outcome.completed,
+            "validation_error": outcome.validation_error,
             "source_file": spec.source_file,
             "source_line": parsed.source_line,
             "source_file_sha256": spec.sha256,
@@ -711,12 +819,22 @@ def _iter_classified_records(
 class _ViewAccumulator:
     def __init__(self) -> None:
         self.row_count = 0
+        self.correct_count = 0
+        self.validated_count = 0
+        self.completed_count = 0
+        self.validation_error_count = 0
         self.source_identity = hashlib.sha256()
         self.source_payload = hashlib.sha256()
         self.normalized_logical = hashlib.sha256()
 
     def update(self, source: dict[str, Any], normalized: dict[str, Any]) -> None:
         self.row_count += 1
+        self.correct_count += int(normalized["correct"] is True)
+        self.validated_count += int(normalized["correct"] is not None)
+        self.completed_count += int(normalized["completed"])
+        self.validation_error_count += int(
+            normalized["validation_error"] is not None
+        )
         self.source_identity.update(
             canonical_json_bytes(
                 [normalized["source_file"], normalized["source_line"]],
@@ -734,6 +852,11 @@ class _ViewAccumulator:
     def finish(self) -> ViewStats:
         return ViewStats(
             row_count=self.row_count,
+            attempted_count=self.row_count,
+            correct_count=self.correct_count,
+            validated_count=self.validated_count,
+            completed_count=self.completed_count,
+            validation_error_count=self.validation_error_count,
             source_identity_sha256=self.source_identity.hexdigest(),
             source_payload_sha256=self.source_payload.hexdigest(),
             normalized_logical_sha256=self.normalized_logical.hexdigest(),
@@ -747,6 +870,10 @@ def _validate_source_specs(source_specs: tuple[SourceSpec, ...]) -> None:
     if len(names) != len(set(names)):
         raise PublicationError("manifest:0: source allowlist [duplicate_source]")
     for spec in source_specs:
+        if spec.outcome_dialect not in OUTCOME_DIALECTS:
+            raise PublicationError(
+                "manifest:0: source outcome dialect [unknown_dialect]"
+            )
         _generation_info(spec)
 
 
@@ -754,6 +881,20 @@ def _enforce_pinned_plan(views: Mapping[str, ViewStats]) -> None:
     for view, expected_count in PINNED_VIEW_COUNTS.items():
         if views[view].row_count != expected_count:
             raise PublicationError(f"manifest:0: {view} row count [contract_mismatch]")
+        expected_correct, expected_validated, expected_completed = (
+            PINNED_VIEW_METRIC_COUNTS[view]
+        )
+        stats = views[view]
+        if (
+            stats.attempted_count != expected_count
+            or stats.correct_count != expected_correct
+            or stats.validated_count != expected_validated
+            or stats.completed_count != expected_completed
+            or stats.validation_error_count != 0
+        ):
+            raise PublicationError(
+                f"manifest:0: {view} metric counts [contract_mismatch]"
+            )
     snapshot = views["snapshot"]
     if (
         snapshot.source_identity_sha256

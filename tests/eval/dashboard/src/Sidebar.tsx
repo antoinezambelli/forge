@@ -29,7 +29,7 @@ interface SidebarProps {
   hasRetired: boolean;
   filteredCount: number;
   totalCount: number;
-  totalRuns: number;
+  totalAttempts: number;
   timestamp: string;
 }
 
@@ -50,7 +50,7 @@ export function Sidebar({
   hasRetired,
   filteredCount,
   totalCount,
-  totalRuns,
+  totalAttempts,
   timestamp,
 }: SidebarProps) {
   return (
@@ -58,7 +58,7 @@ export function Sidebar({
       <h1 className="text-lg font-semibold mb-0.5">Forge Eval</h1>
       <p className="text-xs text-zinc-500 mb-3">
         {filteredCount}/{totalCount} configs &middot;{" "}
-        {totalRuns.toLocaleString()} runs
+        {totalAttempts.toLocaleString()} attempts
       </p>
 
       <ScreenSelector active={activeScreen} onChange={onScreenChange} />

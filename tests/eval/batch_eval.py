@@ -5,7 +5,7 @@ Usage:
                                      [--config CONFIG_NAME] [--dry-run]
 
 Resumes automatically: for each (model, backend, mode, scenario) it counts
-existing completed runs in the JSONL and only runs the remainder.
+existing recorded attempts in the JSONL and only runs the remainder.
 """
 
 from __future__ import annotations
@@ -29,6 +29,15 @@ from tests.eval.ablation import ABLATION_PRESETS, AblationConfig
 from tests.eval.eval_runner import EvalConfig, RunResult, run_scenario
 from tests.eval.generation import effective_generation, effective_reasoning_replay
 from tests.eval.metrics import analyze_history, compute_metrics, count_wire_reasoning
+from tests.eval.outcomes import (
+    CANONICAL_DIALECT,
+    OutcomeDialect,
+    OutcomeSchemaError,
+    RunOutcome,
+    detect_outcome_dialect,
+    read_outcome,
+    write_outcome,
+)
 from tests.eval.scenarios import ALL_SCENARIOS, EvalScenario
 
 # ── GGUF paths ──────────────────────────────────────────────────
@@ -370,11 +379,17 @@ def _parse_generation(value: str) -> int:
     return _validate_generation(generation)
 
 
-def _preflight_completed_runs(
+@dataclass(frozen=True)
+class ResumePreflight:
+    recorded_counts: dict[str, int]
+    outcome_dialect: OutcomeDialect
+
+
+def _preflight_recorded_runs(
     jsonl_path: Path,
     requested_generation: int,
     ablation_name: str = "reforged",
-) -> dict[str, int]:
+) -> ResumePreflight:
     """Validate append compatibility and count runs in one streaming pass.
 
     Every stored row participates in the single-generation check, while only
@@ -385,9 +400,10 @@ def _preflight_completed_runs(
     requested_generation = _validate_generation(requested_generation)
     counts: dict[str, int] = {}
     if not jsonl_path.exists():
-        return counts
+        return ResumePreflight(counts, CANONICAL_DIALECT)
 
     file_generation: int | None = None
+    file_dialect: OutcomeDialect | None = None
     with jsonl_path.open("rb") as f:
         for line_number, raw_line in enumerate(f, 1):
             try:
@@ -408,6 +424,20 @@ def _preflight_completed_runs(
             if not isinstance(row, dict):
                 raise ValueError(
                     f"{jsonl_path}:{line_number}: JSONL row must be an object"
+                )
+            try:
+                row_dialect = detect_outcome_dialect(row)
+                read_outcome(row, expected_dialect=row_dialect)
+            except OutcomeSchemaError as exc:
+                raise ValueError(
+                    f"{jsonl_path}:{line_number}: invalid outcome schema: {exc}"
+                ) from exc
+            if file_dialect is None:
+                file_dialect = row_dialect
+            elif row_dialect != file_dialect:
+                raise ValueError(
+                    f"{jsonl_path}:{line_number}: mixed outcome dialects "
+                    f"{file_dialect!r} and {row_dialect!r}"
                 )
             try:
                 row_generation = _validate_generation(
@@ -444,7 +474,7 @@ def _preflight_completed_runs(
             f"{jsonl_path}: existing effective generation {file_generation} "
             f"does not match requested generation {requested_generation}"
         )
-    return counts
+    return ResumePreflight(counts, file_dialect or CANONICAL_DIALECT)
 
 
 def _append_jsonl_row(jsonl_path: Path, row: dict[str, Any]) -> None:
@@ -472,6 +502,7 @@ def _run_result_to_row(
     budget_tokens: int | None = None,
     ablation_name: str = "reforged",
     reasoning_replay: str = DEFAULT_REASONING_REPLAY,
+    outcome_dialect: OutcomeDialect = CANONICAL_DIALECT,
 ) -> dict[str, Any]:
     """Convert a RunResult into a flat dict for JSONL output."""
     generation = _validate_generation(generation)
@@ -486,7 +517,6 @@ def _run_result_to_row(
         "reasoning_level": config.reasoning_level,
         "scenario": result.scenario_name,
         "run": run_idx,
-        "completeness": result.completeness,
         "iterations": result.iterations_used,
         "elapsed_s": round(result.elapsed_seconds, 2),
         "error_type": result.error_type,
@@ -520,15 +550,21 @@ def _run_result_to_row(
         row["reasoning_wire"] = None
         row["reasoning_wire_total"] = None
 
-    # Correctness
-    row["accuracy"] = result.accuracy
-    if result.validate_error:
-        row["validate_error"] = result.validate_error
+    row.update(
+        write_outcome(
+            RunOutcome(
+                correct=result.correct,
+                completed=result.completed,
+                validation_error=result.validation_error,
+            ),
+            outcome_dialect,
+        )
+    )
 
     # Wasted calls
     ideal = scenario.ideal_iterations or (len(scenario.workflow.required_steps) + 1)
     row["ideal_iterations"] = ideal
-    if result.completeness:
+    if result.completed:
         row["wasted_calls"] = max(0, result.iterations_used - ideal)
     else:
         row["wasted_calls"] = None
@@ -687,7 +723,7 @@ async def _run_with_timeout(
     except asyncio.TimeoutError:
         return RunResult(
             scenario_name=scenario.name,
-            completeness=False,
+            completed=False,
             iterations_used=0,
             error_type="Timeout",
             error_message=f"Exceeded {_RUN_TIMEOUT}s",
@@ -824,7 +860,7 @@ def _build_client(config: BatchConfig, models_dir: Path) -> Any:
         from forge.clients.anthropic import AnthropicClient
 
         # Prompt caching on for sweeps: billing-only (identical model behavior
-        # and accuracy/iterations metrics), caches the re-sent tool defs +
+        # and score/iteration metrics), caches the re-sent tool defs +
         # system prompt. Static-only — see AnthropicClient._apply_static_cache.
         #
         # Adaptive extended thinking when think=True ("Claude with reasoning"
@@ -903,9 +939,11 @@ async def run_batch(
         scenarios = ALL_SCENARIOS
 
     ablation_name = ablation.name if ablation is not None else "reforged"
-    completed_counts = _preflight_completed_runs(
+    preflight = _preflight_recorded_runs(
         output_path, generation, ablation_name=ablation_name
     )
+    recorded_counts = preflight.recorded_counts
+    outcome_dialect = preflight.outcome_dialect
 
     # Precompute total expected runs (excluding skips and unavailable models)
     total_expected = 0
@@ -925,7 +963,7 @@ async def run_batch(
                 ablation_name, tc_label_pre, reasoning_replay,
                 config.reasoning_level, scenario.name,
             )
-            existing = completed_counts.get(key, 0)
+            existing = recorded_counts.get(key, 0)
             total_expected += max(0, runs_per_scenario - existing)
 
     total_configs = len(configs)
@@ -966,7 +1004,7 @@ async def run_batch(
                         ablation_name, tc_label, reasoning_replay,
                         config.reasoning_level, scenario.name,
                     )
-                    existing = completed_counts.get(key, 0)
+                    existing = recorded_counts.get(key, 0)
                     remaining = max(0, runs_per_scenario - existing)
                     status = "SKIP" if remaining == 0 else f"RUN {remaining}"
                     print(f"  {scenario.name}: {existing}/{runs_per_scenario} done -> {status}")
@@ -999,7 +1037,7 @@ async def run_batch(
                         ablation_name, tc_label, reasoning_replay,
                         config.reasoning_level, scenario.name,
                     )
-                    existing = completed_counts.get(key, 0)
+                    existing = recorded_counts.get(key, 0)
                     remaining = max(0, runs_per_scenario - existing)
 
                     if remaining == 0:
@@ -1027,7 +1065,7 @@ async def run_batch(
                     for run_idx in range(existing, existing + remaining):
                         result = await _run_with_timeout(client, scenario, eval_config, ablation)
                         total_ran += 1
-                        status = "OK" if result.completeness else f"FAIL ({result.error_type})"
+                        status = "OK" if result.completed else f"FAIL ({result.error_type})"
                         print(
                             f"    run {run_idx+1}/{runs_per_scenario}: {status} "
                             f"- {result.iterations_used} iters, "
@@ -1041,10 +1079,11 @@ async def run_batch(
                             budget_tokens=scenario_budget,
                             ablation_name=ablation_name,
                             reasoning_replay=reasoning_replay,
+                            outcome_dialect=outcome_dialect,
                         )
                         _append_jsonl_row(output_path, row)
 
-                        completed_counts[key] = completed_counts.get(key, 0) + 1
+                        recorded_counts[key] = recorded_counts.get(key, 0) + 1
                 continue
 
             # ── Check if any scenarios need runs ─────────────
@@ -1060,11 +1099,11 @@ async def run_batch(
                     ablation_name, tc_label, reasoning_replay,
                     config.reasoning_level, scenario.name,
                 )
-                if completed_counts.get(key_check, 0) < runs_per_scenario:
+                if recorded_counts.get(key_check, 0) < runs_per_scenario:
                     has_work = True
                     break
             if not has_work:
-                print(f"  SKIP (all scenarios complete)", flush=True)
+                print("  SKIP (all requested attempts recorded)", flush=True)
                 total_skipped += total_scenarios
                 continue
 
@@ -1145,7 +1184,7 @@ async def run_batch(
                     ablation_name, tc_label, reasoning_replay,
                     config.reasoning_level, scenario.name,
                 )
-                existing = completed_counts.get(key, 0)
+                existing = recorded_counts.get(key, 0)
                 remaining = max(0, runs_per_scenario - existing)
 
                 if remaining == 0:
@@ -1214,7 +1253,7 @@ async def run_batch(
                         result = await _run_with_timeout(client, scenario, eval_config, ablation)
                         total_ran += 1
 
-                    status = "OK" if result.completeness else f"FAIL ({result.error_type})"
+                    status = "OK" if result.completed else f"FAIL ({result.error_type})"
                     print(
                         f"    run {run_idx+1}/{runs_per_scenario}: {status} "
                         f"- {result.iterations_used} iters, "
@@ -1228,11 +1267,12 @@ async def run_batch(
                         budget_tokens=scenario_budget,
                         ablation_name=ablation_name,
                         reasoning_replay=reasoning_replay,
+                        outcome_dialect=outcome_dialect,
                     )
                     _append_jsonl_row(output_path, row)
 
                     # Update in-memory count for resume correctness
-                    completed_counts[key] = completed_counts.get(key, 0) + 1
+                    recorded_counts[key] = recorded_counts.get(key, 0) + 1
 
             # Free VRAM after finishing all scenarios for this Ollama config
             if config.backend == "ollama":

@@ -102,13 +102,17 @@ class ScenarioMetrics:
     """Aggregated metrics for one scenario across all runs."""
 
     scenario_name: str
-    total_runs: int
-    completed_runs: int
+    attempted_count: int
+    correct_count: int
+    validated_count: int
+    completed_count: int
     completion_rate: float
+    score: float
+    validated_accuracy: float | None
     avg_iterations: float
     max_iterations: int
     avg_elapsed_seconds: float
-    correctness_rate: float | None = None
+    validation_error_count: int = 0
     error_counts: dict[str, int] = field(default_factory=dict)
     runs_with_compaction: int = 0
     avg_compaction_phases: float = 0.0
@@ -117,8 +121,8 @@ class ScenarioMetrics:
     avg_tool_errors: float = 0.0
     avg_wasted_calls: float | None = None
     avg_reasoning_messages: float = 0.0
-    correctness_with_reasoning: float | None = None
-    correctness_without_reasoning: float | None = None
+    validated_accuracy_with_reasoning: float | None = None
+    validated_accuracy_without_reasoning: float | None = None
     has_history: bool = False
 
 
@@ -128,7 +132,7 @@ def compute_metrics(
 ) -> ScenarioMetrics:
     """Compute aggregated metrics from a list of RunResults."""
     total = len(results)
-    completed = [r for r in results if r.completeness]
+    completed = [r for r in results if r.completed]
     completed_count = len(completed)
     completion_rate = completed_count / total if total > 0 else 0.0
 
@@ -201,13 +205,18 @@ def compute_metrics(
         ]
         avg_wasted_calls = sum(wasted) / len(wasted)
 
-    # Correctness (only if scenario has a validator)
-    correctness_rate: float | None = None
-    correctness_with_reasoning: float | None = None
-    correctness_without_reasoning: float | None = None
-    validated_runs = [r for r in results if r.accuracy is not None]
+    # Public outcome metrics. Validator failures are attempted but unvalidated.
+    validated_accuracy: float | None = None
+    validated_accuracy_with_reasoning: float | None = None
+    validated_accuracy_without_reasoning: float | None = None
+    validated_runs = [
+        r for r in results
+        if r.correct is not None and r.validation_error is None
+    ]
+    correct_count = sum(1 for r in validated_runs if r.correct)
+    score = correct_count / total if total else 0.0
     if validated_runs:
-        correctness_rate = sum(1 for r in validated_runs if r.accuracy) / len(validated_runs)
+        validated_accuracy = correct_count / len(validated_runs)
 
         # Reasoning vs correctness correlation
         if has_history:
@@ -221,25 +230,31 @@ def compute_metrics(
                 and analyze_history(r.messages).reasoning_messages == 0
             ]
             if with_reasoning:
-                correctness_with_reasoning = (
-                    sum(1 for r in with_reasoning if r.accuracy)
+                validated_accuracy_with_reasoning = (
+                    sum(1 for r in with_reasoning if r.correct)
                     / len(with_reasoning)
                 )
             if without_reasoning:
-                correctness_without_reasoning = (
-                    sum(1 for r in without_reasoning if r.accuracy)
+                validated_accuracy_without_reasoning = (
+                    sum(1 for r in without_reasoning if r.correct)
                     / len(without_reasoning)
                 )
 
     return ScenarioMetrics(
         scenario_name=scenario.name,
-        total_runs=total,
-        completed_runs=completed_count,
+        attempted_count=total,
+        correct_count=correct_count,
+        validated_count=len(validated_runs),
+        completed_count=completed_count,
         completion_rate=completion_rate,
+        score=score,
+        validated_accuracy=validated_accuracy,
         avg_iterations=avg_iters,
         max_iterations=max_iters,
         avg_elapsed_seconds=avg_elapsed,
-        correctness_rate=correctness_rate,
+        validation_error_count=sum(
+            1 for r in results if r.validation_error is not None
+        ),
         error_counts=error_counts,
         runs_with_compaction=runs_with_compaction,
         avg_compaction_phases=avg_compaction_phases,
@@ -247,8 +262,8 @@ def compute_metrics(
         avg_step_nudges=avg_step_nudges,
         avg_tool_errors=avg_tool_errors,
         avg_reasoning_messages=avg_reasoning_messages,
-        correctness_with_reasoning=correctness_with_reasoning,
-        correctness_without_reasoning=correctness_without_reasoning,
+        validated_accuracy_with_reasoning=validated_accuracy_with_reasoning,
+        validated_accuracy_without_reasoning=validated_accuracy_without_reasoning,
         avg_wasted_calls=avg_wasted_calls,
         has_history=has_history,
     )
@@ -290,16 +305,53 @@ def print_report(
             # Minimal metrics without scenario info
             metrics = ScenarioMetrics(
                 scenario_name=name,
-                total_runs=len(results),
-                completed_runs=sum(1 for r in results if r.completeness),
+                attempted_count=len(results),
+                correct_count=sum(
+                    1
+                    for r in results
+                    if r.correct is True and r.validation_error is None
+                ),
+                validated_count=sum(
+                    1
+                    for r in results
+                    if r.correct is not None and r.validation_error is None
+                ),
+                completed_count=sum(1 for r in results if r.completed),
                 completion_rate=(
-                    sum(1 for r in results if r.completeness) / len(results)
+                    sum(1 for r in results if r.completed) / len(results)
                     if results
                     else 0.0
                 ),
+                score=(
+                    sum(
+                        1
+                        for r in results
+                        if r.correct is True and r.validation_error is None
+                    )
+                    / len(results)
+                    if results
+                    else 0.0
+                ),
+                validated_accuracy=(
+                    sum(
+                        1
+                        for r in results
+                        if r.correct is True and r.validation_error is None
+                    )
+                    / sum(
+                        1
+                        for r in results
+                        if r.correct is not None and r.validation_error is None
+                    )
+                    if any(
+                        r.correct is not None and r.validation_error is None
+                        for r in results
+                    )
+                    else None
+                ),
                 avg_iterations=(
-                    sum(r.iterations_used for r in results if r.completeness)
-                    / max(1, sum(1 for r in results if r.completeness))
+                    sum(r.iterations_used for r in results if r.completed)
+                    / max(1, sum(1 for r in results if r.completed))
                 ),
                 max_iterations=max(
                     (r.iterations_used for r in results), default=0
@@ -308,6 +360,9 @@ def print_report(
                     sum(r.elapsed_seconds for r in results) / len(results)
                     if results
                     else 0.0
+                ),
+                validation_error_count=sum(
+                    1 for r in results if r.validation_error is not None
                 ),
             )
             tags_str = ""
@@ -320,19 +375,18 @@ def print_report(
 
         rate_pct = metrics.completion_rate * 100
         print(
-            f"  Completion rate:    {metrics.completed_runs}/{metrics.total_runs} "
+            f"  Completion rate:    {metrics.completed_count}/{metrics.attempted_count} "
             f"({rate_pct:.1f}%)"
         )
 
-        if metrics.correctness_rate is not None:
-            cor_pct = metrics.correctness_rate * 100
-            validated = sum(
-                1 for r in results if r.accuracy is not None
-            )
-            correct = sum(1 for r in results if r.accuracy)
+        print(
+            f"  Score:              {metrics.correct_count}/{metrics.attempted_count} "
+            f"({metrics.score * 100:.1f}%)"
+        )
+        if metrics.validated_accuracy is not None:
             print(
-                f"  Correctness rate:   {correct}/{validated} "
-                f"({cor_pct:.1f}%)"
+                f"  Validated accuracy: {metrics.correct_count}/{metrics.validated_count} "
+                f"({metrics.validated_accuracy * 100:.1f}%)"
             )
 
         ideal_str = f" (ideal: {ideal})" if ideal is not None else ""
@@ -350,20 +404,20 @@ def print_report(
             print(f"  Tool errors:        {metrics.avg_tool_errors:.1f} avg")
             if metrics.avg_reasoning_messages > 0:
                 print(f"  Reasoning msgs:     {metrics.avg_reasoning_messages:.1f} avg")
-                if (metrics.correctness_with_reasoning is not None
-                        or metrics.correctness_without_reasoning is not None):
+                if (metrics.validated_accuracy_with_reasoning is not None
+                        or metrics.validated_accuracy_without_reasoning is not None):
                     parts = []
-                    if metrics.correctness_with_reasoning is not None:
-                        parts.append(f"w/ {metrics.correctness_with_reasoning*100:.0f}%")
-                    if metrics.correctness_without_reasoning is not None:
-                        parts.append(f"w/o {metrics.correctness_without_reasoning*100:.0f}%")
+                    if metrics.validated_accuracy_with_reasoning is not None:
+                        parts.append(f"w/ {metrics.validated_accuracy_with_reasoning*100:.0f}%")
+                    if metrics.validated_accuracy_without_reasoning is not None:
+                        parts.append(f"w/o {metrics.validated_accuracy_without_reasoning*100:.0f}%")
                     print(f"  Reasoning->correct: {', '.join(parts)}")
 
         # Compaction
         if metrics.runs_with_compaction > 0:
             print(
                 f"  Compaction fired:   {metrics.runs_with_compaction}/"
-                f"{metrics.total_runs} runs"
+                f"{metrics.attempted_count} runs"
             )
             print(
                 f"  Avg compaction phases: {metrics.avg_compaction_phases:.1f}"
@@ -378,5 +432,7 @@ def print_report(
             print(f"  Errors:             {', '.join(parts)}")
         else:
             print(f"  Errors:             none")
+        if metrics.validation_error_count:
+            print(f"  Validation errors:  {metrics.validation_error_count}")
 
     print(f"\n{'=' * width}\n")

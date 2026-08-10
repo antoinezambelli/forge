@@ -2,7 +2,7 @@
 
 ```
 --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
-Model/Backend                                                             Scr      Acc      Cmp    Eff   Wst    Spd     N    rel   arg   tsl   b2s   s3s   crt   srn   err   dgr   dge   art   grs   iar rel_s arg_s tsl_s b2s_s s3s_s crt_s srn_s err_s dgr_s dge_s art_s grs_s iar_s
+Model/Backend                                                             Scr     VAcc      Cmp    Eff   Wst    Spd     N    rel   arg   tsl   b2s   s3s   crt   srn   err   dgr   dge   art   grs   iar rel_s arg_s tsl_s b2s_s s3s_s crt_s srn_s err_s dgr_s dge_s art_s grs_s iar_s
 --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 claude-opus-4-8 AN/N [reforged]                                        100.0%   100.0%   100.0%   100%   0.0  13.3s    50    100   100   100   100   100   100   100   100   100   100   100   100   100   100   100   100   100   100   100   100   100   100   100   100   100   100
 claude-sonnet-4-6 AN/N [reforged]                                      100.0%   100.0%   100.0%   100%   0.0  18.2s    50    100   100   100   100   100   100   100   100   100   100   100   100   100   100   100   100   100   100   100   100   100   100   100   100   100   100
@@ -130,7 +130,7 @@ LFM2.5-8B-A1B-Q4_K_M LS/P [reforged]                                    35.3%   
 --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 ```
 
-Scr=score(correct/total), Acc=accuracy(correct/total, excl validate errors), Cmp=completeness(completed/total), Eff=efficiency(ideal/actual calls), Wst=avg wasted calls, Spd=avg time(excl compaction)
+Scr=score(correct/attempted), VAcc=validated accuracy(correct/validated), Cmp=completion rate(completed/attempted), Eff=efficiency(ideal/actual calls), Wst=avg wasted calls, Spd=avg time(excl compaction)
 rel=relevance_detection, arg=argument_fidelity, tsl=tool_selection, b2s=basic_2step, s3s=sequential_3step, crt=conditional_routing, srn=sequential_reasoning, err=error_recovery, dgr=data_gap_recovery, dge=data_gap_recovery_extended, art=argument_transformation, grs=grounded_synthesis, iar=inconsistent_api_recovery, rel_s=relevance_detection_stateful, arg_s=argument_fidelity_stateful, tsl_s=tool_selection_stateful, b2s_s=basic_2step_stateful, s3s_s=sequential_3step_stateful, crt_s=conditional_routing_stateful, srn_s=sequential_reasoning_stateful, err_s=error_recovery_stateful, dgr_s=data_gap_recovery_stateful, dge_s=data_gap_recovery_extended_stateful, art_s=argument_transformation_stateful, grs_s=grounded_synthesis_stateful, iar_s=inconsistent_api_recovery_stateful
 Ablation: full=all guardrails, no_rescue=no rescue loop, no_nudge=no rescue/retry nudge, no_steps=no step enforcement, no_recovery=no error recovery, no_compact=no compaction, bare=all guardrails off
 Replay: ':keep-last'/':full' tags = reasoning_replay policy (how much captured reasoning is re-sent to the backend each turn); untagged = none (default). Rows predating the knob ran unbounded replay and count as full.
@@ -139,4 +139,4 @@ Eval generations (older runs carried forward, superscript-tagged):
   ¹ gen 1 — v0.6.0 suite — incl. Anthropic ablation (commit 2b05dc4, 2026-05-08)
   ² gen 2 — v0.7.0 lineup refresh (8–14B) + 32GB tier debut (v0.7.4) (commit 655e1f6, 2026-05-22)
 
-*Generated 2026-07-28 20:14*
+*Generated 2026-08-09 22:01*

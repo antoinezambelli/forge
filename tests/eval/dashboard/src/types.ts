@@ -14,14 +14,18 @@ export interface ConfigRow {
   /** Family is in the Retired tier — carried forward but hidden by default. */
   retired: boolean;
   score: number;
-  accuracy: number | null;
-  completeness: number;
+  validatedAccuracy: number | null;
+  completionRate: number;
+  attemptedCount: number;
+  correctCount: number;
+  validatedCount: number;
+  completedCount: number;
   efficiency: number;
   wasted: number;
   speed: number;
   n: number;
   scenarios: Record<string, number | null>;
-  scenarioRuns?: Record<string, number>;
+  scenarioAttempted?: Record<string, number>;
   scenarioCorrect?: Record<string, number>;
   /** Per-scenario components used by scopeRows() to recompute aggregates
    *  consistently when the scenario set is filtered. Optional for backward

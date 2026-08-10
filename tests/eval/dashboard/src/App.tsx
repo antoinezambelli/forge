@@ -102,13 +102,14 @@ function App() {
     [scopedRows, viewDef, sort, scopedScenarios, activeScreen],
   );
 
-  const totalRuns = useMemo(
-    () =>
-      filtered.reduce(
-        (sum, r) => sum + r.n * (scopedScenarios.length),
-        0,
+  const totalAttempts = useMemo(
+    () => scopedRows.reduce(
+      (sum, row) => sum + (
+        row.attemptedCount ?? row.n * scopedScenarios.length
       ),
-    [filtered, scopedScenarios],
+      0,
+    ),
+    [scopedRows, scopedScenarios],
   );
 
   const handleFilterChange = useCallback(
@@ -206,7 +207,7 @@ function App() {
         hasRetired={hasRetired}
         filteredCount={filtered.length}
         totalCount={filterByScreen(visibleRows, activeScreen).length}
-        totalRuns={totalRuns}
+        totalAttempts={totalAttempts}
         timestamp={data.timestamp}
       />
 

@@ -18,8 +18,8 @@ interface MetricDef {
 
 const METRICS: MetricDef[] = [
   { key: "score", label: "Score", fmt: (v) => v == null ? "\u2014" : `${v.toFixed(1)}%`, higherBetter: true },
-  { key: "accuracy", label: "Accuracy", fmt: (v) => v == null ? "\u2014" : `${v.toFixed(1)}%`, higherBetter: true },
-  { key: "completeness", label: "Completeness", fmt: (v) => v == null ? "\u2014" : `${v.toFixed(1)}%`, higherBetter: true },
+  { key: "validatedAccuracy", label: "Validated Accuracy", fmt: (v) => v == null ? "\u2014" : `${v.toFixed(1)}%`, higherBetter: true },
+  { key: "completionRate", label: "Completion Rate", fmt: (v) => v == null ? "\u2014" : `${v.toFixed(1)}%`, higherBetter: true },
   { key: "efficiency", label: "Efficiency", fmt: (v) => v == null ? "\u2014" : `${v.toFixed(1)}%`, higherBetter: true },
   { key: "wasted", label: "Avg Wasted", fmt: (v) => v == null ? "\u2014" : v.toFixed(1), higherBetter: false },
   { key: "speed", label: "Speed", fmt: (v) => v == null ? "\u2014" : `${v.toFixed(1)}s`, higherBetter: false },
@@ -125,7 +125,7 @@ export function ComparePanel({
             const vb = b.scenarios[sc];
             const fmtSc = (v: number | null, row: ConfigRow) => {
               if (v != null) return `${v}%`;
-              return (row.scenarioRuns?.[sc] ?? 0) === 0 ? "I" : "\u2014";
+              return (row.scenarioAttempted?.[sc] ?? 0) === 0 ? "I" : "\u2014";
             };
             return (
               <tr key={sc} className="border-b border-zinc-900/50">

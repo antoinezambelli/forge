@@ -1,6 +1,16 @@
 # ADR-007: Report Views
 
-**Status:** Planned (README roadmap item 5)
+**Status:** Implemented; metric vocabulary amended in August 2026
+
+## Metric vocabulary addendum
+
+The report and dashboard now use three explicit outcome rates with independent
+denominators: Score (`correct / attempted`), Validated Accuracy (`correct /
+validated`), and Completion Rate (`completed / attempted`). New JSONL rows use
+`correct`, `completed`, and `validation_error`; readers normalize the immutable
+legacy `accuracy`, `completeness`, and `validate_error` fields. Dashboard data
+also carries the exact attempted, correct, validated, and completed counts so
+scenario-scoped views recompute all three rates from integer components.
 
 ## Problem
 
@@ -37,9 +47,9 @@ Each filter is a multi-select dropdown (or checkbox group). Filters compose with
 
 **Table features:**
 - Click column header to sort (asc/desc toggle)
-- Same columns as current ASCII table: Score, Accuracy, Completeness, Efficiency, Wasted, Speed, N, per-scenario accuracy
+- Same columns as current ASCII table: Score, Validated Accuracy, Completion Rate, Efficiency, Wasted, Speed, N, and per-scenario Score
 - Row count updates as filters change
-- Optional: highlight cells by value (green/yellow/red heat map for accuracy)
+- Optional: highlight cells by value (green/yellow/red heat map for outcome rates)
 
 **Compare mode** (HTML-only):
 - Checkbox column on each row (max 2 selectable)
@@ -47,7 +57,7 @@ Each filter is a multi-select dropdown (or checkbox group). Filters compose with
 - Layout: Config A | Delta | Config B
 - Delta column shows colored diffs: green = B is better, red = B is worse (A is the baseline)
 - All metrics get deltas: Score `+3%`, Efficiency `-0.02`, Speed `+1.2s`, etc.
-- Per-scenario accuracy: same colored delta treatment
+- Per-scenario Score: same colored delta treatment
 - "Swap A↔B" button to flip the baseline
 - Clearing either checkbox dismisses the panel
 - ~30-40 lines of additional JS; no changes to data model — purely a view concern
@@ -244,8 +254,8 @@ Existing stdout behavior unchanged. New flags are additive.
 - Existing `print_table()` / `print_list()` stdout output — still the default
 - `load_jsonl()` / `group_rows()` / `compute_config_metrics()` — reused, not modified
 - `ConfigKey` / `ConfigMetrics` dataclasses — consumed as-is
-- JSONL format — no new fields needed
-- `batch_eval.py` / `eval_runner.py` — writers unchanged
+- The dashboard does not require a separate JSONL format beyond the shared eval outcome contract
+- `batch_eval.py` / `eval_runner.py` require no dashboard-specific behavior
 
 ## Resolved Questions
 

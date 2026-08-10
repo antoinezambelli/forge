@@ -6,6 +6,7 @@ import { heatClass, fmtPct, genBadge } from "./utils";
 interface Column {
   key: string;
   label: string;
+  title: string;
   sortable?: boolean;
 }
 
@@ -24,13 +25,13 @@ interface DataTableProps {
 }
 
 const METRIC_COLS: Column[] = [
-  { key: "score", label: "Scr%" },
-  { key: "accuracy", label: "Acc%" },
-  { key: "completeness", label: "Cmp%" },
-  { key: "efficiency", label: "Eff%" },
-  { key: "wasted", label: "Wst" },
-  { key: "speed", label: "Spd" },
-  { key: "n", label: "N" },
+  { key: "score", label: "Score%", title: "Score: correct / attempted" },
+  { key: "validatedAccuracy", label: "VAcc%", title: "Validated accuracy: correct / validated" },
+  { key: "completionRate", label: "Comp%", title: "Completion rate: completed / attempted" },
+  { key: "efficiency", label: "Eff%", title: "Efficiency: ideal / actual calls on completed correct runs" },
+  { key: "wasted", label: "Wst", title: "Average wasted calls on completed runs" },
+  { key: "speed", label: "Spd", title: "Average elapsed seconds, excluding timing-outlier scenarios" },
+  { key: "n", label: "N", title: "Maximum recorded attempts per included scenario" },
 ];
 
 function SortArrow({ col, sort }: { col: string; sort: SortState }) {
@@ -83,6 +84,7 @@ export function DataTable({
                 key={c.key}
                 className="p-1.5 text-right cursor-pointer select-none hover:text-emerald-400"
                 onClick={() => onSort(c.key)}
+                title={c.title}
               >
                 {c.label}
                 <SortArrow col={c.key} sort={sort} />
@@ -152,13 +154,13 @@ export function DataTable({
                 <td className={`p-1.5 text-right tabular-nums ${heatClass(row.score)}`}>
                   {fmtPct(row.score, 1)}
                 </td>
-                {/* Accuracy */}
-                <td className={`p-1.5 text-right tabular-nums ${heatClass(row.accuracy)}`}>
-                  {fmtPct(row.accuracy, 1)}
+                {/* Validated accuracy */}
+                <td className={`p-1.5 text-right tabular-nums ${heatClass(row.validatedAccuracy)}`}>
+                  {fmtPct(row.validatedAccuracy, 1)}
                 </td>
-                {/* Completeness */}
-                <td className={`p-1.5 text-right tabular-nums ${heatClass(row.completeness)}`}>
-                  {fmtPct(row.completeness, 1)}
+                {/* Completion rate */}
+                <td className={`p-1.5 text-right tabular-nums ${heatClass(row.completionRate)}`}>
+                  {fmtPct(row.completionRate, 1)}
                 </td>
                 {/* Efficiency */}
                 <td className={`p-1.5 text-right tabular-nums ${heatClass(row.efficiency)}`}>
@@ -179,7 +181,7 @@ export function DataTable({
                 {/* Per-scenario */}
                 {scenarios.map((sc) => {
                   const v = row.scenarios[sc];
-                  const runs = row.scenarioRuns?.[sc] ?? 0;
+                  const runs = row.scenarioAttempted?.[sc] ?? 0;
                   let display: string;
                   let cls: string;
                   if (v != null) {

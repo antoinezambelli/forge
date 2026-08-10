@@ -6,8 +6,8 @@ Hugging Face Hub, or require credentials.
 
 Build and verify the pinned corpus with::
 
-    python -m tests.eval.dataset_builder build --source-root . --output build/forge-eval-dataset-v1 --license mit --citation-url https://example.test/citation --reproduction-url https://example.test/reproduce
-    python -m tests.eval.dataset_builder verify --source-root . --bundle build/forge-eval-dataset-v1
+    python -m tests.eval.dataset_builder build --source-root . --output build/forge-eval-dataset-v2 --license mit --citation-url https://example.test/citation --reproduction-url https://example.test/reproduce
+    python -m tests.eval.dataset_builder verify --source-root . --bundle build/forge-eval-dataset-v2
 """
 
 from __future__ import annotations
@@ -29,14 +29,14 @@ from urllib.parse import urlparse
 from tests.eval import publication
 
 
-BUNDLE_VERSION = "forge-eval-parquet-v1"
+BUNDLE_VERSION = "forge-eval-parquet-v2"
 CONFIGURATION_NAMES = ("latest", "snapshot", "history")
 COMPRESSION = "zstd"
 RECORD_BATCH_ROWS = 8_192
 SHARD_ROWS = 100_000
 SHARD_TEMPLATE = "part-{index:05d}-of-{total:05d}.parquet"
 
-# Deliberately frozen for the fixed v1 card layout.  Identifiers that need a
+# Deliberately frozen for the fixed v2 card layout.  Identifiers that need a
 # license_name or a shipped LICENSE file (including "other") are unsupported.
 ACCEPTED_LICENSES = frozenset(
     {
@@ -59,6 +59,7 @@ _REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 BUILDER_SOURCE_PATHS = (
     "tests/eval/dataset_builder.py",
     "tests/eval/publication.py",
+    "tests/eval/outcomes.py",
     "tests/eval/generation.py",
     "tests/eval/provenance.py",
 )
@@ -114,7 +115,7 @@ def validate_release_metadata(
         accepted = ", ".join(sorted(ACCEPTED_LICENSES))
         raise DatasetBuilderError(
             f"unsupported Hugging Face license identifier {license_id!r}; "
-            f"accepted v1 identifiers: {accepted}"
+            f"accepted v2 identifiers: {accepted}"
         )
     return ReleaseMetadata(
         license=license_id,
@@ -169,51 +170,180 @@ def _config_metadata(name: str) -> dict[str, Any]:
 
 def _card_frontmatter(metadata: ReleaseMetadata) -> dict[str, Any]:
     return {
+        "pretty_name": "Forge Agentic Workflow Evaluation Corpus",
         "license": metadata.license,
+        "tags": [
+            "agent-evaluation",
+            "tool-use",
+            "function-calling",
+            "local-inference",
+            "benchmark",
+            "tabular",
+        ],
         "configs": [_config_metadata(name) for name in CONFIGURATION_NAMES],
     }
 
 
-def _card_bytes(metadata: ReleaseMetadata) -> bytes:
+def _format_rate(numerator: int, denominator: int) -> str:
+    return f"{numerator / denominator * 100:.2f}%" if denominator else "n/a"
+
+
+def _card_bytes(
+    metadata: ReleaseMetadata, plan: publication.PublicationPlan
+) -> bytes:
     frontmatter = publication.canonical_json(_card_frontmatter(metadata), sort_keys=False)
+    view_rows = []
+    for name in CONFIGURATION_NAMES:
+        stats = plan.views[name]
+        view_rows.append(
+            f"| `{name}`{' (default)' if name == 'latest' else ''} "
+            f"| {stats.attempted_count:,} | {stats.correct_count:,} "
+            f"| {stats.validated_count:,} | {stats.completed_count:,} "
+            f"| {_format_rate(stats.correct_count, stats.attempted_count)} "
+            f"| {_format_rate(stats.correct_count, stats.validated_count)} "
+            f"| {_format_rate(stats.completed_count, stats.attempted_count)} |"
+        )
+    view_table = "\n".join(view_rows)
+    column_count = len(publication.NORMALIZED_SCHEMA)
     body = f"""---
 {frontmatter}
 ---
 
-# Forge evaluation corpus
+# Forge Agentic Workflow Evaluation Corpus
 
-This offline bundle materializes the verified Forge evaluation publication
-contract. `latest` is the default configuration and contains snapshot rows at
-the corpus-wide maximum generation. `snapshot` retains each selected policy arm,
-including carried evidence. `history` contains every released row, including
-superseded generations, in pinned source-file and source-line order.
+Forge evaluates multi-step agent workflows across models, quantizations,
+inference backends, function-calling modes, scenarios, guardrail ablations, and
+reasoning-replay policies. This dataset publishes the released run-level outcome
+records behind Forge's reports and dashboard. One row represents one attempted
+evaluation run.
 
-The canonical score is `correct / total`: `accuracy == true` divided by all
-cohort rows. Validation-only accuracy is a separate diagnostic and must not be
-reported as the canonical score. Generations describe released collection
-waves; replay policies and carried rows describe provenance and selection, not
-new eval executions.
+This is an **outcome corpus**, not a collection of complete agent traces. It does
+not contain full prompts, conversations, tool-result transcripts, or hidden model
+reasoning and cannot reconstruct an end-to-end trajectory.
 
-The raw `reasoning_replay` field preserves the value recorded by the source. A
-legacy row with missing raw `reasoning_replay` is inferred as effective `full`
-in `effective_reasoning_replay`; that legacy-inferred `full` remains distinct
-in arm identity from an explicitly recorded raw `full`. Likewise, the raw
-`reasoning_level` field preserves the optional source value, while
-`effective_reasoning_level` resolves a missing raw value to `default`. Carried
-evidence is an older selected cohort retained because no newer matching cohort
-exists.
+## Configurations and counts
 
-All 51 columns use one explicit schema. Sparse source fields are normalized to
-null, while provenance records the source file, physical line, source-file hash,
-and source-row hash. Timing, token budgets, and costs are operational
-measurements and should only be compared when backend, model, mode, rig, and
-collection conditions are compatible.
+| Configuration | Attempted | Correct | Validated | Completed | Score | Validated accuracy | Completion rate |
+|---|---:|---:|---:|---:|---:|---:|---:|
+{view_table}
 
-License metadata is supplied explicitly at build time. Citation:
-{metadata.citation_url}
+- `latest` is the default and contains selected rows at the corpus-wide maximum
+  evaluation generation.
+- `snapshot` retains the selected arm for each comparable configuration,
+  including older carried evidence when no newer matching arm exists.
+- `history` contains every released row, including superseded generations, in
+  pinned source-file and source-line order.
 
-Reproduction instructions:
-{metadata.reproduction_url}
+## Quickstart
+
+```python
+from datasets import load_dataset
+
+latest = load_dataset("antoinezambelli/forge-evals", "latest", split="train")
+snapshot = load_dataset("antoinezambelli/forge-evals", "snapshot", split="train")
+history = load_dataset("antoinezambelli/forge-evals", "history", split="train")
+```
+
+## Metric contract
+
+The canonical headline metric is **Score**:
+
+- `score = correct_count / attempted_count`
+- `validated_accuracy = correct_count / validated_count`
+- `completion_rate = completed_count / attempted_count`
+
+`attempted_count` means rows present in the selected cohort, not a theoretical
+schedule. `correct` is `true`, `false`, or null when no usable correctness
+judgment exists. A null judgment remains in the Score denominator and is
+excluded from the validated-accuracy denominator. `completed` records whether
+the workflow returned normally and is independent of correctness. Exact integer
+components are included in the publication plan so every displayed rate is
+reproducible without reverse-engineering rounded percentages.
+
+## Schema overview
+
+All {column_count} columns use one explicit v2 schema:
+
+- **Identity and condition:** model, backend, mode, ablation, tool choice,
+  reasoning replay/level, scenario, run index, and evaluation generation.
+- **Outcome:** `correct`, `completed`, `validation_error`, execution error type,
+  and execution error message.
+- **Efficiency:** iterations, ideal iterations, wasted calls, elapsed seconds,
+  context budget, and stream retries.
+- **Guardrail and reasoning telemetry:** nudges, tool errors, compaction events,
+  captured reasoning counts, and on-wire reasoning counts.
+- **Hosted accounting:** input, output, cache-creation, cache-read tokens, and
+  recorded cost when the source backend supplied them.
+- **Provenance and selection:** release, source file and line hashes, generation
+  metadata, canonical configuration/arm identifiers, selection status, and view
+  membership.
+
+Released source JSONLs remain byte-for-byte immutable. Their legacy
+`accuracy`/`completeness` spelling is normalized to published
+`correct`/`completed`; the legacy aliases do not appear in the Parquet schema.
+Sparse source fields become null.
+
+## Generations, replay, and carried evidence
+
+An evaluation `generation` is a **comparability epoch**, not generated model
+text and not necessarily a Forge release. A generation changes when collection
+semantics materially change. Several releases may share one generation.
+
+The raw `reasoning_replay` field preserves the source value. Rows predating the
+knob have no raw value and resolve to effective `full`; this legacy-inferred arm
+remains distinct from an explicitly recorded `full` arm. Missing raw
+`reasoning_level` resolves to effective `default`. Carried evidence is an older
+selected cohort retained only because no newer matching cohort exists.
+
+## Methodology and statistical use
+
+Forge scenarios exercise tool selection, argument fidelity, multi-step
+sequencing, error recovery, stateful interactions, and context-pressure paths.
+Repeated runs are stored individually. Cohort comparisons should control for
+model, quantization, backend, mode, scenario set, replay policy, reasoning
+level, generation, and collection environment. For paired arms, Forge uses
+paired McNemar tests on matching `(scenario, run)` observations and Wilson
+intervals for Score; consumers can reproduce those analyses from the run rows.
+
+## Intended uses
+
+- Reproduce Forge's aggregate reports and inspect individual outcomes.
+- Compare controlled model/backend/mode or ablation cohorts.
+- Study completion, validation, efficiency, replay, and guardrail behavior.
+- Build new statistical views while retaining source-level provenance.
+
+This dataset should not be used as a general model-quality leaderboard, as
+training text, or as evidence that one backend/model is universally superior.
+It also does not measure subjective answer quality beyond each scenario's
+deterministic validator.
+
+## Limitations
+
+Many cells are intentionally absent or inapplicable, and a missing scenario is
+not scored as an attempted failure. Historical evidence spans different rigs,
+backends, quantizations, serving versions, context budgets, and model-specific
+reasoning behavior. Timing, token, and cost fields are operational measurements
+and are only comparable under compatible collection conditions. Repeated runs
+within one scenario may be more correlated than independent scenario-level
+effects.
+
+## Provenance and integrity
+
+`provenance/sources.json` pins every released source, generation, dialect, row
+count, and SHA-256. `provenance/schema.json` contains the complete source-dialect
+and normalized-schema contract. `manifest.json` records every configuration,
+logical digest, shard row count, file hash, builder-source hash, Git revision,
+Python version, and Parquet writer version. Verify a downloaded bundle with:
+
+```bash
+python -m tests.eval.dataset_builder verify --source-root . --bundle <bundle>
+```
+
+Project and methodology: {metadata.reproduction_url}
+
+Citation: {metadata.citation_url}
+
+License: `{metadata.license}`
 """
     return body.encode("utf-8")
 
@@ -473,7 +603,7 @@ def _write_support_files(
     root: Path, plan: publication.PublicationPlan, metadata: ReleaseMetadata
 ) -> None:
     (root / "provenance").mkdir(parents=True, exist_ok=True)
-    (root / "README.md").write_bytes(_card_bytes(metadata))
+    (root / "README.md").write_bytes(_card_bytes(metadata, plan))
     (root / "provenance" / "sources.json").write_bytes(
         _canonical_bytes(_source_provenance(plan))
     )
@@ -678,7 +808,7 @@ def _verify_against_plan(
         publication.schema_manifest()
     ):
         raise DatasetBuilderError("schema provenance mismatch")
-    if (root / "README.md").read_bytes() != _card_bytes(metadata):
+    if (root / "README.md").read_bytes() != _card_bytes(metadata, plan):
         raise DatasetBuilderError("Dataset Card content mismatch")
     card = _parse_card(root / "README.md")
     if card != _card_frontmatter(metadata):
@@ -852,7 +982,7 @@ def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
         "--license",
         required=True,
         dest="license_id",
-        help="recognized v1 identifier: " + ", ".join(sorted(ACCEPTED_LICENSES)),
+        help="recognized v2 identifier: " + ", ".join(sorted(ACCEPTED_LICENSES)),
     )
     build_parser.add_argument("--citation-url", required=True)
     build_parser.add_argument("--reproduction-url", required=True)

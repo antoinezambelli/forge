@@ -48,8 +48,9 @@ def _assert_selected(
 def _report_row(**overrides: Any) -> dict[str, Any]:
     row = _row(
         "report",
-        completeness=False,
-        accuracy=None,
+        completed=False,
+        correct=None,
+        validation_error=None,
     )
     row.update(overrides)
     return row

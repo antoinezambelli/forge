@@ -155,7 +155,7 @@ python -m tests.eval.batch_eval --config ollama --runs 50 --scenario basic_2step
 ```
 
 Resume is automatic: re-run the same command with the same generation and
-policy and it skips completed scenarios.
+policy and it skips attempts already recorded for each scenario.
 
 ---
 
@@ -184,11 +184,11 @@ dedicated writer extra, then build only into a path that does not already exist:
 
 ```bash
 python -m pip install -e ".[dataset-builder]"
-python -m tests.eval.dataset_builder build --source-root . --output build/forge-eval-dataset-v1 --license mit --citation-url https://github.com/antoinezambelli/forge --reproduction-url https://github.com/antoinezambelli/forge/blob/main/docs/EVAL_GUIDE.md
-python -m tests.eval.dataset_builder verify --source-root . --bundle build/forge-eval-dataset-v1
+python -m tests.eval.dataset_builder build --source-root . --output build/forge-eval-dataset-v2 --license mit --citation-url https://github.com/antoinezambelli/forge --reproduction-url https://github.com/antoinezambelli/forge/blob/main/docs/EVAL_GUIDE.md
+python -m tests.eval.dataset_builder verify --source-root . --bundle build/forge-eval-dataset-v2
 ```
 
-The fixed v1 layout is:
+The fixed v2 layout is:
 
 ```text
 README.md
@@ -200,17 +200,26 @@ provenance/schema.json
 manifest.json
 ```
 
-All configurations use the predecessor's ordered 51-field schema, Zstandard
+All configurations use the ordered 52-field v2 schema, Zstandard
 compression, batches of at most 8,192 rows, 100,000-row shards, and names of
 the form `part-NNNNN-of-NNNNN.parquet`. Configuration order is `latest`,
 `snapshot`, `history`; `latest` is the sole Dataset Card default. `history`
 contains every released row, `snapshot` retains selected policy arms (including
-carried evidence), and `latest` is the maximum-generation subset. The canonical
-score is `accuracy == true / all cohort rows`; validation-only accuracy is a
-separate diagnostic. Timing, cost, and budget fields are not comparable across
-different collection conditions.
+carried evidence), and `latest` is the maximum-generation subset. Its public
+outcome vocabulary and aggregate formulas are:
 
-Build metadata is mandatory. `--license` accepts the frozen v1 identifier set
+- `correct: bool | null`, `completed: bool`, and `validation_error: string | null`
+- Score = `correct_count / attempted_count`
+- Validated accuracy = `correct_count / validated_count`
+- Completion rate = `completed_count / attempted_count`
+
+An attempt is a row present in the selected cohort, not a scheduled run. A
+validator exception leaves `correct` null, remains in the Score denominator,
+and is excluded from the validated-accuracy denominator. Exact integer
+components are recorded in the publication plan. Timing, cost, and budget
+fields are not comparable across different collection conditions.
+
+Build metadata is mandatory. `--license` accepts the frozen v2 identifier set
 shown by `python -m tests.eval.dataset_builder build --help`: `apache-2.0`,
 `bsd-2-clause`, `bsd-3-clause`, `cc-by-4.0`, `cc-by-sa-4.0`, `cc0-1.0`,
 `gpl-3.0`, `lgpl-3.0`, `mit`, `mpl-2.0`, `odc-by`, and `odbl`. It rejects
@@ -236,14 +245,18 @@ reserved for scratch runs and legacy rows that predate the field. Every new row
 records an explicit generation; invoke a released collection with, for example,
 `--generation 4` rather than adding the field after collection.
 
-One output file carries only one effective generation. Before dry-run or live
+One output file carries only one effective generation and one outcome dialect.
+New or empty outputs use `correct` / `completed` / `validation_error`; released
+legacy outputs keep `accuracy` / `completeness` / `validate_error` when resumed,
+so historical rows remain byte-for-byte untouched. Before dry-run or live
 collection starts a client/server or appends a row, `batch_eval` streams the
 existing file and rejects generation mismatches, mixed generations, malformed
-generation values, malformed JSON, and ambiguous resume rows. A legacy file
-whose rows all omit `gen` is generation 0 and can only resume with generation
-0. For resume identity, historical rows without `reasoning_replay` mean `full`
-(the behavior they actually ran); they do not collide with an explicit modern
-`none` arm. Same-generation, same-policy resume remains count-based.
+generation values, malformed JSON, and partial, hybrid, or mixed outcome
+dialects. A legacy file whose rows all omit `gen` is generation 0 and can only
+resume with generation 0. For resume identity, historical rows without
+`reasoning_replay` mean `full` (the behavior they actually ran); they do not
+collide with an explicit modern `none` arm. Same-generation, same-policy resume
+remains count-based.
 
 To fold new models into an existing dataset, run the collector with that
 dataset's generation and append the rows. Because they are net-new configs, no

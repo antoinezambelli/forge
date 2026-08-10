@@ -75,7 +75,8 @@ export function genBadge(gen: number): string {
  * Both axes intersect: e.g. scope="stateful" + suite="advanced_reasoning"
  * yields the 4 stateful AR scenarios.
  *
- * All shown aggregates (score, accuracy, completeness, efficiency, wasted, speed)
+ * All shown aggregates (score, validated accuracy, completion rate, efficiency,
+ * wasted, and speed)
  * are recomputed from per-scenario components emitted by report.py — using the
  * same formulas as the Python side — so a scoped view stays internally
  * consistent. (Older data blobs without per-scenario components fall back to
@@ -113,7 +114,22 @@ export function scopeRows(
   }
 
   const recomputed = rows.map((row) => {
-    let totalRuns = 0;
+    const hasFullDetail = row.scenarioAttempted !== undefined
+      && row.scenarioCorrect !== undefined
+      && row.scenarioCompleted !== undefined
+      && row.scenarioValidated !== undefined
+      && row.scenarioIdealCalls !== undefined
+      && row.scenarioActualCalls !== undefined
+      && row.scenarioWastedSum !== undefined
+      && row.scenarioWastedN !== undefined
+      && row.scenarioSpeedSum !== undefined
+      && row.scenarioSpeedN !== undefined;
+
+    // Older embedded blobs did not include enough integer components to
+    // recompute denominators safely. Preserve their unscoped aggregates.
+    if (!hasFullDetail) return row;
+
+    let totalAttempted = 0;
     let totalCorrect = 0;
     let totalCompleted = 0;
     let totalValidated = 0;
@@ -125,7 +141,7 @@ export function scopeRows(
     let speedN = 0;
 
     for (const sc of scenarios) {
-      totalRuns      += row.scenarioRuns?.[sc] ?? 0;
+      totalAttempted += row.scenarioAttempted?.[sc] ?? 0;
       totalCorrect   += row.scenarioCorrect?.[sc] ?? 0;
       totalCompleted += row.scenarioCompleted?.[sc] ?? 0;
       totalValidated += row.scenarioValidated?.[sc] ?? 0;
@@ -140,27 +156,27 @@ export function scopeRows(
     // Match Python rounding: percentages to 1 decimal, wasted/speed to 1 decimal.
     const round1 = (x: number) => Math.round(x * 10) / 10;
 
-    const score        = totalRuns > 0       ? round1((totalCorrect / totalRuns) * 100)        : 0;
-    const accuracy     = totalValidated > 0  ? round1((totalCorrect / totalValidated) * 100)   : null;
-    const completeness = totalRuns > 0       ? round1((totalCompleted / totalRuns) * 100)      : 0;
+    const score        = totalAttempted > 0  ? round1((totalCorrect / totalAttempted) * 100)   : 0;
+    const validatedAccuracy = totalValidated > 0 ? round1((totalCorrect / totalValidated) * 100) : null;
+    const completionRate = totalAttempted > 0 ? round1((totalCompleted / totalAttempted) * 100) : 0;
     const efficiency   = totalActual > 0     ? round1(Math.min(totalIdeal / totalActual, 1) * 100) : 0;
     const wasted       = wastedN > 0         ? round1(wastedSum / wastedN)                     : 0;
     const speed        = speedN > 0          ? round1(speedSum / speedN)                       : 0;
 
-    // Detection: if per-scenario components are missing, fall back to original
-    // unscoped values for the metrics we can't reconstruct (older data blobs).
-    const hasFullDetail = row.scenarioCompleted !== undefined;
-
-    const n = Math.max(0, ...scenarios.map((sc) => row.scenarioRuns?.[sc] ?? 0));
+    const n = Math.max(0, ...scenarios.map((sc) => row.scenarioAttempted?.[sc] ?? 0));
 
     return {
       ...row,
       score,
-      accuracy:     hasFullDetail ? accuracy     : row.accuracy,
-      completeness: hasFullDetail ? completeness : row.completeness,
-      efficiency:   hasFullDetail ? efficiency   : row.efficiency,
-      wasted:       hasFullDetail ? wasted       : row.wasted,
-      speed:        hasFullDetail ? speed        : row.speed,
+      validatedAccuracy,
+      completionRate,
+      attemptedCount: totalAttempted,
+      correctCount: totalCorrect,
+      validatedCount: totalValidated,
+      completedCount: totalCompleted,
+      efficiency,
+      wasted,
+      speed,
       n,
     };
   });

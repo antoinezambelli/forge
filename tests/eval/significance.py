@@ -1,6 +1,6 @@
 """Statistical significance for ablation tables.
 
-Pooled McNemar + Wilson 95% CI per (model, backend, mode) × ablation.
+McNemar + Wilson 95% CI per complete experimental identity × ablation.
 
 Usage:
     python -m tests.eval.significance eval_results.jsonl
@@ -21,13 +21,28 @@ import sys
 from collections import defaultdict
 from pathlib import Path
 
+from tests.eval.generation import effective_reasoning_replay
+from tests.eval.outcomes import is_correct as outcome_is_correct
+
 
 ABLATION_ORDER = ("reforged", "bare", "no_rescue", "no_nudge", "no_steps", "no_recovery", "no_compact")
 
 
+def configuration_identity(row: dict) -> tuple[str, str, str, str, str, str]:
+    """Return the non-ablation identity that may safely share paired analysis."""
+    return (
+        row["model"],
+        row["backend"],
+        row["mode"],
+        effective_reasoning_replay(row),
+        row.get("reasoning_level", "default"),
+        row.get("tool_choice", "auto"),
+    )
+
+
 def is_correct(row: dict) -> bool:
-    """Same correctness signal report.py uses for `score`: accuracy==True on validated runs."""
-    return bool(row.get("accuracy")) and not row.get("validate_error")
+    """Same canonical correctness predicate used by report.py."""
+    return outcome_is_correct(row)
 
 
 def wilson_ci(successes: int, n: int, z: float = 1.959963984540054) -> tuple[float, float]:
@@ -88,23 +103,29 @@ def mcnemar_pvalue(b: int, c: int) -> float:
     return mcnemar_asymptotic(b, c)
 
 
-def analyze_config(rows: list[dict]) -> dict:
-    """Given all rows for one (model, backend, mode), return a per-ablation analysis table.
+def analyze_config(rows: list[dict]) -> list[dict]:
+    """Analyze rows for one complete experimental identity.
 
-    Rows expected to have fields: ablation, scenario, run, accuracy, validate_error.
+    Rows may use either accepted outcome dialect.
     Pairs are formed on (scenario, run) across ablations vs the reforged baseline.
     """
     # Build reforged correctness lookup: (scenario, run) -> bool
     ref_by_key: dict[tuple[str, int], bool] = {}
     for r in rows:
         if r.get("ablation", "reforged") == "reforged":
-            ref_by_key[(r["scenario"], r["run"])] = is_correct(r)
+            key = (r["scenario"], r["run"])
+            if key in ref_by_key:
+                raise ValueError(f"duplicate reforged pair key: {key!r}")
+            ref_by_key[key] = is_correct(r)
 
     out: list[dict] = []
     for abl in ABLATION_ORDER:
         abl_rows = [r for r in rows if r.get("ablation", "reforged") == abl]
         if not abl_rows:
             continue
+        pair_keys = [(r["scenario"], r["run"]) for r in abl_rows]
+        if len(pair_keys) != len(set(pair_keys)):
+            raise ValueError(f"duplicate {abl} pair key")
 
         n = len(abl_rows)
         correct = sum(1 for r in abl_rows if is_correct(r))
@@ -193,14 +214,14 @@ def main() -> None:
     # Only tool_choice=auto for headline numbers (matches dashboard default)
     rows = [r for r in rows if r.get("tool_choice", "auto") == "auto"]
 
-    by_cfg: dict[tuple[str, str, str], list[dict]] = defaultdict(list)
+    by_cfg: dict[tuple[str, str, str, str, str, str], list[dict]] = defaultdict(list)
     for r in rows:
-        by_cfg[(r["model"], r["backend"], r["mode"])].append(r)
+        by_cfg[configuration_identity(r)].append(r)
 
     # Filter configs
     selected = []
     for key, cfg_rows in by_cfg.items():
-        model, backend, mode = key
+        model, backend, mode, _replay, _reasoning_level, _tool_choice = key
         if args.model and not any(m in model for m in args.model):
             continue
         if args.deep_only and not any(r.get("ablation", "reforged").startswith("no_") for r in cfg_rows):
@@ -216,9 +237,13 @@ def main() -> None:
 
     selected.sort(key=lambda kv: _reforged_score(kv[1]), reverse=True)
 
-    for (model, backend, mode), cfg_rows in selected:
+    for (model, backend, mode, replay, reasoning_level, tool_choice), cfg_rows in selected:
         analysis = analyze_config(cfg_rows)
-        print_report(f"{model}  ({backend}/{mode})", analysis)
+        print_report(
+            f"{model}  ({backend}/{mode}, replay={replay}, "
+            f"reasoning={reasoning_level}, tool_choice={tool_choice})",
+            analysis,
+        )
 
     print("\nSignificance: *** p<.001  ** p<.01  * p<.05  n.s. p>=.05")
     print("Test: McNemar's test on paired (scenario, run) — exact for discordant n<=25, continuity-corrected chi-square otherwise")

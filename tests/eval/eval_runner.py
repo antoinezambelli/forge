@@ -36,11 +36,11 @@ class RunResult:
     """Result of a single eval run."""
 
     scenario_name: str
-    completeness: bool
+    completed: bool
     iterations_used: int
     terminal_args: dict[str, Any] | None = None
-    accuracy: bool | None = None
-    validate_error: str | None = None
+    correct: bool | None = None
+    validation_error: str | None = None
     error_type: str | None = None
     error_message: str | None = None
     compaction_events: list[CompactEvent] = field(default_factory=list)
@@ -205,6 +205,27 @@ def _build_workflow_with_capture(
     return workflow, capture, validate_state_fn
 
 
+def _evaluate_validators(
+    validate: Callable[[dict[str, Any]], bool] | None,
+    terminal_args: dict[str, Any] | None,
+    validate_state: Callable[[], bool] | None,
+) -> tuple[bool | None, str | None]:
+    """Return one usable verdict, or null when either validator raises."""
+    correct: bool | None = None
+    if validate is not None and terminal_args is not None:
+        try:
+            correct = validate(terminal_args)
+        except Exception as exc:
+            return None, type(exc).__name__
+    if validate_state is not None:
+        try:
+            state_ok = validate_state()
+        except Exception as exc:
+            return None, f"validate_state: {type(exc).__name__}"
+        correct = state_ok if correct is None else correct and state_ok
+    return correct, None
+
+
 def _verbose_printer(msg: Message) -> None:
     """Print a live trace line for a single message."""
     _MAX = 120
@@ -312,31 +333,18 @@ async def run_scenario(
         try:
             await runner.run(workflow, scenario.user_message)
             elapsed = time.monotonic() - start
-            accuracy: bool | None = None
-            validate_error: str | None = None
-            if scenario.validate and capture.get("args") is not None:
-                try:
-                    accuracy = scenario.validate(capture["args"])
-                except Exception as exc:
-                    accuracy = None
-                    validate_error = type(exc).__name__
-            if validate_state_fn is not None:
-                try:
-                    state_ok = validate_state_fn()
-                    if accuracy is None:
-                        accuracy = state_ok
-                    else:
-                        accuracy = accuracy and state_ok
-                except Exception as exc:
-                    accuracy = False
-                    validate_error = f"validate_state: {type(exc).__name__}"
+            correct, validation_error = _evaluate_validators(
+                scenario.validate,
+                capture.get("args"),
+                validate_state_fn,
+            )
             return RunResult(
                 scenario_name=scenario.name,
-                completeness=True,
+                completed=True,
                 iterations_used=counting_client.call_count,
                 terminal_args=capture.get("args"),
-                accuracy=accuracy,
-                validate_error=validate_error,
+                correct=correct,
+                validation_error=validation_error,
                 compaction_events=compaction_events,
                 messages=collected_messages if config.keep_message_history else None,
                 elapsed_seconds=elapsed,
@@ -353,7 +361,7 @@ async def run_scenario(
             elapsed = time.monotonic() - start
             return RunResult(
                 scenario_name=scenario.name,
-                completeness=False,
+                completed=False,
                 iterations_used=counting_client.call_count,
                 error_type=type(exc).__name__,
                 error_message=str(exc),
@@ -370,7 +378,7 @@ async def run_scenario(
             elapsed = time.monotonic() - start
             return RunResult(
                 scenario_name=scenario.name,
-                completeness=False,
+                completed=False,
                 iterations_used=counting_client.call_count,
                 error_type=type(exc).__name__,
                 error_message=str(exc),
@@ -389,7 +397,7 @@ async def run_scenario(
     assert last_stream_error is not None
     return RunResult(
         scenario_name=scenario.name,
-        completeness=False,
+        completed=False,
         iterations_used=counting_client.call_count,
         error_type=type(last_stream_error).__name__,
         error_message=str(last_stream_error),
@@ -467,9 +475,9 @@ async def run_eval(
             )
             result = await run_scenario(client, scenario, per_scenario_config, ablation=ablation)
             scenario_results.append(result)
-            if not result.completeness:
+            if not result.completed:
                 status = f"FAIL ({result.error_type})"
-            elif result.accuracy is False:
+            elif result.correct is False:
                 status = "OK (incorrect)"
             else:
                 status = "OK"

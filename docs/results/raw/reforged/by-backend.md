@@ -4,7 +4,7 @@
 
 ```
 -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
-Model/Backend                                                Scr      Acc      Cmp    Eff   Wst    Spd     N    rel   arg   tsl   b2s   s3s   crt   srn   err   dgr   dge   art   grs   iar rel_s arg_s tsl_s b2s_s s3s_s crt_s srn_s err_s dgr_s dge_s art_s grs_s iar_s
+Model/Backend                                                Scr     VAcc      Cmp    Eff   Wst    Spd     N    rel   arg   tsl   b2s   s3s   crt   srn   err   dgr   dge   art   grs   iar rel_s arg_s tsl_s b2s_s s3s_s crt_s srn_s err_s dgr_s dge_s art_s grs_s iar_s
 -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 Ministral-3-8B-Instruct-2512-Q8_0 LS/P [reforged]          84.2%    90.9%    92.7%    91%   0.7   4.6s    50    100   100     6   100   100   100   100   100   100    98     8   100    80   100   100     4   100   100   100   100   100   100    96     0    98   100
 Ministral-3-8B-Instruct-2512-Q8_0 LS/N [reforged]          81.0%    81.0%   100.0%   100%   0.3   4.1s    50    100   100   100   100   100   100   100   100   100    30     0     4   100   100   100   100   100   100   100   100   100   100    68     0     4   100
@@ -16,7 +16,7 @@ ministral-3:8b-instruct-2512-q8_0 OL/N [reforged:full]²    70.7%    74.5%    94
 
 ```
 ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
-Model/Backend                                                   Scr      Acc      Cmp    Eff   Wst    Spd     N    rel   arg   tsl   b2s   s3s   crt   srn   err   dgr   dge   art   grs   iar rel_s arg_s tsl_s b2s_s s3s_s crt_s srn_s err_s dgr_s dge_s art_s grs_s iar_s
+Model/Backend                                                   Scr     VAcc      Cmp    Eff   Wst    Spd     N    rel   arg   tsl   b2s   s3s   crt   srn   err   dgr   dge   art   grs   iar rel_s arg_s tsl_s b2s_s s3s_s crt_s srn_s err_s dgr_s dge_s art_s grs_s iar_s
 ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 Ministral-3-14B-Instruct-2512-Q4_K_M LS/P [reforged]          80.6%    80.6%   100.0%   100%   0.0   3.0s    50    100   100   100   100   100   100   100   100   100     0     0    46   100   100   100   100   100   100   100   100   100    98     0     0    52   100
 Ministral-3-14B-Instruct-2512-Q4_K_M LS/N [reforged]          77.8%    77.8%   100.0%    97%   0.3   4.0s    50    100   100   100   100   100   100   100   100   100     8     0     0   100   100   100   100   100   100   100   100   100   100    14     0     0   100
@@ -28,7 +28,7 @@ ministral-3:14b-instruct-2512-q4_K_M OL/N [reforged:full]²    74.8%    74.8%   
 
 ```
 -----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
-Model/Backend                                        Scr      Acc      Cmp    Eff   Wst    Spd     N    rel   arg   tsl   b2s   s3s   crt   srn   err   dgr   dge   art   grs   iar rel_s arg_s tsl_s b2s_s s3s_s crt_s srn_s err_s dgr_s dge_s art_s grs_s iar_s
+Model/Backend                                        Scr     VAcc      Cmp    Eff   Wst    Spd     N    rel   arg   tsl   b2s   s3s   crt   srn   err   dgr   dge   art   grs   iar rel_s arg_s tsl_s b2s_s s3s_s crt_s srn_s err_s dgr_s dge_s art_s grs_s iar_s
 -----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 gemma-4-E4B-it-Q4_K_M LS/N [reforged]              79.7%    79.9%    99.8%   100%   0.3   8.1s    50    100   100   100   100   100    94    98   100    84     8    30    64    92   100   100   100   100   100    88    94   100    86     2     0    48    84
 gemma-4-E4B-it-Q4_K_M LS/N [reforged:full]         79.2%    82.2%    96.3%    99%   0.5  10.0s    50    100   100   100   100   100    96    88    94   100     2    40    78    54   100   100   100   100   100    94    84    98    96     0     0    82    52
@@ -44,7 +44,7 @@ gemma-4-E4B-it-Q4_K_M LS/P [reforged]              72.4%    72.4%    99.9%    85
 
 ```
 ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
-Model/Backend                                   Scr      Acc      Cmp    Eff   Wst    Spd     N    rel   arg   tsl   b2s   s3s   crt   srn   err   dgr   dge   art   grs   iar rel_s arg_s tsl_s b2s_s s3s_s crt_s srn_s err_s dgr_s dge_s art_s grs_s iar_s
+Model/Backend                                   Scr     VAcc      Cmp    Eff   Wst    Spd     N    rel   arg   tsl   b2s   s3s   crt   srn   err   dgr   dge   art   grs   iar rel_s arg_s tsl_s b2s_s s3s_s crt_s srn_s err_s dgr_s dge_s art_s grs_s iar_s
 ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 qwen3:14b-q4_K_M OL/N [reforged:full]²        78.6%    78.7%    99.9%    77%   1.2  38.5s    50    100   100   100   100   100   100   100   100    74     4    12    68    78   100   100   100   100   100   100   100    94    88     4     0    54    68
 Qwen3-14B-Q4_K_M LS/P [reforged:keep-last]    71.8%    71.8%   100.0%    86%   0.5  23.8s    50    100   100   100   100   100    98   100    72    58     2     4    28    72   100   100   100   100   100    94   100    76    74     0     0    32    56
@@ -60,7 +60,7 @@ Qwen3-14B-Q4_K_M LS/N [reforged:keep-last]    64.0%    64.0%    99.9%    91%   0
 
 ```
 ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
-Model/Backend                                                  Scr      Acc      Cmp    Eff   Wst    Spd     N    rel   arg   tsl   b2s   s3s   crt   srn   err   dgr   dge   art   grs   iar rel_s arg_s tsl_s b2s_s s3s_s crt_s srn_s err_s dgr_s dge_s art_s grs_s iar_s
+Model/Backend                                                  Scr     VAcc      Cmp    Eff   Wst    Spd     N    rel   arg   tsl   b2s   s3s   crt   srn   err   dgr   dge   art   grs   iar rel_s arg_s tsl_s b2s_s s3s_s crt_s srn_s err_s dgr_s dge_s art_s grs_s iar_s
 ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 Ministral-3-8B-Instruct-2512-Q4_K_M LS/N [reforged]          78.3%    78.3%   100.0%    95%   0.4   3.2s    50    100   100   100   100   100   100   100   100   100    18     0     0   100   100   100   100   100   100   100   100   100   100    16     2     0   100
 Ministral-3-8B-Instruct-2512-Q4_K_M LS/P [reforged]          74.9%    83.3%    89.9%    79%   1.3   3.1s    50    100   100     0   100   100   100   100   100   100    20     2    42   100   100   100     0   100   100   100   100   100   100    22     0    62   100
@@ -72,7 +72,7 @@ ministral-3:8b-instruct-2512-q4_K_M OL/N [reforged:full]²    66.8%    71.9%    
 
 ```
 ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
-Model/Backend                                      Scr      Acc      Cmp    Eff   Wst    Spd     N    rel   arg   tsl   b2s   s3s   crt   srn   err   dgr   dge   art   grs   iar rel_s arg_s tsl_s b2s_s s3s_s crt_s srn_s err_s dgr_s dge_s art_s grs_s iar_s
+Model/Backend                                      Scr     VAcc      Cmp    Eff   Wst    Spd     N    rel   arg   tsl   b2s   s3s   crt   srn   err   dgr   dge   art   grs   iar rel_s arg_s tsl_s b2s_s s3s_s crt_s srn_s err_s dgr_s dge_s art_s grs_s iar_s
 ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 gemma-4-E4B-it-Q8_0 LS/N [reforged]              77.8%    77.9%    99.8%   100%   0.2  10.8s    50    100   100   100   100   100    76    90   100   100     0    18    38    98   100   100   100   100   100    76    98   100    98     0     0    36    94
 gemma-4-E4B-it-Q8_0 LS/N [reforged:keep-last]    75.7%    79.3%    95.5%    99%   0.5  13.1s    50    100   100   100   100   100    76    92    98    96     4    16    82    48   100   100   100   100   100    50    86    98    94     2     0    86    40
@@ -88,7 +88,7 @@ gemma-4-E4B-it-Q8_0 LS/P [reforged]              73.2%    73.3%    99.8%    85% 
 
 ```
 ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
-Model/Backend                                Scr      Acc      Cmp    Eff   Wst    Spd     N    rel   arg   tsl   b2s   s3s   crt   srn   err   dgr   dge   art   grs   iar rel_s arg_s tsl_s b2s_s s3s_s crt_s srn_s err_s dgr_s dge_s art_s grs_s iar_s
+Model/Backend                                Scr     VAcc      Cmp    Eff   Wst    Spd     N    rel   arg   tsl   b2s   s3s   crt   srn   err   dgr   dge   art   grs   iar rel_s arg_s tsl_s b2s_s s3s_s crt_s srn_s err_s dgr_s dge_s art_s grs_s iar_s
 ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 Qwen3-8B-Q8_0 LS/P [reforged:keep-last]    72.8%    73.0%    99.7%    89%   0.4  28.0s    50    100   100   100   100   100    98    98    80    90     0     6     8    94   100   100   100   100    96    96   100    60    98     0     2    12    54
 Qwen3-8B-Q8_0 LS/P [reforged:full]         72.8%    72.9%    99.8%    88%   0.4  28.9s    50    100   100   100   100   100    98   100    70    90     0     4    20    96   100   100   100   100    92   100    96    66    92     0     0    12    56
@@ -104,7 +104,7 @@ Qwen3-8B-Q8_0 LS/N [reforged:keep-last]    67.0%    67.2%    99.8%    92%   0.4 
 
 ```
 -----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
-Model/Backend                                  Scr      Acc      Cmp    Eff   Wst    Spd     N    rel   arg   tsl   b2s   s3s   crt   srn   err   dgr   dge   art   grs   iar rel_s arg_s tsl_s b2s_s s3s_s crt_s srn_s err_s dgr_s dge_s art_s grs_s iar_s
+Model/Backend                                  Scr     VAcc      Cmp    Eff   Wst    Spd     N    rel   arg   tsl   b2s   s3s   crt   srn   err   dgr   dge   art   grs   iar rel_s arg_s tsl_s b2s_s s3s_s crt_s srn_s err_s dgr_s dge_s art_s grs_s iar_s
 -----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 Qwen3-8B-Q4_K_M LS/P [reforged:keep-last]    72.2%    72.3%    99.9%    88%   0.5  17.9s    50    100   100   100   100   100   100   100    62    66     0    30     8    90   100   100   100   100   100    98   100    74    68     0     0     8    74
 Qwen3-8B-Q4_K_M LS/P [reforged]              71.1%    71.2%    99.8%    87%   0.5  18.0s    50    100   100   100   100   100    96   100    70    66     0    18     8    96   100   100   100   100    98    96   100    60    60     0     0    10    70
@@ -120,7 +120,7 @@ Qwen3-8B-Q4_K_M LS/N [reforged:keep-last]    64.5%    64.6%    99.9%    91%   0.
 
 ```
 ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
-Model/Backend                                 Scr      Acc      Cmp    Eff   Wst    Spd     N    rel   arg   tsl   b2s   s3s   crt   srn   err   dgr   dge   art   grs   iar rel_s arg_s tsl_s b2s_s s3s_s crt_s srn_s err_s dgr_s dge_s art_s grs_s iar_s
+Model/Backend                                 Scr     VAcc      Cmp    Eff   Wst    Spd     N    rel   arg   tsl   b2s   s3s   crt   srn   err   dgr   dge   art   grs   iar rel_s arg_s tsl_s b2s_s s3s_s crt_s srn_s err_s dgr_s dge_s art_s grs_s iar_s
 ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 granite4.1:8b-q8_0 OL/N [reforged:full]²    69.2%    69.2%   100.0%    83%   1.1   2.9s    50    100   100   100   100   100   100   100   100   100     0     0     0     0   100   100   100   100   100   100   100   100   100     0     0     0     0
 granite-4.1-8b-Q8_0 LS/N [reforged]         65.4%    65.4%   100.0%    88%   1.3   2.8s    50    100   100   100   100   100   100   100   100   100     0     0     0     0   100   100   100   100   100   100   100     0   100     0     0     0     0
@@ -132,7 +132,7 @@ granite-4.1-8b-Q8_0 LS/P [reforged]         61.5%    66.7%    92.3%    73%   1.0
 
 ```
 -----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
-Model/Backend                                        Scr      Acc      Cmp    Eff   Wst    Spd     N    rel   arg   tsl   b2s   s3s   crt   srn   err   dgr   dge   art   grs   iar rel_s arg_s tsl_s b2s_s s3s_s crt_s srn_s err_s dgr_s dge_s art_s grs_s iar_s
+Model/Backend                                        Scr     VAcc      Cmp    Eff   Wst    Spd     N    rel   arg   tsl   b2s   s3s   crt   srn   err   dgr   dge   art   grs   iar rel_s arg_s tsl_s b2s_s s3s_s crt_s srn_s err_s dgr_s dge_s art_s grs_s iar_s
 -----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 granite-4.1-8b-Q4_K_M LS/N [reforged]              65.4%    68.0%    96.2%    90%   0.8   1.9s    50    100   100   100   100   100   100   100   100   100     0     0     0     0   100   100   100   100   100   100   100     0   100     0     0     0     0
 granite-4.1-8b-Q4_K_M LS/N [reforged:keep-last]    65.4%    68.0%    96.2%    90%   0.8   1.8s    50    100   100   100   100   100   100   100   100   100     0     0     0     0   100   100   100   100   100   100   100     0   100     0     0     0     0
@@ -142,7 +142,7 @@ granite4.1:8b-q4_K_M OL/N [reforged:full]²         57.8%    57.8%   100.0%    8
 -----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 ```
 
-Scr=score(correct/total), Acc=accuracy(correct/total, excl validate errors), Cmp=completeness(completed/total), Eff=efficiency(ideal/actual calls), Wst=avg wasted calls, Spd=avg time(excl compaction)
+Scr=score(correct/attempted), VAcc=validated accuracy(correct/validated), Cmp=completion rate(completed/attempted), Eff=efficiency(ideal/actual calls), Wst=avg wasted calls, Spd=avg time(excl compaction)
 rel=relevance_detection, arg=argument_fidelity, tsl=tool_selection, b2s=basic_2step, s3s=sequential_3step, crt=conditional_routing, srn=sequential_reasoning, err=error_recovery, dgr=data_gap_recovery, dge=data_gap_recovery_extended, art=argument_transformation, grs=grounded_synthesis, iar=inconsistent_api_recovery, rel_s=relevance_detection_stateful, arg_s=argument_fidelity_stateful, tsl_s=tool_selection_stateful, b2s_s=basic_2step_stateful, s3s_s=sequential_3step_stateful, crt_s=conditional_routing_stateful, srn_s=sequential_reasoning_stateful, err_s=error_recovery_stateful, dgr_s=data_gap_recovery_stateful, dge_s=data_gap_recovery_extended_stateful, art_s=argument_transformation_stateful, grs_s=grounded_synthesis_stateful, iar_s=inconsistent_api_recovery_stateful
 Ablation: full=all guardrails, no_rescue=no rescue loop, no_nudge=no rescue/retry nudge, no_steps=no step enforcement, no_recovery=no error recovery, no_compact=no compaction, bare=all guardrails off
 Replay: ':keep-last'/':full' tags = reasoning_replay policy (how much captured reasoning is re-sent to the backend each turn); untagged = none (default). Rows predating the knob ran unbounded replay and count as full.
@@ -151,4 +151,4 @@ Eval generations (older runs carried forward, superscript-tagged):
   ¹ gen 1 — v0.6.0 suite — incl. Anthropic ablation (commit 2b05dc4, 2026-05-08)
   ² gen 2 — v0.7.0 lineup refresh (8–14B) + 32GB tier debut (v0.7.4) (commit 655e1f6, 2026-05-22)
 
-*Generated 2026-07-28 20:14*
+*Generated 2026-08-09 22:01*

@@ -9,7 +9,7 @@ Usage:
     # Multiple generations — newest gen wins per config (see dedup_latest_gen):
     python -m tests.eval.report eval_results_v*.jsonl --html docs/results/dashboard.html
 
-Only shows model/backend/mode combos that have fully completed all scenarios.
+Only shows model/backend/mode combos with full recorded scenario coverage.
 Scenarios are derived from the data — works for both full 8-scenario batch
 files and single-scenario budget eval files.
 """
@@ -28,6 +28,7 @@ from tests.eval.generation import (
     select_latest_generation as dedup_latest_gen,
 )
 from tests.eval.provenance import GEN_INFO
+from tests.eval.outcomes import read_outcome
 
 # Scenarios and their ideal iteration counts (from scenarios.py)
 # Hardcoded here so the report script has zero forge imports and can
@@ -249,17 +250,19 @@ def group_rows(
 class ConfigMetrics:
     key: ConfigKey
     runs_per_scenario: int
-    total_runs: int
-    total_completed: int
-    completeness: float  # completed / total across all scenarios
-    per_scenario_completeness: dict[str, float]  # scenario -> rate
-    score: float  # correct / total across all scenarios
-    accuracy: float | None  # correct / validated (excludes runs with accuracy=None)
-    per_scenario_score: dict[str, float | None]  # scenario -> correct / total
-    per_scenario_runs: dict[str, int]  # scenario -> total run count
+    attempted_count: int
+    correct_count: int
+    validated_count: int
+    completed_count: int
+    completion_rate: float
+    per_scenario_completion_rate: dict[str, float]
+    score: float  # correct / attempted across all scenarios
+    validated_accuracy: float | None  # correct / validated
+    per_scenario_score: dict[str, float | None]
+    per_scenario_attempted: dict[str, int]
     per_scenario_correct: dict[str, int]  # scenario -> correct run count
     per_scenario_completed: dict[str, int]  # scenario -> completed run count
-    per_scenario_validated: dict[str, int]  # scenario -> count of runs with non-None accuracy (denom for accuracy)
+    per_scenario_validated: dict[str, int]  # scenario -> validated denominator
     per_scenario_ideal_calls: dict[str, int]  # scenario -> sum of ideal_iterations across correct runs
     per_scenario_actual_calls: dict[str, int]  # scenario -> sum of iterations across correct runs
     per_scenario_wasted_sum: dict[str, float]  # scenario -> sum of wasted_calls across completed runs
@@ -269,9 +272,9 @@ class ConfigMetrics:
     efficiency: float  # 1.0 = perfect (no wasted calls)
     avg_wasted: float
     speed: float  # avg seconds per run (excluding compaction_stress)
-    complete: bool  # all scenarios have full run count
+    has_full_coverage: bool
     stream_retries: int = 0  # total stream retries across all runs
-    validate_errors: int = 0  # runs where validate() raised an exception
+    validation_error_count: int = 0
     gen: int = 0  # eval generation (max across this config's rows)
     retired: bool = False  # family is in the Retired tier; hidden by default
 
@@ -305,18 +308,18 @@ def compute_config_metrics(
     if scenarios is None:
         scenarios = SCENARIO_NAMES
 
-    total_runs = 0
-    total_completed = 0
+    attempted_count = 0
+    correct_count = 0
+    validated_count = 0
+    completed_count = 0
     total_wasted = 0
     wasted_count = 0
     total_stream_retries = 0
-    total_validate_errors = 0
-    total_validated = 0
-    total_correct = 0
+    validation_error_count = 0
     speed_times: list[float] = []
-    per_scenario_completeness: dict[str, float] = {}
+    per_scenario_completion_rate: dict[str, float] = {}
     per_scenario_score: dict[str, float | None] = {}
-    per_scenario_runs: dict[str, int] = {}
+    per_scenario_attempted: dict[str, int] = {}
     per_scenario_correct: dict[str, int] = {}
     per_scenario_completed: dict[str, int] = {}
     per_scenario_validated: dict[str, int] = {}
@@ -332,35 +335,36 @@ def compute_config_metrics(
     run_counts = [len(scenario_runs.get(sc, [])) for sc in scenarios]
     max_runs = max(run_counts) if run_counts else 0
     if target_runs is not None:
-        all_complete = all(
+        has_full_coverage = all(
             len(scenario_runs.get(sc, [])) >= target_runs[sc]
             for sc in scenarios
             if len(scenario_runs.get(sc, [])) > 0
         ) and max_runs > 0
     else:
-        all_complete = all(c == max_runs for c in run_counts) and max_runs > 0
+        has_full_coverage = all(c == max_runs for c in run_counts) and max_runs > 0
 
     for scenario_name in scenarios:
         runs = scenario_runs.get(scenario_name, [])
+        outcomes = [read_outcome(row) for row in runs]
 
         n = len(runs)
-        completed = sum(1 for r in runs if r["completeness"])
-        total_runs += n
-        total_completed += completed
-        per_scenario_completeness[scenario_name] = completed / n if n > 0 else 0.0
-        per_scenario_runs[scenario_name] = n
+        completed = sum(1 for outcome in outcomes if outcome.completed)
+        attempted_count += n
+        completed_count += completed
+        per_scenario_completion_rate[scenario_name] = (
+            completed / n if n > 0 else 0.0
+        )
+        per_scenario_attempted[scenario_name] = n
         per_scenario_completed[scenario_name] = completed
 
-        # Accuracy (correct / total runs — score semantics)
-        tainted = sum(1 for r in runs if r.get("validate_error"))
-        total_validate_errors += tainted
-        validated = [
-            r for r in runs
-            if r.get("accuracy") is not None and not r.get("validate_error")
-        ]
-        sc_correct = sum(1 for r in validated if r["accuracy"])
-        total_validated += len(validated)
-        total_correct += sc_correct
+        # Outcome rates: score uses attempted rows; validated accuracy does not.
+        validated = [outcome for outcome in outcomes if outcome.validated]
+        sc_correct = sum(1 for outcome in validated if outcome.is_correct)
+        validation_error_count += sum(
+            1 for outcome in outcomes if outcome.validation_error is not None
+        )
+        validated_count += len(validated)
+        correct_count += sc_correct
         per_scenario_correct[scenario_name] = sc_correct
         per_scenario_validated[scenario_name] = len(validated)
         if n > 0:
@@ -371,27 +375,27 @@ def compute_config_metrics(
         # Wasted calls (completed runs only)
         sc_wasted_sum = 0.0
         sc_wasted_n = 0
-        for r in runs:
-            if r["completeness"] and r.get("wasted_calls") is not None:
-                total_wasted += r["wasted_calls"]
+        for row, outcome in zip(runs, outcomes, strict=True):
+            if outcome.completed and row.get("wasted_calls") is not None:
+                total_wasted += row["wasted_calls"]
                 wasted_count += 1
-                sc_wasted_sum += r["wasted_calls"]
+                sc_wasted_sum += row["wasted_calls"]
                 sc_wasted_n += 1
         per_scenario_wasted_sum[scenario_name] = sc_wasted_sum
         per_scenario_wasted_n[scenario_name] = sc_wasted_n
 
         # Stream retries
-        for r in runs:
-            total_stream_retries += r.get("stream_retries", 0)
+        for row in runs:
+            total_stream_retries += row.get("stream_retries", 0)
 
         # Speed (exclude compaction_stress)
         sc_speed_sum = 0.0
         sc_speed_n = 0
         if scenario_name not in SPEED_EXCLUDE:
-            for r in runs:
-                if r["completeness"]:
-                    speed_times.append(r["elapsed_s"])
-                    sc_speed_sum += r["elapsed_s"]
+            for row, outcome in zip(runs, outcomes, strict=True):
+                if outcome.completed:
+                    speed_times.append(row["elapsed_s"])
+                    sc_speed_sum += row["elapsed_s"]
                     sc_speed_n += 1
         per_scenario_speed_sum[scenario_name] = sc_speed_sum
         per_scenario_speed_n[scenario_name] = sc_speed_n
@@ -399,15 +403,15 @@ def compute_config_metrics(
         # Per-scenario efficiency components (correct runs only, same gating as global)
         sc_ideal = 0
         sc_actual = 0
-        for r in runs:
-            if r["completeness"] and r.get("accuracy"):
-                ideal = r.get("ideal_iterations") or _SCENARIO_IDEAL_FALLBACK.get(scenario_name, 3)
+        for row, outcome in zip(runs, outcomes, strict=True):
+            if outcome.completed and outcome.is_correct:
+                ideal = row.get("ideal_iterations") or _SCENARIO_IDEAL_FALLBACK.get(scenario_name, 3)
                 sc_ideal += ideal
-                sc_actual += r["iterations"]
+                sc_actual += row["iterations"]
         per_scenario_ideal_calls[scenario_name] = sc_ideal
         per_scenario_actual_calls[scenario_name] = sc_actual
 
-    completeness = total_completed / total_runs if total_runs > 0 else 0.0
+    completion_rate = completed_count / attempted_count if attempted_count else 0.0
     avg_wasted = total_wasted / wasted_count if wasted_count > 0 else 0.0
 
     # Efficiency: ratio of ideal calls to actual calls across correct runs only.
@@ -416,17 +420,20 @@ def compute_config_metrics(
     total_ideal = 0
     total_actual = 0
     for scenario_name in scenarios:
-        for r in scenario_runs.get(scenario_name, []):
-            if r["completeness"] and r.get("accuracy"):
-                ideal = r.get("ideal_iterations") or _SCENARIO_IDEAL_FALLBACK.get(scenario_name, 3)
+        for row in scenario_runs.get(scenario_name, []):
+            outcome = read_outcome(row)
+            if outcome.completed and outcome.is_correct:
+                ideal = row.get("ideal_iterations") or _SCENARIO_IDEAL_FALLBACK.get(scenario_name, 3)
                 total_ideal += ideal
-                total_actual += r["iterations"]
+                total_actual += row["iterations"]
     efficiency = min(total_ideal / total_actual, 1.0) if total_actual > 0 else 0.0
 
     speed = sum(speed_times) / len(speed_times) if speed_times else 0.0
 
-    accuracy = total_correct / total_validated if total_validated > 0 else None
-    score = total_correct / total_runs if total_runs > 0 else 0.0
+    validated_accuracy = (
+        correct_count / validated_count if validated_count else None
+    )
+    score = correct_count / attempted_count if attempted_count else 0.0
 
     # Generation: max gen across this config's rows (all equal post-dedup).
     gen = 0
@@ -440,14 +447,16 @@ def compute_config_metrics(
     return ConfigMetrics(
         key=key,
         runs_per_scenario=max_runs,
-        total_runs=total_runs,
-        total_completed=total_completed,
-        completeness=completeness,
-        per_scenario_completeness=per_scenario_completeness,
+        attempted_count=attempted_count,
+        correct_count=correct_count,
+        validated_count=validated_count,
+        completed_count=completed_count,
+        completion_rate=completion_rate,
+        per_scenario_completion_rate=per_scenario_completion_rate,
         score=score,
-        accuracy=accuracy,
+        validated_accuracy=validated_accuracy,
         per_scenario_score=per_scenario_score,
-        per_scenario_runs=per_scenario_runs,
+        per_scenario_attempted=per_scenario_attempted,
         per_scenario_correct=per_scenario_correct,
         per_scenario_completed=per_scenario_completed,
         per_scenario_validated=per_scenario_validated,
@@ -460,9 +469,9 @@ def compute_config_metrics(
         efficiency=efficiency,
         avg_wasted=avg_wasted,
         speed=speed,
-        complete=all_complete,
+        has_full_coverage=has_full_coverage,
         stream_retries=total_stream_retries,
-        validate_errors=total_validate_errors,
+        validation_error_count=validation_error_count,
         gen=gen,
         retired=retired,
     )
@@ -731,10 +740,10 @@ def _gen_legend_lines(metrics_list: list["ConfigMetrics"], max_gen: int) -> list
 
 
 def _sort_metrics(metrics_list: list[ConfigMetrics]) -> list[ConfigMetrics]:
-    """Sort by score desc → completeness desc → efficiency desc → speed asc."""
+    """Sort by score, completion rate, efficiency, then speed."""
     return sorted(metrics_list, key=lambda m: (
         -round(m.score, 2),
-        -round(m.completeness, 2),
+        -round(m.completion_rate, 2),
         -round(m.efficiency, 2),
         m.speed,
     ))
@@ -743,7 +752,7 @@ def _sort_metrics(metrics_list: list[ConfigMetrics]) -> list[ConfigMetrics]:
 def _legend_lines(scenarios: list[str]) -> list[str]:
     """Return legend lines for table footer."""
     lines = [
-        "Scr=score(correct/total), Acc=accuracy(correct/total, excl validate errors), Cmp=completeness(completed/total), "
+        "Scr=score(correct/attempted), VAcc=validated accuracy(correct/validated), Cmp=completion rate(completed/attempted), "
         "Eff=efficiency(ideal/actual calls), Wst=avg wasted calls, Spd=avg time(excl compaction)",
     ]
     abbrev_legend = ", ".join(
@@ -776,7 +785,7 @@ def render_table_string(
     superscript badge. Pass 0 (default) to disable badging.
     """
     if not metrics_list:
-        return "No fully completed configs found.\n"
+        return "No fully covered configs found.\n"
 
     if scenarios is None:
         scenarios = SCENARIO_NAMES
@@ -802,7 +811,7 @@ def render_table_string(
     header = (
         f"{'Model/Backend':<{label_w}}  "
         f"{'Scr':>7}  "
-        f"{'Acc':>7}  "
+        f"{'VAcc':>7}  "
         f"{'Cmp':>7}  "
         f"{'Eff':>5}  "
         f"{'Wst':>4}  "
@@ -816,8 +825,8 @@ def render_table_string(
 
     for m in metrics_list:
         scr_str = f"{m.score*100:.1f}%"
-        acc_str = f"{m.accuracy*100:.1f}%" if m.accuracy is not None else "  —"
-        cmp_str = f"{m.completeness*100:.1f}%"
+        acc_str = f"{m.validated_accuracy*100:.1f}%" if m.validated_accuracy is not None else "  —"
+        cmp_str = f"{m.completion_rate*100:.1f}%"
         eff_str = f"{m.efficiency*100:.0f}%"
         wst_str = f"{m.avg_wasted:.1f}"
         spd_str = f"{m.speed:.1f}s"
@@ -828,7 +837,7 @@ def render_table_string(
             rate = m.per_scenario_score.get(sc)
             if rate is not None:
                 sc_strs.append(f"{rate*100:{sc_w}.0f}")
-            elif m.per_scenario_runs.get(sc, 0) == 0:
+            elif m.per_scenario_attempted.get(sc, 0) == 0:
                 sc_strs.append(f"{'I':>{sc_w}}")
             else:
                 sc_strs.append(f"{'—':>{sc_w}}")
@@ -862,7 +871,7 @@ def print_table(
     max_gen: int = 0,
 ) -> None:
     if not metrics_list:
-        print("No fully completed configs found.")
+        print("No fully covered configs found.")
         return
     print(f"\n{render_table_string(metrics_list, scenarios, max_gen=max_gen)}")
 
@@ -872,7 +881,7 @@ def print_table(
 
 def print_list(metrics_list: list[ConfigMetrics]) -> None:
     if not metrics_list:
-        print("No fully completed configs found.")
+        print("No fully covered configs found.")
         return
 
     metrics_list = _sort_metrics(metrics_list)
@@ -882,33 +891,33 @@ def print_list(metrics_list: list[ConfigMetrics]) -> None:
     print(f"{'='*50}")
 
     for i, m in enumerate(metrics_list, 1):
-        cmp_pct = m.completeness * 100
+        cmp_pct = m.completion_rate * 100
         eff_pct = m.efficiency * 100
-        pass_fail = f"{m.total_completed}/{m.total_runs}"
+        pass_fail = f"{m.completed_count}/{m.attempted_count}"
 
         print(f"\n  #{i} {m.key.label}")
-        print(f"     Score:         {m.score*100:.1f}%")
-        if m.accuracy is not None:
-            print(f"     Accuracy:      {m.accuracy*100:.1f}%")
-        print(f"     Completeness:  {pass_fail} ({cmp_pct:.1f}%)")
+        print(f"     Score:              {m.correct_count}/{m.attempted_count} ({m.score*100:.1f}%)")
+        if m.validated_accuracy is not None:
+            print(f"     Validated accuracy: {m.correct_count}/{m.validated_count} ({m.validated_accuracy*100:.1f}%)")
+        print(f"     Completion rate:    {pass_fail} ({cmp_pct:.1f}%)")
         print(f"     Efficiency: {eff_pct:.0f}% (avg {m.avg_wasted:.1f} wasted)")
         print(f"     Speed:      {m.speed:.1f}s avg (excl compaction)")
 
-        # Flag weak scenarios (by completeness)
+        # Flag scenarios with incomplete execution return rates.
         weak = [
-            sc for sc, rate in m.per_scenario_completeness.items()
+            sc for sc, rate in m.per_scenario_completion_rate.items()
             if rate < 1.0
         ]
         if weak:
-            parts = [f"{sc}={m.per_scenario_completeness[sc]*100:.0f}%" for sc in weak]
+            parts = [f"{sc}={m.per_scenario_completion_rate[sc]*100:.0f}%" for sc in weak]
             print(f"     Weak:       {', '.join(parts)}")
         else:
             print(f"     Weak:       none (all 100%)")
 
         if m.stream_retries > 0:
             print(f"     Stream retries: {m.stream_retries}")
-        if m.validate_errors > 0:
-            print(f"     Validate errors: {m.validate_errors}")
+        if m.validation_error_count > 0:
+            print(f"     Validation errors: {m.validation_error_count}")
 
     print(f"\n{'='*50}\n")
 
@@ -969,8 +978,12 @@ def _metrics_to_json_row(m: ConfigMetrics, scenarios: list[str]) -> dict:
         "gen": m.gen,
         "retired": m.retired,
         "score": round(m.score * 100, 1),
-        "accuracy": round(m.accuracy * 100, 1) if m.accuracy is not None else None,
-        "completeness": round(m.completeness * 100, 1),
+        "validatedAccuracy": round(m.validated_accuracy * 100, 1) if m.validated_accuracy is not None else None,
+        "completionRate": round(m.completion_rate * 100, 1),
+        "attemptedCount": m.attempted_count,
+        "correctCount": m.correct_count,
+        "validatedCount": m.validated_count,
+        "completedCount": m.completed_count,
         "efficiency": round(m.efficiency * 100, 1),
         "wasted": round(m.avg_wasted, 1),
         "speed": round(m.speed, 1),
@@ -979,7 +992,7 @@ def _metrics_to_json_row(m: ConfigMetrics, scenarios: list[str]) -> dict:
             sc: round(m.per_scenario_score[sc] * 100) if m.per_scenario_score.get(sc) is not None else None
             for sc in scenarios
         },
-        "scenarioRuns": {sc: m.per_scenario_runs.get(sc, 0) for sc in scenarios},
+        "scenarioAttempted": {sc: m.per_scenario_attempted.get(sc, 0) for sc in scenarios},
         "scenarioCorrect": {sc: m.per_scenario_correct.get(sc, 0) for sc in scenarios},
         "scenarioCompleted": {sc: m.per_scenario_completed.get(sc, 0) for sc in scenarios},
         "scenarioValidated": {sc: m.per_scenario_validated.get(sc, 0) for sc in scenarios},
@@ -1136,7 +1149,7 @@ def write_markdown_views(
 
     written: list[tuple[str, str]] = []  # (relpath-from-raw, description)
 
-    complete = [m for m in all_metrics if m.complete]
+    complete = [m for m in all_metrics if m.has_full_coverage]
     # Retired models are carried forward by dedup but hidden from the static
     # markdown views by default (no toggle possible in markdown). The HTML
     # dashboard keeps them and gates them behind a checkbox instead.
@@ -1481,7 +1494,7 @@ def main() -> None:
     if args.include_partial:
         display_metrics = all_metrics
     else:
-        display_metrics = [m for m in all_metrics if m.complete]
+        display_metrics = [m for m in all_metrics if m.has_full_coverage]
 
     if not display_metrics and not args.progress:
         print(

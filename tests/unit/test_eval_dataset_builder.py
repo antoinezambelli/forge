@@ -10,6 +10,7 @@ from typing import Any
 import pytest
 
 from tests.eval import dataset_builder, publication
+from tests.eval.outcomes import LEGACY_DIALECT
 
 
 def _row(**overrides: Any) -> dict[str, Any]:
@@ -58,6 +59,7 @@ def _write_source(
         name,
         "synthetic",
         generations.pop(),
+        LEGACY_DIALECT,
         len(rows),
         hashlib.sha256(payload).hexdigest(),
     )
@@ -100,7 +102,7 @@ def metadata() -> dataset_builder.ReleaseMetadata:
 def test_physical_schema_is_exact_and_pyarrow_is_lazy() -> None:
     pa, _ = dataset_builder._require_pyarrow()
     schema = dataset_builder._physical_schema(pa)
-    assert len(schema) == 51
+    assert len(schema) == 52
     assert [field.name for field in schema] == [
         field.name for field in publication.NORMALIZED_SCHEMA
     ]
@@ -112,22 +114,27 @@ def test_physical_schema_is_exact_and_pyarrow_is_lazy() -> None:
 
 
 def test_card_documents_replay_reasoning_and_carried_evidence_semantics(
+    tmp_path: Path,
     metadata: dataset_builder.ReleaseMetadata,
 ) -> None:
-    body = dataset_builder._card_bytes(metadata).decode("utf-8")
-    assert "missing raw `reasoning_replay` is inferred as effective `full`" in body
+    plan = _fixture_plan(tmp_path / "source")
+    body = dataset_builder._card_bytes(metadata, plan).decode("utf-8")
+    assert "Rows predating the\nknob have no raw value and resolve to effective `full`" in body
     assert (
-        "legacy-inferred `full` remains distinct\n"
-        "in arm identity from an explicitly recorded raw `full`"
+        "legacy-inferred arm\nremains distinct from an explicitly recorded `full` arm"
     ) in body
-    assert "raw `reasoning_replay` field preserves the value recorded" in body
-    assert "in `effective_reasoning_replay`" in body
-    assert "raw\n`reasoning_level` field preserves the optional source value" in body
-    assert "`effective_reasoning_level` resolves a missing raw value to `default`" in body
+    assert "raw `reasoning_replay` field preserves the source value" in body
+    assert "Missing raw\n`reasoning_level` resolves to effective `default`" in body
     assert (
-        "Carried\nevidence is an older selected cohort retained because no newer "
-        "matching cohort\nexists."
+        "Carried evidence is an older\nselected cohort retained only because no "
+        "newer matching cohort exists."
     ) in body
+    assert "score = correct_count / attempted_count" in body
+    assert "validated_accuracy = correct_count / validated_count" in body
+    assert "completion_rate = completed_count / attempted_count" in body
+    assert "outcome corpus" in body
+    assert "not a collection of complete agent traces" in body
+    assert "comparability epoch" in body
 
 
 @pytest.mark.parametrize("license_id", ["", "other", "custom", "MIT", " mit"])
@@ -199,7 +206,7 @@ def test_build_is_deterministic_structured_and_fully_verified(
         "shard_template": "part-{index:05d}-of-{total:05d}.parquet",
     }
     assert "builder_source_sha256" in manifest["builder"]
-    assert len(manifest["builder"]["source_files"]) == 4
+    assert len(manifest["builder"]["source_files"]) == 5
     assert all("sha256" in fact for fact in manifest["files"])
     assert all(
         "rows" in fact

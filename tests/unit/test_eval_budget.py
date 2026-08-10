@@ -52,7 +52,7 @@ class TestBudgetOverride:
         )
 
         result = await run_scenario(client, compaction_chain_p1, config)
-        assert result.completeness
+        assert result.completed
         # With 16384 budget, no compaction should fire on short mock responses
         assert len(result.compaction_events) == 0
 
@@ -71,7 +71,7 @@ class TestBudgetOverride:
         )
 
         result = await run_scenario(client, basic_2step, config)
-        assert result.completeness
+        assert result.completed
 
     async def test_tight_budget_triggers_compaction(self) -> None:
         """A very tight budget with long responses should trigger compaction."""
@@ -95,5 +95,5 @@ class TestBudgetOverride:
         )
 
         result = await run_scenario(client, compaction_chain_p1, config)
-        assert result.completeness
+        assert result.completed
         assert len(result.compaction_events) > 0

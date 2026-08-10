@@ -10,6 +10,7 @@ from typing import Any
 import pytest
 
 from tests.eval import publication, report
+from tests.eval.outcomes import CANONICAL_DIALECT, LEGACY_DIALECT, OutcomeDialect
 from tests.eval.provenance import GEN_INFO
 
 
@@ -58,6 +59,7 @@ def _write_source(
     *,
     terminator: bytes = b"\n",
     final_terminator: bool = True,
+    outcome_dialect: OutcomeDialect = LEGACY_DIALECT,
 ) -> publication.SourceSpec:
     chunks = []
     for index, row in enumerate(rows):
@@ -72,6 +74,7 @@ def _write_source(
         name,
         "synthetic",
         generation,
+        outcome_dialect,
         len(rows),
         hashlib.sha256(payload).hexdigest(),
     )
@@ -96,46 +99,15 @@ def _single_plan(
 
 
 def test_schema_is_exact_and_shared_provenance_has_object_identity() -> None:
-    assert len(publication.SOURCE_SCHEMA) == 33
-    assert len(publication.NORMALIZED_SCHEMA) == 51
-    assert [field.name for field in publication.SOURCE_SCHEMA] == [
-        "ablation",
-        "accuracy",
-        "backend",
-        "budget_tokens",
-        "compaction_events",
-        "completeness",
-        "elapsed_s",
-        "error_message",
-        "error_type",
-        "gen",
-        "ideal_iterations",
-        "iterations",
-        "mode",
-        "model",
-        "reasoning_msgs",
-        "retry_nudges",
-        "run",
-        "scenario",
-        "step_nudges",
-        "tool_choice",
-        "tool_errors",
-        "wasted_calls",
-        "cache_creation_input_tokens",
-        "cache_read_input_tokens",
-        "cost_usd",
-        "input_tokens",
-        "output_tokens",
-        "reasoning_level",
-        "reasoning_replay",
-        "reasoning_wire",
-        "reasoning_wire_total",
-        "rig",
-        "stream_retries",
-    ]
+    assert len(publication.source_schema(LEGACY_DIALECT)) == 34
+    assert len(publication.source_schema(CANONICAL_DIALECT)) == 34
+    assert len(publication.NORMALIZED_SCHEMA) == 52
     assert report.GEN_INFO is publication.GEN_INFO is GEN_INFO
 
-    fields = {field.name: field for field in publication.SOURCE_SCHEMA}
+    fields = {
+        field.name: field
+        for field in publication.source_schema(LEGACY_DIALECT)
+    }
     assert {name for name, field in fields.items() if not field.source_required} == {
         "cache_creation_input_tokens",
         "cache_read_input_tokens",
@@ -148,6 +120,7 @@ def test_schema_is_exact_and_shared_provenance_has_object_identity() -> None:
         "reasoning_wire_total",
         "rig",
         "stream_retries",
+        "validate_error",
     }
     assert {name for name, field in fields.items() if field.source_nullable} == {
         "accuracy",
@@ -160,6 +133,7 @@ def test_schema_is_exact_and_shared_provenance_has_object_identity() -> None:
         "step_nudges",
         "tool_errors",
         "wasted_calls",
+        "validate_error",
     }
     assert {name for name, field in fields.items() if field.logical_type == "bool"} == {
         "accuracy",
@@ -178,7 +152,20 @@ def test_schema_is_exact_and_shared_provenance_has_object_identity() -> None:
     assert not fields["run"].source_nullable
 
     manifest = publication.schema_manifest()
+    normalized_names = [field.name for field in publication.NORMALIZED_SCHEMA]
+    assert "correct" in normalized_names
+    assert "completed" in normalized_names
+    assert "validation_error" in normalized_names
+    assert "accuracy" not in normalized_names
+    assert "completeness" not in normalized_names
     assert manifest["sha256"] == publication.schema_fingerprint()
+    assert manifest["version"] == 2
+    assert manifest["enums"]["outcome_dialect"] == ["legacy", "canonical"]
+    assert manifest["source_dialects"]["legacy"]["outcome_mapping"] == {
+        "accuracy": "correct",
+        "completeness": "completed",
+        "validate_error": "validation_error",
+    }
     assert manifest["enums"]["reasoning_replay"] == ["none", "keep-last", "full"]
 
 
@@ -202,7 +189,42 @@ def test_sparse_fields_normalize_to_null_and_run_is_untouched(tmp_path: Path) ->
         assert normalized[name] is None
     assert normalized["effective_reasoning_replay"] == "full"
     assert normalized["effective_reasoning_level"] == "default"
+    assert normalized["correct"] is None
+    assert normalized["completed"] is True
+    assert normalized["validation_error"] is None
+    assert "accuracy" not in normalized
+    assert "completeness" not in normalized
     assert normalized["run"] == -7
+
+
+def test_canonical_source_dialect_normalizes_without_aliases(tmp_path: Path) -> None:
+    row = _row()
+    row["correct"] = row.pop("accuracy")
+    row["completed"] = row.pop("completeness")
+    spec = _write_source(
+        tmp_path,
+        "canonical.jsonl",
+        [row],
+        outcome_dialect=CANONICAL_DIALECT,
+    )
+    plan = publication.build_publication_plan(tmp_path, source_specs=[spec])
+    normalized = list(publication.iter_history(plan))[0]
+
+    assert normalized["correct"] is True
+    assert normalized["completed"] is True
+    assert "accuracy" not in normalized
+    assert "completeness" not in normalized
+    assert plan.sources[0].outcome_dialect == CANONICAL_DIALECT
+
+
+def test_source_dialect_is_exact_and_rejects_aliases_from_the_other_shape() -> None:
+    with pytest.raises(publication.PublicationError, match="unknown_field"):
+        publication.parse_source_line(
+            _encode(_row()),
+            "fixture.jsonl",
+            1,
+            outcome_dialect=CANONICAL_DIALECT,
+        )
 
 
 @pytest.mark.parametrize(
@@ -221,14 +243,18 @@ def test_strict_parser_rejects_invalid_json(
     line: bytes, category: str
 ) -> None:
     with pytest.raises(publication.PublicationError, match=category) as exc_info:
-        publication.parse_source_line(line, "fixture.jsonl", 9)
+        publication.parse_source_line(
+            line, "fixture.jsonl", 9, outcome_dialect=LEGACY_DIALECT
+        )
     assert str(exc_info.value).startswith("fixture.jsonl:9:")
 
 
 def test_overflow_float_is_rejected_as_non_finite() -> None:
     raw = _encode(_row()).replace(b'"elapsed_s":1.25', b'"elapsed_s":1e999')
     with pytest.raises(publication.PublicationError, match="non_finite"):
-        publication.parse_source_line(raw, "fixture.jsonl", 1)
+        publication.parse_source_line(
+            raw, "fixture.jsonl", 1, outcome_dialect=LEGACY_DIALECT
+        )
 
 
 @pytest.mark.parametrize(
@@ -245,7 +271,12 @@ def test_schema_errors_fail_closed_and_are_redacted(mutate: Any, category: str) 
     row = _row()
     mutate(row)
     with pytest.raises(publication.PublicationError, match=category) as exc_info:
-        publication.parse_source_line(_encode(row), "fixture.jsonl", 3)
+        publication.parse_source_line(
+            _encode(row),
+            "fixture.jsonl",
+            3,
+            outcome_dialect=LEGACY_DIALECT,
+        )
     message = str(exc_info.value)
     assert "secret-host-value" not in message
     assert "model-a" not in message
@@ -254,14 +285,21 @@ def test_schema_errors_fail_closed_and_are_redacted(mutate: Any, category: str) 
 def test_source_generation_and_generation_metadata_are_strict(tmp_path: Path) -> None:
     spec = _write_source(tmp_path, "wrong-gen.jsonl", [_row(gen=1)])
     mismatched = publication.SourceSpec(
-        spec.source_file, spec.release, 2, spec.row_count, spec.sha256
+        spec.source_file,
+        spec.release,
+        2,
+        spec.outcome_dialect,
+        spec.row_count,
+        spec.sha256,
     )
     with pytest.raises(
         publication.PublicationError, match="source_generation_mismatch"
     ):
         publication.build_publication_plan(tmp_path, source_specs=[mismatched])
 
-    unknown = publication.SourceSpec("unused.jsonl", "synthetic", 99, 0, "0" * 64)
+    unknown = publication.SourceSpec(
+        "unused.jsonl", "synthetic", 99, LEGACY_DIALECT, 0, "0" * 64
+    )
     with pytest.raises(publication.PublicationError, match="unknown_generation"):
         publication.build_publication_plan(tmp_path, source_specs=[unknown])
 
@@ -380,7 +418,7 @@ def test_plan_and_logical_digest_are_deterministic_golden(tmp_path: Path) -> Non
         "13acbcacb2ce55e8a8e0e0d9b31eef9dcf2307d3990849a1092de77153166d11"
     )
     assert plan.views["history"].normalized_logical_sha256 == (
-        "c682dd15cee85edd884f7cc7c89fef84201bd032f67c4355ed8fa6240b7d875f"
+        "c48510f6c29a4701d49b3c8e417949f798c3d906dcdfde6adb472ecaab9bc6bb"
     )
 
 

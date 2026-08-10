@@ -12,21 +12,22 @@ import tests.eval.batch_eval as batch_eval
 from tests.eval.batch_eval import (
     BatchConfig,
     _compute_cost,
-    _preflight_completed_runs,
+    _preflight_recorded_runs,
     _run_key,
     _run_result_to_row,
     run_batch,
 )
 from tests.eval.eval_runner import RunResult
+from tests.eval.outcomes import CANONICAL_DIALECT, LEGACY_DIALECT, OutcomeDialect
 from tests.eval.scenarios import basic_2step
 
 
 def _result(scenario: str = "basic_2step") -> RunResult:
     return RunResult(
         scenario_name=scenario,
-        completeness=True,
+        completed=True,
         iterations_used=3,
-        accuracy=True,
+        correct=True,
         messages=None,
     )
 
@@ -37,6 +38,7 @@ def _row(
     reasoning_replay: str = "none",
     generation: int = 0,
     run_idx: int = 1,
+    outcome_dialect: OutcomeDialect = CANONICAL_DIALECT,
 ) -> dict[str, Any]:
     """Build a JSONL row via the production serializer."""
     cfg = BatchConfig(model=model, backend="llamaserver", mode="native", think=None)
@@ -45,6 +47,7 @@ def _row(
         generation=generation,
         ablation_name="reforged",
         reasoning_replay=reasoning_replay,
+        outcome_dialect=outcome_dialect,
     )
 
 
@@ -130,6 +133,10 @@ def test_run_result_to_row_records_generation_and_replay() -> None:
     assert released["gen"] == 7
     assert released["reasoning_replay"] == "full"
     assert released["reasoning_level"] == "default"
+    assert scratch["correct"] is True
+    assert scratch["completed"] is True
+    assert "accuracy" not in scratch
+    assert "completeness" not in scratch
 
 
 def test_run_result_to_row_requires_generation_keyword() -> None:
@@ -257,13 +264,17 @@ async def test_resume_safely_separates_unterminated_final_row(
 
 
 def test_legacy_missing_replay_counts_as_full_not_none(tmp_path: Path) -> None:
-    legacy = _row(reasoning_replay="none")
+    legacy = _row(
+        reasoning_replay="none", outcome_dialect=LEGACY_DIALECT
+    )
     del legacy["reasoning_replay"]
     del legacy["gen"]
     output = tmp_path / "legacy.jsonl"
     _write_rows(output, [legacy])
 
-    counts = _preflight_completed_runs(output, requested_generation=0)
+    counts = _preflight_recorded_runs(
+        output, requested_generation=0
+    ).recorded_counts
 
     def key(policy: str) -> str:
         return _run_key(
@@ -280,7 +291,11 @@ async def test_legacy_full_resume_skips_existing_generation_zero_run(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     output = tmp_path / "legacy.jsonl"
-    legacy = _row(model="claude-sonnet-4-6", reasoning_replay="full")
+    legacy = _row(
+        model="claude-sonnet-4-6",
+        reasoning_replay="full",
+        outcome_dialect=LEGACY_DIALECT,
+    )
     legacy["backend"] = "anthropic"
     del legacy["reasoning_replay"]
     del legacy["gen"]
@@ -301,7 +316,9 @@ async def test_explicit_none_does_not_collide_with_legacy_full(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     output = tmp_path / "legacy.jsonl"
-    legacy = _row(model="claude-sonnet-4-6")
+    legacy = _row(
+        model="claude-sonnet-4-6", outcome_dialect=LEGACY_DIALECT
+    )
     legacy["backend"] = "anthropic"
     del legacy["reasoning_replay"]
     del legacy["gen"]
@@ -318,6 +335,59 @@ async def test_explicit_none_does_not_collide_with_legacy_full(
     assert "reasoning_replay" not in rows[0]
     assert rows[1]["reasoning_replay"] == "none"
     assert rows[1]["gen"] == 0
+    assert rows[1]["accuracy"] is True
+    assert rows[1]["completeness"] is True
+    assert "correct" not in rows[1]
+    assert "completed" not in rows[1]
+
+
+@pytest.mark.parametrize(
+    "row",
+    [
+        {**_row(), "accuracy": True, "completeness": True},
+        {key: value for key, value in _row().items() if key != "completed"},
+        {
+            **{
+                key: value
+                for key, value in _row().items()
+                if key not in {"correct", "completed"}
+            },
+            "accuracy": True,
+            "completed": True,
+        },
+        {**_row(), "correct": "yes"},
+        {**_row(), "completed": 1},
+        {**_row(), "validation_error": 123},
+    ],
+    ids=[
+        "dual",
+        "partial",
+        "hybrid",
+        "wrong-correct-type",
+        "wrong-completed-type",
+        "wrong-validation-error-type",
+    ],
+)
+@pytest.mark.asyncio
+async def test_outcome_dialect_errors_fail_before_backend_and_preserve_bytes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    row: dict[str, Any],
+) -> None:
+    output = tmp_path / "invalid-outcome.jsonl"
+    _write_rows(output, [row])
+    before = output.read_bytes()
+    _fail_if_backend_reached(monkeypatch)
+
+    with pytest.raises(ValueError, match="outcome"):
+        await run_batch(
+            configs=[_managed_config()],
+            runs_per_scenario=2,
+            output_path=output,
+            generation=0,
+        )
+
+    assert output.read_bytes() == before
 
 
 @pytest.mark.parametrize(
@@ -433,9 +503,9 @@ def test_run_result_to_row_emits_cache_tokens() -> None:
     )
     result = RunResult(
         scenario_name="basic_2step",
-        completeness=True,
+        completed=True,
         iterations_used=3,
-        accuracy=True,
+        correct=True,
         messages=None,
         input_tokens=1_000,
         output_tokens=500,
