@@ -135,6 +135,14 @@ def test_card_documents_replay_reasoning_and_carried_evidence_semantics(
     assert "outcome corpus" in body
     assert "not a collection of complete agent traces" in body
     assert "comparability epoch" in body
+    assert "does not include a packaged Parquet-to-report or dashboard command" in body
+    assert "Recompute aggregate metrics and perform independent analyses" in body
+    assert "Reproduce Forge's aggregate reports" not in body
+    assert (
+        "Forge: Closing the Agentic Reliability Gap Between\n"
+        "Self-Hosted and Frontier Language Models"
+    ) in body
+    assert metadata.citation_url in body
 
 
 @pytest.mark.parametrize("license_id", ["", "other", "custom", "MIT", " mit"])

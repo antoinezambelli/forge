@@ -329,7 +329,7 @@ tests/
 
 The forge guardrail framework and ablation study are published as:
 
-> Zambelli, A. *Forge: A Reliability Layer for Self-Hosted LLM Tool-Calling.*
+> Zambelli, A. *Forge: Closing the Agentic Reliability Gap Between Self-Hosted and Frontier Language Models.*
 > [https://doi.org/10.1145/3786335.3813193](https://doi.org/10.1145/3786335.3813193)
 
 A pre-publication preprint is also available at [docs/forge_ieee_preprint.pdf](docs/forge_ieee_preprint.pdf) — kept as a historical artifact. Cite the published version above; the DOI link may not resolve immediately depending on the publisher's release timing.

@@ -303,11 +303,14 @@ Repeated runs are stored individually. Cohort comparisons should control for
 model, quantization, backend, mode, scenario set, replay policy, reasoning
 level, generation, and collection environment. For paired arms, Forge uses
 paired McNemar tests on matching `(scenario, run)` observations and Wilson
-intervals for Score; consumers can reproduce those analyses from the run rows.
+intervals for Score. The run rows contain the paired observations and exact
+outcome components needed to recompute those analyses independently. This
+bundle does not include a packaged Parquet-to-report or dashboard command.
 
 ## Intended uses
 
-- Reproduce Forge's aggregate reports and inspect individual outcomes.
+- Recompute aggregate metrics and perform independent analyses from run-level
+  outcomes.
 - Compare controlled model/backend/mode or ablation cohorts.
 - Study completion, validation, efficiency, replay, and guardrail behavior.
 - Build new statistical views while retaining source-level provenance.
@@ -341,7 +344,8 @@ python -m tests.eval.dataset_builder verify --source-root . --bundle <bundle>
 
 Project and methodology: {metadata.reproduction_url}
 
-Citation: {metadata.citation_url}
+Paper citation: Zambelli, A. *Forge: Closing the Agentic Reliability Gap Between
+Self-Hosted and Frontier Language Models.* {metadata.citation_url}
 
 License: `{metadata.license}`
 """

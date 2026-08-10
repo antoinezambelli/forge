@@ -184,7 +184,7 @@ dedicated writer extra, then build only into a path that does not already exist:
 
 ```bash
 python -m pip install -e ".[dataset-builder]"
-python -m tests.eval.dataset_builder build --source-root . --output build/forge-eval-dataset-v2 --license mit --citation-url https://github.com/antoinezambelli/forge --reproduction-url https://github.com/antoinezambelli/forge/blob/main/docs/EVAL_GUIDE.md
+python -m tests.eval.dataset_builder build --source-root . --output build/forge-eval-dataset-v2 --license mit --citation-url https://doi.org/10.1145/3786335.3813193 --reproduction-url https://github.com/antoinezambelli/forge/blob/main/docs/EVAL_GUIDE.md
 python -m tests.eval.dataset_builder verify --source-root . --bundle build/forge-eval-dataset-v2
 ```
 
