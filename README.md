@@ -255,6 +255,9 @@ tool-calling workflows, with a baseline tier and an `advanced_reasoning` tier
 for top-end separation. See [Eval Guide](docs/EVAL_GUIDE.md) for the current
 scenario inventory and full CLI reference.
 
+The released run-level outcome corpus is available as the
+[Forge eval dataset on Hugging Face](https://huggingface.co/datasets/antoinezambelli/forge-evals).
+
 ```bash
 # llama-server (start in another terminal first; see Eval Guide)
 python -m tests.eval.eval_runner --backend llamafile --llamafile-mode prompt --gguf "path/to/Ministral-3-8B-Instruct-2512-Q8_0.gguf" --runs 10 --stream --verbose

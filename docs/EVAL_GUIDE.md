@@ -224,9 +224,10 @@ shown by `python -m tests.eval.dataset_builder build --help`: `apache-2.0`,
 `bsd-2-clause`, `bsd-3-clause`, `cc-by-4.0`, `cc-by-sa-4.0`, `cc0-1.0`,
 `gpl-3.0`, `lgpl-3.0`, `mit`, `mpl-2.0`, `odc-by`, and `odbl`. It rejects
 `other` and custom licenses because those require a license name and/or a
-LICENSE file outside the fixed layout. Citation and reproduction values must
-be absolute HTTP(S) URLs. The builder verifies the five pinned source hashes
-and exact view counts before
+LICENSE file outside the fixed layout. `--citation-url` must be the canonical
+Forge paper DOI, `https://doi.org/10.1145/3786335.3813193`;
+`--reproduction-url` must be an absolute HTTP(S) URL. The builder verifies the
+five pinned source hashes and exact view counts before
 creating a sibling `.NAME.incomplete-*` staging directory. It hashes every
 finished non-manifest file, reads every shard back against the publication
 plan, and only then renames the complete directory into place. Any failure

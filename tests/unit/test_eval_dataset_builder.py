@@ -94,7 +94,7 @@ def _fixture_plan(root: Path) -> publication.PublicationPlan:
 def metadata() -> dataset_builder.ReleaseMetadata:
     return dataset_builder.validate_release_metadata(
         "mit",
-        "https://example.test/citation?q=forge#paper",
+        dataset_builder.FORGE_PAPER_DOI_URL,
         "http://example.test/reproduce?version=1",
     )
 
@@ -135,6 +135,8 @@ def test_card_documents_replay_reasoning_and_carried_evidence_semantics(
     assert "outcome corpus" in body
     assert "not a collection of complete agent traces" in body
     assert "comparability epoch" in body
+    assert dataset_builder.HUGGING_FACE_DATASET_URL in body
+    assert body.count(f'load_dataset("{dataset_builder.HUGGING_FACE_DATASET_ID}"') == 3
     assert "does not include a packaged Parquet-to-report or dashboard command" in body
     assert "Recompute aggregate metrics and perform independent analyses" in body
     assert "Reproduce Forge's aggregate reports" not in body
@@ -161,6 +163,24 @@ def test_metadata_rejects_malformed_urls(url: str) -> None:
     with pytest.raises(dataset_builder.DatasetBuilderError, match="URL"):
         dataset_builder.validate_release_metadata(
             "mit", url, "https://example.test/repro"
+        )
+
+
+@pytest.mark.parametrize(
+    "citation_url",
+    [
+        "https://example.test/citation",
+        "http://doi.org/10.1145/3786335.3813193",
+        "https://doi.org/10.1145/3786335.3813193/",
+        "https://doi.org/10.1145/3786335.3813193?source=forge",
+    ],
+)
+def test_metadata_requires_canonical_forge_paper_doi(citation_url: str) -> None:
+    with pytest.raises(
+        dataset_builder.DatasetBuilderError, match="canonical Forge paper DOI"
+    ):
+        dataset_builder.validate_release_metadata(
+            "mit", citation_url, "https://example.test/repro"
         )
 
 

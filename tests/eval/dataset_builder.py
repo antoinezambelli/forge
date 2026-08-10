@@ -6,7 +6,7 @@ Hugging Face Hub, or require credentials.
 
 Build and verify the pinned corpus with::
 
-    python -m tests.eval.dataset_builder build --source-root . --output build/forge-eval-dataset-v2 --license mit --citation-url https://example.test/citation --reproduction-url https://example.test/reproduce
+    python -m tests.eval.dataset_builder build --source-root . --output build/forge-eval-dataset-v2 --license mit --citation-url https://doi.org/10.1145/3786335.3813193 --reproduction-url https://example.test/reproduce
     python -m tests.eval.dataset_builder verify --source-root . --bundle build/forge-eval-dataset-v2
 """
 
@@ -35,6 +35,11 @@ COMPRESSION = "zstd"
 RECORD_BATCH_ROWS = 8_192
 SHARD_ROWS = 100_000
 SHARD_TEMPLATE = "part-{index:05d}-of-{total:05d}.parquet"
+FORGE_PAPER_DOI_URL = "https://doi.org/10.1145/3786335.3813193"
+HUGGING_FACE_DATASET_ID = "antoinezambelli/forge-evals"
+HUGGING_FACE_DATASET_URL = (
+    f"https://huggingface.co/datasets/{HUGGING_FACE_DATASET_ID}"
+)
 
 # Deliberately frozen for the fixed v2 card layout.  Identifiers that need a
 # license_name or a shipped LICENSE file (including "other") are unsupported.
@@ -117,9 +122,15 @@ def validate_release_metadata(
             f"unsupported Hugging Face license identifier {license_id!r}; "
             f"accepted v2 identifiers: {accepted}"
         )
+    validated_citation_url = _validate_url(citation_url, "citation URL")
+    if validated_citation_url != FORGE_PAPER_DOI_URL:
+        raise DatasetBuilderError(
+            "citation URL must be the canonical Forge paper DOI "
+            f"{FORGE_PAPER_DOI_URL!r}"
+        )
     return ReleaseMetadata(
         license=license_id,
-        citation_url=_validate_url(citation_url, "citation URL"),
+        citation_url=validated_citation_url,
         reproduction_url=_validate_url(reproduction_url, "reproduction URL"),
     )
 
@@ -234,14 +245,16 @@ reasoning and cannot reconstruct an end-to-end trajectory.
 - `history` contains every released row, including superseded generations, in
   pinned source-file and source-line order.
 
+Dataset repository: {HUGGING_FACE_DATASET_URL}
+
 ## Quickstart
 
 ```python
 from datasets import load_dataset
 
-latest = load_dataset("antoinezambelli/forge-evals", "latest", split="train")
-snapshot = load_dataset("antoinezambelli/forge-evals", "snapshot", split="train")
-history = load_dataset("antoinezambelli/forge-evals", "history", split="train")
+latest = load_dataset("{HUGGING_FACE_DATASET_ID}", "latest", split="train")
+snapshot = load_dataset("{HUGGING_FACE_DATASET_ID}", "snapshot", split="train")
+history = load_dataset("{HUGGING_FACE_DATASET_ID}", "history", split="train")
 ```
 
 ## Metric contract
@@ -988,7 +1001,11 @@ def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
         dest="license_id",
         help="recognized v2 identifier: " + ", ".join(sorted(ACCEPTED_LICENSES)),
     )
-    build_parser.add_argument("--citation-url", required=True)
+    build_parser.add_argument(
+        "--citation-url",
+        required=True,
+        help=f"canonical Forge paper DOI (must be {FORGE_PAPER_DOI_URL})",
+    )
     build_parser.add_argument("--reproduction-url", required=True)
     verify_parser = subparsers.add_parser("verify", help="verify a finished pinned bundle")
     verify_parser.add_argument("--source-root", required=True, type=Path)
