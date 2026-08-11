@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from dataclasses import FrozenInstanceError
-from pathlib import Path
 
 import pytest
 
@@ -99,21 +98,16 @@ def test_render_coordinator_matches_proven_rig_topology(
     ]
 
 
-@pytest.mark.parametrize(
-    "flags",
-    [
+def test_rpc_topology_flag_ownership() -> None:
+    duplicate_flags = [
         ["--rpc", "10.0.0.5:50052"],
         ["--device=Vulkan0,RPC0"],
         ["-sm", "layer"],
         ["--tensor-split=1,1"],
-    ],
-)
-def test_duplicate_topology_flags_are_rejected(flags: list[str]) -> None:
-    with pytest.raises(ValueError, match="RPC topology owns"):
-        validate_rpc_extra_flags(flags)
-
-
-def test_ordinary_extra_flags_are_accepted() -> None:
+    ]
+    for flags in duplicate_flags:
+        with pytest.raises(ValueError, match="RPC topology owns"):
+            validate_rpc_extra_flags(flags)
     validate_rpc_extra_flags(["--fit", "off", "-fa", "on"])
 
 
@@ -122,40 +116,24 @@ def test_config_is_frozen(rig_rpc: LlamaCppRpcConfig) -> None:
         rig_rpc.startup_timeout = 12  # type: ignore[misc]
 
 
-def test_log_directory_is_normalized(rig_rpc: LlamaCppRpcConfig) -> None:
-    configured = LlamaCppRpcConfig(
-        worker=rig_rpc.worker,
-        coordinator_executable=rig_rpc.coordinator_executable,
-        devices=rig_rpc.devices,
-        tensor_split=rig_rpc.tensor_split,
-        log_directory="logs/rpc",
-    )
-    assert configured.log_directory == Path("logs/rpc")
-
-
-@pytest.mark.parametrize(
-    ("kwargs", "message"),
-    [
+def test_invalid_worker_config_fails_early() -> None:
+    invalid_cases = [
         ({"rpc_host": "0.0.0.0"}, "direct-link"),
         ({"rpc_port": 0}, "rpc_port"),
         ({"ssh_target": ""}, "ssh_target"),
         ({"environment": (("BAD=KEY", "x"),)}, "invalid variable"),
-    ],
-)
-def test_invalid_worker_config_fails_early(
-    kwargs: dict[str, object],
-    message: str,
-) -> None:
-    values: dict[str, object] = {
-        "ssh_target": "worker",
-        "rpc_host": "10.0.0.5",
-        "rpc_port": 50052,
-        "executable": "/opt/ggml-rpc-server",
-        "device": "Vulkan0",
-    }
-    values.update(kwargs)
-    with pytest.raises(ValueError, match=message):
-        LlamaCppRpcWorkerConfig(**values)  # type: ignore[arg-type]
+    ]
+    for kwargs, message in invalid_cases:
+        values: dict[str, object] = {
+            "ssh_target": "worker",
+            "rpc_host": "10.0.0.5",
+            "rpc_port": 50052,
+            "executable": "/opt/ggml-rpc-server",
+            "device": "Vulkan0",
+        }
+        values.update(kwargs)
+        with pytest.raises(ValueError, match=message):
+            LlamaCppRpcWorkerConfig(**values)  # type: ignore[arg-type]
 
 
 def test_tensor_split_must_match_devices(

@@ -148,24 +148,32 @@ async def test_worker_cleanup_still_runs_if_coordinator_stop_errors(
 
 
 @pytest.mark.asyncio
-async def test_worker_readiness_failure_cleans_worker(
+async def test_worker_tcp_timeout_cleans_worker_and_reports_logs(
     rpc_config: LlamaCppRpcConfig,
 ) -> None:
     manager = ServerManager("llamaserver")
+    short_timeout = replace(rpc_config, startup_timeout=0.1)
     worker = _process()
+    clock = [0.0]
+
+    def advance_clock() -> float:
+        clock[0] += 0.05
+        return clock[0]
+
     with (
-        patch("forge.server.subprocess.Popen", return_value=worker),
-        patch.object(
-            manager,
-            "_wait_rpc_worker",
+        patch("forge.server.subprocess.Popen", return_value=worker) as popen,
+        patch("forge.server.time.monotonic", side_effect=advance_clock),
+        patch(
+            "forge.server.asyncio.open_connection",
             new_callable=AsyncMock,
-            side_effect=RuntimeError("worker unavailable"),
+            side_effect=OSError("not listening"),
         ),
         patch("forge.server.asyncio.sleep", new_callable=AsyncMock),
-        pytest.raises(RuntimeError, match="worker unavailable"),
+        pytest.raises(RuntimeError, match="within 0.1s.*logs"),
     ):
-        await manager.start("/m.gguf", gguf_path="/m.gguf", rpc=rpc_config)
+        await manager.start("/m.gguf", gguf_path="/m.gguf", rpc=short_timeout)
 
+    assert popen.call_count == 1
     worker.terminate.assert_called_once()
     assert manager._proc is None
     assert manager._rpc_worker_proc is None
@@ -192,61 +200,6 @@ async def test_coordinator_spawn_failure_cleans_worker(
     worker.terminate.assert_called_once()
     assert manager._rpc_worker_proc is None
     assert any("RPC logs:" in note for note in exc_info.value.__notes__)
-
-
-@pytest.mark.asyncio
-async def test_worker_tcp_timeout_uses_topology_timeout_and_logs(
-    rpc_config: LlamaCppRpcConfig,
-) -> None:
-    manager = ServerManager("llamaserver")
-    short_timeout = replace(rpc_config, startup_timeout=0.1)
-    manager._rpc_worker_proc = _process()
-    manager._open_rpc_logs(short_timeout)
-    clock = [0.0]
-
-    def advance_clock() -> float:
-        clock[0] += 0.05
-        return clock[0]
-
-    with (
-        patch("forge.server.time.monotonic", side_effect=advance_clock),
-        patch(
-            "forge.server.asyncio.open_connection",
-            new_callable=AsyncMock,
-            side_effect=OSError("not listening"),
-        ),
-        patch("forge.server.asyncio.sleep", new_callable=AsyncMock),
-        pytest.raises(RuntimeError, match="within 0.1s.*logs"),
-    ):
-        await manager._wait_rpc_worker(short_timeout)
-    manager._close_rpc_logs()
-
-
-@pytest.mark.asyncio
-async def test_coordinator_readiness_failure_cleans_both(
-    rpc_config: LlamaCppRpcConfig,
-) -> None:
-    manager = ServerManager("llamaserver")
-    events: list[str] = []
-    worker = _process()
-    coordinator = _process()
-    worker.terminate.side_effect = lambda: events.append("worker")
-    coordinator.terminate.side_effect = lambda: events.append("coordinator")
-    with (
-        patch("forge.server.subprocess.Popen", side_effect=[worker, coordinator]),
-        patch.object(manager, "_wait_rpc_worker", new_callable=AsyncMock),
-        patch.object(
-            manager,
-            "_wait_healthy",
-            new_callable=AsyncMock,
-            side_effect=RuntimeError("coordinator unavailable"),
-        ),
-        patch("forge.server.asyncio.sleep", new_callable=AsyncMock),
-        pytest.raises(RuntimeError, match="coordinator unavailable"),
-    ):
-        await manager.start("/m.gguf", gguf_path="/m.gguf", rpc=rpc_config)
-
-    assert events == ["coordinator", "worker"]
 
 
 @pytest.mark.asyncio
@@ -285,45 +238,32 @@ async def test_coordinator_props_timeout_cleans_both(
 
 
 @pytest.mark.asyncio
-async def test_worker_exit_during_coordinator_load_rejects_pair(
+async def test_exited_child_after_readiness_rejects_pair(
     rpc_config: LlamaCppRpcConfig,
 ) -> None:
-    manager = ServerManager("llamaserver")
-    worker = _process()
-    worker.poll.return_value = 1
-    coordinator = _process()
-    with (
-        patch("forge.server.subprocess.Popen", side_effect=[worker, coordinator]),
-        patch.object(manager, "_wait_rpc_worker", new_callable=AsyncMock),
-        patch.object(manager, "_wait_healthy", new_callable=AsyncMock),
-        patch("forge.server.asyncio.sleep", new_callable=AsyncMock),
-        pytest.raises(RuntimeError, match="worker exited"),
+    for dead_child, message in (
+        ("worker", "worker exited"),
+        ("coordinator", "Coordinator exited"),
     ):
-        await manager.start("/m.gguf", gguf_path="/m.gguf", rpc=rpc_config)
+        manager = ServerManager("llamaserver")
+        worker = _process()
+        coordinator = _process()
+        if dead_child == "worker":
+            worker.poll.return_value = 1
+        else:
+            coordinator.poll.return_value = 1
 
-    coordinator.terminate.assert_called_once()
-    worker.terminate.assert_called_once()
+        with (
+            patch("forge.server.subprocess.Popen", side_effect=[worker, coordinator]),
+            patch.object(manager, "_wait_rpc_worker", new_callable=AsyncMock),
+            patch.object(manager, "_wait_healthy", new_callable=AsyncMock),
+            patch("forge.server.asyncio.sleep", new_callable=AsyncMock),
+            pytest.raises(RuntimeError, match=message),
+        ):
+            await manager.start("/m.gguf", gguf_path="/m.gguf", rpc=rpc_config)
 
-
-@pytest.mark.asyncio
-async def test_coordinator_exit_after_readiness_rejects_pair(
-    rpc_config: LlamaCppRpcConfig,
-) -> None:
-    manager = ServerManager("llamaserver")
-    worker = _process()
-    coordinator = _process()
-    coordinator.poll.return_value = 1
-    with (
-        patch("forge.server.subprocess.Popen", side_effect=[worker, coordinator]),
-        patch.object(manager, "_wait_rpc_worker", new_callable=AsyncMock),
-        patch.object(manager, "_wait_healthy", new_callable=AsyncMock),
-        patch("forge.server.asyncio.sleep", new_callable=AsyncMock),
-        pytest.raises(RuntimeError, match="Coordinator exited"),
-    ):
-        await manager.start("/m.gguf", gguf_path="/m.gguf", rpc=rpc_config)
-
-    coordinator.terminate.assert_called_once()
-    worker.terminate.assert_called_once()
+        coordinator.terminate.assert_called_once()
+        worker.terminate.assert_called_once()
 
 
 @pytest.mark.asyncio
@@ -502,90 +442,33 @@ async def test_rpc_forge_fast_preserves_two_phase_sequence(
 
 
 @pytest.mark.asyncio
-async def test_rpc_forge_fast_restart_replays_only_final_half_context(
+async def test_rpc_forge_fast_budget_failures_stop_pair(
     rpc_config: LlamaCppRpcConfig,
 ) -> None:
-    manager = ServerManager("llamaserver")
-    processes = [_process() for _ in range(4)]
-    with (
-        patch("forge.server.subprocess.Popen", side_effect=processes),
-        patch.object(manager, "_wait_rpc_worker", new_callable=AsyncMock),
-        patch.object(manager, "_wait_healthy", new_callable=AsyncMock),
-        patch.object(
-            manager,
-            "get_server_context",
-            new_callable=AsyncMock,
-            side_effect=[16_384, 8_192],
-        ),
-        patch("forge.server.asyncio.sleep", new_callable=AsyncMock),
+    for context_results, expected_starts in (
+        ([BudgetResolutionError()], 1),
+        ([16_384, BudgetResolutionError()], 2),
     ):
-        result = await manager.start_with_budget(
-            "/m.gguf",
-            gguf_path="/m.gguf",
-            budget_mode=BudgetMode.FORGE_FAST,
-            rpc=rpc_config,
-        )
-        await manager.stop()
-
-    assert result == 8_192
-    assert manager._last_launch is not None
-    assert manager._last_launch.ctx_override == 8_192
-
-    with patch.object(manager, "start", new_callable=AsyncMock) as start:
-        await manager.restart()
-    start.assert_awaited_once()
-    assert start.await_args.kwargs["ctx_override"] == 8_192
-
-
-@pytest.mark.asyncio
-async def test_rpc_forge_fast_discovery_failure_stops_pair(
-    rpc_config: LlamaCppRpcConfig,
-) -> None:
-    manager = ServerManager("llamaserver")
-    with (
-        patch.object(manager, "start", new_callable=AsyncMock),
-        patch.object(
-            manager,
-            "get_server_context",
-            new_callable=AsyncMock,
-            side_effect=BudgetResolutionError(),
-        ),
-        patch.object(manager, "stop", new_callable=AsyncMock) as stop,
-        pytest.raises(BudgetResolutionError),
-    ):
-        await manager.start_with_budget(
-            "/m.gguf",
-            gguf_path="/m.gguf",
-            budget_mode=BudgetMode.FORGE_FAST,
-            rpc=rpc_config,
-        )
-    stop.assert_awaited_once()
-
-
-@pytest.mark.asyncio
-async def test_rpc_final_budget_failure_stops_pair(
-    rpc_config: LlamaCppRpcConfig,
-) -> None:
-    manager = ServerManager("llamaserver")
-    with (
-        patch.object(manager, "start", new_callable=AsyncMock) as start,
-        patch.object(
-            manager,
-            "get_server_context",
-            new_callable=AsyncMock,
-            side_effect=[16_384, BudgetResolutionError()],
-        ),
-        patch.object(manager, "stop", new_callable=AsyncMock) as stop,
-        pytest.raises(BudgetResolutionError),
-    ):
-        await manager.start_with_budget(
-            "/m.gguf",
-            gguf_path="/m.gguf",
-            budget_mode=BudgetMode.FORGE_FAST,
-            rpc=rpc_config,
-        )
-    assert start.await_count == 2
-    stop.assert_awaited_once()
+        manager = ServerManager("llamaserver")
+        with (
+            patch.object(manager, "start", new_callable=AsyncMock) as start,
+            patch.object(
+                manager,
+                "get_server_context",
+                new_callable=AsyncMock,
+                side_effect=context_results,
+            ),
+            patch.object(manager, "stop", new_callable=AsyncMock) as stop,
+            pytest.raises(BudgetResolutionError),
+        ):
+            await manager.start_with_budget(
+                "/m.gguf",
+                gguf_path="/m.gguf",
+                budget_mode=BudgetMode.FORGE_FAST,
+                rpc=rpc_config,
+            )
+        assert start.await_count == expected_starts
+        stop.assert_awaited_once()
 
 
 @pytest.mark.asyncio

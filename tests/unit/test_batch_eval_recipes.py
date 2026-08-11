@@ -171,33 +171,19 @@ def test_managed_config_roster_and_sets_are_pinned() -> None:
         assert [_identity(config) for config in batch_eval.CONFIG_SETS[name]] == expected
 
 
-@pytest.mark.parametrize(
-    "config",
-    batch_eval.LLAMASERVER_CONFIGS + batch_eval._REASONING_HIGH_CONFIGS,
-    ids=lambda config: f"{config.model}-{config.mode}-{config.reasoning_level}",
-)
-def test_llamaserver_recipe_flags_match_the_pinned_literals(
-    config: batch_eval.BatchConfig,
-) -> None:
-    expected = _EXPECTED_SPECIAL_FLAGS.get(config.model, ())
-    assert config.server_recipe.extra_flags == expected
-    assert "--jinja" not in config.server_recipe.extra_flags
+def test_managed_recipe_mapping_matches_pinned_literals() -> None:
+    llamaserver_configs = (
+        batch_eval.LLAMASERVER_CONFIGS + batch_eval._REASONING_HIGH_CONFIGS
+    )
+    for config in llamaserver_configs:
+        expected = _EXPECTED_SPECIAL_FLAGS.get(config.model, ())
+        assert config.server_recipe.extra_flags == expected, _identity(config)
+        assert "--jinja" not in config.server_recipe.extra_flags, _identity(config)
 
+    for config in batch_eval.OLLAMA_CONFIGS + batch_eval.LLAMAFILE_CONFIGS:
+        assert config.server_recipe.extra_flags == (), _identity(config)
 
-@pytest.mark.parametrize(
-    "config",
-    batch_eval.OLLAMA_CONFIGS + batch_eval.LLAMAFILE_CONFIGS,
-    ids=lambda config: f"{config.backend}-{config.model}",
-)
-def test_other_managed_configs_have_an_empty_recipe(
-    config: batch_eval.BatchConfig,
-) -> None:
-    assert config.server_recipe.extra_flags == ()
-
-
-def test_batch_server_recipe_is_private_frozen_and_replaces_the_old_lookup() -> None:
     recipe = batch_eval._BatchServerRecipe(("--reasoning-format", "auto"))
-
     with pytest.raises(FrozenInstanceError):
         recipe.extra_flags = ()  # type: ignore[misc]
 
