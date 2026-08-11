@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import json
 from collections.abc import Awaitable, Callable
 from typing import Any
@@ -327,7 +328,7 @@ class WorkflowRunner:
                 tc_id = call_ids[i]
                 fn = workflow.get_callable(tc.tool)
                 try:
-                    if asyncio.iscoroutinefunction(fn):
+                    if inspect.iscoroutinefunction(fn):
                         result_val = await fn(**tc.args)
                     else:
                         result_val = fn(**tc.args)
