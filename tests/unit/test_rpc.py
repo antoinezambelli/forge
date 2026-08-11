@@ -50,6 +50,7 @@ def test_render_worker_matches_proven_rig_command(
 ) -> None:
     assert render_rpc_worker_command(rig_rpc.worker) == [
         "ssh",
+        "-tt",
         "-o",
         "BatchMode=yes",
         "-o",
@@ -75,6 +76,7 @@ def test_render_worker_quotes_remote_values() -> None:
     )
     assert render_rpc_worker_command(worker) == [
         "ssh",
+        "-tt",
         "worker",
         (
             "exec env 'TRACE_LABEL=rpc smoke' '/opt/llama cpp/ggml-rpc-server' "

@@ -133,7 +133,9 @@ def render_rpc_worker_command(config: LlamaCppRpcWorkerConfig) -> list[str]:
     if config.tensor_cache:
         remote_argv.append("-c")
     remote_command = f"exec {shlex.join(remote_argv)}"
-    return ["ssh", *config.ssh_options, config.ssh_target, remote_command]
+    # Force a remote PTY so terminating Forge's foreground SSH child sends a
+    # hangup to the exec'd worker instead of leaving it listening remotely.
+    return ["ssh", "-tt", *config.ssh_options, config.ssh_target, remote_command]
 
 
 def render_rpc_coordinator_args(config: LlamaCppRpcConfig) -> list[str]:
