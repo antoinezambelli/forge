@@ -939,6 +939,20 @@ class TestStartWithBudget:
         assert result == 13568
 
     @pytest.mark.asyncio
+    async def test_ollama_restart_replays_last_attached_model(self) -> None:
+        sm = ServerManager(backend="ollama")
+        with patch.object(
+            sm, "resolve_budget", new_callable=AsyncMock, return_value=4096,
+        ):
+            await sm.start_with_budget("llama3", budget_mode=BudgetMode.BACKEND)
+
+        with patch.object(sm, "stop", new_callable=AsyncMock) as stop:
+            await sm.restart()
+
+        stop.assert_awaited_once()
+        assert sm._current_model == "llama3"
+
+    @pytest.mark.asyncio
     async def test_start_with_budget_manual(self) -> None:
         sm = ServerManager(backend="llamaserver")
         with (
@@ -1293,6 +1307,25 @@ class TestSetupBackend:
         assert isinstance(server, ServerManager)
         assert isinstance(ctx, ContextManager)
         assert ctx.budget_tokens == 13568
+
+    @pytest.mark.asyncio
+    async def test_setup_failure_stops_unreturned_manager(self) -> None:
+        with (
+            patch.object(
+                ServerManager,
+                "start_with_budget",
+                new_callable=AsyncMock,
+                side_effect=BudgetResolutionError(),
+            ),
+            patch.object(ServerManager, "stop", new_callable=AsyncMock) as stop,
+            pytest.raises(BudgetResolutionError),
+        ):
+            await setup_backend(
+                backend="llamaserver",
+                gguf_path="/models/llama3.gguf",
+            )
+
+        stop.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_setup_backend_ctx_uses_tiered_compact(self) -> None:

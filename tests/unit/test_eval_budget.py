@@ -7,6 +7,7 @@ from typing import Any
 
 import pytest
 
+import tests.eval.eval_runner as eval_runner
 from forge.context.strategies import TieredCompact
 from forge.core.workflow import ToolCall, TextResponse
 
@@ -97,3 +98,28 @@ class TestBudgetOverride:
         result = await run_scenario(client, compaction_chain_p1, config)
         assert result.completed
         assert len(result.compaction_events) > 0
+
+    async def test_each_run_builds_a_fresh_context_manager(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        created: list[object] = []
+        context_manager = eval_runner.ContextManager
+
+        class RecordingContextManager(context_manager):
+            def __init__(self, *args: Any, **kwargs: Any) -> None:
+                super().__init__(*args, **kwargs)
+                created.append(self)
+
+        monkeypatch.setattr(eval_runner, "ContextManager", RecordingContextManager)
+        responses = [
+            ToolCall(tool="get_country_info", args={"country": "France"}),
+            ToolCall(tool="summarize", args={"content": "test"}),
+        ]
+        config = EvalConfig(runs_per_scenario=1, budget_override=4096)
+
+        for _ in range(2):
+            result = await run_scenario(_MockClient(responses), basic_2step, config)
+            assert result.completed
+
+        assert len(created) == 2
+        assert created[0] is not created[1]

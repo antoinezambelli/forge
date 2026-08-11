@@ -131,6 +131,7 @@ class ServerManager:
         self._current_kv_unified: bool = False
         self._active_launch: _ServerLaunch | None = None
         self._last_launch: _ServerLaunch | None = None
+        self._last_daemon_model: str | None = None
         self._rpc_worker_proc: subprocess.Popen | None = None
         self._rpc_log_handles: tuple[TextIO, TextIO] | None = None
         self._rpc_log_paths: tuple[Path, Path] | None = None
@@ -457,7 +458,17 @@ class ServerManager:
             raise first_error
 
     async def restart(self) -> None:
-        """Restart the last successful spawned launch with resolved arguments."""
+        """Restart the last successful launch with resolved arguments."""
+
+        if (
+            self._profile is not None
+            and self._profile.lifecycle == LifecycleOwnership.ATTACHED_DAEMON
+        ):
+            if self._last_daemon_model is None:
+                raise RuntimeError("no successful attached model is available to restart")
+            await self.stop()
+            self._current_model = self._last_daemon_model
+            return
 
         launch = self._last_launch
         if launch is None:
@@ -749,7 +760,9 @@ class ServerManager:
             and self._profile.family_profile.family == BackendFamily.OLLAMA
         ):
             self._current_model = model
-            return await self.resolve_budget(budget_mode, manual_tokens)
+            budget = await self.resolve_budget(budget_mode, manual_tokens)
+            self._last_daemon_model = model
+            return budget
 
         try:
             return await self._start_spawned_with_budget(
@@ -1034,28 +1047,35 @@ async def _setup_managed_backend(
 
     server = ServerManager(backend=backend, port=port)
     try:
-        context_window_tokens = await server.start_with_budget(
-            model=identity,
-            gguf_path=gguf_path,
-            model_path=model_path,
-            mode=mode,
-            budget_mode=budget_mode,
-            manual_tokens=manual_tokens,
-            extra_flags=extra_flags,
-            cache_type_k=cache_type_k,
-            cache_type_v=cache_type_v,
-            n_slots=n_slots,
-            kv_unified=kv_unified,
-            **({"rpc": rpc} if rpc is not None else {}),
-        )
-    except BudgetResolutionError:
-        if not (
-            allow_missing_backend_window
-            and budget_mode == BudgetMode.BACKEND
-            and profile.family_profile.family != BackendFamily.OLLAMA
-        ):
-            raise
-        context_window_tokens = None
+        try:
+            context_window_tokens = await server.start_with_budget(
+                model=identity,
+                gguf_path=gguf_path,
+                model_path=model_path,
+                mode=mode,
+                budget_mode=budget_mode,
+                manual_tokens=manual_tokens,
+                extra_flags=extra_flags,
+                cache_type_k=cache_type_k,
+                cache_type_v=cache_type_v,
+                n_slots=n_slots,
+                kv_unified=kv_unified,
+                **({"rpc": rpc} if rpc is not None else {}),
+            )
+        except BudgetResolutionError:
+            if not (
+                allow_missing_backend_window
+                and budget_mode == BudgetMode.BACKEND
+                and profile.family_profile.family != BackendFamily.OLLAMA
+            ):
+                raise
+            context_window_tokens = None
+    except BaseException:
+        try:
+            await server.stop()
+        except BaseException:
+            pass
+        raise
 
     if (
         profile.family_profile.family == BackendFamily.OLLAMA

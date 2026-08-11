@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -68,12 +69,11 @@ def _anthropic_config() -> BatchConfig:
 
 
 def _install_inert_backend(monkeypatch: pytest.MonkeyPatch) -> None:
-    class FakeServerManager:
-        def __init__(self, *args, **kwargs):
-            pass
+    class FakeServer:
+        client_base_url = "http://localhost:11434"
 
-        async def start_with_budget(self, **kwargs):
-            return 4096
+        async def restart(self):
+            pass
 
         async def resolve_budget(self, *args, **kwargs):
             return 4096
@@ -81,12 +81,15 @@ def _install_inert_backend(monkeypatch: pytest.MonkeyPatch) -> None:
         async def stop(self):
             pass
 
+    async def fake_setup_backend(**kwargs):
+        return FakeServer(), SimpleNamespace(budget_tokens=4096)
+
     monkeypatch.setattr(batch_eval, "ALL_SCENARIOS", [basic_2step])
     monkeypatch.setattr(batch_eval, "_check_model_available", lambda *args: None)
-    monkeypatch.setattr(batch_eval, "ServerManager", FakeServerManager)
+    monkeypatch.setattr(batch_eval, "setup_backend", fake_setup_backend)
     monkeypatch.setattr(batch_eval, "_build_client", lambda *args: object())
 
-    async def fake_run_with_timeout(client, scenario, eval_config, ablation):
+    async def fake_run_with_timeout(client, scenario, eval_config, ablation, run_timeout):
         return _result(scenario.name)
 
     monkeypatch.setattr(batch_eval, "_run_with_timeout", fake_run_with_timeout)
@@ -96,7 +99,7 @@ def _fail_if_backend_reached(monkeypatch: pytest.MonkeyPatch) -> None:
     def fail(*args, **kwargs):
         pytest.fail("backend construction was reached")
 
-    monkeypatch.setattr(batch_eval, "ServerManager", fail)
+    monkeypatch.setattr(batch_eval, "setup_backend", fail)
     monkeypatch.setattr(batch_eval, "_build_client", fail)
 
 
@@ -219,31 +222,25 @@ async def test_empty_output_accepts_requested_generation(
 
 
 @pytest.mark.asyncio
-async def test_initial_startup_and_recovery_use_identical_recipe_flags(
+async def test_public_setup_receives_the_configuration_recipe(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     recipe_flags = ("--reasoning-format", "auto", "--no-mmap")
-    starts: list[list[str] | None] = []
+    setups: list[dict[str, Any]] = []
 
-    class RecoveringServerManager:
-        def __init__(self, *args, **kwargs):
-            pass
+    _install_inert_backend(monkeypatch)
 
-        async def start_with_budget(self, **kwargs):
-            starts.append(kwargs["extra_flags"])
-            if len(starts) == 1:
-                raise RuntimeError("startup timeout")
-            return 4096
-
-        async def resolve_budget(self, *args, **kwargs):
-            return 4096
+    class Server:
+        client_base_url = "http://localhost:8080/v1"
 
         async def stop(self):
             pass
 
-    _install_inert_backend(monkeypatch)
-    monkeypatch.setattr(batch_eval, "ServerManager", RecoveringServerManager)
-    monkeypatch.setattr(batch_eval, "_RECOVERY_BACKOFFS", [0])
+    async def setup(**kwargs):
+        setups.append(kwargs)
+        return Server(), SimpleNamespace(budget_tokens=4096)
+
+    monkeypatch.setattr(batch_eval, "setup_backend", setup)
     config = BatchConfig(
         model="M",
         backend="llamaserver",
@@ -259,7 +256,7 @@ async def test_initial_startup_and_recovery_use_identical_recipe_flags(
         output_path=tmp_path / "results.jsonl",
     )
 
-    assert starts == [list(recipe_flags), list(recipe_flags)]
+    assert setups[0]["extra_flags"] == list(recipe_flags)
 
 
 @pytest.mark.asyncio

@@ -23,7 +23,8 @@ from typing import Any
 
 from forge.clients.sampling_defaults import get_sampling_defaults
 from forge.core.reasoning import DEFAULT_REASONING_REPLAY, REASONING_REPLAY_CHOICES, ReasoningReplay
-from forge.server import BudgetMode, ServerManager
+from forge.rpc import LlamaCppRpcConfig
+from forge.server import BudgetMode, ServerManager, setup_backend
 
 from tests.eval.ablation import ABLATION_PRESETS, AblationConfig
 from tests.eval.eval_runner import EvalConfig, RunResult, run_scenario
@@ -54,6 +55,7 @@ class _BatchServerRecipe:
     """Literal server options owned by one managed batch configuration."""
 
     extra_flags: tuple[str, ...] = ()
+    rpc: LlamaCppRpcConfig | None = None
 
 
 _DEFAULT_SERVER_RECIPE = _BatchServerRecipe()
@@ -633,7 +635,8 @@ def _check_model_available(
 
 # Wall-clock cap per scenario run. p99 in historical data is ~38s and the
 # longest legitimate 12GB-tier run is ~100s, so 300s is a safe hang guard.
-_RUN_TIMEOUT = 300
+_REQUEST_TIMEOUT = 300.0
+_RUN_TIMEOUT = 300.0
 
 
 async def _run_with_timeout(
@@ -641,6 +644,7 @@ async def _run_with_timeout(
     scenario: EvalScenario,
     eval_config: EvalConfig,
     ablation: AblationConfig | None,
+    run_timeout: float = _RUN_TIMEOUT,
 ) -> RunResult:
     """Run a scenario with a wall-clock cap.
 
@@ -651,7 +655,7 @@ async def _run_with_timeout(
     try:
         return await asyncio.wait_for(
             run_scenario(client, scenario, eval_config, ablation=ablation),
-            timeout=_RUN_TIMEOUT,
+            timeout=run_timeout,
         )
     except asyncio.TimeoutError:
         return RunResult(
@@ -659,7 +663,7 @@ async def _run_with_timeout(
             completed=False,
             iterations_used=0,
             error_type="Timeout",
-            error_message=f"Exceeded {_RUN_TIMEOUT}s",
+            error_message=f"Exceeded {run_timeout:g}s",
             elapsed_seconds=time.monotonic() - start,
         )
 
@@ -681,23 +685,20 @@ def _is_server_error(result: "RunResult") -> bool:
 
 async def _recover_server(
     server: "ServerManager",
-    config: BatchConfig,
-    gguf_path: str,
-    extra_flags: tuple[str, ...],
     crash_count: int,
     budget_mode: BudgetMode,
     manual_tokens: int | None,
-) -> bool:
+) -> int | None:
     """Attempt to restart the server after a crash.
 
-    Restarts through the prod ``start_with_budget`` path so the recovered
-    server is launched with the same budget (e.g. ``-c manual_tokens`` for
-    MANUAL mode) as the original.
+    Restarts the manager's last successful launch, preserving its resolved
+    topology and context arguments.
 
-    Returns True if recovery succeeded, False if circuit breaker tripped.
+    Returns the recovered budget, or ``None`` if recovery failed or the circuit
+    breaker tripped.
     """
     if crash_count > len(_RECOVERY_BACKOFFS):
-        return False
+        return None
 
     backoff = _RECOVERY_BACKOFFS[crash_count - 1]
     print(
@@ -714,29 +715,25 @@ async def _recover_server(
 
     await asyncio.sleep(backoff)
 
-    # Restart. Cache-equality identity: model string for ollama,
-    # GGUF path for non-Ollama (matches run_batch and setup_backend).
-    cache_identity = config.model if config.backend == "ollama" else gguf_path
     try:
-        await server.start_with_budget(
-            model=cache_identity,
-            gguf_path=gguf_path,
-            mode=config.mode,
-            budget_mode=budget_mode,
-            manual_tokens=manual_tokens,
-            extra_flags=list(extra_flags) if extra_flags else None,
-        )
+        await server.restart()
+        resolved_budget = await server.resolve_budget(budget_mode, manual_tokens)
         print("  [!] Server restarted successfully.", flush=True)
-        return True
+        return resolved_budget
     except Exception as exc:
         print(f"  [!] Server restart failed: {exc}", flush=True)
-        return False
+        return None
 
 
 # ── Client factory ──────────────────────────────────────────────
 
 
-def _build_client(config: BatchConfig, models_dir: Path) -> Any:
+def _build_client(
+    config: BatchConfig,
+    models_dir: Path,
+    base_url: str,
+    request_timeout: float = _REQUEST_TIMEOUT,
+) -> Any:
     """Build the appropriate LLM client for a BatchConfig.
 
     For llamaserver/llamafile, ``gguf_path`` is constructed from
@@ -749,7 +746,8 @@ def _build_client(config: BatchConfig, models_dir: Path) -> Any:
         from forge.clients.ollama import OllamaClient
 
         return OllamaClient(
-            model=config.model, think=think_val,
+            model=config.model, base_url=base_url, think=think_val,
+            timeout=request_timeout,
             recommended_sampling=recommended_sampling,
         )
 
@@ -766,14 +764,16 @@ def _build_client(config: BatchConfig, models_dir: Path) -> Any:
             return LlamafileClient(
                 gguf_path=str(models_dir / config.gguf_filename),
                 mode=config.mode, think=think_val,
-                base_url=f"http://localhost:{_eval_port()}/v1",
+                base_url=base_url,
+                timeout=request_timeout,
                 recommended_sampling=False,
                 **config.sampling_override,
             )
         return LlamafileClient(
             gguf_path=str(models_dir / config.gguf_filename),
             mode=config.mode, think=think_val,
-            base_url=f"http://localhost:{_eval_port()}/v1",
+            base_url=base_url,
+            timeout=request_timeout,
             recommended_sampling=recommended_sampling,
         )
 
@@ -785,7 +785,8 @@ def _build_client(config: BatchConfig, models_dir: Path) -> Any:
             gguf_path=str(models_dir / config.gguf_filename),
             mode=config.mode,
             think=think_val,
-            base_url=f"http://localhost:{_eval_port()}/v1",
+            base_url=base_url,
+            timeout=request_timeout,
             recommended_sampling=recommended_sampling,
         )
 
@@ -827,10 +828,12 @@ async def run_batch(
     ablation: AblationConfig | None = None,
     reasoning_replay: ReasoningReplay = DEFAULT_REASONING_REPLAY,
     generation: int = 0,
+    request_timeout: float = _REQUEST_TIMEOUT,
+    run_timeout: float = _RUN_TIMEOUT,
 ) -> None:
     """Run all configs × scenarios, appending each result to JSONL.
 
-    Budget resolution uses the prod ServerManager path. Compaction
+    Budget resolution uses the public ``setup_backend()`` path. Compaction
     scenarios (compaction_stress, phase2_compaction) always override
     with their own hardcoded budget.
     """
@@ -895,134 +898,101 @@ async def run_batch(
     total_ran = 0
     total_failed_connect = 0
     batch_start = time.monotonic()
-    server = ServerManager(backend="ollama", port=_eval_port(), models_dir=models_dir)
-    prev_backend: str | None = None
-    prev_server: ServerManager | None = None
+    for cfg_idx, config in enumerate(configs, 1):
+        tc_label = config.tool_choice or "auto"
+        config_label = f"{config.model} ({config.backend}/{config.mode})"
+        if config.tool_choice:
+            config_label += f" [tool_choice={config.tool_choice}]"
+        print(
+            f"\n{'='*70}\n"
+            f"[{cfg_idx}/{total_configs}] {config_label}\n"
+            f"{'='*70}",
+            flush=True,
+        )
 
-    try:
-        for cfg_idx, config in enumerate(configs, 1):
-            tc_label = config.tool_choice or "auto"
-            config_label = f"{config.model} ({config.backend}/{config.mode})"
-            if config.tool_choice:
-                config_label += f" [tool_choice={config.tool_choice}]"
-            print(
-                f"\n{'='*70}\n"
-                f"[{cfg_idx}/{total_configs}] {config_label}\n"
-                f"{'='*70}",
-                flush=True,
-            )
-
-            # ── Dry run ───────────────────────────────────────
-            if dry_run:
-                for scenario in scenarios:
-                    skip_compaction = (
-                        ablation is not None and not ablation.compaction_enabled
-                    )
-                    if scenario.name in _COMPACTION_SCENARIOS and skip_compaction:
-                        print(f"  {scenario.name}: SKIP (compaction N/A)")
-                        continue
-                    key = _run_key(
-                        config.model, config.backend, config.mode,
-                        ablation_name, tc_label, reasoning_replay,
-                        config.reasoning_level, scenario.name,
-                    )
-                    existing = recorded_counts.get(key, 0)
-                    remaining = max(0, runs_per_scenario - existing)
-                    status = "SKIP" if remaining == 0 else f"RUN {remaining}"
-                    print(f"  {scenario.name}: {existing}/{runs_per_scenario} done -> {status}")
-                continue
-
-            # ── Model availability check ────────────────────
-            skip_reason = _check_model_available(config, models_dir)
-            if skip_reason:
-                # Stop Ollama before skipping so VRAM is clear for later configs
-                if prev_backend == "ollama" and config.backend != "ollama":
-                    if prev_server is not None:
-                        await prev_server.stop()
-                    prev_backend = None
-                print(f"  SKIP ({skip_reason})", flush=True)
-                total_skipped += total_scenarios
-                continue
-
-            # ── Check if any scenarios need runs ─────────────
-            has_work = False
+        # ── Dry run ───────────────────────────────────────
+        if dry_run:
             for scenario in scenarios:
                 skip_compaction = (
                     ablation is not None and not ablation.compaction_enabled
                 )
                 if scenario.name in _COMPACTION_SCENARIOS and skip_compaction:
+                    print(f"  {scenario.name}: SKIP (compaction N/A)")
                     continue
-                key_check = _run_key(
+                key = _run_key(
                     config.model, config.backend, config.mode,
                     ablation_name, tc_label, reasoning_replay,
                     config.reasoning_level, scenario.name,
                 )
-                if recorded_counts.get(key_check, 0) < runs_per_scenario:
-                    has_work = True
-                    break
-            if not has_work:
-                print("  SKIP (all requested attempts recorded)", flush=True)
-                total_skipped += total_scenarios
+                existing = recorded_counts.get(key, 0)
+                remaining = max(0, runs_per_scenario - existing)
+                status = "SKIP" if remaining == 0 else f"RUN {remaining}"
+                print(f"  {scenario.name}: {existing}/{runs_per_scenario} done -> {status}")
+            continue
+
+        # ── Model availability check ────────────────────
+        skip_reason = _check_model_available(config, models_dir)
+        if skip_reason:
+            print(f"  SKIP ({skip_reason})", flush=True)
+            total_skipped += total_scenarios
+            continue
+
+        # ── Check if any scenarios need runs ─────────────
+        has_work = False
+        for scenario in scenarios:
+            skip_compaction = (
+                ablation is not None and not ablation.compaction_enabled
+            )
+            if scenario.name in _COMPACTION_SCENARIOS and skip_compaction:
                 continue
+            key_check = _run_key(
+                config.model, config.backend, config.mode,
+                ablation_name, tc_label, reasoning_replay,
+                config.reasoning_level, scenario.name,
+            )
+            if recorded_counts.get(key_check, 0) < runs_per_scenario:
+                has_work = True
+                break
+        if not has_work:
+            print("  SKIP (all requested attempts recorded)", flush=True)
+            total_skipped += total_scenarios
+            continue
 
-            # ── Local backend path (server-managed) ──────────
+        # Resolve GGUF/llamafile path for non-Ollama backends
+        gguf_path: str | None = None
+        if config.backend in ("llamaserver", "llamafile"):
+            assert config.gguf_filename, f"missing gguf_filename: {config.model}"
+            gguf_path = str(models_dir / config.gguf_filename)
 
-            # Clean VRAM unload when switching away from Ollama
-            if prev_backend == "ollama" and config.backend != "ollama":
-                if prev_server is not None:
-                    await prev_server.stop()
+        try:
+            server, setup_context = await setup_backend(
+                backend=config.backend,
+                model=config.model if config.backend == "ollama" else None,
+                gguf_path=gguf_path,
+                mode=config.mode,
+                port=_eval_port(),
+                budget_mode=budget_mode,
+                manual_tokens=manual_tokens,
+                extra_flags=(
+                    list(config.server_recipe.extra_flags)
+                    if config.server_recipe.extra_flags else None
+                ),
+                rpc=config.server_recipe.rpc,
+            )
+        except RuntimeError:
+            print(f"  SKIP (server failed to start)", flush=True)
+            total_skipped += total_scenarios
+            continue
 
-            # Create new ServerManager if backend changed
-            if config.backend != prev_backend:
-                if prev_server is not None and prev_backend != "ollama":
-                    await prev_server.stop()
-                server = ServerManager(
-                    backend=config.backend, port=_eval_port(), models_dir=models_dir
-                )
-
-            # Resolve GGUF/llamafile path for non-Ollama backends
-            gguf_path = ""
-            if config.backend in ("llamaserver", "llamafile"):
-                assert config.gguf_filename, f"missing gguf_filename: {config.model}"
-                gguf_path = str(models_dir / config.gguf_filename)
-
-            # Start server with the configuration's literal recipe. For
-            # non-Ollama backends pass
-            # the GGUF path as the cache-equality key (matches setup_backend
-            # convention from server.py); for Ollama, pass the model string.
-            extra_flags = config.server_recipe.extra_flags
-            cache_identity = config.model if config.backend == "ollama" else gguf_path
-            try:
-                # Prod path: launches with the budget-appropriate context
-                # (e.g. -c manual_tokens for MANUAL) and returns the resolved
-                # budget, instead of starting raw and reading back full ctx.
-                resolved_budget = await server.start_with_budget(
-                    model=cache_identity,
-                    gguf_path=gguf_path,
-                    mode=config.mode,
-                    budget_mode=budget_mode,
-                    manual_tokens=manual_tokens,
-                    extra_flags=list(extra_flags) if extra_flags else None,
-                )
-            except RuntimeError:
-                # Startup timeout — attempt recovery
-                recovered = await _recover_server(
-                    server, config, gguf_path,
-                    extra_flags,
-                    crash_count=1,
-                    budget_mode=budget_mode, manual_tokens=manual_tokens,
-                )
-                if not recovered:
-                    print(f"  SKIP (server failed to start)", flush=True)
-                    total_skipped += total_scenarios
-                    continue
-                resolved_budget = await server.resolve_budget(budget_mode, manual_tokens)
-
-            prev_backend = config.backend
-            prev_server = server
-
-            # Build client
-            client = _build_client(config, models_dir)
+        try:
+            resolved_budget = setup_context.budget_tokens
+            # Build one client for this isolated managed configuration.
+            client = _build_client(
+                config,
+                models_dir,
+                server.client_base_url,
+                request_timeout,
+            )
             if hasattr(client, "set_num_ctx"):
                 client.set_num_ctx(resolved_budget)
 
@@ -1077,7 +1047,9 @@ async def run_batch(
                 )
 
                 for run_idx in range(existing, existing + remaining):
-                    result = await _run_with_timeout(client, scenario, eval_config, ablation)
+                    result = await _run_with_timeout(
+                        client, scenario, eval_config, ablation, run_timeout
+                    )
                     total_ran += 1
 
                     # Server crash recovery
@@ -1088,13 +1060,10 @@ async def run_batch(
                             f"CRASH ({result.error_message.split(':')[0]})",
                             flush=True,
                         )
-                        recovered = await _recover_server(
-                            server, config, gguf_path,
-                            extra_flags,
-                            crash_count,
-                            budget_mode=budget_mode, manual_tokens=manual_tokens,
+                        recovered_budget = await _recover_server(
+                            server, crash_count, budget_mode, manual_tokens
                         )
-                        if not recovered:
+                        if recovered_budget is None:
                             print(
                                 f"\n  [!] Circuit breaker: {crash_count} crashes "
                                 f"for {config_label}. Skipping remaining scenarios.",
@@ -1104,12 +1073,19 @@ async def run_batch(
                             break
 
                         # Rebuild client and retry the failed run
-                        client = _build_client(config, models_dir)
-                        resolved_budget = await server.resolve_budget(budget_mode, manual_tokens)
+                        client = _build_client(
+                            config,
+                            models_dir,
+                            server.client_base_url,
+                            request_timeout,
+                        )
+                        resolved_budget = recovered_budget
                         if hasattr(client, "set_num_ctx"):
                             client.set_num_ctx(scenario_budget)
 
-                        result = await _run_with_timeout(client, scenario, eval_config, ablation)
+                        result = await _run_with_timeout(
+                            client, scenario, eval_config, ablation, run_timeout
+                        )
                         total_ran += 1
 
                     status = "OK" if result.completed else f"FAIL ({result.error_type})"
@@ -1132,12 +1108,8 @@ async def run_batch(
 
                     # Update in-memory count for resume correctness
                     recorded_counts[key] = recorded_counts.get(key, 0) + 1
-
-            # Free VRAM after finishing all scenarios for this Ollama config
-            if config.backend == "ollama":
-                await server.stop()
-    finally:
-        await server.stop()
+        finally:
+            await server.stop()
 
     elapsed = time.monotonic() - batch_start
     print(
@@ -1191,6 +1163,18 @@ async def main() -> None:
         type=int,
         default=None,
         help="Exact token budget (requires --budget-mode manual).",
+    )
+    parser.add_argument(
+        "--request-timeout",
+        type=float,
+        default=_REQUEST_TIMEOUT,
+        help="Per-request client timeout in seconds (default: 300).",
+    )
+    parser.add_argument(
+        "--run-timeout",
+        type=float,
+        default=_RUN_TIMEOUT,
+        help="Whole scenario-run timeout in seconds (default: 300).",
     )
     parser.add_argument(
         "--tags", nargs="*",
@@ -1277,6 +1261,8 @@ async def main() -> None:
         ablation=ablation,
         reasoning_replay=args.reasoning_replay,
         generation=args.generation,
+        request_timeout=args.request_timeout,
+        run_timeout=args.run_timeout,
     )
 
 
