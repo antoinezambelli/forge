@@ -49,47 +49,73 @@ def _eval_port() -> int:
     """llama-server port for eval workers; overridden by rig wrappers."""
     return int(os.environ.get("FORGE_EVAL_PORT", "8080"))
 
-# GGUF and llamafile model files for local-server backends.
-# Each entry is just the filename — paired into a BatchConfig below
-# alongside the canonical identity (the file stem, no extension).
-_GGUF_FILES: list[str] = [
-    "Qwen3-8B-Q4_K_M.gguf",
-    "Qwen3-8B-Q8_0.gguf",
-    "Qwen3-14B-Q4_K_M.gguf",
-    "Ministral-3-8B-Instruct-2512-Q4_K_M.gguf",
-    "Ministral-3-8B-Instruct-2512-Q8_0.gguf",
-    "Ministral-3-14B-Instruct-2512-Q4_K_M.gguf",
-    "Ministral-3-8B-Reasoning-2512-Q4_K_M.gguf",
-    "Ministral-3-8B-Reasoning-2512-Q8_0.gguf",
-    "Ministral-3-14B-Reasoning-2512-Q4_K_M.gguf",
-    "gemma-4-E4B-it-Q4_K_M.gguf",
-    "gemma-4-E4B-it-Q8_0.gguf",
-    "granite-4.1-8b-Q4_K_M.gguf",
-    "granite-4.1-8b-Q8_0.gguf",
-    "phi-4-Q4_K_M.gguf",
+@dataclass(frozen=True)
+class _BatchServerRecipe:
+    """Literal server options owned by one managed batch configuration."""
+
+    extra_flags: tuple[str, ...] = ()
+
+
+_DEFAULT_SERVER_RECIPE = _BatchServerRecipe()
+_REASONING_SERVER_RECIPE = _BatchServerRecipe(("--reasoning-format", "auto"))
+_GEMMA4_LARGE_SERVER_RECIPE = _BatchServerRecipe((
+    "--reasoning-format", "auto",
+    "--ctx-checkpoints", "1", "--cache-type-k", "q8_0",
+    "--cache-type-v", "q8_0", "-fa", "1",
+    "--samplers", "temperature;top_p;top_k",
+))
+_GPT_OSS_120B_SERVER_RECIPE = _BatchServerRecipe((
+    "--reasoning-format", "auto",
+    "--cache-type-k", "q8_0", "--cache-type-v", "q8_0", "-fa", "1",
+    "-ub", "2048", "-b", "2048",
+    "--no-prefill-assistant", "--no-mmap",
+))
+_LARGE_120B_SERVER_RECIPE = _BatchServerRecipe((
+    "--reasoning-format", "auto",
+    "--cache-type-k", "q8_0", "--cache-type-v", "q8_0", "-fa", "1",
+    "--no-prefill-assistant", "--no-mmap",
+))
+
+
+# GGUF files and their literal per-configuration server options. Mode-derived
+# options such as --jinja remain owned by ServerManager.
+_GGUF_FILES: list[tuple[str, _BatchServerRecipe]] = [
+    ("Qwen3-8B-Q4_K_M.gguf", _REASONING_SERVER_RECIPE),
+    ("Qwen3-8B-Q8_0.gguf", _REASONING_SERVER_RECIPE),
+    ("Qwen3-14B-Q4_K_M.gguf", _REASONING_SERVER_RECIPE),
+    ("Ministral-3-8B-Instruct-2512-Q4_K_M.gguf", _DEFAULT_SERVER_RECIPE),
+    ("Ministral-3-8B-Instruct-2512-Q8_0.gguf", _DEFAULT_SERVER_RECIPE),
+    ("Ministral-3-14B-Instruct-2512-Q4_K_M.gguf", _DEFAULT_SERVER_RECIPE),
+    ("Ministral-3-8B-Reasoning-2512-Q4_K_M.gguf", _DEFAULT_SERVER_RECIPE),
+    ("Ministral-3-8B-Reasoning-2512-Q8_0.gguf", _DEFAULT_SERVER_RECIPE),
+    ("Ministral-3-14B-Reasoning-2512-Q4_K_M.gguf", _DEFAULT_SERVER_RECIPE),
+    ("gemma-4-E4B-it-Q4_K_M.gguf", _DEFAULT_SERVER_RECIPE),
+    ("gemma-4-E4B-it-Q8_0.gguf", _DEFAULT_SERVER_RECIPE),
+    ("granite-4.1-8b-Q4_K_M.gguf", _DEFAULT_SERVER_RECIPE),
+    ("granite-4.1-8b-Q8_0.gguf", _DEFAULT_SERVER_RECIPE),
+    ("phi-4-Q4_K_M.gguf", _DEFAULT_SERVER_RECIPE),
     # 32GB tier (rig-02 v0.7.1 eval — the configs that ran)
-    "Mistral-Small-3.2-24B-Instruct-2506-Q4_K_M.gguf",
-    "Qwen3.5-27B-Q4_K_M.gguf",
-    "Qwen3.5-35B-A3B-Q4_K_M.gguf",
-    "Qwen3.6-27B-Q4_K_M.gguf",
-    "Qwen3.6-35B-A3B-UD-Q4_K_M.gguf",
-    "Nemotron-3-Nano-30B-A3B-Q4_K_M.gguf",
+    ("Mistral-Small-3.2-24B-Instruct-2506-Q4_K_M.gguf", _DEFAULT_SERVER_RECIPE),
+    ("Qwen3.5-27B-Q4_K_M.gguf", _REASONING_SERVER_RECIPE),
+    ("Qwen3.5-35B-A3B-Q4_K_M.gguf", _REASONING_SERVER_RECIPE),
+    ("Qwen3.6-27B-Q4_K_M.gguf", _REASONING_SERVER_RECIPE),
+    ("Qwen3.6-35B-A3B-UD-Q4_K_M.gguf", _REASONING_SERVER_RECIPE),
+    ("Nemotron-3-Nano-30B-A3B-Q4_K_M.gguf", _REASONING_SERVER_RECIPE),
     # Gemma-4 large (rig-04, az/eval-large): 26B-A4B MoE + 31B dense. Native FC;
-    # serving recipe in _SERVER_EXTRA_FLAGS (SWA + q8-KV serving fixes).
-    "gemma-4-26B-A4B-it-UD-Q4_K_M.gguf",
-    "gemma-4-31B-it-Q4_K_M.gguf",
+    # literal serving recipe includes the SWA + q8-KV serving fixes.
+    ("gemma-4-26B-A4B-it-UD-Q4_K_M.gguf", _GEMMA4_LARGE_SERVER_RECIPE),
+    ("gemma-4-31B-it-Q4_K_M.gguf", _GEMMA4_LARGE_SERVER_RECIPE),
     # 120B tier (rig-03, az/eval-large): multi-shard GGUFs — list the FIRST
     # shard; llama-server auto-loads siblings. The config loop strips the
-    # -NNNNN-of-NNNNN suffix so the model key (and _SERVER_EXTRA_FLAGS /
-    # sampling lookups) resolve on the clean stem. Serving recipe below.
-    "gpt-oss-120b-Q4_K_M-00001-of-00002.gguf",
-    "Qwen3.5-122B-A10B-Q4_K_M-00001-of-00003.gguf",
-    "NVIDIA-Nemotron-3-Super-120B-A12B-UD-Q4_K_M-00001-of-00003.gguf",
+    # -NNNNN-of-NNNNN suffix for clean model identity and sampling lookups.
+    ("gpt-oss-120b-Q4_K_M-00001-of-00002.gguf", _GPT_OSS_120B_SERVER_RECIPE),
+    ("Qwen3.5-122B-A10B-Q4_K_M-00001-of-00003.gguf", _LARGE_120B_SERVER_RECIPE),
+    ("NVIDIA-Nemotron-3-Super-120B-A12B-UD-Q4_K_M-00001-of-00003.gguf", _LARGE_120B_SERVER_RECIPE),
     # 16GB tier (rig-01) — LFM2.5 MoE + Mellum2 MoE (both variants). All
     # support native FC, so each gets native + prompt configs below.
-    "LFM2.5-8B-A1B-Q4_K_M.gguf",
-    "Mellum2-12B-A2.5B-Thinking-Q4_K_M.gguf",
-    "Mellum2-12B-A2.5B-Instruct-Q4_K_M.gguf",
+    ("LFM2.5-8B-A1B-Q4_K_M.gguf", _REASONING_SERVER_RECIPE),
+    ("Mellum2-12B-A2.5B-Thinking-Q4_K_M.gguf", _REASONING_SERVER_RECIPE),
+    ("Mellum2-12B-A2.5B-Instruct-Q4_K_M.gguf", _DEFAULT_SERVER_RECIPE),
 ]
 
 # Models that lack native function-calling support — only run prompt mode.
@@ -126,20 +152,19 @@ class BatchConfig:
       - ollama: Ollama-style string (e.g. "qwen3:8b-q8_0")
       - llamaserver: GGUF stem (e.g. "Qwen3-8B-Q8_0")
       - llamafile: llamafile binary stem (e.g. "Mistral-Nemo-Instruct-2407.Q4_K_M")
-      - anthropic: model ID (e.g. "claude-haiku-4-5-20251001")
 
     ``gguf_filename`` is the on-disk filename for llamaserver/llamafile
     backends (joined with ``models_dir`` to form the path passed to the
-    server and to ``LlamafileClient(gguf_path=...)``). None for
-    ollama/anthropic.
+    server and to ``LlamafileClient(gguf_path=...)``). None for ollama.
     """
 
     model: str
-    backend: str  # "ollama" | "llamaserver" | "llamafile" | "anthropic"
+    backend: str  # "ollama" | "llamaserver" | "llamafile"
     mode: str  # "native" | "prompt"
     think: bool | None  # None = auto
-    tool_choice: str | None = None  # Anthropic only: "auto", "any"
+    tool_choice: str | None = None
     gguf_filename: str | None = None  # llamaserver/llamafile only
+    server_recipe: _BatchServerRecipe = _DEFAULT_SERVER_RECIPE
     # Reasoning-effort axis. reasoning_level tags rows so effort variants of the
     # same stem coexist in the resume key + report ("default" = registry
     # recommended sampling). sampling_override, when set, bypasses recommended
@@ -169,7 +194,7 @@ OLLAMA_CONFIGS: list[BatchConfig] = [
 # llama-server configs: each GGUF × 2 modes (native + prompt), with native
 # skipped for models in _PROMPT_ONLY_MODELS (no native FC training).
 LLAMASERVER_CONFIGS: list[BatchConfig] = []
-for _filename in _GGUF_FILES:
+for _filename, _server_recipe in _GGUF_FILES:
     # Strip a multi-shard suffix (e.g. "-00001-of-00002") so a sharded model
     # keys on its clean stem for config/flags/sampling/row-identity, while
     # gguf_filename keeps the first-shard name that llama-server loads from.
@@ -179,12 +204,14 @@ for _filename in _GGUF_FILES:
             BatchConfig(
                 model=_stem, backend="llamaserver", mode="native",
                 think=None, gguf_filename=_filename,
+                server_recipe=_server_recipe,
             )
         )
     LLAMASERVER_CONFIGS.append(
         BatchConfig(
             model=_stem, backend="llamaserver", mode="prompt",
             think=None, gguf_filename=_filename,
+            server_recipe=_server_recipe,
         )
     )
 
@@ -195,22 +222,6 @@ LLAMAFILE_CONFIGS: list[BatchConfig] = [
         think=None, gguf_filename=filename,
     )
     for filename in _LLAMAFILE_FILES
-]
-
-ANTHROPIC_CONFIGS: list[BatchConfig] = [
-    # think=True -> adaptive extended thinking ("Claude with reasoning" baseline
-    # rows). Haiku has no adaptive support (API rejects it) so it stays a
-    # non-thinking baseline. Wired in _build_client. NOT part of the
-    # reasoning_replay sweep — thinking here is request-only, no replay folding.
-    BatchConfig(model="claude-haiku-4-5-20251001", backend="anthropic", mode="native", think=False),
-    BatchConfig(model="claude-sonnet-4-6", backend="anthropic", mode="native", think=True),
-    BatchConfig(model="claude-opus-4-8", backend="anthropic", mode="native", think=True),
-]
-
-ANTHROPIC_ANY_CONFIGS: list[BatchConfig] = [
-    BatchConfig(model="claude-haiku-4-5-20251001", backend="anthropic", mode="native", think=None, tool_choice="any"),
-    BatchConfig(model="claude-sonnet-4-6", backend="anthropic", mode="native", think=None, tool_choice="any"),
-    BatchConfig(model="claude-opus-4-8", backend="anthropic", mode="native", think=None, tool_choice="any"),
 ]
 
 ALL_CONFIGS: list[BatchConfig] = (
@@ -240,6 +251,7 @@ _REASONING_HIGH_CONFIGS: list[BatchConfig] = [
     BatchConfig(
         model="gpt-oss-120b-Q4_K_M", backend="llamaserver", mode="native",
         think=None, gguf_filename="gpt-oss-120b-Q4_K_M-00001-of-00002.gguf",
+        server_recipe=_GPT_OSS_120B_SERVER_RECIPE,
         reasoning_level="high",
         sampling_override={
             **get_sampling_defaults("gpt-oss-120b-Q4_K_M"),
@@ -250,6 +262,7 @@ _REASONING_HIGH_CONFIGS: list[BatchConfig] = [
         model="NVIDIA-Nemotron-3-Super-120B-A12B-UD-Q4_K_M", backend="llamaserver",
         mode="native", think=None,
         gguf_filename="NVIDIA-Nemotron-3-Super-120B-A12B-UD-Q4_K_M-00001-of-00003.gguf",
+        server_recipe=_LARGE_120B_SERVER_RECIPE,
         reasoning_level="high",
         sampling_override={
             **get_sampling_defaults("NVIDIA-Nemotron-3-Super-120B-A12B-UD-Q4_K_M"),
@@ -261,7 +274,6 @@ _REASONING_HIGH_CONFIGS: list[BatchConfig] = [
 ]
 
 # Named subsets for quick iteration
-# Note: "anthropic" is separate from "all" — it costs money per API call.
 CONFIG_SETS: dict[str, list[BatchConfig]] = {
     "all": ALL_CONFIGS,
     "ollama": OLLAMA_CONFIGS,
@@ -273,14 +285,6 @@ CONFIG_SETS: dict[str, list[BatchConfig]] = {
     "new-models": NEW_MODEL_CONFIGS,
     "new-models-native": [c for c in NEW_MODEL_CONFIGS if c.mode == "native"],
     "new-models-prompt": [c for c in NEW_MODEL_CONFIGS if c.mode == "prompt"],
-    "anthropic": ANTHROPIC_CONFIGS,
-    "anthropic-any": ANTHROPIC_ANY_CONFIGS,
-    "haiku": [c for c in ANTHROPIC_CONFIGS if "haiku" in c.model],
-    "sonnet": [c for c in ANTHROPIC_CONFIGS if "sonnet" in c.model],
-    "opus": [c for c in ANTHROPIC_CONFIGS if "opus" in c.model],
-    "haiku-any": [c for c in ANTHROPIC_ANY_CONFIGS if "haiku" in c.model],
-    "sonnet-any": [c for c in ANTHROPIC_ANY_CONFIGS if "sonnet" in c.model],
-    "opus-any": [c for c in ANTHROPIC_ANY_CONFIGS if "opus" in c.model],
 }
 
 
@@ -589,69 +593,7 @@ def _run_result_to_row(
     return row
 
 
-# ── llama-server flags ───────────────────────────────────────────
-
-# Extra flags per model for llama-server, keyed by config.model (the GGUF
-# stem for llamaserver configs).
-# Reasoning models (Qwen3): --reasoning-format auto for server-side <think>
-# tag parsing. Everything else: no extra flags needed.
-_SERVER_EXTRA_FLAGS: dict[str, list[str]] = {
-    "Qwen3-8B-Q4_K_M": ["--reasoning-format", "auto"],
-    "Qwen3-8B-Q8_0": ["--reasoning-format", "auto"],
-    "Qwen3-14B-Q4_K_M": ["--reasoning-format", "auto"],
-    "Qwen3.5-27B-Q4_K_M": ["--reasoning-format", "auto"],
-    "Qwen3.5-35B-A3B-Q4_K_M": ["--reasoning-format", "auto"],
-    "Qwen3.6-27B-Q4_K_M": ["--reasoning-format", "auto"],
-    "Qwen3.6-35B-A3B-UD-Q4_K_M": ["--reasoning-format", "auto"],
-    "Nemotron-3-Nano-30B-A3B-Q4_K_M": ["--reasoning-format", "auto"],
-    # 16GB tier reasoning models: LFM2.5 emits explicit CoT, Mellum2 Thinking
-    # emits <think> (qwen3-style) — both need server-side parsing. Mellum2
-    # Instruct is direct (no <think>), so it gets no extra flag.
-    "LFM2.5-8B-A1B-Q4_K_M": ["--reasoning-format", "auto"],
-    "Mellum2-12B-A2.5B-Thinking-Q4_K_M": ["--reasoning-format", "auto"],
-    # Gemma-4 large (rig-04): dense 31B + 26B-A4B MoE. --reasoning-format auto for
-    # <think> parsing; --ctx-checkpoints 1 bounds SWA checkpoint RAM (llama.cpp
-    # #21690); q8 KV + -fa for VRAM; --samplers orders temp/top_p/top_k (values
-    # come client-side from recommended_sampling → sampling_defaults). No
-    # --reasoning-budget (absent, as every other config here). No -c: context comes
-    # from --budget-mode (forge-full auto-fit).
-    "gemma-4-31B-it-Q4_K_M": [
-        "--reasoning-format", "auto",
-        "--ctx-checkpoints", "1", "--cache-type-k", "q8_0",
-        "--cache-type-v", "q8_0", "-fa", "1",
-        "--samplers", "temperature;top_p;top_k",
-    ],
-    "gemma-4-26B-A4B-it-UD-Q4_K_M": [
-        "--reasoning-format", "auto",
-        "--ctx-checkpoints", "1", "--cache-type-k", "q8_0",
-        "--cache-type-v", "q8_0", "-fa", "1",
-        "--samplers", "temperature;top_p;top_k",
-    ],
-    # 120B tier (rig-03, UMA/Vulkan). Shared portable recipe: --reasoning-format
-    # auto for <think> parsing, q8 KV + -fa for footprint, --no-prefill-assistant
-    # (trailing-assistant + thinking 400 guard). --no-mmap is rig-03/UMA-required
-    # (weights in shared RAM; kernel must not evict GGUF pages). The RADV env vars
-    # (AMD_VULKAN_ICD/RADV_PERFTEST) are set in the launch wrapper, not here — this
-    # dict is CLI-flags-only. No -c (context from --budget-mode forge-full). No
-    # --reasoning-budget. Reasoning level is client-side via sampling_defaults
-    # chat_template_kwargs (gpt-oss reasoning_effort=medium; nemotron low_effort).
-    "gpt-oss-120b-Q4_K_M": [
-        "--reasoning-format", "auto",
-        "--cache-type-k", "q8_0", "--cache-type-v", "q8_0", "-fa", "1",
-        "-ub", "2048", "-b", "2048",
-        "--no-prefill-assistant", "--no-mmap",
-    ],
-    "Qwen3.5-122B-A10B-Q4_K_M": [
-        "--reasoning-format", "auto",
-        "--cache-type-k", "q8_0", "--cache-type-v", "q8_0", "-fa", "1",
-        "--no-prefill-assistant", "--no-mmap",
-    ],
-    "NVIDIA-Nemotron-3-Super-120B-A12B-UD-Q4_K_M": [
-        "--reasoning-format", "auto",
-        "--cache-type-k", "q8_0", "--cache-type-v", "q8_0", "-fa", "1",
-        "--no-prefill-assistant", "--no-mmap",
-    ],
-}
+# ── Model availability ──────────────────────────────────────────
 
 
 def _ollama_models() -> set[str]:
@@ -685,15 +627,6 @@ def _check_model_available(
         if config.model not in available:
             return f"not in ollama list"
     return None
-
-
-def _get_server_flags(model: str, mode: str) -> list[str]:
-    """Build llama-server CLI flags for a given model and mode."""
-    flags: list[str] = []
-    if mode == "native":
-        flags.append("--jinja")
-    flags.extend(_SERVER_EXTRA_FLAGS.get(model, []))
-    return flags
 
 
 # ── Run-level timeout ───────────────────────────────────────────
@@ -750,7 +683,7 @@ async def _recover_server(
     server: "ServerManager",
     config: BatchConfig,
     gguf_path: str,
-    extra_flags: list[str] | None,
+    extra_flags: tuple[str, ...],
     crash_count: int,
     budget_mode: BudgetMode,
     manual_tokens: int | None,
@@ -791,7 +724,7 @@ async def _recover_server(
             mode=config.mode,
             budget_mode=budget_mode,
             manual_tokens=manual_tokens,
-            extra_flags=extra_flags,
+            extra_flags=list(extra_flags) if extra_flags else None,
         )
         print("  [!] Server restarted successfully.", flush=True)
         return True
@@ -856,25 +789,6 @@ def _build_client(config: BatchConfig, models_dir: Path) -> Any:
             recommended_sampling=recommended_sampling,
         )
 
-    elif config.backend == "anthropic":
-        from forge.clients.anthropic import AnthropicClient
-
-        # Prompt caching on for sweeps: billing-only (identical model behavior
-        # and score/iteration metrics), caches the re-sent tool defs +
-        # system prompt. Static-only — see AnthropicClient._apply_static_cache.
-        #
-        # Adaptive extended thinking when think=True ("Claude with reasoning"
-        # baselines). Gated off for tool_choice="any" (forced tool choice is
-        # incompatible with thinking) and for models without adaptive support
-        # (Haiku, configured think=False). Request-only: no reasoning_replay
-        # folding — these are baseline rows, not part of the replay sweep.
-        thinking = {"type": "adaptive"} if (config.think and config.tool_choice != "any") else None
-        return AnthropicClient(
-            model=config.model, tool_choice=config.tool_choice,
-            prompt_caching=True, thinking=thinking,
-            max_tokens=16384 if thinking else 4096,
-        )
-
     else:
         raise ValueError(f"Unknown backend: {config.backend}")
 
@@ -924,6 +838,16 @@ async def run_batch(
     from tests.eval.eval_runner import _COMPACTION_SCENARIOS
 
     generation = _validate_generation(generation)
+    supported_backends = {"ollama", "llamaserver", "llamafile"}
+    unsupported_backends = sorted({
+        config.backend for config in configs
+        if config.backend not in supported_backends
+    })
+    if unsupported_backends:
+        raise ValueError(
+            "batch_eval supports only managed backends "
+            f"{sorted(supported_backends)}; unsupported: {unsupported_backends}"
+        )
 
     if scenario_names:
         name_set = set(scenario_names)
@@ -953,8 +877,7 @@ async def run_batch(
         tc_label_pre = config.tool_choice or "auto"
         for scenario in scenarios:
             skip_compaction = (
-                config.backend == "anthropic"
-                or (ablation is not None and not ablation.compaction_enabled)
+                ablation is not None and not ablation.compaction_enabled
             )
             if scenario.name in _COMPACTION_SCENARIOS and skip_compaction:
                 continue
@@ -993,8 +916,7 @@ async def run_batch(
             if dry_run:
                 for scenario in scenarios:
                     skip_compaction = (
-                        config.backend == "anthropic"
-                        or (ablation is not None and not ablation.compaction_enabled)
+                        ablation is not None and not ablation.compaction_enabled
                     )
                     if scenario.name in _COMPACTION_SCENARIOS and skip_compaction:
                         print(f"  {scenario.name}: SKIP (compaction N/A)")
@@ -1020,70 +942,6 @@ async def run_batch(
                     prev_backend = None
                 print(f"  SKIP ({skip_reason})", flush=True)
                 total_skipped += total_scenarios
-                continue
-
-            # ── Anthropic cloud API path ─────────────────────
-            # No server management, no GGUF, no VRAM budget.
-            if config.backend == "anthropic":
-                client = _build_client(config, models_dir)
-
-                for sc_idx, scenario in enumerate(scenarios, 1):
-                    if scenario.name in _COMPACTION_SCENARIOS:
-                        total_skipped += 1
-                        continue
-
-                    key = _run_key(
-                        config.model, config.backend, config.mode,
-                        ablation_name, tc_label, reasoning_replay,
-                        config.reasoning_level, scenario.name,
-                    )
-                    existing = recorded_counts.get(key, 0)
-                    remaining = max(0, runs_per_scenario - existing)
-
-                    if remaining == 0:
-                        total_skipped += 1
-                        continue
-
-                    scenario_budget = scenario.budget_tokens
-
-                    eval_config = EvalConfig(
-                        runs_per_scenario=1,
-                        stream=True,
-                        keep_message_history=True,
-                        verbose=verbose,
-                        budget_override=scenario_budget,
-                        reasoning_replay=reasoning_replay,
-                    )
-
-                    eta = _format_eta(total_ran, total_expected, batch_start)
-                    print(
-                        f"\n  [{sc_idx}/{total_scenarios}] {scenario.name} "
-                        f"- {existing} done, running {remaining} more{eta}",
-                        flush=True,
-                    )
-
-                    for run_idx in range(existing, existing + remaining):
-                        result = await _run_with_timeout(client, scenario, eval_config, ablation)
-                        total_ran += 1
-                        status = "OK" if result.completed else f"FAIL ({result.error_type})"
-                        print(
-                            f"    run {run_idx+1}/{runs_per_scenario}: {status} "
-                            f"- {result.iterations_used} iters, "
-                            f"{result.elapsed_seconds:.1f}s",
-                            flush=True,
-                        )
-
-                        row = _run_result_to_row(
-                            result, config, scenario, run_idx + 1,
-                            generation=generation,
-                            budget_tokens=scenario_budget,
-                            ablation_name=ablation_name,
-                            reasoning_replay=reasoning_replay,
-                            outcome_dialect=outcome_dialect,
-                        )
-                        _append_jsonl_row(output_path, row)
-
-                        recorded_counts[key] = recorded_counts.get(key, 0) + 1
                 continue
 
             # ── Check if any scenarios need runs ─────────────
@@ -1128,10 +986,11 @@ async def run_batch(
                 assert config.gguf_filename, f"missing gguf_filename: {config.model}"
                 gguf_path = str(models_dir / config.gguf_filename)
 
-            # Start server and get extra flags. For non-Ollama backends pass
+            # Start server with the configuration's literal recipe. For
+            # non-Ollama backends pass
             # the GGUF path as the cache-equality key (matches setup_backend
             # convention from server.py); for Ollama, pass the model string.
-            extra_flags = _get_server_flags(config.model, config.mode)
+            extra_flags = config.server_recipe.extra_flags
             cache_identity = config.model if config.backend == "ollama" else gguf_path
             try:
                 # Prod path: launches with the budget-appropriate context
@@ -1143,13 +1002,13 @@ async def run_batch(
                     mode=config.mode,
                     budget_mode=budget_mode,
                     manual_tokens=manual_tokens,
-                    extra_flags=extra_flags if extra_flags else None,
+                    extra_flags=list(extra_flags) if extra_flags else None,
                 )
             except RuntimeError:
                 # Startup timeout — attempt recovery
                 recovered = await _recover_server(
                     server, config, gguf_path,
-                    extra_flags if extra_flags else None,
+                    extra_flags,
                     crash_count=1,
                     budget_mode=budget_mode, manual_tokens=manual_tokens,
                 )
@@ -1231,7 +1090,7 @@ async def run_batch(
                         )
                         recovered = await _recover_server(
                             server, config, gguf_path,
-                            extra_flags if extra_flags else None,
+                            extra_flags,
                             crash_count,
                             budget_mode=budget_mode, manual_tokens=manual_tokens,
                         )

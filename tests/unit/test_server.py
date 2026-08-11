@@ -120,7 +120,7 @@ class TestServerManagerStart:
             await sm.start("llama3", gguf_path="/models/llama3.gguf", mode="native")
 
         args = mock_popen.call_args[0][0]
-        assert "--jinja" in args
+        assert args.count("--jinja") == 1
 
     @pytest.mark.asyncio
     async def test_start_prompt_mode_no_jinja(self, sm: ServerManager) -> None:
@@ -132,7 +132,7 @@ class TestServerManagerStart:
             await sm.start("llama3", gguf_path="/models/llama3.gguf", mode="prompt")
 
         args = mock_popen.call_args[0][0]
-        assert "--jinja" not in args
+        assert args.count("--jinja") == 0
 
     @pytest.mark.asyncio
     async def test_start_with_extra_flags(self, sm: ServerManager) -> None:
