@@ -300,6 +300,54 @@ await runner.run(workflow, "What's the weather in Paris?")
 await server.stop()
 ```
 
+### Experimental llama.cpp RPC
+
+`setup_backend()` can own one remote `ggml-rpc-server` worker and one local
+`llama-server` coordinator. The worker runs in the foreground of an SSH
+connection, so normal stop and restart target the exact SSH child Forge
+started. An abruptly lost SSH transport that leaves a remote worker behind
+must be cleared by the operator.
+
+```python
+from forge import (
+    BudgetMode,
+    LlamaCppRpcConfig,
+    LlamaCppRpcWorkerConfig,
+    setup_backend,
+)
+
+rpc = LlamaCppRpcConfig(
+    worker=LlamaCppRpcWorkerConfig(
+        ssh_target="model-worker@10.0.0.5",
+        rpc_host="10.0.0.5",
+        executable="/opt/llama.cpp/build/bin/ggml-rpc-server",
+        device="Vulkan0",
+        environment=(("AMD_VULKAN_ICD", "RADV"),),
+    ),
+    coordinator_executable="/opt/llama.cpp/build/bin/llama-server",
+    coordinator_environment=(("AMD_VULKAN_ICD", "RADV"),),
+    devices=("Vulkan0", "RPC0"),
+    tensor_split=(1, 1),
+    startup_timeout=1800,  # allow a large distributed model to load
+    log_directory="logs/llama-rpc",
+)
+
+server, ctx = await setup_backend(
+    backend="llamaserver",
+    gguf_path="/models/model-00001-of-00005.gguf",
+    budget_mode=BudgetMode.MANUAL,
+    manual_tokens=262_144,
+    cache_type_k="q8_0",
+    cache_type_v="q8_0",
+    extra_flags=["--fit", "off", "--no-mmap", "-fa", "on"],
+    rpc=rpc,
+)
+
+# The latest worker/coordinator logs remain available after stop or failure.
+print(server.rpc_log_paths)
+await server.stop()
+```
+
 ### What happens under the hood
 
 1. `setup_backend()` starts the server, detects available VRAM, and calculates a context budget.

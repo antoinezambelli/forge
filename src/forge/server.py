@@ -12,12 +12,13 @@ from __future__ import annotations
 import asyncio
 import os
 import subprocess
+import tempfile
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
-from typing import Any
+from typing import Any, TextIO
 
 import httpx
 
@@ -35,6 +36,12 @@ from forge.context.hardware import detect_hardware
 from forge.context.manager import CompactEvent, ContextManager
 from forge.context.strategies import TieredCompact
 from forge.errors import BackendError, BudgetResolutionError
+from forge.rpc import (
+    LlamaCppRpcConfig,
+    render_rpc_coordinator_args,
+    render_rpc_worker_command,
+    validate_rpc_extra_flags,
+)
 
 
 class BudgetMode(str, Enum):
@@ -56,6 +63,23 @@ class _ManagedBackendSetup:
 
     server: ServerManager
     context_window_tokens: int | None
+
+
+@dataclass(frozen=True)
+class _ServerLaunch:
+    """Resolved arguments needed to compare or replay one server launch."""
+
+    model: str
+    gguf_path: str | None
+    model_path: str | None
+    mode: str
+    extra_flags: tuple[str, ...]
+    ctx_override: int | None
+    cache_type_k: str | None
+    cache_type_v: str | None
+    n_slots: int | None
+    kv_unified: bool
+    rpc: LlamaCppRpcConfig | None
 
 
 class ServerManager:
@@ -105,6 +129,25 @@ class ServerManager:
         self._current_cache_type_v: str | None = None
         self._current_n_slots: int | None = None
         self._current_kv_unified: bool = False
+        self._active_launch: _ServerLaunch | None = None
+        self._last_launch: _ServerLaunch | None = None
+        self._rpc_worker_proc: subprocess.Popen | None = None
+        self._rpc_log_handles: tuple[TextIO, TextIO] | None = None
+        self._rpc_log_paths: tuple[Path, Path] | None = None
+
+    @property
+    def client_base_url(self) -> str:
+        """Base URL suitable for Forge's backend client adapters."""
+
+        if self._resolved_backend is None:
+            raise ValueError(f"unsupported backend: {self._backend!r}")
+        return self._resolved_backend.adapter_base_url
+
+    @property
+    def rpc_log_paths(self) -> tuple[Path, Path] | None:
+        """Worker and coordinator log paths from the latest RPC launch."""
+
+        return self._rpc_log_paths
 
     def _set_resolved_daemon_target(self, target: ResolvedBackend) -> None:
         """Use Proxy's already-normalized attached-daemon target."""
@@ -134,6 +177,7 @@ class ServerManager:
         cache_type_v: str | None = None,
         n_slots: int | None = None,
         kv_unified: bool = False,
+        rpc: LlamaCppRpcConfig | None = None,
     ) -> None:
         """Start a llama-server/llamafile/vllm process.
 
@@ -173,6 +217,8 @@ class ServerManager:
                      cache). llama-server / llamafile only.
             kv_unified: If True, use a single unified KV cache shared
                         across all slots. llama-server / llamafile only.
+            rpc: Optional experimental one-worker llama.cpp RPC topology.
+                 Supported only by ``backend="llamaserver"``.
         """
         if self._profile is None:
             raise ValueError(f"unsupported backend: {self._backend!r}")
@@ -184,6 +230,12 @@ class ServerManager:
             kv_unified=kv_unified,
         )
         family = self._profile.family_profile.family
+        if rpc is not None:
+            if self._backend != "llamaserver":
+                raise ValueError(
+                    "llama.cpp RPC is supported only by backend='llamaserver'"
+                )
+            validate_rpc_extra_flags(extra_flags)
         if self._profile.lifecycle == LifecycleOwnership.ATTACHED_DAEMON:
             return
 
@@ -216,18 +268,23 @@ class ServerManager:
                     "(vLLM has its own scheduler concepts)"
                 )
 
-        # Reuse if same configuration is already running
         flags = tuple(extra_flags) if extra_flags else ()
-        if (
-            self._current_model == model
-            and self._current_mode == mode
-            and self._current_ctx == ctx_override
-            and self._current_flags == flags
-            and self._current_cache_type_k == cache_type_k
-            and self._current_cache_type_v == cache_type_v
-            and self._current_n_slots == n_slots
-            and self._current_kv_unified == kv_unified
-        ):
+        launch = _ServerLaunch(
+            model=model,
+            gguf_path=str(gguf_path) if gguf_path is not None else None,
+            model_path=str(model_path) if model_path is not None else None,
+            mode=mode,
+            extra_flags=flags,
+            ctx_override=ctx_override,
+            cache_type_k=cache_type_k,
+            cache_type_v=cache_type_v,
+            n_slots=n_slots,
+            kv_unified=kv_unified,
+            rpc=rpc,
+        )
+
+        # Reuse only a matching launch whose owned process(es) are still ready.
+        if self._active_launch == launch and await self.is_healthy():
             return
 
         await self.stop()
@@ -261,7 +318,7 @@ class ServerManager:
                 cmd.append("--kv-unified")
         elif family == BackendFamily.LLAMA_SERVER:
             cmd = [
-                "llama-server",
+                rpc.coordinator_executable if rpc is not None else "llama-server",
                 "-m",
                 str(gguf_path),
                 "-ngl",
@@ -269,6 +326,8 @@ class ServerManager:
                 "--port",
                 str(self._port),
             ]
+            if rpc is not None:
+                cmd.extend(render_rpc_coordinator_args(rpc))
             if mode == "native":
                 cmd.append("--jinja")
             if extra_flags:
@@ -296,10 +355,49 @@ class ServerManager:
             if ctx_override is not None:
                 cmd.extend(["--max-model-len", str(ctx_override)])
 
-        self._proc = subprocess.Popen(
-            cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
-        )
-        await self._wait_healthy()
+        try:
+            if rpc is not None:
+                worker_log, coordinator_log = self._open_rpc_logs(rpc)
+                self._rpc_worker_proc = subprocess.Popen(
+                    render_rpc_worker_command(rpc.worker),
+                    stdout=worker_log,
+                    stderr=subprocess.STDOUT,
+                )
+                await self._wait_rpc_worker(rpc)
+                coordinator_env = os.environ.copy()
+                coordinator_env.update(dict(rpc.coordinator_environment))
+                self._proc = subprocess.Popen(
+                    cmd,
+                    stdout=coordinator_log,
+                    stderr=subprocess.STDOUT,
+                    env=coordinator_env,
+                )
+                await self._wait_healthy(timeout=rpc.startup_timeout)
+                if self._proc is None or self._proc.poll() is not None:
+                    raise RuntimeError(
+                        self._rpc_failure_message(
+                            "Coordinator exited after reporting readiness"
+                        )
+                    )
+                if (
+                    self._rpc_worker_proc is None
+                    or self._rpc_worker_proc.poll() is not None
+                ):
+                    raise RuntimeError(
+                        self._rpc_failure_message(
+                            "RPC worker exited while the coordinator was loading"
+                        )
+                    )
+            else:
+                self._proc = subprocess.Popen(
+                    cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+                )
+                await self._wait_healthy()
+        except BaseException as exc:
+            await self.stop()
+            if rpc is not None:
+                self._add_rpc_log_note(exc)
+            raise
 
         self._current_model = model
         self._current_mode = mode
@@ -309,6 +407,8 @@ class ServerManager:
         self._current_cache_type_v = cache_type_v
         self._current_n_slots = n_slots
         self._current_kv_unified = kv_unified
+        self._active_launch = launch
+        self._last_launch = launch
 
     async def stop(self) -> None:
         """Stop the current server / unload the Ollama model."""
@@ -330,23 +430,135 @@ class ServerManager:
                 self._current_model = None
             return
 
-        if self._proc is not None:
-            self._proc.terminate()
-            try:
-                self._proc.wait(timeout=10)
-            except subprocess.TimeoutExpired:
-                self._proc.kill()
-                self._proc.wait()
+        had_process = self._proc is not None or self._rpc_worker_proc is not None
+        first_error: Exception | None = None
+        try:
+            if self._proc is not None:
+                self._terminate_process(self._proc)
+        except Exception as exc:
+            first_error = exc
+        finally:
             self._proc = None
-            self._current_model = None
-            self._current_mode = None
-            self._current_ctx = None
-            self._current_flags = ()
-            self._current_cache_type_k = None
-            self._current_cache_type_v = None
-            self._current_n_slots = None
-            self._current_kv_unified = False
+
+        try:
+            if self._rpc_worker_proc is not None:
+                self._terminate_process(self._rpc_worker_proc)
+        except Exception as exc:
+            if first_error is None:
+                first_error = exc
+        finally:
+            self._rpc_worker_proc = None
+            self._close_rpc_logs()
+            self._clear_active_state()
+
+        if had_process:
             await asyncio.sleep(3)  # let VRAM clear
+        if first_error is not None:
+            raise first_error
+
+    async def restart(self) -> None:
+        """Restart the last successful spawned launch with resolved arguments."""
+
+        launch = self._last_launch
+        if launch is None:
+            raise RuntimeError("no successful spawned launch is available to restart")
+        await self.stop()
+        await self.start(
+            launch.model,
+            gguf_path=launch.gguf_path,
+            model_path=launch.model_path,
+            mode=launch.mode,
+            extra_flags=list(launch.extra_flags) or None,
+            ctx_override=launch.ctx_override,
+            cache_type_k=launch.cache_type_k,
+            cache_type_v=launch.cache_type_v,
+            n_slots=launch.n_slots,
+            kv_unified=launch.kv_unified,
+            rpc=launch.rpc,
+        )
+
+    async def is_healthy(self) -> bool:
+        """Check owned process state and the backend's readiness endpoint once."""
+
+        if (
+            self._profile is not None
+            and self._profile.lifecycle == LifecycleOwnership.ATTACHED_DAEMON
+        ):
+            return self._current_model is not None
+        if self._proc is None or self._proc.poll() is not None:
+            return False
+        if self._active_launch is not None and self._active_launch.rpc is not None:
+            if (
+                self._rpc_worker_proc is None
+                or self._rpc_worker_proc.poll() is not None
+            ):
+                return False
+        try:
+            return await self._probe_readiness()
+        except (httpx.HTTPError, ValueError):
+            return False
+
+    @staticmethod
+    def _terminate_process(process: subprocess.Popen) -> None:
+        """Terminate and reap exactly one process owned by this manager."""
+
+        process.terminate()
+        try:
+            process.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait()
+
+    def _clear_active_state(self) -> None:
+        self._current_model = None
+        self._current_mode = None
+        self._current_ctx = None
+        self._current_flags = ()
+        self._current_cache_type_k = None
+        self._current_cache_type_v = None
+        self._current_n_slots = None
+        self._current_kv_unified = False
+        self._active_launch = None
+
+    def _open_rpc_logs(self, rpc: LlamaCppRpcConfig) -> tuple[TextIO, TextIO]:
+        if rpc.log_directory is None:
+            log_directory = Path(tempfile.mkdtemp(prefix="forge-llama-rpc-"))
+        else:
+            log_directory = Path(rpc.log_directory)
+            log_directory.mkdir(parents=True, exist_ok=True)
+        paths = (
+            log_directory / "rpc-worker.log",
+            log_directory / "rpc-coordinator.log",
+        )
+        worker_log = paths[0].open("w", encoding="utf-8", buffering=1)
+        try:
+            coordinator_log = paths[1].open("w", encoding="utf-8", buffering=1)
+        except Exception:
+            worker_log.close()
+            raise
+        self._rpc_log_paths = paths
+        self._rpc_log_handles = (worker_log, coordinator_log)
+        return self._rpc_log_handles
+
+    def _close_rpc_logs(self) -> None:
+        if self._rpc_log_handles is not None:
+            for handle in self._rpc_log_handles:
+                handle.close()
+            self._rpc_log_handles = None
+
+    def _rpc_failure_message(self, message: str) -> str:
+        if self._rpc_log_paths is None:
+            return message
+        worker, coordinator = self._rpc_log_paths
+        return f"{message}; logs: worker={worker}, coordinator={coordinator}"
+
+    def _add_rpc_log_note(self, error: BaseException) -> None:
+        if self._rpc_log_paths is None:
+            return
+        worker, coordinator = self._rpc_log_paths
+        note = f"RPC logs: worker={worker}, coordinator={coordinator}"
+        if note not in getattr(error, "__notes__", ()):
+            error.add_note(note)
 
     # ── /props + context ────────────────────────────────────────
 
@@ -471,6 +683,7 @@ class ServerManager:
         cache_type_v: str | None = None,
         n_slots: int | None = None,
         kv_unified: bool = False,
+        rpc: LlamaCppRpcConfig | None = None,
     ) -> int:
         """Start server with the specified budget mode and return the resolved budget.
 
@@ -503,6 +716,7 @@ class ServerManager:
             n_slots: Number of concurrent slots.
             kv_unified: If True, use a single unified KV cache shared
                         across all slots.
+            rpc: Optional experimental one-worker llama.cpp RPC topology.
 
         Returns:
             Resolved budget in tokens (ready for ContextManager).
@@ -523,6 +737,12 @@ class ServerManager:
             n_slots=n_slots,
             kv_unified=kv_unified,
         )
+        if rpc is not None:
+            if self._backend != "llamaserver":
+                raise ValueError(
+                    "llama.cpp RPC is supported only by backend='llamaserver'"
+                )
+            validate_rpc_extra_flags(extra_flags)
 
         if (
             self._profile is not None
@@ -531,6 +751,45 @@ class ServerManager:
             self._current_model = model
             return await self.resolve_budget(budget_mode, manual_tokens)
 
+        try:
+            return await self._start_spawned_with_budget(
+                model=model,
+                gguf_path=gguf_path,
+                model_path=model_path,
+                mode=mode,
+                budget_mode=budget_mode,
+                manual_tokens=manual_tokens,
+                extra_flags=extra_flags,
+                cache_type_k=cache_type_k,
+                cache_type_v=cache_type_v,
+                n_slots=n_slots,
+                kv_unified=kv_unified,
+                rpc=rpc,
+            )
+        except BaseException as exc:
+            if rpc is not None:
+                await self.stop()
+                self._add_rpc_log_note(exc)
+            raise
+
+    async def _start_spawned_with_budget(
+        self,
+        *,
+        model: str,
+        gguf_path: str | Path | None,
+        model_path: str | Path | None,
+        mode: str,
+        budget_mode: BudgetMode,
+        manual_tokens: int | None,
+        extra_flags: list[str] | None,
+        cache_type_k: str | None,
+        cache_type_v: str | None,
+        n_slots: int | None,
+        kv_unified: bool,
+        rpc: LlamaCppRpcConfig | None,
+    ) -> int:
+        rpc_kwargs = {"rpc": rpc} if rpc is not None else {}
+
         if budget_mode == BudgetMode.FORGE_FAST:
             # Phase 1: start with auto-tune to discover max
             await self.start(
@@ -538,6 +797,7 @@ class ServerManager:
                 mode=mode, extra_flags=extra_flags, ctx_override=None,
                 cache_type_k=cache_type_k, cache_type_v=cache_type_v,
                 n_slots=n_slots, kv_unified=kv_unified,
+                **rpc_kwargs,
             )
             # /props reports per-slot context (non-unified) or full context
             # (unified). Either way, recover the total for -c math.
@@ -554,6 +814,7 @@ class ServerManager:
                 mode=mode, extra_flags=extra_flags, ctx_override=half_total,
                 cache_type_k=cache_type_k, cache_type_v=cache_type_v,
                 n_slots=n_slots, kv_unified=kv_unified,
+                **rpc_kwargs,
             )
             return await self.resolve_budget(budget_mode)
 
@@ -564,6 +825,7 @@ class ServerManager:
             mode=mode, extra_flags=extra_flags, ctx_override=ctx_override,
             cache_type_k=cache_type_k, cache_type_v=cache_type_v,
             n_slots=n_slots, kv_unified=kv_unified,
+            **rpc_kwargs,
         )
         return await self.resolve_budget(budget_mode, manual_tokens)
 
@@ -619,6 +881,54 @@ class ServerManager:
 
     # ── health polling ──────────────────────────────────────────
 
+    async def _wait_rpc_worker(self, rpc: LlamaCppRpcConfig) -> None:
+        """Wait for the owned SSH worker to accept RPC connections."""
+
+        assert self._rpc_worker_proc is not None
+        assert self._rpc_log_paths is not None
+        timeout = rpc.startup_timeout
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            if self._rpc_worker_proc.poll() is not None:
+                raise RuntimeError(
+                    self._rpc_failure_message(
+                        "RPC worker exited before accepting connections"
+                    )
+                )
+            remaining = deadline - time.monotonic()
+            try:
+                _, writer = await asyncio.wait_for(
+                    asyncio.open_connection(
+                        rpc.worker.rpc_host,
+                        rpc.worker.rpc_port,
+                    ),
+                    timeout=min(2.0, remaining),
+                )
+            except (OSError, asyncio.TimeoutError):
+                await asyncio.sleep(2)
+                continue
+            writer.close()
+            await writer.wait_closed()
+            return
+        raise RuntimeError(
+            self._rpc_failure_message(
+                f"RPC worker did not become ready within {timeout}s"
+            )
+        )
+
+    def _readiness_check(self, data: dict[str, Any]) -> bool:
+        assert self._profile is not None
+        if self._profile.family_profile.metadata_format == MetadataFormat.VLLM_MODELS:
+            return bool(data.get("data"))
+        return "default_generation_settings" in data
+
+    async def _probe_readiness(self) -> bool:
+        assert self._resolved_backend is not None
+        url = self._resolved_backend.address(BackendOperation.STARTUP_READINESS)
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            resp = await client.get(url)
+        return resp.status_code == 200 and self._readiness_check(resp.json())
+
     async def _wait_healthy(self, timeout: float | None = None) -> None:
         """Poll until the server is fully ready.
 
@@ -636,33 +946,34 @@ class ServerManager:
         assert self._profile is not None
         assert self._resolved_backend is not None
         if self._profile.family_profile.metadata_format == MetadataFormat.VLLM_MODELS:
-            url = self._resolved_backend.address(BackendOperation.STARTUP_READINESS)
             effective_timeout = timeout if timeout is not None else 300.0
-
-            def readiness_check(data: dict[str, Any]) -> bool:
-                return bool(data.get("data"))
         else:
-            url = self._resolved_backend.address(BackendOperation.STARTUP_READINESS)
             effective_timeout = timeout if timeout is not None else 180.0
 
-            def readiness_check(data: dict[str, Any]) -> bool:
-                return "default_generation_settings" in data
-
         deadline = time.monotonic() + effective_timeout
-        async with httpx.AsyncClient(timeout=5.0) as client:
-            while time.monotonic() < deadline:
-                try:
-                    resp = await client.get(url)
-                    if resp.status_code == 200:
-                        data = resp.json()
-                        if readiness_check(data):
-                            return
-                except (httpx.ConnectError, httpx.ReadError, httpx.TimeoutException):
-                    pass
-                await asyncio.sleep(2)
-        raise RuntimeError(
+        while time.monotonic() < deadline:
+            if self._proc is not None and self._proc.poll() is not None:
+                raise RuntimeError(
+                    self._rpc_failure_message("Server exited before becoming ready")
+                )
+            if (
+                self._rpc_worker_proc is not None
+                and self._rpc_worker_proc.poll() is not None
+            ):
+                raise RuntimeError(
+                    self._rpc_failure_message(
+                        "RPC worker exited while the coordinator was loading"
+                    )
+                )
+            try:
+                if await self._probe_readiness():
+                    return
+            except (httpx.HTTPError, ValueError):
+                pass
+            await asyncio.sleep(2)
+        raise RuntimeError(self._rpc_failure_message(
             f"Server did not become ready within {effective_timeout}s"
-        )
+        ))
 
 
 async def _setup_managed_backend(
@@ -682,9 +993,16 @@ async def _setup_managed_backend(
     kv_unified: bool = False,
     *,
     allow_missing_backend_window: bool = False,
+    rpc: LlamaCppRpcConfig | None = None,
 ) -> _ManagedBackendSetup:
     """Spawn or attach to a managed backend and return lifecycle plus window facts."""
     profile = managed_profile(backend)
+    if rpc is not None:
+        if backend != "llamaserver":
+            raise ValueError(
+                "llama.cpp RPC is supported only by backend='llamaserver'"
+            )
+        validate_rpc_extra_flags(extra_flags)
     if profile.required_identity == ArtifactIdentity.MODEL_TAG:
         if gguf_path is not None:
             raise ValueError("backend='ollama' does not accept gguf_path (use model)")
@@ -728,6 +1046,7 @@ async def _setup_managed_backend(
             cache_type_v=cache_type_v,
             n_slots=n_slots,
             kv_unified=kv_unified,
+            **({"rpc": rpc} if rpc is not None else {}),
         )
     except BudgetResolutionError:
         if not (
@@ -772,6 +1091,7 @@ async def setup_backend(
     kv_unified: bool = False,
     context_thresholds: list[float] | None = None,
     on_context_threshold: Callable[[int, int, float], str | None] | None = None,
+    rpc: LlamaCppRpcConfig | None = None,
 ) -> tuple[ServerManager, ContextManager]:
     """One-call setup: spawn or attach, resolve budget, create ContextManager.
 
@@ -801,6 +1121,11 @@ async def setup_backend(
     When ``kv_unified=True``, all slots share a single KV cache pool.
     Llama-server / llamafile only — vLLM has its own scheduler concepts
     and rejects ``n_slots`` / ``kv_unified``.
+
+    ``rpc`` enables the experimental one-worker llama.cpp RPC lifecycle for
+    ``backend="llamaserver"``. Forge starts the remote worker through a
+    foreground SSH process, then starts the local coordinator, and owns both
+    until ``server.stop()``.
 
     Example usage::
 
@@ -834,6 +1159,7 @@ async def setup_backend(
         cache_type_v=cache_type_v,
         n_slots=n_slots,
         kv_unified=kv_unified,
+        **({"rpc": rpc} if rpc is not None else {}),
     )
     budget = managed_setup.context_window_tokens
     assert budget is not None

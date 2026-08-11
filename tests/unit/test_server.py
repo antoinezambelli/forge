@@ -90,6 +90,27 @@ class TestServerManagerStart:
         assert "8080" in args
 
     @pytest.mark.asyncio
+    async def test_start_readiness_failure_cleans_spawned_process(
+        self, sm: ServerManager,
+    ) -> None:
+        mock_proc = MagicMock()
+        with (
+            patch("forge.server.subprocess.Popen", return_value=mock_proc),
+            patch.object(
+                sm,
+                "_wait_healthy",
+                new_callable=AsyncMock,
+                side_effect=RuntimeError("not ready"),
+            ),
+            patch("forge.server.asyncio.sleep", new_callable=AsyncMock),
+            pytest.raises(RuntimeError, match="not ready"),
+        ):
+            await sm.start("llama3", gguf_path="/models/llama3.gguf")
+
+        mock_proc.terminate.assert_called_once()
+        assert sm._proc is None
+
+    @pytest.mark.asyncio
     async def test_start_native_mode_adds_jinja(self, sm: ServerManager) -> None:
         mock_proc = MagicMock()
         with (
@@ -148,6 +169,9 @@ class TestServerManagerStart:
         with (
             patch("forge.server.subprocess.Popen", return_value=mock_proc) as mock_popen,
             patch.object(sm, "_wait_healthy", new_callable=AsyncMock),
+            patch.object(
+                sm, "is_healthy", new_callable=AsyncMock, return_value=True,
+            ),
         ):
             await sm.start("llama3", gguf_path="/models/llama3.gguf", mode="native")
             await sm.start("llama3", gguf_path="/models/llama3.gguf", mode="native")
@@ -220,6 +244,9 @@ class TestServerManagerStart:
         with (
             patch("forge.server.subprocess.Popen", return_value=mock_proc) as mock_popen,
             patch.object(sm, "_wait_healthy", new_callable=AsyncMock),
+            patch.object(
+                sm, "is_healthy", new_callable=AsyncMock, return_value=True,
+            ),
         ):
             await sm.start(
                 "llama3", gguf_path="/models/llama3.gguf", mode="native",

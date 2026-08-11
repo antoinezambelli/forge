@@ -45,6 +45,7 @@ from forge.context import (
     detect_hardware,
 )
 from forge.server import BudgetMode, ServerManager, setup_backend
+from forge.rpc import LlamaCppRpcConfig, LlamaCppRpcWorkerConfig
 from forge.tools import RESPOND_TOOL_NAME, respond_spec, respond_tool
 from forge.prompts import build_tool_prompt, extract_tool_call, rescue_tool_call, retry_nudge, step_nudge
 from forge.guardrails import (
@@ -133,6 +134,8 @@ __all__ = [
     "step_nudge",
     # Server
     "BudgetMode",
+    "LlamaCppRpcConfig",
+    "LlamaCppRpcWorkerConfig",
     "ServerManager",
     "setup_backend",
     # Built-in tools
