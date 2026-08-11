@@ -1617,6 +1617,20 @@ class TestRecommendedSampling:
         assert client.top_k == 20
         assert client.min_p == 0.0
 
+    def test_inkling_shard_applies_sampling_and_effort(self) -> None:
+        """The production Inkling shard name resolves to its complete row."""
+        client = LlamafileClient(
+            gguf_path="Inkling-Small-UD-IQ4_XS-00001-of-00004.gguf",
+            mode="native",
+            recommended_sampling=True,
+        )
+        assert client.model == "Inkling-Small-UD-IQ4_XS"
+        assert client.chat_template_kwargs == {"reasoning_effort": "high"}
+        assert client.temperature == 1.0
+        assert client.top_p == 1.0
+        assert client.top_k is None
+        assert client.min_p == 0.0
+
     def test_strict_unknown_model_raises(self) -> None:
         """recommended_sampling=True + unknown model: raises UnsupportedModelError."""
         from forge.errors import UnsupportedModelError

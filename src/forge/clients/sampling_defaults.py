@@ -109,6 +109,10 @@ MODEL_SAMPLING_DEFAULTS: dict[str, dict[str, float | int]] = {
     # supports low/high/max reasoning effort. This one registry value is the
     # deliberate campaign selector; change only it between effort campaigns.
     "DeepSeek-V4-Flash-0731-UD-Q4_K_XL":      {"temperature": 1.0, "top_p": 0.95, "chat_template_kwargs": {"reasoning_effort": "max"}},                  # https://huggingface.co/deepseek-ai/DeepSeek-V4-Flash-0731
+    # Inkling-Small — Unsloth recommends T=1.0/top_p=1.0 for most tasks and
+    # includes min_p=0.0 in its llama.cpp recipes. Use high effort (0.9) for
+    # the DGE pressure smoke; xhigh/max both map to the benchmark's 0.99.
+    "Inkling-Small-UD-IQ4_XS":                 {"temperature": 1.0, "top_p": 1.0, "min_p": 0.0, "chat_template_kwargs": {"reasoning_effort": "high"}},   # https://unsloth.ai/docs/models/inkling
     # gpt-oss-120b — OpenAI open-weight MoE (117B total, 5.1B active). Reasoning model with three
     # discrete levels: "low" / "medium" / "high", controlled via chat_template_kwargs.reasoning_effort
     # (per llama.cpp guide: `--chat-template-kwargs '{"reasoning_effort": "high"}'`). Defaulting to

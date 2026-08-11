@@ -70,6 +70,7 @@ Sampling params staged, no eval data published. Forge supports these — perform
 | Qwen3 4B Thinking 2507 | Q4_K_M | 0.6 | 0.95 | 20 | 0.0 | — | [HF](https://huggingface.co/Qwen/Qwen3-4B-Thinking-2507) |
 | Qwen3.5 122B-A10B | Q4_K_M | 0.7 | 0.8 | 20 | — | balanced (instruct) preset; thinking mode is separate⁸ | [HF](https://huggingface.co/Qwen/Qwen3.5-122B-A10B) |
 | DeepSeek-V4-Flash-0731 UD | Q4_K_XL | 1.0 | 0.95 | — | — | agentic profile; registry-selected `reasoning_effort` (`low`/`high`/`max`)¹² | [HF](https://huggingface.co/deepseek-ai/DeepSeek-V4-Flash-0731) |
+| Inkling Small UD | IQ4_XS | 1.0 | 1.0 | — | 0.0 | `reasoning_effort="high"` stress profile¹³ | [Unsloth](https://unsloth.ai/docs/models/inkling) |
 | Qwen3-Coder 30B-A3B Instruct | Q4_K_M | 0.7 | 0.8 | 20 | — | repeat_penalty=1.05 | [HF](https://huggingface.co/Qwen/Qwen3-Coder-30B-A3B-Instruct) |
 | Qwen3-Coder-Next 80B-A3B | Q4_K_M | 1.0 | 0.95 | 40 | — | coder fine-tune over Qwen3-Next | [HF](https://huggingface.co/Qwen/Qwen3-Coder-Next) |
 | Qwen3-Next 80B-A3B Instruct | Q4_K_M | 0.7 | 0.8 | 20 | 0.0 | hybrid-attention MoE; thinking-mode profile | [HF](https://huggingface.co/Qwen/Qwen3-Next-80B-A3B-Instruct) |
@@ -85,6 +86,7 @@ Sampling params staged, no eval data published. Forge supports these — perform
 ¹⁰ Nemotron-3 Super: card recommends T=1.0 / top_p=0.95 across all tasks. `low_effort` reins in over-thinking; `force_nonempty_content` so the model emits something substantive instead of empty `<think>` blocks.
 ¹¹ gpt-oss-120b: per the llama.cpp maintainer guide, **explicitly do not set `repeat_penalty` or `presence_penalty`** — they degrade output. Registry omission == None == field omitted from request body. `reasoning_effort` adjustable via `chat_template_kwargs`; "medium" is the current default, bring down if overthinking observed.
 ¹² DeepSeek-V4-Flash-0731 supports exactly `low`, `high`, and `max`. The single value in `sampling_defaults.py` is the manual campaign control; change it there between isolated multi-day runs. There is no second effort selector.
+¹³ Unsloth recommends T=1.0 / top_p=1.0 for most Inkling tasks and uses min_p=0.0 in its llama.cpp recipes. Inkling maps `high` reasoning effort to 0.9 and both `xhigh` and `max` to 0.99; Forge selects `high` for this DGE pressure smoke.
 
 ---
 
