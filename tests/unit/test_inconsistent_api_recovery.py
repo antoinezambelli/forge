@@ -211,23 +211,25 @@ class TestValidator:
         args = {"report": self._canonical_report()}
         assert _validate_inconsistent_api_recovery(args) is True
 
-    def test_missing_total_fails(self) -> None:
-        args = {"report": '{"compliance_status": "PASS", "txn_count": 3}'}
-        assert _validate_inconsistent_api_recovery(args) is False
+    def test_missing_or_wrong_required_tokens_fail(self) -> None:
+        cases = (
+            ("missing total", '{"compliance_status": "PASS", "txn_count": 3}'),
+            (
+                "wrong total",
+                '{"flagged_count": 0, "total_usd": "20500.00", '
+                '"compliance_status": "PASS", "txn_count": 3}',
+            ),
+            (
+                "wrong status",
+                '{"flagged_count": 0, "total_usd": "25500.00", '
+                '"compliance_status": "FAIL", "txn_count": 3}',
+            ),
+            ("empty args", None),
+        )
 
-    def test_wrong_total_fails(self) -> None:
-        args = {"report": (
-            '{"flagged_count": 0, "total_usd": "20500.00", '
-            '"compliance_status": "PASS", "txn_count": 3}'
-        )}
-        assert _validate_inconsistent_api_recovery(args) is False
-
-    def test_wrong_status_fails(self) -> None:
-        args = {"report": (
-            '{"flagged_count": 0, "total_usd": "25500.00", '
-            '"compliance_status": "FAIL", "txn_count": 3}'
-        )}
-        assert _validate_inconsistent_api_recovery(args) is False
+        for case, report in cases:
+            args = {} if report is None else {"report": report}
+            assert not _validate_inconsistent_api_recovery(args), case
 
     def test_total_with_comma_passes(self) -> None:
         # _check strips commas; matcher is substring-AND on lowercased text.
@@ -236,9 +238,6 @@ class TestValidator:
             '"compliance_status": "PASS", "txn_count": 3}'
         )}
         assert _validate_inconsistent_api_recovery(args) is True
-
-    def test_empty_args_fail(self) -> None:
-        assert _validate_inconsistent_api_recovery({}) is False
 
 
 # ── Stateful backend ────────────────────────────────────────────
@@ -337,99 +336,52 @@ class TestStatefulValidateState:
             "txn_count": 3,
         })
 
-    def _drive_canonical(self, db: LegacyAPISystem) -> None:
-        db.list_accounts(page=1, page_size=10)
-        db.get_balance("ACC-12345")
-        db.get_transactions("ACC-12345", "2024-10-01", "2024-12-31")
-        db.categorize_spend(42, "SVCS")
-        db.check_compliance("us", "2024-Q4")
-        db.aggregate_subtotal("5000.00|12500.00|8000.00")
-        db.submit_audit(self._canonical_report())
+    def _drive_tools(
+        self,
+        tools: dict,
+        *,
+        categorize: bool = True,
+        region: str = "us",
+        amounts: str = "5000.00|12500.00|8000.00",
+        report: str | None = None,
+    ) -> None:
+        tools["legacy_list_accounts"].callable(page=1, page_size=10)
+        tools["legacy_get_balance"].callable(account_id="ACC-12345")
+        tools["legacy_get_transactions"].callable(
+            account_id="ACC-12345", since="2024-10-01", until="2024-12-31",
+        )
+        if categorize:
+            tools["legacy_categorize_spend"].callable(txn_id=42, category="SVCS")
+        tools["legacy_check_compliance"].callable(
+            region=region, period="2024-Q4",
+        )
+        tools["legacy_aggregate_subtotal"].callable(amounts=amounts)
+        tools["legacy_submit_audit"].callable(
+            report=self._canonical_report() if report is None else report,
+        )
 
     def test_canonical_path_passes(self) -> None:
         workflow, validate_state = _build_inconsistent_api_recovery_stateful()
-        # Walk the LegacyAPISystem instance backing this workflow's tools.
-        # The backend instance is captured in the lambda closures — invoke
-        # tools through the workflow to drive its state.
-        tools = workflow.tools
-        tools["legacy_list_accounts"].callable(page=1, page_size=10)
-        tools["legacy_get_balance"].callable(account_id="ACC-12345")
-        tools["legacy_get_transactions"].callable(
-            account_id="ACC-12345", since="2024-10-01", until="2024-12-31",
-        )
-        tools["legacy_categorize_spend"].callable(txn_id=42, category="SVCS")
-        tools["legacy_check_compliance"].callable(region="us", period="2024-Q4")
-        tools["legacy_aggregate_subtotal"].callable(
-            amounts="5000.00|12500.00|8000.00",
-        )
-        tools["legacy_submit_audit"].callable(report=self._canonical_report())
+        self._drive_tools(workflow.tools)
         assert validate_state() is True
 
-    def test_skipping_categorize_fails(self) -> None:
-        workflow, validate_state = _build_inconsistent_api_recovery_stateful()
-        tools = workflow.tools
-        tools["legacy_list_accounts"].callable(page=1, page_size=10)
-        tools["legacy_get_balance"].callable(account_id="ACC-12345")
-        tools["legacy_get_transactions"].callable(
-            account_id="ACC-12345", since="2024-10-01", until="2024-12-31",
+    def test_each_invalid_state_or_report_fails(self) -> None:
+        cases = (
+            ("skipped categorize", {"categorize": False}),
+            ("uppercase region", {"region": "US"}),
+            ("wrong subtotal", {"amounts": "5000.00|12500.00"}),
+            (
+                "missing report field",
+                {
+                    "report": (
+                        '{"flagged_count": 0, "total_usd": "25500", '
+                        '"compliance_status": "PASS"}'
+                    ),
+                },
+            ),
         )
-        tools["legacy_check_compliance"].callable(region="us", period="2024-Q4")
-        tools["legacy_aggregate_subtotal"].callable(
-            amounts="5000.00|12500.00|8000.00",
-        )
-        tools["legacy_submit_audit"].callable(report=self._canonical_report())
-        assert validate_state() is False
 
-    def test_uppercase_region_in_state_fails(self) -> None:
-        workflow, validate_state = _build_inconsistent_api_recovery_stateful()
-        tools = workflow.tools
-        tools["legacy_list_accounts"].callable(page=1, page_size=10)
-        tools["legacy_get_balance"].callable(account_id="ACC-12345")
-        tools["legacy_get_transactions"].callable(
-            account_id="ACC-12345", since="2024-10-01", until="2024-12-31",
-        )
-        tools["legacy_categorize_spend"].callable(txn_id=42, category="SVCS")
-        # Failed compliance check (uppercase region) — tool returns ERROR
-        # and does not update state. compliance_checked_for stays None.
-        tools["legacy_check_compliance"].callable(region="US", period="2024-Q4")
-        tools["legacy_aggregate_subtotal"].callable(
-            amounts="5000.00|12500.00|8000.00",
-        )
-        tools["legacy_submit_audit"].callable(report=self._canonical_report())
-        assert validate_state() is False
-
-    def test_wrong_subtotal_fails(self) -> None:
-        workflow, validate_state = _build_inconsistent_api_recovery_stateful()
-        tools = workflow.tools
-        tools["legacy_list_accounts"].callable(page=1, page_size=10)
-        tools["legacy_get_balance"].callable(account_id="ACC-12345")
-        tools["legacy_get_transactions"].callable(
-            account_id="ACC-12345", since="2024-10-01", until="2024-12-31",
-        )
-        tools["legacy_categorize_spend"].callable(txn_id=42, category="SVCS")
-        tools["legacy_check_compliance"].callable(region="us", period="2024-Q4")
-        # Wrong subtotal — only 2 of 3 amounts.
-        tools["legacy_aggregate_subtotal"].callable(
-            amounts="5000.00|12500.00",
-        )
-        tools["legacy_submit_audit"].callable(report=self._canonical_report())
-        assert validate_state() is False
-
-    def test_wrong_report_content_fails(self) -> None:
-        workflow, validate_state = _build_inconsistent_api_recovery_stateful()
-        tools = workflow.tools
-        tools["legacy_list_accounts"].callable(page=1, page_size=10)
-        tools["legacy_get_balance"].callable(account_id="ACC-12345")
-        tools["legacy_get_transactions"].callable(
-            account_id="ACC-12345", since="2024-10-01", until="2024-12-31",
-        )
-        tools["legacy_categorize_spend"].callable(txn_id=42, category="SVCS")
-        tools["legacy_check_compliance"].callable(region="us", period="2024-Q4")
-        tools["legacy_aggregate_subtotal"].callable(
-            amounts="5000.00|12500.00|8000.00",
-        )
-        # Wrong report — missing "txn_count" key required by validator.
-        tools["legacy_submit_audit"].callable(
-            report='{"flagged_count": 0, "total_usd": "25500", "compliance_status": "PASS"}',
-        )
-        assert validate_state() is False
+        for case, overrides in cases:
+            workflow, validate_state = _build_inconsistent_api_recovery_stateful()
+            self._drive_tools(workflow.tools, **overrides)
+            assert validate_state() is False, case

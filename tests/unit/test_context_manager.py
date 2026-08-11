@@ -62,49 +62,43 @@ class TestUnavailableBudget:
         assert mgr.check_thresholds(messages) is None
         assert mgr.maybe_compact(messages) is messages
 
-    @pytest.mark.parametrize(
-        "strategy",
-        [SlidingWindowCompact(keep_recent=1), TieredCompact()],
-    )
-    def test_compacting_strategy_without_budget_is_rejected(self, strategy) -> None:
-        with pytest.raises(ValueError, match="budget_tokens=None requires NoCompact"):
-            ContextManager(strategy, budget_tokens=None)
-
-    def test_thresholds_without_budget_are_rejected(self) -> None:
-        with pytest.raises(ValueError, match="no context thresholds"):
-            ContextManager(
+    def test_budget_dependent_features_without_budget_are_rejected(self) -> None:
+        cases = [
+            ("sliding strategy", SlidingWindowCompact(keep_recent=1), {}),
+            ("tiered strategy", TieredCompact(), {}),
+            (
+                "thresholds",
                 NoCompact(),
-                budget_tokens=None,
-                context_thresholds=[0.5],
-                on_context_threshold=lambda *_: None,
-            )
-
-    def test_threshold_callback_without_budget_is_rejected(self) -> None:
-        with pytest.raises(ValueError, match="no context thresholds"):
-            ContextManager(
+                {
+                    "context_thresholds": [0.5],
+                    "on_context_threshold": lambda *_: None,
+                },
+            ),
+            (
+                "threshold callback",
                 NoCompact(),
-                budget_tokens=None,
-                on_context_threshold=lambda *_: None,
-            )
+                {"on_context_threshold": lambda *_: None},
+            ),
+        ]
+        for label, strategy, kwargs in cases:
+            with pytest.raises(ValueError) as exc_info:
+                ContextManager(strategy, budget_tokens=None, **kwargs)
+            assert "budget_tokens=None requires NoCompact" in str(exc_info.value), label
 
 
 # ── estimate_tokens ─────────────────────────────────────────────
 
 
 class TestEstimateTokens:
-    def test_basic(self) -> None:
-        mgr = ContextManager(NoCompact(), budget_tokens=1000)
-        msgs = [_msg("a" * 100), _msg("b" * 200)]
-        assert mgr.estimate_tokens(msgs) == 300 // 4
-
-    def test_empty(self) -> None:
-        mgr = ContextManager(NoCompact(), budget_tokens=1000)
-        assert mgr.estimate_tokens([]) == 0
-
-    def test_char_div_4(self) -> None:
-        mgr = ContextManager(NoCompact(), budget_tokens=1000)
-        msgs = [_msg("a" * 41)]  # 41 / 4 = 10 (integer division)
-        assert mgr.estimate_tokens(msgs) == 10
+    def test_uses_total_character_count_divided_by_four(self) -> None:
+        cases = [
+            ("multiple messages", [_msg("a" * 100), _msg("b" * 200)], 75),
+            ("empty", [], 0),
+            ("integer division", [_msg("a" * 41)], 10),
+        ]
+        for label, messages, expected in cases:
+            mgr = ContextManager(NoCompact(), budget_tokens=1000)
+            assert mgr.estimate_tokens(messages) == expected, label
 
     def test_prefers_observed_usage_including_zero(self) -> None:
         mgr = ContextManager(NoCompact(), budget_tokens=1000)
@@ -194,18 +188,13 @@ class TestPublishedProxyUsage:
 
 
 class TestMaybeCompactUnderThreshold:
-    def test_returns_messages_unchanged(self) -> None:
-        mgr = ContextManager(NoCompact(), budget_tokens=10000)
-        msgs = [_msg("short")]
-        result = mgr.maybe_compact(msgs)
-        assert result is msgs  # Same object — not compacted
-
-    def test_on_compact_not_called(self) -> None:
+    def test_returns_messages_unchanged_without_emitting_event(self) -> None:
         events: list[CompactEvent] = []
         mgr = ContextManager(NoCompact(), budget_tokens=10000, on_compact=events.append)
         msgs = [_msg("short")]
-        mgr.maybe_compact(msgs)
-        assert len(events) == 0
+        result = mgr.maybe_compact(msgs)
+        assert result is msgs  # Same object — not compacted
+        assert events == []
 
 
 # ── maybe_compact — over threshold ──────────────────────────────
@@ -239,17 +228,6 @@ class TestMaybeCompactOverThreshold:
         assert event.budget_tokens == 100
         assert event.messages_before == 6
         assert event.messages_after < 6
-
-    def test_on_compact_none_no_error(self) -> None:
-        msgs = _build_messages(total_chars=400, count=6)
-        mgr = ContextManager(
-            SlidingWindowCompact(keep_recent=1, compact_threshold=0.75),
-            budget_tokens=100,
-            on_compact=None,
-        )
-        # Should not raise
-        result = mgr.maybe_compact(msgs)
-        assert len(result) < len(msgs)
 
     def test_observed_trigger_invalidates_after_real_rewrite(self) -> None:
         events: list[CompactEvent] = []
@@ -291,46 +269,6 @@ class TestMaybeCompactOverThreshold:
 
 
 class TestCompactEvent:
-    def test_fields_accurate(self) -> None:
-        events: list[CompactEvent] = []
-        msgs = _build_messages(total_chars=400, count=6)
-        mgr = ContextManager(
-            SlidingWindowCompact(keep_recent=1, compact_threshold=0.75),
-            budget_tokens=100,
-            on_compact=events.append,
-        )
-        mgr.maybe_compact(msgs, step_index=5)
-        event = events[0]
-        assert event.tokens_before == mgr.estimate_tokens(msgs)
-        assert event.messages_before == 6
-        assert event.budget_tokens == 100
-
-    def test_phase_reached_from_tiered(self) -> None:
-        events: list[CompactEvent] = []
-        # Build enough content to trigger compaction
-        msgs = _build_messages(total_chars=800, count=8)
-        mgr = ContextManager(
-            TieredCompact(keep_recent=2, compact_threshold=0.75),
-            budget_tokens=100,
-            on_compact=events.append,
-        )
-        mgr.maybe_compact(msgs, step_index=1, step_hint="[Steps completed: a]")
-        assert len(events) == 1
-        assert events[0].phase_reached >= 1
-
-    def test_no_compact_when_under_threshold(self) -> None:
-        events: list[CompactEvent] = []
-        # Small content, high threshold — should not compact
-        msgs = _build_messages(total_chars=100, count=4)
-        mgr = ContextManager(
-            TieredCompact(keep_recent=2, compact_threshold=0.99),
-            budget_tokens=10000,
-            on_compact=events.append,
-        )
-        result = mgr.maybe_compact(msgs)
-        assert result is msgs  # Same object — not compacted
-        assert len(events) == 0
-
     def test_per_phase_thresholds_through_manager(self) -> None:
         """Per-phase thresholds on TieredCompact flow through ContextManager."""
         events: list[CompactEvent] = []

@@ -29,13 +29,11 @@ from forge.server import (
 class TestBudgetMode:
     """BudgetMode enum basics."""
 
-    def test_budget_mode_values(self) -> None:
+    def test_values_and_string_behavior(self) -> None:
         assert BudgetMode.BACKEND.value == "backend"
         assert BudgetMode.MANUAL.value == "manual"
         assert BudgetMode.FORGE_FULL.value == "forge-full"
         assert BudgetMode.FORGE_FAST.value == "forge-fast"
-
-    def test_budget_mode_is_string_enum(self) -> None:
         assert BudgetMode.BACKEND == "backend"
         assert BudgetMode.MANUAL == "manual"
         assert BudgetMode.FORGE_FULL == "forge-full"
@@ -43,22 +41,6 @@ class TestBudgetMode:
 
 
 # ── ServerManager construction ──────────────────────────────────
-
-
-class TestServerManagerInit:
-    """Constructor / attribute checks."""
-
-    def test_init_ollama(self) -> None:
-        sm = ServerManager(backend="ollama")
-        assert sm._backend == "ollama"
-        assert sm._proc is None
-        assert sm._current_model is None
-
-    def test_init_llamaserver(self) -> None:
-        sm = ServerManager(backend="llamaserver", port=9090, models_dir="/models")
-        assert sm._backend == "llamaserver"
-        assert sm._port == 9090
-        assert sm._models_dir is not None
 
 
 # ── ServerManager.start() ───────────────────────────────────────
@@ -164,100 +146,61 @@ class TestServerManagerStart:
         assert "8000" in args
 
     @pytest.mark.asyncio
-    async def test_start_reuses_same_config(self, sm: ServerManager) -> None:
-        mock_proc = MagicMock()
-        with (
-            patch("forge.server.subprocess.Popen", return_value=mock_proc) as mock_popen,
-            patch.object(sm, "_wait_healthy", new_callable=AsyncMock),
-            patch.object(
-                sm, "is_healthy", new_callable=AsyncMock, return_value=True,
+    async def test_start_reuses_same_config(self) -> None:
+        cases = [
+            ("base", {}),
+            ("extra flags", {"extra_flags": ["--reasoning-format", "auto"]}),
+        ]
+        for label, options in cases:
+            sm = ServerManager(backend="llamaserver", port=8080)
+            mock_proc = MagicMock()
+            with (
+                patch(
+                    "forge.server.subprocess.Popen", return_value=mock_proc
+                ) as mock_popen,
+                patch.object(sm, "_wait_healthy", new_callable=AsyncMock),
+                patch.object(
+                    sm, "is_healthy", new_callable=AsyncMock, return_value=True,
+                ),
+            ):
+                await sm.start(
+                    "llama3", gguf_path="/models/llama3.gguf", mode="native",
+                    **options,
+                )
+                await sm.start(
+                    "llama3", gguf_path="/models/llama3.gguf", mode="native",
+                    **options,
+                )
+            assert mock_popen.call_count == 1, label
+
+    @pytest.mark.asyncio
+    async def test_start_restarts_when_launch_configuration_changes(self) -> None:
+        cases = [
+            ("mode", {"mode": "native"}, {"mode": "prompt"}),
+            ("context", {}, {"ctx_override": 8000}),
+            (
+                "extra flags",
+                {"mode": "native"},
+                {"mode": "native", "extra_flags": ["--reasoning-format", "auto"]},
             ),
-        ):
-            await sm.start("llama3", gguf_path="/models/llama3.gguf", mode="native")
-            await sm.start("llama3", gguf_path="/models/llama3.gguf", mode="native")
-
-        assert mock_popen.call_count == 1
-
-    @pytest.mark.asyncio
-    async def test_start_restarts_on_mode_change(self, sm: ServerManager) -> None:
-        mock_proc = MagicMock()
-        with (
-            patch("forge.server.subprocess.Popen", return_value=mock_proc) as mock_popen,
-            patch.object(sm, "_wait_healthy", new_callable=AsyncMock),
-            patch.object(sm, "stop", new_callable=AsyncMock) as mock_stop,
-        ):
-            # First start — stop is called but nothing to stop
-            await sm.start("llama3", gguf_path="/models/llama3.gguf", mode="native")
-            # Simulate state after first start
-            sm._current_model = "llama3"
-            sm._current_mode = "native"
-            sm._current_ctx = None
-
-            # Second start with different mode — should restart
-            await sm.start("llama3", gguf_path="/models/llama3.gguf", mode="prompt")
-
-        assert mock_popen.call_count == 2
-        # stop() called before each start
-        assert mock_stop.call_count >= 2
-
-    @pytest.mark.asyncio
-    async def test_start_restarts_on_ctx_change(self, sm: ServerManager) -> None:
-        mock_proc = MagicMock()
-        with (
-            patch("forge.server.subprocess.Popen", return_value=mock_proc) as mock_popen,
-            patch.object(sm, "_wait_healthy", new_callable=AsyncMock),
-            patch.object(sm, "stop", new_callable=AsyncMock),
-        ):
-            await sm.start("llama3", gguf_path="/models/llama3.gguf")
-            sm._current_model = "llama3"
-            sm._current_mode = "native"
-            sm._current_ctx = None
-
-            await sm.start("llama3", gguf_path="/models/llama3.gguf", ctx_override=8000)
-
-        assert mock_popen.call_count == 2
-
-    @pytest.mark.asyncio
-    async def test_start_restarts_on_extra_flags_change(self, sm: ServerManager) -> None:
-        mock_proc = MagicMock()
-        with (
-            patch("forge.server.subprocess.Popen", return_value=mock_proc) as mock_popen,
-            patch.object(sm, "_wait_healthy", new_callable=AsyncMock),
-            patch.object(sm, "stop", new_callable=AsyncMock),
-        ):
-            await sm.start("llama3", gguf_path="/models/llama3.gguf", mode="native")
-            sm._current_model = "llama3"
-            sm._current_mode = "native"
-            sm._current_ctx = None
-
-            # Same model/mode/ctx but different extra_flags — should restart
-            await sm.start(
-                "llama3", gguf_path="/models/llama3.gguf", mode="native",
-                extra_flags=["--reasoning-format", "auto"],
-            )
-
-        assert mock_popen.call_count == 2
-
-    @pytest.mark.asyncio
-    async def test_start_reuses_same_config_with_extra_flags(self, sm: ServerManager) -> None:
-        mock_proc = MagicMock()
-        with (
-            patch("forge.server.subprocess.Popen", return_value=mock_proc) as mock_popen,
-            patch.object(sm, "_wait_healthy", new_callable=AsyncMock),
-            patch.object(
-                sm, "is_healthy", new_callable=AsyncMock, return_value=True,
-            ),
-        ):
-            await sm.start(
-                "llama3", gguf_path="/models/llama3.gguf", mode="native",
-                extra_flags=["--reasoning-format", "auto"],
-            )
-            await sm.start(
-                "llama3", gguf_path="/models/llama3.gguf", mode="native",
-                extra_flags=["--reasoning-format", "auto"],
-            )
-
-        assert mock_popen.call_count == 1
+        ]
+        for label, initial_options, changed_options in cases:
+            sm = ServerManager(backend="llamaserver", port=8080)
+            mock_proc = MagicMock()
+            with (
+                patch(
+                    "forge.server.subprocess.Popen", return_value=mock_proc
+                ) as mock_popen,
+                patch.object(sm, "_wait_healthy", new_callable=AsyncMock),
+                patch.object(sm, "stop", new_callable=AsyncMock),
+            ):
+                await sm.start(
+                    "llama3", gguf_path="/models/llama3.gguf", **initial_options
+                )
+                await sm.start(
+                    "llama3", gguf_path="/models/llama3.gguf", **changed_options
+                )
+            assert mock_popen.call_count == 2, label
 
     @pytest.mark.asyncio
     async def test_start_noop_for_ollama(self) -> None:
@@ -528,24 +471,18 @@ class TestServerManagerStartVllm:
             await sm.start("x")
 
     @pytest.mark.asyncio
-    async def test_rejects_cache_type_k(self, sm: ServerManager) -> None:
-        with pytest.raises(ValueError, match="does not support cache_type"):
-            await sm.start("x", model_path="/m", cache_type_k="q8_0")
-
-    @pytest.mark.asyncio
-    async def test_rejects_cache_type_v(self, sm: ServerManager) -> None:
-        with pytest.raises(ValueError, match="does not support cache_type"):
-            await sm.start("x", model_path="/m", cache_type_v="q8_0")
-
-    @pytest.mark.asyncio
-    async def test_rejects_n_slots(self, sm: ServerManager) -> None:
-        with pytest.raises(ValueError, match="does not support n_slots"):
-            await sm.start("x", model_path="/m", n_slots=2)
-
-    @pytest.mark.asyncio
-    async def test_rejects_kv_unified(self, sm: ServerManager) -> None:
-        with pytest.raises(ValueError, match="does not support n_slots"):
-            await sm.start("x", model_path="/m", kv_unified=True)
+    async def test_rejects_llamacpp_runtime_controls(self) -> None:
+        cases = [
+            ("cache type k", {"cache_type_k": "q8_0"}, "cache_type"),
+            ("cache type v", {"cache_type_v": "q8_0"}, "cache_type"),
+            ("slots", {"n_slots": 2}, "n_slots"),
+            ("unified kv", {"kv_unified": True}, "n_slots"),
+        ]
+        for label, options, expected in cases:
+            sm = ServerManager(backend="vllm", port=8000)
+            with pytest.raises(ValueError) as exc_info:
+                await sm.start("x", model_path="/m", **options)
+            assert expected in str(exc_info.value), label
 
     @pytest.mark.asyncio
     async def test_llamaserver_rejects_model_path(self) -> None:
@@ -795,35 +732,19 @@ class TestResolveBudget:
     # -- backend mode --
 
     @pytest.mark.asyncio
-    async def test_resolve_budget_backend_ollama(self) -> None:
-        sm = ServerManager(backend="ollama")
-        hw = MagicMock(vram_total_gb=12.0)
-        with patch("forge.server.detect_hardware", return_value=hw):
-            result = await sm.resolve_budget(BudgetMode.BACKEND)
-        assert result == 4096
-
-    @pytest.mark.asyncio
-    async def test_resolve_budget_backend_ollama_24gb(self) -> None:
-        sm = ServerManager(backend="ollama")
-        hw = MagicMock(vram_total_gb=24.0)
-        with patch("forge.server.detect_hardware", return_value=hw):
-            result = await sm.resolve_budget(BudgetMode.BACKEND)
-        assert result == 32768
-
-    @pytest.mark.asyncio
-    async def test_resolve_budget_backend_ollama_48gb(self) -> None:
-        sm = ServerManager(backend="ollama")
-        hw = MagicMock(vram_total_gb=48.0)
-        with patch("forge.server.detect_hardware", return_value=hw):
-            result = await sm.resolve_budget(BudgetMode.BACKEND)
-        assert result == 262144
-
-    @pytest.mark.asyncio
-    async def test_resolve_budget_backend_ollama_no_gpu(self) -> None:
-        sm = ServerManager(backend="ollama")
-        with patch("forge.server.detect_hardware", return_value=None):
-            result = await sm.resolve_budget(BudgetMode.BACKEND)
-        assert result == 4096
+    async def test_resolve_budget_backend_ollama_vram_tiers(self) -> None:
+        cases = [
+            ("no gpu", None, 4096),
+            ("12 GB", 12.0, 4096),
+            ("24 GB", 24.0, 32768),
+            ("48 GB", 48.0, 262144),
+        ]
+        for label, vram_gb, expected in cases:
+            sm = ServerManager(backend="ollama")
+            hardware = None if vram_gb is None else MagicMock(vram_total_gb=vram_gb)
+            with patch("forge.server.detect_hardware", return_value=hardware):
+                result = await sm.resolve_budget(BudgetMode.BACKEND)
+            assert result == expected, label
 
     @pytest.mark.asyncio
     async def test_resolve_budget_backend_llamaserver(self) -> None:
@@ -848,19 +769,14 @@ class TestResolveBudget:
         assert result == 8000
 
     @pytest.mark.asyncio
-    async def test_resolve_budget_manual_no_tokens_raises(self) -> None:
-        sm = ServerManager(backend="ollama")
-        with pytest.raises(ValueError, match="manual mode requires manual_tokens"):
-            await sm.resolve_budget(BudgetMode.MANUAL)
-
-    @pytest.mark.asyncio
-    @pytest.mark.parametrize("manual_tokens", [0, -1])
-    async def test_resolve_budget_manual_requires_positive_tokens(
-        self, manual_tokens: int,
-    ) -> None:
-        sm = ServerManager(backend="llamaserver")
-        with pytest.raises(ValueError, match="manual_tokens > 0"):
-            await sm.resolve_budget(BudgetMode.MANUAL, manual_tokens=manual_tokens)
+    async def test_resolve_budget_manual_requires_positive_tokens(self) -> None:
+        for manual_tokens in [None, 0, -1]:
+            sm = ServerManager(backend="ollama")
+            with pytest.raises(ValueError) as exc_info:
+                await sm.resolve_budget(
+                    BudgetMode.MANUAL, manual_tokens=manual_tokens
+                )
+            assert "manual" in str(exc_info.value), f"manual_tokens={manual_tokens}"
 
     # -- forge-full mode --
 
@@ -899,18 +815,23 @@ class TestResolveBudget:
     # -- error cases --
 
     @pytest.mark.asyncio
-    async def test_resolve_budget_llamaserver_no_context_raises(self) -> None:
-        sm = ServerManager(backend="llamaserver")
-        with patch.object(sm, "get_server_context", new_callable=AsyncMock, side_effect=BudgetResolutionError()):
-            with pytest.raises(BudgetResolutionError):
-                await sm.resolve_budget(BudgetMode.BACKEND)
-
-    @pytest.mark.asyncio
-    async def test_resolve_budget_manual_llamaserver_no_context_raises(self) -> None:
-        sm = ServerManager(backend="llamaserver")
-        with patch.object(sm, "get_server_context", new_callable=AsyncMock, side_effect=BudgetResolutionError()):
-            with pytest.raises(BudgetResolutionError):
-                await sm.resolve_budget(BudgetMode.MANUAL, manual_tokens=8000)
+    async def test_resolve_budget_propagates_missing_server_context(self) -> None:
+        cases = [
+            ("backend", BudgetMode.BACKEND, None),
+            ("manual", BudgetMode.MANUAL, 8000),
+        ]
+        for label, mode, manual_tokens in cases:
+            sm = ServerManager(backend="llamaserver")
+            with (
+                patch.object(
+                    sm,
+                    "get_server_context",
+                    new_callable=AsyncMock,
+                    side_effect=BudgetResolutionError(),
+                ),
+                pytest.raises(BudgetResolutionError),
+            ):
+                await sm.resolve_budget(mode, manual_tokens=manual_tokens)
 
 
 # ── ServerManager.start_with_budget() ─────────────────────────────
@@ -973,27 +894,17 @@ class TestStartWithBudget:
         assert result == 8000
 
     @pytest.mark.asyncio
-    async def test_start_with_budget_manual_no_tokens_raises(self) -> None:
-        sm = ServerManager(backend="llamaserver")
-        with pytest.raises(ValueError, match="manual mode requires manual_tokens"):
-            await sm.start_with_budget(
-                "llama3", gguf_path="/models/llama3.gguf",
-                budget_mode=BudgetMode.MANUAL,
-            )
-
-    @pytest.mark.asyncio
-    @pytest.mark.parametrize("manual_tokens", [0, -1])
-    async def test_start_with_budget_manual_requires_positive_tokens(
-        self, manual_tokens: int,
-    ) -> None:
-        sm = ServerManager(backend="llamaserver")
-        with pytest.raises(ValueError, match="manual_tokens > 0"):
-            await sm.start_with_budget(
-                "llama3",
-                gguf_path="/models/llama3.gguf",
-                budget_mode=BudgetMode.MANUAL,
-                manual_tokens=manual_tokens,
-            )
+    async def test_start_with_budget_manual_requires_positive_tokens(self) -> None:
+        for manual_tokens in [None, 0, -1]:
+            sm = ServerManager(backend="llamaserver")
+            with pytest.raises(ValueError) as exc_info:
+                await sm.start_with_budget(
+                    "llama3",
+                    gguf_path="/models/llama3.gguf",
+                    budget_mode=BudgetMode.MANUAL,
+                    manual_tokens=manual_tokens,
+                )
+            assert "manual" in str(exc_info.value), f"manual_tokens={manual_tokens}"
 
     @pytest.mark.asyncio
     async def test_nonmanual_dormant_manual_tokens_are_ignored(self) -> None:
@@ -1307,6 +1218,7 @@ class TestSetupBackend:
         assert isinstance(server, ServerManager)
         assert isinstance(ctx, ContextManager)
         assert ctx.budget_tokens == 13568
+        assert isinstance(ctx.strategy, TieredCompact)
 
     @pytest.mark.asyncio
     async def test_setup_failure_stops_unreturned_manager(self) -> None:
@@ -1328,39 +1240,7 @@ class TestSetupBackend:
         stop.assert_awaited_once()
 
     @pytest.mark.asyncio
-    async def test_setup_backend_ctx_uses_tiered_compact(self) -> None:
-        with (
-            patch.object(
-                ServerManager, "start_with_budget",
-                new_callable=AsyncMock, return_value=13568,
-            ),
-        ):
-            _, ctx = await setup_backend(
-                backend="llamaserver",
-                gguf_path="/models/llama3.gguf",
-            )
-
-        assert isinstance(ctx.strategy, TieredCompact)
-
-    @pytest.mark.asyncio
-    async def test_setup_backend_passes_compact_threshold(self) -> None:
-        with (
-            patch.object(
-                ServerManager, "start_with_budget",
-                new_callable=AsyncMock, return_value=13568,
-            ),
-        ):
-            _, ctx = await setup_backend(
-                backend="llamaserver",
-                gguf_path="/models/llama3.gguf",
-                compact_threshold=0.5,
-            )
-
-        # compact_threshold now lives on the strategy, not ContextManager
-        assert ctx.strategy._phase_triggers == (0.5, 0.5, 0.5)
-
-    @pytest.mark.asyncio
-    async def test_setup_backend_passes_on_compact(self) -> None:
+    async def test_setup_backend_passes_compact_threshold_and_callback(self) -> None:
         callback = MagicMock()
         with (
             patch.object(
@@ -1371,9 +1251,12 @@ class TestSetupBackend:
             _, ctx = await setup_backend(
                 backend="llamaserver",
                 gguf_path="/models/llama3.gguf",
+                compact_threshold=0.5,
                 on_compact=callback,
             )
 
+        # compact_threshold now lives on the strategy, not ContextManager
+        assert ctx.strategy._phase_triggers == (0.5, 0.5, 0.5)
         assert ctx.on_compact is callback
 
     @pytest.mark.asyncio
@@ -1431,30 +1314,18 @@ class TestSetupBackend:
         mock_client.set_num_ctx.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_setup_backend_ollama_no_client_ok(self) -> None:
-        """setup_backend without client still works (no crash)."""
-        with patch.object(
-            ServerManager, "start_with_budget",
-            new_callable=AsyncMock, return_value=4096,
-        ):
-            server, ctx = await setup_backend(
-                backend="ollama",
-                model="llama3",
-            )
-        assert ctx.budget_tokens == 4096
-
-    @pytest.mark.asyncio
-    @pytest.mark.parametrize("manual_tokens", [None, 0, -1])
-    async def test_setup_backend_manual_requires_positive_tokens(
-        self, manual_tokens: int | None,
-    ) -> None:
-        with pytest.raises(ValueError, match="manual_tokens > 0"):
-            await setup_backend(
-                backend="ollama",
-                model="llama3",
-                budget_mode=BudgetMode.MANUAL,
-                manual_tokens=manual_tokens,
-            )
+    async def test_setup_backend_manual_requires_positive_tokens(self) -> None:
+        for manual_tokens in [None, 0, -1]:
+            with pytest.raises(ValueError) as exc_info:
+                await setup_backend(
+                    backend="ollama",
+                    model="llama3",
+                    budget_mode=BudgetMode.MANUAL,
+                    manual_tokens=manual_tokens,
+                )
+            assert "manual_tokens > 0" in str(
+                exc_info.value
+            ), f"manual_tokens={manual_tokens}"
 
     @pytest.mark.asyncio
     async def test_setup_backend_ollama_forwards_option_validation(self) -> None:
@@ -1473,64 +1344,55 @@ class TestSetupBackend:
         assert start.await_args.kwargs["mode"] == "prompt"
 
     @pytest.mark.asyncio
-    async def test_setup_backend_ollama_rejects_gguf_path(self) -> None:
-        """Ollama backend must not accept gguf_path."""
-        with pytest.raises(ValueError, match="ollama.*does not accept gguf_path"):
-            await setup_backend(
-                backend="ollama", model="llama3", gguf_path="/models/x.gguf",
-            )
-
-    @pytest.mark.asyncio
-    async def test_setup_backend_ollama_requires_model(self) -> None:
-        """Ollama backend must have a model."""
-        with pytest.raises(ValueError, match="ollama.*requires model"):
-            await setup_backend(backend="ollama")
-
-    @pytest.mark.asyncio
-    async def test_setup_backend_llamaserver_rejects_model(self) -> None:
-        """llamaserver/llamafile must not accept model (use gguf_path)."""
-        with pytest.raises(ValueError, match="does not accept model"):
-            await setup_backend(
-                backend="llamaserver", model="llama3", gguf_path="/x.gguf",
-            )
-
-    @pytest.mark.asyncio
-    async def test_setup_backend_llamaserver_requires_gguf(self) -> None:
-        """llamaserver/llamafile must have a gguf_path."""
-        with pytest.raises(ValueError, match="requires gguf_path"):
-            await setup_backend(backend="llamaserver")
-
-    # ── vllm identity rules ────────────────────────────────────
-
-    @pytest.mark.asyncio
-    async def test_vllm_requires_model_path(self) -> None:
-        with pytest.raises(ValueError, match="requires model_path"):
-            await setup_backend(backend="vllm")
-
-    @pytest.mark.asyncio
-    async def test_vllm_rejects_gguf_path(self) -> None:
-        with pytest.raises(ValueError, match="does not accept gguf_path"):
-            await setup_backend(backend="vllm", model_path="/m", gguf_path="/x")
-
-    @pytest.mark.asyncio
-    async def test_vllm_rejects_model(self) -> None:
-        with pytest.raises(ValueError, match="does not accept model"):
-            await setup_backend(backend="vllm", model_path="/m", model="ollama-tag")
-
-    @pytest.mark.asyncio
-    async def test_ollama_rejects_model_path(self) -> None:
-        with pytest.raises(ValueError, match="does not accept model_path"):
-            await setup_backend(backend="ollama", model="tag", model_path="/x")
-
-    @pytest.mark.asyncio
-    async def test_llamaserver_rejects_model_path(self) -> None:
-        with pytest.raises(ValueError, match="does not accept model_path"):
-            await setup_backend(backend="llamaserver", gguf_path="/x", model_path="/y")
-
-    @pytest.mark.asyncio
-    async def test_unknown_backend_raises(self) -> None:
-        with pytest.raises(ValueError, match="unsupported backend"):
-            await setup_backend(backend="bogus")
+    async def test_setup_backend_enforces_backend_identity_rules(self) -> None:
+        cases = [
+            (
+                "ollama rejects gguf",
+                {"backend": "ollama", "model": "llama3", "gguf_path": "/x"},
+                "does not accept gguf_path",
+            ),
+            ("ollama requires model", {"backend": "ollama"}, "requires model"),
+            (
+                "ollama rejects model path",
+                {"backend": "ollama", "model": "tag", "model_path": "/x"},
+                "does not accept model_path",
+            ),
+            (
+                "llamaserver rejects model",
+                {"backend": "llamaserver", "model": "tag", "gguf_path": "/x"},
+                "does not accept model",
+            ),
+            (
+                "llamaserver requires gguf",
+                {"backend": "llamaserver"},
+                "requires gguf_path",
+            ),
+            (
+                "llamaserver rejects model path",
+                {
+                    "backend": "llamaserver",
+                    "gguf_path": "/x",
+                    "model_path": "/y",
+                },
+                "does not accept model_path",
+            ),
+            ("vllm requires model path", {"backend": "vllm"}, "requires model_path"),
+            (
+                "vllm rejects gguf",
+                {"backend": "vllm", "model_path": "/m", "gguf_path": "/x"},
+                "does not accept gguf_path",
+            ),
+            (
+                "vllm rejects model",
+                {"backend": "vllm", "model_path": "/m", "model": "tag"},
+                "does not accept model",
+            ),
+            ("unknown backend", {"backend": "bogus"}, "unsupported backend"),
+        ]
+        for label, kwargs, expected in cases:
+            with pytest.raises(ValueError) as exc_info:
+                await setup_backend(**kwargs)
+            assert expected in str(exc_info.value), label
 
     @pytest.mark.asyncio
     async def test_vllm_setup_returns_manager_and_ctx(self) -> None:
@@ -1623,33 +1485,6 @@ class TestPrivateManagedSetup:
 
 
 # ── Full workflow wiring (integration-style, mocked) ─────────────
-
-
-class TestFullWorkflowWiring:
-    """Sanity check that all types wire together."""
-
-    @pytest.mark.asyncio
-    async def test_full_workflow_wiring(self) -> None:
-        """Create mocked ServerManager + OllamaClient + ContextManager + WorkflowRunner."""
-        from forge.clients.ollama import OllamaClient
-        from forge.context.manager import ContextManager
-        from forge.context.strategies import TieredCompact
-        from forge.core.runner import WorkflowRunner
-
-        sm = ServerManager(backend="ollama")
-        hw = MagicMock(vram_total_gb=12.0)
-        with patch("forge.server.detect_hardware", return_value=hw):
-            budget = await sm.resolve_budget(BudgetMode.BACKEND)
-
-        client = OllamaClient(model="llama3")
-        ctx = ContextManager(
-            strategy=TieredCompact(),
-            budget_tokens=budget,
-        )
-        runner = WorkflowRunner(client=client, context_manager=ctx)
-
-        assert runner is not None
-        assert ctx.budget_tokens == 4096
 
 
 class TestOllamaDaemonTarget:

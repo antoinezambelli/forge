@@ -61,26 +61,18 @@ class TestLambdaTools:
 
     # get_skill_summary -------------------------------------------
 
-    def test_skill_summary_sarah_is_attractor(self) -> None:
-        out = self._call("get_skill_summary", candidate_name="Sarah Chen")
-        # Reinforces the trap: glowing skills + payments domain
-        assert "Stripe Connect" in out
-        assert "Top decile" in out
+    def test_skill_summaries_preserve_each_candidate_signal(self) -> None:
+        cases = (
+            ("Sarah Chen", ("Stripe Connect", "Top decile")),
+            ("James Patel", ("DeepMind", "Top decile")),
+            ("Aisha Nakamura", ("Square", "78th percentile")),
+            ("Marcus Reyes", ("no payments background", "5")),
+            ("Diana Kim", ("Principal Engineer", "99th percentile", "Stripe")),
+        )
 
-    def test_skill_summary_james_is_attractor(self) -> None:
-        out = self._call("get_skill_summary", candidate_name="James Patel")
-        assert "DeepMind" in out
-        assert "Top decile" in out
-
-    def test_skill_summary_aisha_solid(self) -> None:
-        out = self._call("get_skill_summary", candidate_name="Aisha Nakamura")
-        assert "Square" in out
-        assert "78th percentile" in out
-
-    def test_skill_summary_marcus_weaker(self) -> None:
-        out = self._call("get_skill_summary", candidate_name="Marcus Reyes")
-        assert "no payments background" in out
-        assert "5" in out  # 5 years
+        for candidate, signals in cases:
+            out = self._call("get_skill_summary", candidate_name=candidate)
+            assert all(signal in out for signal in signals), candidate
 
     def test_skill_summary_unknown_returns_none(self) -> None:
         out = self._call("get_skill_summary", candidate_name="Unknown Person")
@@ -141,12 +133,6 @@ class TestLambdaTools:
         # No blocker-relevant timeline issues in compat — clean read.
         assert "essentially immediately" in out.lower()
 
-    def test_skill_summary_diana_is_top_decile_attractor(self) -> None:
-        out = self._call("get_skill_summary", candidate_name="Diana Kim")
-        assert "Principal Engineer" in out
-        assert "99th percentile" in out
-        assert "Stripe" in out
-
     def test_team_dynamics_diana_exposes_buried_blocker(self) -> None:
         # The actual disqualifying signal lives here, in soft form:
         # role-mismatch (lead/EM track vs IC) + low commitment signal
@@ -165,22 +151,16 @@ class TestLambdaTools:
 
     # get_team_dynamics -------------------------------------------
 
-    def test_team_dynamics_sarah_reinforces_attractor(self) -> None:
-        # Team-fit is glowing for Sarah — reinforces "she's perfect"
-        out = self._call("get_team_dynamics", candidate_name="Sarah Chen")
-        assert "very strong" in out
-        assert "webhook" in out.lower()
+    def test_team_dynamics_preserve_comparative_signals(self) -> None:
+        cases = (
+            ("Sarah Chen", ("very strong", "webhook")),
+            ("Aisha Nakamura", ("payments", "2-3 weeks")),
+            ("Marcus Reyes", ("8-12 weeks", "learning")),
+        )
 
-    def test_team_dynamics_aisha_solid(self) -> None:
-        out = self._call("get_team_dynamics", candidate_name="Aisha Nakamura")
-        assert "payments" in out.lower()
-        assert "2-3 weeks" in out
-
-    def test_team_dynamics_marcus_long_ramp(self) -> None:
-        out = self._call("get_team_dynamics", candidate_name="Marcus Reyes")
-        # The "Marcus is weaker" signal lives here
-        assert "8-12 weeks" in out
-        assert "learning" in out.lower()
+        for candidate, signals in cases:
+            out = self._call("get_team_dynamics", candidate_name=candidate).lower()
+            assert all(signal in out for signal in signals), candidate
 
     # submit_hiring_decision --------------------------------------
 
@@ -211,108 +191,93 @@ class TestValidator:
     def test_canonical_passes(self) -> None:
         assert _validate_grounded_synthesis(self._ok_args()) is True
 
-    def test_correct_pick_no_rationale_fails(self) -> None:
-        # Aisha picked but rationale doesn't reference any blocker.
-        args = {
-            "candidate": "Aisha Nakamura",
-            "rationale": "Aisha looks good.",
-        }
-        assert _validate_grounded_synthesis(args) is False
-
-    def test_picks_sarah_fails(self) -> None:
-        args = {
-            "candidate": "Sarah Chen",
-            "rationale": "Sarah is the strongest candidate, top decile.",
-        }
-        assert _validate_grounded_synthesis(args) is False
-
-    def test_picks_james_fails(self) -> None:
-        args = {
-            "candidate": "James Patel",
-            "rationale": "James is the strongest candidate, distributed systems master.",
-        }
-        assert _validate_grounded_synthesis(args) is False
-
-    def test_picks_marcus_fails(self) -> None:
-        # Marcus is eligible but the WRONG preference pick.
-        args = {
-            "candidate": "Marcus Reyes",
-            "rationale": "Marcus is solid; ruled out Sarah for non-compete and James for visa.",
-        }
-        assert _validate_grounded_synthesis(args) is False
-
-    def test_picks_diana_fails(self) -> None:
-        # Diana is the hidden-blocker attractor — clean compat but
-        # short-tenure / role-mismatch revealed in team_dynamics.
-        args = {
-            "candidate": "Diana Kim",
-            "rationale": (
-                "Diana has the strongest payments background; cleanest "
-                "compatibility check; ruled out Sarah for non-compete."
+    def test_attractor_and_preference_candidates_are_rejected(self) -> None:
+        cases = (
+            ("Sarah", "Sarah Chen", "Sarah is the strongest candidate, top decile."),
+            (
+                "James",
+                "James Patel",
+                "James is the strongest candidate, distributed systems master.",
             ),
-        }
-        assert _validate_grounded_synthesis(args) is False
+            (
+                "Marcus",
+                "Marcus Reyes",
+                "Marcus is solid; ruled out Sarah for non-compete and James for visa.",
+            ),
+            (
+                "Diana",
+                "Diana Kim",
+                "Diana has the strongest payments background; cleanest "
+                "compatibility check; ruled out Sarah for non-compete.",
+            ),
+        )
+
+        for case, candidate, rationale in cases:
+            assert not _validate_grounded_synthesis(
+                {"candidate": candidate, "rationale": rationale}
+            ), case
 
     # Validator pass paths beyond the canonical ──────────────────
 
-    def test_synonym_covenant_passes(self) -> None:
-        # Model uses "covenant" (true synonym for non-compete) instead
-        # of the literal "non-compete" phrase.
-        args = {
-            "candidate": "Aisha Nakamura",
-            "rationale": "Aisha picked. Sarah's Stripe covenant prevents fast start.",
-        }
-        assert _validate_grounded_synthesis(args) is True
+    def test_supported_rationale_and_name_variants_pass(self) -> None:
+        cases = (
+            (
+                "covenant synonym",
+                "Aisha Nakamura",
+                "Aisha picked. Sarah's Stripe covenant prevents fast start.",
+            ),
+            (
+                "immigration synonym",
+                "Aisha",
+                "Picked Aisha; the immigration committee process rules "
+                "James out for the timeline.",
+            ),
+            (
+                "Diana role mismatch",
+                "Aisha Nakamura",
+                "Aisha is the right pick. Diana is targeting tech-lead roles, not IC.",
+            ),
+            (
+                "named rejection",
+                "Aisha Nakamura",
+                "Aisha is the strongest viable choice. Sarah and James are not "
+                "workable for this role; Diana is unlikely to stay.",
+            ),
+            (
+                "candidate surname",
+                "Nakamura",
+                "Picked Nakamura — Sarah blocked by Stripe non-compete.",
+            ),
+            (
+                "visa blocker",
+                "Aisha Nakamura",
+                "Aisha picked. James ruled out for visa sponsorship.",
+            ),
+        )
 
-    def test_synonym_immigration_passes(self) -> None:
-        args = {
-            "candidate": "Aisha",
-            "rationale": "Picked Aisha; the immigration committee process rules James out for the timeline.",
-        }
-        assert _validate_grounded_synthesis(args) is True
+        for case, candidate, rationale in cases:
+            assert _validate_grounded_synthesis(
+                {"candidate": candidate, "rationale": rationale}
+            ), case
 
-    def test_synonym_tech_lead_passes_for_diana_reasoning(self) -> None:
-        # Diana's blocker phrased as role mismatch.
-        args = {
-            "candidate": "Aisha Nakamura",
-            "rationale": "Aisha is the right pick. Diana is targeting tech-lead roles, not IC.",
-        }
-        assert _validate_grounded_synthesis(args) is True
+    def test_missing_or_unrelated_rationale_is_rejected(self) -> None:
+        cases = (
+            (
+                "generic praise",
+                {"candidate": "Aisha Nakamura", "rationale": "Aisha looks good."},
+            ),
+            (
+                "unrelated rationale",
+                {
+                    "candidate": "Aisha Nakamura",
+                    "rationale": "Aisha matches the role requirements and culture.",
+                },
+            ),
+            ("empty args", {}),
+        )
 
-    def test_alternative_path_named_rejection_passes(self) -> None:
-        # Model articulates rationale by naming the rejected
-        # candidates without using a specific blocker term.
-        args = {
-            "candidate": "Aisha Nakamura",
-            "rationale": "Aisha is the strongest viable choice. Sarah and James are not workable for this role; Diana is unlikely to stay.",
-        }
-        assert _validate_grounded_synthesis(args) is True
-
-    def test_correct_pick_unrelated_rationale_fails(self) -> None:
-        # Picked Aisha but rationale doesn't reference any blocker
-        # nor any rejected candidate by name.
-        args = {
-            "candidate": "Aisha Nakamura",
-            "rationale": "Aisha matches the role requirements and culture.",
-        }
-        assert _validate_grounded_synthesis(args) is False
-
-    def test_aisha_surname_only_passes(self) -> None:
-        args = {
-            "candidate": "Nakamura",
-            "rationale": "Picked Nakamura — Sarah blocked by Stripe non-compete.",
-        }
-        assert _validate_grounded_synthesis(args) is True
-
-    def test_blocker_term_visa_passes(self) -> None:
-        args = {
-            "candidate": "Aisha Nakamura",
-            "rationale": "Aisha picked. James ruled out for visa sponsorship.",
-        }
-        assert _validate_grounded_synthesis(args) is True
-
-    def test_empty_args_fail(self) -> None:
-        assert _validate_grounded_synthesis({}) is False
+        for case, args in cases:
+            assert not _validate_grounded_synthesis(args), case
 
 
 # ── Candidate pool design ───────────────────────────────────────
@@ -435,55 +400,26 @@ class TestStatefulValidateState:
         )
         assert validate_state() is False
 
-    def test_picks_sarah_fails(self) -> None:
-        workflow, validate_state = _build_grounded_synthesis_stateful()
-        tools = workflow.tools
-        tools["get_open_role"].callable()
-        tools["get_candidate_pool"].callable()
-        for name in ("Sarah Chen", "James Patel"):
-            tools["get_compatibility_check"].callable(candidate_name=name)
-        # Saw the blockers, ignored them.
-        tools["submit_hiring_decision"].callable(
-            candidate="Sarah Chen",
-            rationale="Sarah is the strongest candidate, payments expert.",
-        )
-        assert validate_state() is False
-
-    def test_picks_marcus_fails(self) -> None:
-        workflow, validate_state = _build_grounded_synthesis_stateful()
-        tools = workflow.tools
-        self._drive_canonical(tools)
-        # Drive overwrites submitted_args; do another submit with Marcus
-        tools["submit_hiring_decision"].callable(
-            candidate="Marcus Reyes",
-            rationale="Marcus picked; Sarah blocked by non-compete; James blocked by visa.",
-        )
-        assert validate_state() is False
-
-    def test_picks_diana_fails(self) -> None:
-        # Diana the hidden-blocker attractor: clean compat, but
-        # team_dynamics reveals 30% acceptance + short retention.
-        workflow, validate_state = _build_grounded_synthesis_stateful()
-        tools = workflow.tools
-        self._drive_canonical(tools)
-        tools["submit_hiring_decision"].callable(
-            candidate="Diana Kim",
-            rationale=(
-                "Diana picked — strongest payments background; clean "
-                "compatibility. Ruled out Sarah for non-compete."
+    def test_invalid_submissions_fail_after_the_state_path_is_satisfied(self) -> None:
+        cases = (
+            ("Sarah Chen", "Sarah is the strongest candidate, payments expert."),
+            (
+                "Marcus Reyes",
+                "Marcus picked; Sarah blocked by non-compete; James blocked by visa.",
             ),
+            (
+                "Diana Kim",
+                "Diana picked — strongest payments background; clean compatibility. "
+                "Ruled out Sarah for non-compete.",
+            ),
+            ("Aisha Nakamura", "Aisha is the right pick."),
         )
-        assert validate_state() is False
 
-    def test_no_blocker_reference_in_rationale_fails(self) -> None:
-        workflow, validate_state = _build_grounded_synthesis_stateful()
-        tools = workflow.tools
-        tools["get_open_role"].callable()
-        tools["get_candidate_pool"].callable()
-        for name in ("Sarah Chen", "James Patel"):
-            tools["get_compatibility_check"].callable(candidate_name=name)
-        tools["submit_hiring_decision"].callable(
-            candidate="Aisha Nakamura",
-            rationale="Aisha is the right pick.",
-        )
-        assert validate_state() is False
+        for candidate, rationale in cases:
+            workflow, validate_state = _build_grounded_synthesis_stateful()
+            self._drive_canonical(workflow.tools)
+            workflow.tools["submit_hiring_decision"].callable(
+                candidate=candidate,
+                rationale=rationale,
+            )
+            assert validate_state() is False, candidate

@@ -84,9 +84,8 @@ def test_proxy_selector_accessor_is_complete_and_closed() -> None:
     )
 
 
-@pytest.mark.parametrize(
-    ("backend", "identity", "forbidden"),
-    [
+def test_managed_identity_matrix_rejects_irrelevant_fields() -> None:
+    cases = [
         ("llamaserver", {"gguf": "m.gguf"}, {"model": "tag"}),
         ("llamaserver", {"gguf": "m.gguf"}, {"model_path": "/m"}),
         ("llamafile", {"gguf": "m.gguf"}, {"model": "tag"}),
@@ -94,15 +93,16 @@ def test_proxy_selector_accessor_is_complete_and_closed() -> None:
         ("ollama", {"model": "tag"}, {"model_path": "/m"}),
         ("vllm", {"model_path": "/m"}, {"model": "tag"}),
         ("vllm", {"model_path": "/m"}, {"gguf": "m.gguf"}),
-    ],
-)
-def test_managed_identity_matrix_rejects_irrelevant_fields(
-    backend: str,
-    identity: dict[str, str],
-    forbidden: dict[str, str],
-) -> None:
-    with pytest.raises(ValueError, match="does not accept"):
-        ProxyServer(backend=backend, **identity, **forbidden)
+    ]
+
+    for backend, identity, forbidden in cases:
+        case = f"{backend}:{next(iter(forbidden))}"
+        try:
+            ProxyServer(backend=backend, **identity, **forbidden)
+        except ValueError as exc:
+            assert "does not accept" in str(exc), case
+        else:
+            pytest.fail(f"{case} was accepted")
 
 
 @pytest.mark.parametrize("field", [{"gguf": "m.gguf"}, {"model_path": "/m"}])
@@ -180,9 +180,8 @@ def test_nonnegative_retry_controls(field: str) -> None:
         ProxyServer(backend_url="http://host", **{field: -1})
 
 
-@pytest.mark.parametrize(
-    ("backend", "identity", "token"),
-    [
+def test_profile_owned_extra_flag_conflicts() -> None:
+    cases = [
         (backend, {"gguf": "m.gguf"}, token)
         for backend in ("llamaserver", "llamafile")
         for token in (
@@ -196,13 +195,16 @@ def test_nonnegative_retry_controls(field: str) -> None:
             "--host", "--host=0.0.0.0", "--port", "--port=9000",
             "--max-model-len", "--max-model-len=8192",
         )
-    ],
-)
-def test_profile_owned_extra_flag_conflicts(
-    backend: str, identity: dict[str, str], token: str,
-) -> None:
-    with pytest.raises(ValueError, match="Forge-owned"):
-        ProxyServer(backend=backend, extra_flags=[token], **identity)
+    ]
+
+    for backend, identity, token in cases:
+        case = f"{backend}:{token}"
+        try:
+            ProxyServer(backend=backend, extra_flags=[token], **identity)
+        except ValueError as exc:
+            assert "Forge-owned" in str(exc), case
+        else:
+            pytest.fail(f"{case} was accepted")
 
 
 def test_short_assignment_and_backend_tuning_flags_are_not_overparsed() -> None:

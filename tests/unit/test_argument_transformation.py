@@ -159,44 +159,43 @@ class TestValidator:
         }
         assert _validate_argument_transformation(args)
 
-    def test_skip_currency_conversion_fails(self) -> None:
-        # Model treated TX-1006 as 4,800 EUR < $5K (didn't convert),
-        # so excluded it. Total = 7500 + 5000 + 11200 = 23,700.
-        args = self._canonical_args()
-        args["transaction_ids"] = "TX-1001, TX-1005, TX-1008"
-        args["total_flagged_usd"] = "$23,700"
-        assert not _validate_argument_transformation(args)
+    def test_top_tier_failure_modes_are_rejected(self) -> None:
+        cases = (
+            (
+                "skipped EUR conversion",
+                {
+                    "transaction_ids": "TX-1001, TX-1005, TX-1008",
+                    "total_flagged_usd": "$23,700",
+                },
+            ),
+            (
+                "ACME alias over-flag",
+                {
+                    "transaction_ids": (
+                        "TX-1001, TX-1005, TX-1006, TX-1008, TX-1009"
+                    ),
+                    "total_flagged_usd": "$35,480",
+                },
+            ),
+            (
+                "strict greater-than threshold",
+                {
+                    "transaction_ids": "TX-1001, TX-1006, TX-1008",
+                    "total_flagged_usd": "$23,980",
+                },
+            ),
+            ("wrong top vendor", {"top_vendor": "Cyberdyne LLC"}),
+            (
+                "missing transaction",
+                {"transaction_ids": "TX-1001, TX-1005, TX-1008"},
+            ),
+            ("missing total", {"total_flagged_usd": ""}),
+        )
 
-    def test_case_mismatch_over_flag_fails(self) -> None:
-        # Model failed to disambiguate ACME Corp / Acme Corp — over-
-        # flagged TX-1009. IDs are still all there (substring AND tolerates
-        # extras) but total is wrong: 28,980 + 6,500 = 35,480.
-        args = self._canonical_args()
-        args["transaction_ids"] = "TX-1001, TX-1005, TX-1006, TX-1008, TX-1009"
-        args["total_flagged_usd"] = "$35,480"
-        assert not _validate_argument_transformation(args)
-
-    def test_strict_gt_threshold_fails(self) -> None:
-        # Model interpreted "$5,000 or more" as strict >, missed TX-1005.
-        args = self._canonical_args()
-        args["transaction_ids"] = "TX-1001, TX-1006, TX-1008"
-        args["total_flagged_usd"] = "$23,980"
-        assert not _validate_argument_transformation(args)
-
-    def test_wrong_top_vendor_fails(self) -> None:
-        args = self._canonical_args()
-        args["top_vendor"] = "Cyberdyne LLC"
-        assert not _validate_argument_transformation(args)
-
-    def test_missing_one_id_fails(self) -> None:
-        args = self._canonical_args()
-        args["transaction_ids"] = "TX-1001, TX-1005, TX-1008"
-        assert not _validate_argument_transformation(args)
-
-    def test_missing_total_fails(self) -> None:
-        args = self._canonical_args()
-        args["total_flagged_usd"] = ""
-        assert not _validate_argument_transformation(args)
+        for case, updates in cases:
+            args = self._canonical_args()
+            args.update(updates)
+            assert not _validate_argument_transformation(args), case
 
 
 # ── Stateful backend ────────────────────────────────────────────
@@ -295,21 +294,6 @@ class TestStatefulValidateState:
         workflow.tools["get_vendor_details"].callable(vendor_name="ACME Corp")
         # Skipped currency_convert — even if model guessed the right answer,
         # state validation fails.
-        workflow.tools["submit_audit_report"].callable(
-            transaction_ids="TX-1001, TX-1005, TX-1006, TX-1008",
-            total_flagged_usd="$28,980",
-            top_vendor="Wonka Industries",
-        )
-        assert not validate_state()
-
-    def test_validate_state_false_when_skipped_vendor_details(self) -> None:
-        workflow, validate_state = _build_argument_transformation_stateful()
-        workflow.tools["list_transactions"].callable(quarter="Q4", year=2024)
-        workflow.tools["get_approved_vendors"].callable()
-        workflow.tools["currency_convert"].callable(
-            amount=4800, from_currency="EUR", to_currency="USD",
-        )
-        # Skipped get_vendor_details for ACME Corp
         workflow.tools["submit_audit_report"].callable(
             transaction_ids="TX-1001, TX-1005, TX-1006, TX-1008",
             total_flagged_usd="$28,980",

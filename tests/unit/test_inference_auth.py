@@ -55,55 +55,45 @@ async def _run(client, **kw):
 
 
 @pytest.mark.asyncio
-async def test_extra_headers_forwarded_to_send():
-    client = _send_client([ToolCall(tool="search", args={})])
-    await _run(client, extra_headers={"Authorization": "Bearer X"})
-    assert client.send.call_args.kwargs["extra_headers"] == {"Authorization": "Bearer X"}
+async def test_extra_headers_forwarded_or_omitted_from_send():
+    for case, extra_headers in [
+        ("forwarded", {"Authorization": "Bearer X"}),
+        ("omitted", None),
+    ]:
+        client = _send_client([ToolCall(tool="search", args={})])
+        kwargs = {"extra_headers": extra_headers} if extra_headers is not None else {}
+        await _run(client, **kwargs)
+        sent = client.send.call_args.kwargs
+        if extra_headers is None:
+            # Splat-only-when-set keeps clients without this parameter compatible.
+            assert "extra_headers" not in sent, case
+        else:
+            assert sent["extra_headers"] == extra_headers, case
 
 
 @pytest.mark.asyncio
-async def test_extra_headers_omitted_when_none():
-    # splat-only-when-set: no kwarg at all, so a client lacking the param works.
-    client = _send_client([ToolCall(tool="search", args={})])
-    await _run(client)
-    assert "extra_headers" not in client.send.call_args.kwargs
+async def test_extra_headers_forwarded_or_omitted_from_send_stream():
+    for case, extra_headers in [
+        ("forwarded", {"x-api-key": "K"}),
+        ("omitted", None),
+    ]:
+        captured: dict = {}
 
+        async def fake_stream(*args, **kwargs):
+            captured.update(kwargs)
+            yield StreamChunk(
+                type=ChunkType.FINAL, response=[ToolCall(tool="search", args={})]
+            )
 
-@pytest.mark.asyncio
-async def test_extra_headers_forwarded_to_send_stream():
-    captured: dict = {}
+        client = AsyncMock()
+        client.api_format = "ollama"
+        client.send_stream = fake_stream
+        client.last_usage = {}
+        client._slot_id = 0
 
-    async def fake_stream(*args, **kwargs):
-        captured.update(kwargs)
-        yield StreamChunk(
-            type=ChunkType.FINAL, response=[ToolCall(tool="search", args={})]
-        )
-
-    client = AsyncMock()
-    client.api_format = "ollama"
-    client.send_stream = fake_stream
-    client.last_usage = {}
-    client._slot_id = 0
-
-    await _run(client, stream=True, extra_headers={"x-api-key": "K"})
-    assert captured["extra_headers"] == {"x-api-key": "K"}
-
-
-@pytest.mark.asyncio
-async def test_extra_headers_omitted_from_send_stream_when_none():
-    captured: dict = {}
-
-    async def fake_stream(*args, **kwargs):
-        captured.update(kwargs)
-        yield StreamChunk(
-            type=ChunkType.FINAL, response=[ToolCall(tool="search", args={})]
-        )
-
-    client = AsyncMock()
-    client.api_format = "ollama"
-    client.send_stream = fake_stream
-    client.last_usage = {}
-    client._slot_id = 0
-
-    await _run(client, stream=True)
-    assert "extra_headers" not in captured
+        kwargs = {"extra_headers": extra_headers} if extra_headers is not None else {}
+        await _run(client, stream=True, **kwargs)
+        if extra_headers is None:
+            assert "extra_headers" not in captured, case
+        else:
+            assert captured["extra_headers"] == extra_headers, case

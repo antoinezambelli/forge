@@ -1383,41 +1383,48 @@ class TestMetadataForwarding:
         assert lazy.done is True
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize("static_key", [None, "STATIC"])
-    @pytest.mark.parametrize("budget", [None, 4096])
     async def test_unpinned_auth_budget_matrix_uses_one_private_prefixed_get(
-        self, metadata_pair_factory, static_key, budget,
+        self, metadata_pair_factory,
     ):
-        client = _mock_client(TextResponse(content="ok"))
-        client.model = "default"
-        client._set_model_identity = MagicMock(
-            side_effect=lambda model: setattr(client, "model", model),
-        )
-        ctx = ContextManager(strategy=NoCompact(), budget_tokens=budget)
-        _, port, requests, _, _ = await metadata_pair_factory(
-            {
-                "/deploy/v1/models": (
-                    200,
-                    {"Content-Type": "application/json"},
-                    b'{"data":[{"id":"served"}]}',
-                ),
-            },
-            mount_suffix="/deploy",
-            static_key=static_key,
-            client=client,
-            context_manager=ctx,
-            lazy_discovery=LazyDiscovery(),
-        )
-        inbound = [] if static_key else ["Authorization: Bearer FORWARDED"]
-        status, _ = await _raw_request(
-            port, inbound, {"messages": [{"role": "user", "content": "hi"}]},
-        )
-        assert status == 200
-        assert [target for target, _ in requests] == ["/deploy/v1/models"]
-        expected = "Bearer STATIC" if static_key else "Bearer FORWARDED"
-        assert requests[0][1]["authorization"] == expected
-        assert client.model == "served"
-        assert ctx.budget_tokens == budget
+        for static_key in (None, "STATIC"):
+            for budget in (None, 4096):
+                case = (static_key, budget)
+                client = _mock_client(TextResponse(content="ok"))
+                client.model = "default"
+                client._set_model_identity = MagicMock(
+                    side_effect=lambda model: setattr(client, "model", model),
+                )
+                ctx = ContextManager(strategy=NoCompact(), budget_tokens=budget)
+                _, port, requests, _, _ = await metadata_pair_factory(
+                    {
+                        "/deploy/v1/models": (
+                            200,
+                            {"Content-Type": "application/json"},
+                            b'{"data":[{"id":"served"}]}',
+                        ),
+                    },
+                    mount_suffix="/deploy",
+                    static_key=static_key,
+                    client=client,
+                    context_manager=ctx,
+                    lazy_discovery=LazyDiscovery(),
+                )
+                inbound = (
+                    [] if static_key else ["Authorization: Bearer FORWARDED"]
+                )
+                status, _ = await _raw_request(
+                    port,
+                    inbound,
+                    {"messages": [{"role": "user", "content": "hi"}]},
+                )
+                assert status == 200, case
+                assert [target for target, _ in requests] == [
+                    "/deploy/v1/models"
+                ], case
+                expected = "Bearer STATIC" if static_key else "Bearer FORWARDED"
+                assert requests[0][1]["authorization"] == expected, case
+                assert client.model == "served", case
+                assert ctx.budget_tokens == budget, case
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("serialize", [False, True])
@@ -1547,29 +1554,23 @@ class TestMetadataForwarding:
 
 class TestDeferredDiscoveryStatusMapping:
     @pytest.mark.asyncio
-    async def test_auth_rejection_maps_401(self):
-        srv, port, client, _ = await _discovery_server(
-            side_effect=BackendError(401, "unauthorized"),
-        )
+    @pytest.mark.parametrize(
+        ("backend_status", "expected_status"),
+        [(401, 401), (502, 502)],
+        ids=["auth-rejection", "backend-fault"],
+    )
+    async def test_discovery_errors_map_to_http_status(
+        self, backend_status, expected_status,
+    ):
+        srv, port, client, _ = await _discovery_server(side_effect=BackendError(
+            backend_status, "discovery failed",
+        ))
         try:
             status, _ = await _raw_request(
                 port, [], {"messages": [{"role": "user", "content": "hi"}]},
             )
-            assert status == 401  # backend rejected the probe credential
+            assert status == expected_status
             client.send.assert_not_awaited()
-        finally:
-            await srv.stop()
-
-    @pytest.mark.asyncio
-    async def test_backend_fault_maps_502(self):
-        srv, port, client, _ = await _discovery_server(
-            side_effect=BackendError(502, "backend unreachable"),
-        )
-        try:
-            status, _ = await _raw_request(
-                port, [], {"messages": [{"role": "user", "content": "hi"}]},
-            )
-            assert status == 502
         finally:
             await srv.stop()
 
@@ -1626,35 +1627,19 @@ async def _raw_response(port, method, path):
 
 class TestBackendErrorStatusMapping:
     @pytest.mark.asyncio
-    async def test_backend_401_during_dispatch_maps_401(self):
-        srv, port = await _error_server(BackendError(401, "unauthorized"))
+    @pytest.mark.parametrize(
+        ("backend_status", "expected_status"),
+        [(401, 401), (403, 401), (500, 502)],
+    )
+    async def test_backend_dispatch_errors_map_to_http_status(
+        self, backend_status, expected_status,
+    ):
+        srv, port = await _error_server(BackendError(backend_status, "failed"))
         try:
             status, _ = await _raw_request(
                 port, [], {"messages": [{"role": "user", "content": "hi"}]},
             )
-            assert status == 401  # backend auth rejection is the caller's 401
-        finally:
-            await srv.stop()
-
-    @pytest.mark.asyncio
-    async def test_backend_403_maps_401(self):
-        srv, port = await _error_server(BackendError(403, "forbidden"))
-        try:
-            status, _ = await _raw_request(
-                port, [], {"messages": [{"role": "user", "content": "hi"}]},
-            )
-            assert status == 401
-        finally:
-            await srv.stop()
-
-    @pytest.mark.asyncio
-    async def test_backend_500_still_maps_502(self):
-        srv, port = await _error_server(BackendError(500, "boom"))
-        try:
-            status, _ = await _raw_request(
-                port, [], {"messages": [{"role": "user", "content": "hi"}]},
-            )
-            assert status == 502  # non-auth backend fault stays 502
+            assert status == expected_status
         finally:
             await srv.stop()
 

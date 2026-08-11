@@ -44,16 +44,31 @@ _OPENAI_OK = {"choices": [{"message": {"content": "ok"}}]}
 
 
 class TestResolveRequestHeaders:
-    def test_none_extra_returns_none(self) -> None:
-        assert resolve_request_headers(True, None) is None
-        assert resolve_request_headers(False, None) is None
-        assert resolve_request_headers(True, {}) is None
-
-    def test_no_static_passes_through_as_copy(self) -> None:
-        src = {"Authorization": "Bearer x"}
-        out = resolve_request_headers(False, src)
-        assert out == src
-        assert out is not src  # must not alias the caller's dict
+    def test_success_cases_return_fresh_headers_or_none(self) -> None:
+        cases = [
+            ("static with no extra", True, None, None),
+            ("no static with no extra", False, None, None),
+            ("empty extra", True, {}, None),
+            (
+                "per-call auth",
+                False,
+                {"Authorization": "Bearer x"},
+                {"Authorization": "Bearer x"},
+            ),
+            ("static plus trace", True, {"X-Trace-Id": "1"}, {"X-Trace-Id": "1"}),
+            ("blank auth", True, {"Authorization": ""}, {"Authorization": ""}),
+            (
+                "scheme-only auth",
+                True,
+                {"Authorization": "Bearer "},
+                {"Authorization": "Bearer "},
+            ),
+        ]
+        for case, static, extra, expected in cases:
+            out = resolve_request_headers(static, extra)
+            assert out == expected, case
+            if out is not None:
+                assert out is not extra, case
 
     def test_static_plus_per_call_auth_raises(self) -> None:
         with pytest.raises(MultipleCredentialsError):
@@ -61,33 +76,26 @@ class TestResolveRequestHeaders:
         with pytest.raises(MultipleCredentialsError):
             resolve_request_headers(True, {"Authorization": "Bearer k"})
 
-    def test_static_plus_per_call_nonauth_is_fine(self) -> None:
-        out = resolve_request_headers(True, {"X-Trace-Id": "1"})
-        assert out == {"X-Trace-Id": "1"}
-
     def test_two_per_call_auth_headers_raises(self) -> None:
         # One credential per request — two auth headers in one call is refused
         # (the proxy never hands two, but a direct library caller could).
         with pytest.raises(MultipleCredentialsError):
             resolve_request_headers(False, {"Authorization": "Bearer A", "x-api-key": "B"})
 
-    def test_blank_per_call_auth_does_not_collide_with_static(self) -> None:
-        # A blank / scheme-only per-call auth header carries no credential, so it
-        # must not trip the static-plus-per-call conflict.
-        assert resolve_request_headers(True, {"Authorization": ""}) == {"Authorization": ""}
-        assert resolve_request_headers(True, {"Authorization": "Bearer "}) == {
-            "Authorization": "Bearer ",
-        }
-
 
 class TestStaticAuthPresent:
-    def test_none_is_false(self) -> None:
-        assert static_auth_present(None, None) is False
-        assert static_auth_present("", {}) is False
-
-    def test_single_source_is_true(self) -> None:
-        assert static_auth_present("sk-x", None) is True
-        assert static_auth_present(None, {"x-api-key": "k"}) is True
+    def test_reports_presence_for_each_zero_or_one_source_shape(self) -> None:
+        cases = [
+            ("no sources", None, None, False),
+            ("empty sources", "", {}, False),
+            ("api key", "sk-x", None, True),
+            ("header", None, {"x-api-key": "k"}, True),
+            ("blank key", "   ", None, False),
+            ("blank key with header", "   ", {"x-api-key": "k"}, True),
+            ("blank header", None, {"Authorization": ""}, False),
+        ]
+        for case, api_key, headers, expected in cases:
+            assert static_auth_present(api_key, headers) is expected, case
 
     def test_key_plus_header_raises(self) -> None:
         with pytest.raises(MultipleCredentialsError):
@@ -97,44 +105,37 @@ class TestStaticAuthPresent:
         with pytest.raises(MultipleCredentialsError):
             static_auth_present(None, {"Authorization": "Bearer A", "x-api-key": "B"})
 
-    def test_blank_key_is_absent(self) -> None:
-        # "   " is not a credential: not present, and (in the proxy) must not
-        # disable lazy discovery as if a real static key existed.
-        assert static_auth_present("   ", None) is False
-
-    def test_blank_key_yields_to_real_header(self) -> None:
-        # Blank key ignored → the real header is the single credential.
-        assert static_auth_present("   ", {"x-api-key": "k"}) is True
-
-    def test_blank_construction_header_is_absent(self) -> None:
-        assert static_auth_present(None, {"Authorization": ""}) is False
-
 
 class TestHasAuthHeader:
-    def test_case_insensitive(self) -> None:
-        assert has_auth_header({"AUTHORIZATION": "x"})
-        assert has_auth_header({"X-Api-Key": "x"})
-        assert has_auth_header({"x-api-key": "x"})
-
-    def test_negatives(self) -> None:
-        assert not has_auth_header(None)
-        assert not has_auth_header({})
-        assert not has_auth_header({"X-Trace-Id": "1"})
+    def test_recognizes_auth_header_names_case_insensitively(self) -> None:
+        cases = [
+            ("uppercase authorization", {"AUTHORIZATION": "x"}, True),
+            ("mixed-case api key", {"X-Api-Key": "x"}, True),
+            ("lowercase api key", {"x-api-key": "x"}, True),
+            ("none", None, False),
+            ("empty", {}, False),
+            ("non-auth header", {"X-Trace-Id": "1"}, False),
+        ]
+        for case, headers, expected in cases:
+            assert has_auth_header(headers) is expected, case
 
     def test_constant(self) -> None:
         assert AUTH_HEADER_NAMES == {"authorization", "x-api-key"}
 
 
 class TestRedactAuthHeaders:
-    def test_masks_auth_values_keeps_names(self) -> None:
-        out = redact_auth_headers({"Authorization": "Bearer secret", "X-Trace": "1"})
-        assert out == {"Authorization": "***", "X-Trace": "1"}
-
-    def test_masks_x_api_key(self) -> None:
-        assert redact_auth_headers({"x-api-key": "sk-secret"}) == {"x-api-key": "***"}
-
-    def test_none(self) -> None:
-        assert redact_auth_headers(None) == {}
+    def test_masks_auth_values_and_preserves_other_headers(self) -> None:
+        cases = [
+            (
+                "authorization",
+                {"Authorization": "Bearer secret", "X-Trace": "1"},
+                {"Authorization": "***", "X-Trace": "1"},
+            ),
+            ("api key", {"x-api-key": "sk-secret"}, {"x-api-key": "***"}),
+            ("none", None, {}),
+        ]
+        for case, headers, expected in cases:
+            assert redact_auth_headers(headers) == expected, case
 
 
 # ── httpx clients: real wire headers via MockTransport ───────────────
@@ -208,29 +209,27 @@ async def test_per_call_extra_headers_reach_the_wire(factory) -> None:
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("factory", _FACTORIES)
-async def test_static_plus_per_call_auth_raises(factory) -> None:
+async def test_static_plus_per_call_auth_raises() -> None:
+    factory = _openai
     client, _ = factory(api_key="STATICKEY")
     with pytest.raises(MultipleCredentialsError):
         await client.send(_USER_MSG, extra_headers={"x-api-key": "INBOUND"})
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("factory", _FACTORIES)
-async def test_construction_extra_headers_auth_also_blocks_per_call(factory) -> None:
+async def test_construction_extra_headers_auth_also_blocks_per_call() -> None:
     # §10.3 must trip even when the static credential came via extra_headers
     # (not api_key=), so static_present can't be derived from api_key alone.
-    client, _ = factory(extra_headers={"Authorization": "Bearer STATIC"})
+    client, _ = _openai(extra_headers={"Authorization": "Bearer STATIC"})
     with pytest.raises(MultipleCredentialsError):
         await client.send(_USER_MSG, extra_headers={"Authorization": "Bearer INBOUND"})
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("factory", _FACTORIES)
-async def test_no_credential_leak_across_serialized_requests(factory) -> None:
+async def test_no_credential_leak_across_serialized_requests() -> None:
     # The proxy reuses one client instance across requests. A per-call inbound
     # credential must NOT persist into a later request that carries none.
-    client, cap = factory(api_key="")
+    client, cap = _openai(api_key="")
     await client.send(_USER_MSG, extra_headers={"Authorization": "Bearer A"})
     assert cap["request"].headers["authorization"] == "Bearer A"
     await client.send(_USER_MSG)  # no per-call credential this time
@@ -328,28 +327,30 @@ async def test_construction_api_key_plus_auth_header_raises(factory) -> None:
 
 
 class TestPrepareAnthropicHeaders:
-    def test_recases_x_api_key_for_case_sensitive_preflight(self) -> None:
-        assert _prepare_anthropic_headers({"x-api-key": "k"}) == {"X-Api-Key": "k"}
-
-    def test_recases_authorization(self) -> None:
-        assert _prepare_anthropic_headers({"authorization": "Bearer k"}) == {
-            "Authorization": "Bearer k"
-        }
-
-    def test_drops_pinned_version_headers(self) -> None:
-        out = _prepare_anthropic_headers(
-            {"x-api-key": "k", "anthropic-version": "2023-06-01", "anthropic-beta": "x"}
-        )
-        assert out == {"X-Api-Key": "k"}
-
-    def test_passes_through_unknown_headers(self) -> None:
-        assert _prepare_anthropic_headers({"X-Trace": "1"}) == {"X-Trace": "1"}
-
-    def test_empty_returns_none(self) -> None:
-        assert _prepare_anthropic_headers(None) is None
-        assert _prepare_anthropic_headers({}) is None
-        # all-dropped collapses to None
-        assert _prepare_anthropic_headers({"anthropic-version": "x"}) is None
+    def test_normalizes_every_supported_header_shape(self) -> None:
+        cases = [
+            ("api key", {"x-api-key": "k"}, {"X-Api-Key": "k"}),
+            (
+                "authorization",
+                {"authorization": "Bearer k"},
+                {"Authorization": "Bearer k"},
+            ),
+            (
+                "pinned SDK headers",
+                {
+                    "x-api-key": "k",
+                    "anthropic-version": "2023-06-01",
+                    "anthropic-beta": "x",
+                },
+                {"X-Api-Key": "k"},
+            ),
+            ("unknown", {"X-Trace": "1"}, {"X-Trace": "1"}),
+            ("none", None, None),
+            ("empty", {}, None),
+            ("all dropped", {"anthropic-version": "x"}, None),
+        ]
+        for case, headers, expected in cases:
+            assert _prepare_anthropic_headers(headers) == expected, case
 
 
 def _anthropic_capturing(

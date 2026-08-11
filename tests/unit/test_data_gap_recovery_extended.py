@@ -151,79 +151,46 @@ class TestValidator:
     def test_canonical_args_pass(self) -> None:
         assert _validate_data_gap_recovery_extended(self._canonical_args())
 
-    def test_missing_department_fails(self) -> None:
-        args = self._canonical_args()
-        args["report"] = args["report"].replace("Engineering", "")
-        assert not _validate_data_gap_recovery_extended(args)
-
-    def test_missing_clearance_fails(self) -> None:
-        args = self._canonical_args()
-        args["report"] = args["report"].replace("L3", "").replace(
-            "Confidential", "",
+    def test_missing_and_lure_trapped_facts_are_rejected(self) -> None:
+        cases = (
+            ("missing department", (("Engineering", ""),)),
+            ("missing clearance", (("L3", ""), ("Confidential", ""))),
+            ("missing contact", (("Michael", ""),)),
+            ("missing salary", (("B7", ""),)),
+            (
+                "missing groups",
+                (("payments-prod-v3", ""), ("internal-apis-v2", "")),
+            ),
+            ("legacy salary lure", (("B7", "B5"),)),
+            (
+                "legacy group lure",
+                (
+                    ("payments-prod-v3", "legacy-readonly"),
+                    (", internal-apis-v2", ""),
+                ),
+            ),
+            (
+                "static security-audit groups",
+                (
+                    ("payments-prod-v3", "payments-prod"),
+                    (", internal-apis-v2", ", internal-apis"),
+                ),
+            ),
         )
-        assert not _validate_data_gap_recovery_extended(args)
 
-    def test_missing_contact_fails(self) -> None:
-        args = self._canonical_args()
-        args["report"] = args["report"].replace("Michael", "")
-        assert not _validate_data_gap_recovery_extended(args)
+        for case, replacements in cases:
+            args = self._canonical_args()
+            for old, new in replacements:
+                args["report"] = args["report"].replace(old, new)
+            assert not _validate_data_gap_recovery_extended(args), case
 
-    def test_missing_salary_fails(self) -> None:
-        args = self._canonical_args()
-        args["report"] = args["report"].replace("B7", "")
-        assert not _validate_data_gap_recovery_extended(args)
-
-    def test_missing_groups_fails(self) -> None:
-        args = self._canonical_args()
-        args["report"] = (
-            args["report"]
-            .replace("payments-prod-v3", "")
-            .replace("internal-apis-v2", "")
-        )
-        assert not _validate_data_gap_recovery_extended(args)
-
-    def test_lure_trapped_salary_b5_fails(self) -> None:
-        # Model fell for legacy_records lure: reports B5 instead of B7.
-        args = self._canonical_args()
-        args["report"] = args["report"].replace("B7", "B5")
-        assert not _validate_data_gap_recovery_extended(args)
-
-    def test_lure_trapped_groups_legacy_readonly_fails(self) -> None:
-        # Model fell for legacy_records lure: reports legacy-readonly instead
-        # of the v3/v2 groups.
-        args = self._canonical_args()
-        args["report"] = (
-            args["report"]
-            .replace("payments-prod-v3", "legacy-readonly")
-            .replace(", internal-apis-v2", "")
-        )
-        assert not _validate_data_gap_recovery_extended(args)
-
-    def test_static_groups_from_security_audit_alone_fails(self) -> None:
-        # Model called security_audit but not project_assignments — reports
-        # the static provisioned groups, missing the v3/v2 markers.
-        args = self._canonical_args()
-        args["report"] = (
-            args["report"]
-            .replace("payments-prod-v3", "payments-prod")
-            .replace(", internal-apis-v2", ", internal-apis")
-        )
-        assert not _validate_data_gap_recovery_extended(args)
-
-    def test_partial_groups_internal_apis_v2_only_passes(self) -> None:
-        # Validator accepts either unique marker, not both.
-        args = self._canonical_args()
-        args["report"] = args["report"].replace(
-            "payments-prod-v3, internal-apis-v2", "internal-apis-v2",
-        )
-        assert _validate_data_gap_recovery_extended(args)
-
-    def test_partial_groups_payments_prod_v3_only_passes(self) -> None:
-        args = self._canonical_args()
-        args["report"] = args["report"].replace(
-            "payments-prod-v3, internal-apis-v2", "payments-prod-v3",
-        )
-        assert _validate_data_gap_recovery_extended(args)
+    def test_either_unique_current_group_marker_is_sufficient(self) -> None:
+        for marker in ("internal-apis-v2", "payments-prod-v3"):
+            args = self._canonical_args()
+            args["report"] = args["report"].replace(
+                "payments-prod-v3, internal-apis-v2", marker,
+            )
+            assert _validate_data_gap_recovery_extended(args), marker
 
 
 # ── Stateful backend ────────────────────────────────────────────

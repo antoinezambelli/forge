@@ -123,11 +123,9 @@ def test_nonempty_claude_agent_headers_are_ineligible(header_name):
 
 
 class TestExtractToolSpecs:
-    def test_none_returns_empty(self):
-        assert _extract_tool_specs(None) == []
-
-    def test_empty_list_returns_empty(self):
-        assert _extract_tool_specs([]) == []
+    def test_absent_tools_return_empty(self):
+        for tools in (None, []):
+            assert _extract_tool_specs(tools) == [], tools
 
     def test_extracts_function_tools(self):
         specs = _extract_tool_specs([_tool_def("search"), _tool_def("fetch")])
@@ -139,15 +137,6 @@ class TestExtractToolSpecs:
         tools = [{"type": "retrieval"}, _tool_def("search")]
         specs = _extract_tool_specs(tools)
         assert len(specs) == 1
-        assert specs[0].name == "search"
-
-    def test_extracts_parameters(self):
-        params = {
-            "type": "object",
-            "properties": {"q": {"type": "string"}},
-            "required": ["q"],
-        }
-        specs = _extract_tool_specs([_tool_def("search", parameters=params)])
         assert specs[0].name == "search"
 
 

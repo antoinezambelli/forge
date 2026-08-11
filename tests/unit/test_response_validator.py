@@ -3,7 +3,7 @@
 import pytest
 
 from forge.core.workflow import TextResponse, ToolCall
-from forge.guardrails import Nudge, ResponseValidator, ValidationResult
+from forge.guardrails import Nudge, ResponseValidator
 
 
 class TestNudge:
@@ -80,12 +80,26 @@ class TestResponseValidatorToolCalls:
             tool_names=["search", "answer"], rescue_enabled=True
         )
 
-    def test_valid_tool_calls_pass(self):
-        calls = [ToolCall(tool="search", args={"q": "hi"})]
-        result = self.validator.validate(calls)
-        assert result.needs_retry is False
-        assert result.tool_calls == calls
-        assert result.nudge is None
+    def test_valid_tool_call_batches_pass(self):
+        cases = [
+            ("single", [ToolCall(tool="search", args={"q": "hi"})]),
+            (
+                "multiple",
+                [
+                    ToolCall(tool="search", args={"q": "a"}),
+                    ToolCall(tool="answer", args={"text": "b"}),
+                ],
+            ),
+            ("empty", []),
+        ]
+        for label, calls in cases:
+            validator = ResponseValidator(
+                tool_names=["search", "answer"], rescue_enabled=True
+            )
+            result = validator.validate(calls)
+            assert result.needs_retry is False, label
+            assert result.tool_calls == calls, label
+            assert result.nudge is None, label
 
     def test_unknown_tool_returns_nudge(self):
         calls = [ToolCall(tool="nonexistent", args={})]
@@ -107,21 +121,6 @@ class TestResponseValidatorToolCalls:
         assert result.nudge.kind == "unknown_tool"
         assert "bad_tool" in result.nudge.content
 
-    def test_multiple_valid_tools_pass(self):
-        calls = [
-            ToolCall(tool="search", args={"q": "a"}),
-            ToolCall(tool="answer", args={"text": "b"}),
-        ]
-        result = self.validator.validate(calls)
-        assert result.needs_retry is False
-        assert result.tool_calls == calls
-
-    def test_empty_tool_calls_pass(self):
-        result = self.validator.validate([])
-        assert result.needs_retry is False
-        assert result.tool_calls == []
-
-
 class TestResponseValidatorArgsShape:
     """Args-shape enforcement — moved out of pydantic ToolCall construction."""
 
@@ -130,34 +129,20 @@ class TestResponseValidatorArgsShape:
             tool_names=["search", "answer"], rescue_enabled=True
         )
 
-    def test_empty_string_args_returns_nudge(self):
-        calls = [ToolCall(tool="search", args="")]  # type: ignore[arg-type]
-        result = self.validator.validate(calls)
-        assert result.needs_retry is True
-        assert result.tool_calls is None
-        assert result.nudge.kind == "tool_arg_validation"
-        assert "search" in result.nudge.content
-        assert "JSON object" in result.nudge.content
-        # Malformed args ride the tool-result channel (role="tool").
-        assert result.nudge.role == "tool"
-
-    def test_none_args_returns_nudge(self):
-        calls = [ToolCall(tool="search", args=None)]  # type: ignore[arg-type]
-        result = self.validator.validate(calls)
-        assert result.needs_retry is True
-        assert result.nudge.kind == "tool_arg_validation"
-
-    def test_list_args_returns_nudge(self):
-        calls = [ToolCall(tool="search", args=[1, 2])]  # type: ignore[arg-type]
-        result = self.validator.validate(calls)
-        assert result.needs_retry is True
-        assert result.nudge.kind == "tool_arg_validation"
-
-    def test_primitive_args_returns_nudge(self):
-        calls = [ToolCall(tool="search", args=42)]  # type: ignore[arg-type]
-        result = self.validator.validate(calls)
-        assert result.needs_retry is True
-        assert result.nudge.kind == "tool_arg_validation"
+    def test_invalid_arg_shapes_return_tool_channel_nudge(self):
+        cases = [("string", ""), ("none", None), ("list", [1, 2]), ("integer", 42)]
+        for label, args in cases:
+            validator = ResponseValidator(
+                tool_names=["search", "answer"], rescue_enabled=True
+            )
+            calls = [ToolCall(tool="search", args=args)]  # type: ignore[arg-type]
+            result = validator.validate(calls)
+            assert result.needs_retry is True, label
+            assert result.tool_calls is None, label
+            assert result.nudge.kind == "tool_arg_validation", label
+            assert "search" in result.nudge.content, label
+            assert "JSON object" in result.nudge.content, label
+            assert result.nudge.role == "tool", label
 
     def test_unknown_tool_takes_precedence_over_bad_args(self):
         # Unknown-tool check runs first; no point validating args of a

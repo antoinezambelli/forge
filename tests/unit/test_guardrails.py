@@ -53,18 +53,15 @@ class TestCheckValidation:
         assert len(result.tool_calls) == 1
         assert result.nudge is None
 
-    def test_rescue_parses_tool_call_from_text(self):
-        g = make_guardrails(rescue_enabled=True)
+    def test_rescue_configuration_controls_text_tool_parsing(self):
         text = '```json\n{"tool": "search", "args": {"q": "test"}}\n```'
-        result = g.check(TextResponse(content=text))
-        assert result.action == "execute"
-        assert result.tool_calls[0].tool == "search"
-
-    def test_rescue_disabled_skips_parsing(self):
-        g = make_guardrails(rescue_enabled=False)
-        text = '```json\n{"tool": "search", "args": {"q": "test"}}\n```'
-        result = g.check(TextResponse(content=text))
-        assert result.action == "retry"
+        cases = [("enabled", True, "execute"), ("disabled", False, "retry")]
+        for label, enabled, expected_action in cases:
+            g = make_guardrails(rescue_enabled=enabled)
+            result = g.check(TextResponse(content=text))
+            assert result.action == expected_action, label
+            if enabled:
+                assert result.tool_calls[0].tool == "search", label
 
 
 class TestCheckRetryExhaustion:
@@ -166,21 +163,14 @@ class TestCheckStepEnforcement:
 
 
 class TestRecord:
-    def test_returns_false_for_non_terminal(self):
+    def test_returns_completion_across_workflow_lifecycle(self):
         g = make_guardrails()
         g.check([ToolCall(tool="search", args={})])
-        done = g.record(["search"])
-        assert done is False
-
-    def test_returns_true_when_terminal_and_satisfied(self):
-        g = make_guardrails()
-        g.check([ToolCall(tool="search", args={})])
-        g.record(["search"])
+        assert g.record(["search"]) is False
         g.check([ToolCall(tool="lookup", args={})])
         g.record(["lookup"])
         g.check([ToolCall(tool="answer", args={})])
-        done = g.record(["answer"])
-        assert done is True
+        assert g.record(["answer"]) is True
 
     def test_returns_false_when_terminal_but_unsatisfied(self):
         """Edge case: if record() is called with the terminal tool
@@ -202,31 +192,29 @@ class TestRecord:
 
 
 class TestCheckResult:
-    def test_is_frozen(self):
+    def test_defaults_and_frozen_contract(self):
+        defaults = CheckResult(action="retry")
+        assert defaults.tool_calls is None
+        assert defaults.nudge is None
+        assert defaults.reason is None
+
         r = CheckResult(action="execute", tool_calls=[])
         with pytest.raises(AttributeError):
             r.action = "retry"
-
-    def test_defaults(self):
-        r = CheckResult(action="retry")
-        assert r.tool_calls is None
-        assert r.nudge is None
-        assert r.reason is None
 
 
 # ── Imports ──────────────────────────────────────────────────
 
 
 class TestImports:
-    def test_importable_from_guardrails_package(self):
+    def test_public_imports(self):
         from forge.guardrails import CheckResult, Guardrails
         assert CheckResult is not None
         assert Guardrails is not None
-
-    def test_importable_from_forge_top_level(self):
-        from forge import CheckResult, Guardrails
-        assert CheckResult is not None
-        assert Guardrails is not None
+        from forge import CheckResult as TopLevelCheckResult
+        from forge import Guardrails as TopLevelGuardrails
+        assert TopLevelCheckResult is CheckResult
+        assert TopLevelGuardrails is Guardrails
 
 
 # ── Custom retry nudge ───────────────────────────────────────
@@ -239,18 +227,13 @@ class TestCustomRetryNudge:
         assert result.action == "retry"
         assert "tool call" in result.nudge.content.lower()
 
-    def test_custom_nudge_callable(self):
-        custom = lambda raw: f"Wrap this in respond: {raw}"
-        g = make_guardrails(retry_nudge=custom, rescue_enabled=False)
-        result = g.check(TextResponse(content="hello world"))
-        assert result.action == "retry"
-        assert "Wrap this in respond: hello world" == result.nudge.content
-
-    def test_custom_nudge_receives_raw_response(self):
+    def test_custom_nudge_receives_raw_response_and_supplies_content(self):
         captured = []
         def nudge_fn(raw):
             captured.append(raw)
-            return "try again"
+            return f"Wrap this in respond: {raw}"
         g = make_guardrails(retry_nudge=nudge_fn, rescue_enabled=False)
-        g.check(TextResponse(content="my bare text"))
+        result = g.check(TextResponse(content="my bare text"))
+        assert result.action == "retry"
+        assert result.nudge.content == "Wrap this in respond: my bare text"
         assert captured == ["my bare text"]

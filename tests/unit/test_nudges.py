@@ -9,109 +9,67 @@ from forge.prompts.nudges import (
 
 
 class TestRetryNudge:
-    def test_returns_non_empty_string(self) -> None:
-        result = retry_nudge("some raw output")
-        assert isinstance(result, str)
-        assert len(result) > 0
-
-    def test_does_not_echo_raw_response(self) -> None:
+    def test_describes_retry_without_echoing_raw_response(self) -> None:
         raw = "I think the answer is 42"
         result = retry_nudge(raw)
+        assert isinstance(result, str)
+        assert result
         assert raw not in result
-
-    def test_mentions_tool_call(self) -> None:
-        result = retry_nudge("whatever")
         assert "tool call" in result.lower()
 
 
 class TestStepNudge:
-    def test_returns_non_empty_string(self) -> None:
-        result = step_nudge("submit_answer", ["get_data", "analyze"])
+    def test_default_names_terminal_and_pending_steps(self) -> None:
+        result = step_nudge("submit", ["fetch", "analyze"])
         assert isinstance(result, str)
-        assert len(result) > 0
-
-    def test_contains_terminal_tool_name(self) -> None:
-        result = step_nudge("submit_answer", ["get_data"])
-        assert "submit_answer" in result
-
-    def test_contains_pending_steps(self) -> None:
-        result = step_nudge("submit", ["get_pricing", "get_history"])
-        assert "get_pricing" in result
-        assert "get_history" in result
-
-    def test_single_pending_step(self) -> None:
-        result = step_nudge("done", ["fetch_data"])
-        assert "fetch_data" in result
-
-    def test_tier1_is_default(self) -> None:
-        result = step_nudge("submit", ["fetch"])
+        assert result
         assert "cannot call submit yet" in result.lower()
-
-    def test_tier2_direct(self) -> None:
-        result = step_nudge("submit", ["fetch", "analyze"], tier=2)
-        assert "must call one of these tools now" in result.lower()
         assert "fetch" in result
         assert "analyze" in result
 
-    def test_tier3_aggressive(self) -> None:
-        result = step_nudge("submit", ["fetch"], tier=3)
-        assert "STOP" in result
-        assert "Do NOT call submit" in result
-        assert "fetch" in result
+    def test_escalation_tiers_change_urgency(self) -> None:
+        direct = step_nudge("submit", ["fetch", "analyze"], tier=2)
+        aggressive = step_nudge("submit", ["fetch"], tier=3)
+        assert "must call one of these tools now" in direct.lower()
+        assert "fetch" in direct
+        assert "analyze" in direct
+        assert "STOP" in aggressive
+        assert "Do NOT call submit" in aggressive
+        assert "fetch" in aggressive
 
-    def test_tier_clamped_below(self) -> None:
-        result_t0 = step_nudge("submit", ["fetch"], tier=0)
-        result_t1 = step_nudge("submit", ["fetch"], tier=1)
-        assert result_t0 == result_t1
-
-    def test_tier_clamped_above(self) -> None:
-        result_t5 = step_nudge("submit", ["fetch"], tier=5)
-        result_t3 = step_nudge("submit", ["fetch"], tier=3)
-        assert result_t5 == result_t3
+    def test_tier_is_clamped_to_supported_range(self) -> None:
+        assert step_nudge("submit", ["fetch"], tier=0) == step_nudge(
+            "submit", ["fetch"], tier=1
+        )
+        assert step_nudge("submit", ["fetch"], tier=5) == step_nudge(
+            "submit", ["fetch"], tier=3
+        )
 
 
 class TestPrerequisiteNudge:
-    def test_returns_non_empty_string(self) -> None:
-        result = prerequisite_nudge("edit_file", ["read_file"])
-        assert isinstance(result, str)
-        assert len(result) > 0
-
-    def test_contains_tool_name(self) -> None:
-        result = prerequisite_nudge("edit_file", ["read_file"])
-        assert "edit_file" in result
-
-    def test_contains_missing_prereqs(self) -> None:
+    def test_names_tool_and_every_missing_prerequisite(self) -> None:
         result = prerequisite_nudge("edit_file", ["read_file", "authenticate"])
+        assert isinstance(result, str)
+        assert result
+        assert "edit_file" in result
         assert "read_file" in result
         assert "authenticate" in result
 
-    def test_single_missing_prereq(self) -> None:
-        result = prerequisite_nudge("edit_file", ["read_file"])
-        assert "read_file" in result
-
 
 class TestToolArgValidationNudge:
-    def test_returns_non_empty_string(self) -> None:
-        result = tool_arg_validation_nudge("edit", "")
-        assert isinstance(result, str)
-        assert len(result) > 0
-
-    def test_contains_tool_name(self) -> None:
+    def test_names_tool_and_required_shape(self) -> None:
         result = tool_arg_validation_nudge("edit_file", "")
+        assert isinstance(result, str)
+        assert result
         assert "edit_file" in result
-
-    def test_mentions_required_shape(self) -> None:
-        result = tool_arg_validation_nudge("edit", "")
         assert "JSON object" in result or "dict" in result
 
-    def test_echoes_received_args_shape(self) -> None:
-        result = tool_arg_validation_nudge("edit", "")
-        assert "str" in result  # type name appears
-
-    def test_handles_none_args(self) -> None:
-        result = tool_arg_validation_nudge("edit", None)
-        assert "NoneType" in result
-
-    def test_handles_list_args(self) -> None:
-        result = tool_arg_validation_nudge("edit", [1, 2, 3])
-        assert "list" in result
+    def test_reports_received_argument_shape(self) -> None:
+        cases = [
+            ("string", "", "str"),
+            ("none", None, "NoneType"),
+            ("list", [1, 2, 3], "list"),
+        ]
+        for label, args, expected_type in cases:
+            result = tool_arg_validation_nudge("edit", args)
+            assert expected_type in result, label

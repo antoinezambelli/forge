@@ -18,12 +18,12 @@ class TestHardwareProfile:
     """Tests for HardwareProfile dataclass."""
 
     def test_vram_total_gb(self) -> None:
-        hw = HardwareProfile(gpu_name="RTX 5070", vram_total_mb=12288)
-        assert hw.vram_total_gb == 12.0
-
-    def test_vram_total_gb_fractional(self) -> None:
-        hw = HardwareProfile(gpu_name="RTX 5070", vram_total_mb=12000)
-        assert hw.vram_total_gb == 12000 / 1024
+        for label, vram_mb, expected_gb in [
+            ("whole", 12288, 12.0),
+            ("fractional", 12000, 12000 / 1024),
+        ]:
+            hw = HardwareProfile(gpu_name="RTX 5070", vram_total_mb=vram_mb)
+            assert hw.vram_total_gb == expected_gb, label
 
     def test_defaults_to_nvidia_discrete(self) -> None:
         hw = HardwareProfile(gpu_name="RTX 5070", vram_total_mb=12288)
@@ -34,17 +34,30 @@ class TestHardwareProfile:
 class TestDetectHardwareNvidia:
     """nvidia-smi probe path."""
 
-    def test_returns_none_when_nvidia_smi_not_found_and_no_amd(self, tmp_path: Path) -> None:
-        # FileNotFoundError on nvidia-smi + empty drm root => fall through to None.
-        with patch("subprocess.run", side_effect=FileNotFoundError), \
-             patch("forge.context.hardware.Path", return_value=tmp_path):
-            assert detect_hardware() is None
-
-    def test_returns_none_on_nonzero_exit_and_no_amd(self, tmp_path: Path) -> None:
-        result = subprocess.CompletedProcess(args=[], returncode=1, stdout="", stderr="error")
-        with patch("subprocess.run", return_value=result), \
-             patch("forge.context.hardware.Path", return_value=tmp_path):
-            assert detect_hardware() is None
+    def test_failed_nvidia_probes_fall_through_to_amd(self, tmp_path: Path) -> None:
+        cases = [
+            ("not installed", FileNotFoundError()),
+            (
+                "nonzero exit",
+                subprocess.CompletedProcess(
+                    args=[], returncode=1, stdout="", stderr="error"
+                ),
+            ),
+            (
+                "timeout",
+                subprocess.TimeoutExpired(cmd="nvidia-smi", timeout=10),
+            ),
+        ]
+        for label, outcome in cases:
+            patch_kwargs = (
+                {"return_value": outcome}
+                if isinstance(outcome, subprocess.CompletedProcess)
+                else {"side_effect": outcome}
+            )
+            with patch("subprocess.run", **patch_kwargs), patch(
+                "forge.context.hardware.Path", return_value=tmp_path
+            ):
+                assert detect_hardware() is None, label
 
     def test_raises_on_malformed_output(self) -> None:
         result = subprocess.CompletedProcess(args=[], returncode=0, stdout="garbage", stderr="")
@@ -52,11 +65,6 @@ class TestDetectHardwareNvidia:
             with pytest.raises(HardwareDetectionError) as exc_info:
                 detect_hardware()
             assert isinstance(exc_info.value.cause, ValueError)
-
-    def test_returns_none_on_timeout_and_no_amd(self, tmp_path: Path) -> None:
-        with patch("subprocess.run", side_effect=subprocess.TimeoutExpired(cmd="nvidia-smi", timeout=10)), \
-             patch("forge.context.hardware.Path", return_value=tmp_path):
-            assert detect_hardware() is None
 
     def test_returns_profile_on_success(self) -> None:
         nvidia_output = "NVIDIA GeForce RTX 5070, 12288\n"
@@ -139,6 +147,10 @@ class TestDetectHardwareAmdSysfs:
              caplog.at_level(logging.WARNING, logger="forge.context.hardware"):
             assert detect_hardware() is None
             assert any("GPU detection failed" in rec.message for rec in caplog.records)
+            warns = [rec.message for rec in caplog.records if rec.levelno == logging.WARNING]
+            assert len(warns) == 1
+            assert "nvidia-smi: not installed" in warns[0]
+            assert "amd-sysfs" in warns[0]
 
     def test_no_amd_card_falls_through_with_warn(self, fake_drm: Path, caplog: pytest.LogCaptureFixture) -> None:
         # Only an Intel card present.
@@ -147,12 +159,3 @@ class TestDetectHardwareAmdSysfs:
              caplog.at_level(logging.WARNING, logger="forge.context.hardware"):
             assert detect_hardware() is None
             assert any("GPU detection failed" in rec.message for rec in caplog.records)
-
-    def test_warn_lists_attempted_probes(self, fake_drm: Path, caplog: pytest.LogCaptureFixture) -> None:
-        with patch("subprocess.run", side_effect=FileNotFoundError), \
-             caplog.at_level(logging.WARNING, logger="forge.context.hardware"):
-            detect_hardware()
-            warns = [rec.message for rec in caplog.records if rec.levelno == logging.WARNING]
-            assert len(warns) == 1
-            assert "nvidia-smi: not installed" in warns[0]
-            assert "amd-sysfs" in warns[0]

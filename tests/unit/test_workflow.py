@@ -1,7 +1,7 @@
 """Unit tests for forge.core.workflow."""
 
 import pytest
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import BaseModel
 
 from forge.core.workflow import (
     TextResponse,
@@ -57,22 +57,43 @@ class TestWorkflowValidation:
         with pytest.raises(ValueError, match="Required step 'nonexistent'"):
             _make_workflow(required_steps=["nonexistent"])
 
-    def test_raises_on_unknown_terminal_tool(self):
-        with pytest.raises(ValueError, match="Terminal tool 'nonexistent'"):
-            _make_workflow(terminal_tool="nonexistent")
+    def test_raises_on_unknown_terminal_tools(self):
+        for label, terminal_tool in [
+            ("single", "nonexistent"),
+            ("multiple", ["submit_result", "nonexistent"]),
+        ]:
+            with pytest.raises(ValueError, match="Terminal tool 'nonexistent'") as exc_info:
+                _make_workflow(terminal_tool=terminal_tool)
+            assert "nonexistent" in str(exc_info.value), label
 
     def test_raises_on_key_name_mismatch(self):
         tool = _make_tool("actual_name")
         with pytest.raises(ValueError, match="does not match"):
             _make_workflow(tools={"wrong_key": tool, "submit_result": _make_tool("submit_result")})
 
-    def test_raises_when_terminal_tool_in_required_steps(self):
-        with pytest.raises(ValueError, match="cannot also be a required step"):
-            _make_workflow(
-                tools=_make_tools("fetch_data", "submit_result"),
-                required_steps=["fetch_data", "submit_result"],
-                terminal_tool="submit_result",
-            )
+    def test_raises_when_terminal_tools_are_required_steps(self):
+        cases = [
+            (
+                "single",
+                _make_tools("fetch_data", "submit_result"),
+                ["fetch_data", "submit_result"],
+                "submit_result",
+            ),
+            (
+                "multiple",
+                _make_tools("fetch_data", "approve", "reject"),
+                ["fetch_data", "approve"],
+                ["approve", "reject"],
+            ),
+        ]
+        for label, tools, required_steps, terminal_tool in cases:
+            with pytest.raises(ValueError, match="cannot also be a required step") as exc_info:
+                _make_workflow(
+                    tools=tools,
+                    required_steps=required_steps,
+                    terminal_tool=terminal_tool,
+                )
+            assert "required step" in str(exc_info.value), label
 
     def test_valid_construction_succeeds(self):
         wf = _make_workflow()
@@ -93,44 +114,28 @@ class TestWorkflowValidation:
         assert isinstance(wf.terminal_tools, frozenset)
         assert wf.terminal_tools == frozenset(["submit_result"])
 
-    def test_raises_on_unknown_terminal_tool_in_list(self):
-        with pytest.raises(ValueError, match="Terminal tool 'nonexistent'"):
-            _make_workflow(
-                tools=_make_tools("fetch_data", "submit_result"),
-                terminal_tool=["submit_result", "nonexistent"],
-            )
+    def test_rejects_unknown_prerequisite_shapes(self):
+        cases = [
+            ("name", ["nonexistent"]),
+            ("arg matched", [{"tool": "nonexistent", "match_arg": "path"}]),
+        ]
+        for label, prerequisites in cases:
+            tools = _make_tools("fetch_data", "submit_result")
+            tools["submit_result"].prerequisites = prerequisites
+            with pytest.raises(ValueError, match="Prerequisite 'nonexistent'") as exc_info:
+                _make_workflow(tools=tools)
+            assert "nonexistent" in str(exc_info.value), label
 
-    def test_raises_when_any_terminal_tool_in_required_steps(self):
-        with pytest.raises(ValueError, match="cannot also be a required step"):
-            _make_workflow(
-                tools=_make_tools("fetch_data", "approve", "reject"),
-                required_steps=["fetch_data", "approve"],
-                terminal_tool=["approve", "reject"],
-            )
-
-    def test_raises_on_unknown_prerequisite_name_only(self):
-        tools = _make_tools("fetch_data", "submit_result")
-        tools["submit_result"].prerequisites = ["nonexistent"]
-        with pytest.raises(ValueError, match="Prerequisite 'nonexistent'"):
-            _make_workflow(tools=tools)
-
-    def test_raises_on_unknown_prerequisite_arg_matched(self):
-        tools = _make_tools("fetch_data", "submit_result")
-        tools["submit_result"].prerequisites = [{"tool": "nonexistent", "match_arg": "path"}]
-        with pytest.raises(ValueError, match="Prerequisite 'nonexistent'"):
-            _make_workflow(tools=tools)
-
-    def test_valid_prerequisite_succeeds(self):
-        tools = _make_tools("fetch_data", "submit_result")
-        tools["submit_result"].prerequisites = ["fetch_data"]
-        wf = _make_workflow(tools=tools)
-        assert wf.tools["submit_result"].prerequisites == ["fetch_data"]
-
-    def test_valid_arg_matched_prerequisite_succeeds(self):
-        tools = _make_tools("fetch_data", "submit_result")
-        tools["submit_result"].prerequisites = [{"tool": "fetch_data", "match_arg": "id"}]
-        wf = _make_workflow(tools=tools)
-        assert len(wf.tools["submit_result"].prerequisites) == 1
+    def test_accepts_supported_prerequisite_shapes(self):
+        cases = [
+            ("name", ["fetch_data"]),
+            ("arg matched", [{"tool": "fetch_data", "match_arg": "id"}]),
+        ]
+        for label, prerequisites in cases:
+            tools = _make_tools("fetch_data", "submit_result")
+            tools["submit_result"].prerequisites = prerequisites
+            wf = _make_workflow(tools=tools)
+            assert wf.tools["submit_result"].prerequisites == prerequisites, label
 
 
 class TestWorkflowMethods:
@@ -178,6 +183,7 @@ class TestToolCall:
         tc = ToolCall(tool="fetch", args={"key": "value"})
         assert tc.tool == "fetch"
         assert tc.args == {"key": "value"}
+        assert tc.reasoning is None
 
     def test_args_not_validated_at_construction(self):
         # args-shape enforcement moved to ResponseValidator so malformed args
@@ -189,10 +195,6 @@ class TestToolCall:
         assert tc2.args is None
         tc3 = ToolCall(tool="fetch", args=[1, 2])  # type: ignore[arg-type]
         assert tc3.args == [1, 2]
-
-    def test_reasoning_defaults_to_none(self):
-        tc = ToolCall(tool="fetch", args={})
-        assert tc.reasoning is None
 
     def test_reasoning_captures_text(self):
         tc = ToolCall(tool="fetch", args={}, reasoning="I should fetch the data")

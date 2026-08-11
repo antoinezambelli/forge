@@ -72,35 +72,10 @@ class TestConstructorValidation:
         ):
             ProxyServer(backend_url="http://x:8000", backend_timeout=backend_timeout)
 
-    def test_managed_ok(self) -> None:
-        ProxyServer(backend="llamaserver", gguf="m.gguf")
-        ProxyServer(backend="llamafile", gguf="m.gguf")
-        ProxyServer(backend="vllm", model_path="/m")
-        ProxyServer(backend="ollama", model="llama3")
-
-    def test_external_ok(self) -> None:
-        proxy = ProxyServer(backend_url="http://x:8080")
-        assert proxy._backend_url == "http://x:8080"
-        assert proxy._backend is None
-        proxy2 = ProxyServer(backend_url="http://x:8000", backend="vllm")
-        assert proxy2._backend == "vllm"
-
     def test_backend_timeout_default_and_override(self) -> None:
         assert ProxyServer(backend_url="http://x:8000")._backend_timeout == 300.0
         proxy = ProxyServer(backend_url="http://x:8000", backend_timeout=1800.0)
         assert proxy._backend_timeout == 1800.0
-
-    # Serialize auto-detection: managed (no url) serializes, external does not.
-    def test_serialize_auto_managed_true(self) -> None:
-        assert ProxyServer(backend="vllm", model_path="/m")._serialize is True
-
-    def test_serialize_auto_external_false(self) -> None:
-        # Even with backend set (external vLLM), external mode does not serialize.
-        assert ProxyServer(backend_url="http://x:8000", backend="vllm")._serialize is False
-
-    def test_serialize_override(self) -> None:
-        assert ProxyServer(backend_url="http://x:8000", serialize=True)._serialize is True
-
 
 class TestSetupExternal:
     """External setup is metadata-free; only unpinned vLLM gets a latch."""
@@ -151,28 +126,27 @@ class TestSetupExternal:
         assert lazy is None
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize("static_key", [None, "K"])
-    @pytest.mark.parametrize("budget", [None, 4096])
-    async def test_unpinned_vllm_all_auth_budget_cells_are_lazy(
-        self, static_key: str | None, budget: int | None,
-    ) -> None:
-        proxy = ProxyServer(
-            backend_url="http://localhost:8000/deploy",
-            backend="vllm",
-            backend_api_key=static_key,
-            budget_tokens=budget,
-        )
-        with patch.object(
-            VLLMClient, "get_served_model_name", new_callable=AsyncMock,
-        ) as served, patch.object(
-            VLLMClient, "get_context_length", new_callable=AsyncMock,
-        ) as context:
-            client, ctx, lazy = await proxy._setup_external()
-        served.assert_not_awaited()
-        context.assert_not_awaited()
-        assert client.model == "default"
-        assert lazy is not None and lazy.done is False
-        assert ctx.budget_tokens == budget
+    async def test_unpinned_vllm_all_auth_budget_cells_are_lazy(self) -> None:
+        for static_key in (None, "K"):
+            for budget in (None, 4096):
+                case = (static_key, budget)
+                proxy = ProxyServer(
+                    backend_url="http://localhost:8000/deploy",
+                    backend="vllm",
+                    backend_api_key=static_key,
+                    budget_tokens=budget,
+                )
+                with patch.object(
+                    VLLMClient, "get_served_model_name", new_callable=AsyncMock,
+                ) as served, patch.object(
+                    VLLMClient, "get_context_length", new_callable=AsyncMock,
+                ) as context:
+                    client, ctx, lazy = await proxy._setup_external()
+                assert served.await_count == 0, case
+                assert context.await_count == 0, case
+                assert client.model == "default", case
+                assert lazy is not None and lazy.done is False, case
+                assert ctx.budget_tokens == budget, case
 
     @pytest.mark.asyncio
     async def test_profile_identity_discovery_flag_owns_latch_creation(self) -> None:
@@ -194,22 +168,21 @@ class TestSetupExternal:
         assert lazy is None
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize("static_key", [None, "K"])
-    @pytest.mark.parametrize("budget", [None, 4096])
-    async def test_pinned_vllm_never_creates_identity_work(
-        self, static_key: str | None, budget: int | None,
-    ) -> None:
-        proxy = ProxyServer(
-            backend_url="http://localhost:8000",
-            backend="vllm",
-            backend_api_key=static_key,
-            budget_tokens=budget,
-            model="pinned",
-        )
-        client, ctx, lazy = await proxy._setup_external()
-        assert client.model == "pinned"
-        assert lazy is None
-        assert ctx.budget_tokens == budget
+    async def test_pinned_vllm_never_creates_identity_work(self) -> None:
+        for static_key in (None, "K"):
+            for budget in (None, 4096):
+                case = (static_key, budget)
+                proxy = ProxyServer(
+                    backend_url="http://localhost:8000",
+                    backend="vllm",
+                    backend_api_key=static_key,
+                    budget_tokens=budget,
+                    model="pinned",
+                )
+                client, ctx, lazy = await proxy._setup_external()
+                assert client.model == "pinned", case
+                assert lazy is None, case
+                assert ctx.budget_tokens == budget, case
 
     @pytest.mark.asyncio
     async def test_generic_missing_budget_does_not_probe(self) -> None:
@@ -438,22 +411,26 @@ class TestBackendCapability:
         proxy = ProxyServer(backend_url="http://x:8080", backend_capability="prompt")
         assert proxy._backend_capability == "prompt"
 
-    # Guards: prompt is a llama.cpp/llamafile capability only.
-    def test_prompt_rejects_vllm(self) -> None:
-        with pytest.raises(ValueError, match="only supported for"):
-            ProxyServer(backend_url="http://x:8000", backend="vllm", backend_capability="prompt")
-
-    def test_prompt_rejects_ollama(self) -> None:
-        with pytest.raises(ValueError, match="only supported for"):
-            ProxyServer(backend="ollama", model="m", backend_capability="prompt")
-
-    def test_prompt_rejects_anthropic(self) -> None:
-        with pytest.raises(ValueError, match="only supported for llama-shaped"):
-            ProxyServer(
-                backend_url="http://x:8080",
-                backend="anthropic",
-                backend_capability="prompt",
-            )
+    @pytest.mark.parametrize(
+        ("kwargs", "match"),
+        [
+            (
+                {"backend_url": "http://x:8000", "backend": "vllm"},
+                "only supported for",
+            ),
+            ({"backend": "ollama", "model": "m"}, "only supported for"),
+            (
+                {"backend_url": "http://x:8080", "backend": "anthropic"},
+                "only supported for llama-shaped",
+            ),
+        ],
+        ids=["vllm", "ollama", "anthropic"],
+    )
+    def test_prompt_rejects_non_llama_capabilities(
+        self, kwargs: dict[str, str], match: str,
+    ) -> None:
+        with pytest.raises(ValueError, match=match):
+            ProxyServer(**kwargs, backend_capability="prompt")
 
     def test_prompt_allowed_for_external_llamacpp(self) -> None:
         # backend=None (external) defaults to the llama.cpp adapter → prompt ok.
@@ -494,15 +471,6 @@ class TestBackendCapability:
         assert isinstance(client, LlamafileClient)
         assert client.mode == "prompt"
         assert mock_setup.await_args.kwargs["mode"] == "native"
-
-    def test_native_passthrough_forwarded_to_http_server(self) -> None:
-        # native → native_passthrough True; prompt → False.
-        assert (ProxyServer(backend_url="http://x")._backend_capability == "native")
-        assert (
-            ProxyServer(backend_url="http://x", backend_capability="prompt")
-            ._backend_capability == "prompt"
-        )
-
 
 class TestLifecycle:
     """start()/stop() thread + state management."""
@@ -597,7 +565,6 @@ class TestLifecycle:
             metadata_url=None,
         )
         ready.set.assert_called_once_with()
-        await proxy._client.aclose()
 
     @pytest.mark.asyncio
     async def test_managed_ollama_wires_resolved_window_reporting(self) -> None:

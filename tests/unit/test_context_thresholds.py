@@ -27,53 +27,55 @@ def _make_messages_at_pct(budget: int, pct: float) -> list[Message]:
 
 
 class TestDefaultContextWarning:
-    def test_returns_string_at_50pct(self) -> None:
-        result = default_context_warning(4000, 8000, 0.50)
-        assert result is not None
-        assert "50%" in result
-
-    def test_returns_string_at_65pct(self) -> None:
-        result = default_context_warning(5200, 8000, 0.65)
-        assert result is not None
-        assert "filling up" in result.lower()
-
-    def test_returns_string_at_80pct(self) -> None:
-        result = default_context_warning(6400, 8000, 0.80)
-        assert result is not None
-        assert "nearly full" in result.lower()
-
-    def test_escalates_with_pct(self) -> None:
-        msg_50 = default_context_warning(4000, 8000, 0.50)
-        msg_80 = default_context_warning(6400, 8000, 0.80)
-        assert msg_50 != msg_80
-        # Higher urgency at 80%
-        assert "nearly full" not in msg_50.lower()
-        assert "nearly full" in msg_80.lower()
+    def test_escalates_across_context_usage_tiers(self) -> None:
+        cases = [
+            ("50%", 4000, 0.50, "50%"),
+            ("65%", 5200, 0.65, "filling up"),
+            ("80%", 6400, 0.80, "nearly full"),
+        ]
+        results = []
+        for label, tokens, pct, expected in cases:
+            result = default_context_warning(tokens, 8000, pct)
+            assert result is not None, label
+            assert expected in result.lower(), label
+            results.append(result)
+        assert len(set(results)) == len(results)
 
 
 # ── ContextManager.check_thresholds ──────────────────────────────
 
 
 class TestCheckThresholds:
-    def test_no_callback_returns_none(self) -> None:
-        ctx = ContextManager(
-            strategy=NoCompact(),
-            budget_tokens=8000,
-            context_thresholds=[0.5],
-            on_context_threshold=None,
-        )
-        msgs = _make_messages_at_pct(8000, 0.6)
-        assert ctx.check_thresholds(msgs) is None
-
-    def test_no_thresholds_returns_none(self) -> None:
-        ctx = ContextManager(
-            strategy=NoCompact(),
-            budget_tokens=8000,
-            context_thresholds=None,
-            on_context_threshold=default_context_warning,
-        )
-        msgs = _make_messages_at_pct(8000, 0.6)
-        assert ctx.check_thresholds(msgs) is None
+    def test_inactive_configurations_return_none(self) -> None:
+        cases = [
+            (
+                "no callback",
+                8000,
+                {"context_thresholds": [0.5], "on_context_threshold": None},
+            ),
+            (
+                "no thresholds",
+                8000,
+                {
+                    "context_thresholds": None,
+                    "on_context_threshold": default_context_warning,
+                },
+            ),
+            (
+                "zero budget",
+                0,
+                {
+                    "context_thresholds": [0.5],
+                    "on_context_threshold": default_context_warning,
+                },
+            ),
+        ]
+        for label, budget, kwargs in cases:
+            ctx = ContextManager(
+                strategy=NoCompact(), budget_tokens=budget, **kwargs
+            )
+            msgs = _make_messages_at_pct(8000, 0.6)
+            assert ctx.check_thresholds(msgs) is None, label
 
     def test_fires_when_threshold_crossed(self) -> None:
         ctx = ContextManager(
@@ -160,15 +162,6 @@ class TestCheckThresholds:
         msgs = _make_messages_at_pct(8000, 0.6)
         result = ctx.check_thresholds(msgs)
         assert result is None
-
-    def test_zero_budget_returns_none(self) -> None:
-        ctx = ContextManager(
-            strategy=NoCompact(),
-            budget_tokens=0,
-            context_thresholds=[0.5],
-            on_context_threshold=default_context_warning,
-        )
-        assert ctx.check_thresholds([_msg("test")]) is None
 
     def test_importable_from_forge(self) -> None:
         from forge import default_context_warning

@@ -20,37 +20,19 @@ def _tool_call(name: str) -> Message:
     )
 
 
-def test_full_replays_every_reasoning_block():
-    messages = [
-        _reasoning("first"), _tool_call("a"),
-        _reasoning("second"), _tool_call("b"),
+def test_reasoning_replay_policies_select_expected_blocks():
+    cases = [
+        ("full", ["first", "second"]),
+        ("keep-last", ["", "second"]),
+        ("none", ["", ""]),
     ]
-
-    result = fold_and_serialize(messages, "openai", reasoning_replay="full")
-
-    assert [m["content"] for m in result] == ["first", "second"]
-
-
-def test_keep_last_replays_only_latest_reasoning_block():
-    messages = [
-        _reasoning("first"), _tool_call("a"),
-        _reasoning("second"), _tool_call("b"),
-    ]
-
-    result = fold_and_serialize(messages, "openai", reasoning_replay="keep-last")
-
-    assert [m["content"] for m in result] == ["", "second"]
-
-
-def test_none_replays_no_reasoning_blocks():
-    messages = [
-        _reasoning("first"), _tool_call("a"),
-        _reasoning("second"), _tool_call("b"),
-    ]
-
-    result = fold_and_serialize(messages, "openai", reasoning_replay="none")
-
-    assert [m["content"] for m in result] == ["", ""]
+    for policy, expected in cases:
+        messages = [
+            _reasoning("first"), _tool_call("a"),
+            _reasoning("second"), _tool_call("b"),
+        ]
+        result = fold_and_serialize(messages, "openai", reasoning_replay=policy)
+        assert [m["content"] for m in result] == expected, policy
 
 
 def test_keep_last_orphan_reasoning_is_preserved_as_orphan():
@@ -147,20 +129,13 @@ def _wire_transcript() -> list[Message]:
     ]
 
 
-def test_count_wire_reasoning_full_keeps_all():
-    survived, total = count_wire_reasoning(_wire_transcript(), "full")
-    assert (survived, total) == (2, 2)
-
-
-def test_count_wire_reasoning_keep_last_keeps_one():
-    survived, total = count_wire_reasoning(_wire_transcript(), "keep-last")
-    assert (survived, total) == (1, 2)
-
-
-def test_count_wire_reasoning_none_strips_all():
-    # The core claim: none puts zero reasoning on the wire.
-    survived, total = count_wire_reasoning(_wire_transcript(), "none")
-    assert (survived, total) == (0, 2)
+def test_count_wire_reasoning_matches_each_replay_policy():
+    for policy, expected in [
+        ("full", (2, 2)),
+        ("keep-last", (1, 2)),
+        ("none", (0, 2)),
+    ]:
+        assert count_wire_reasoning(_wire_transcript(), policy) == expected, policy
 
 
 def test_count_wire_reasoning_no_reasoning_is_zero_zero():

@@ -784,34 +784,16 @@ class TestParseToolCalls:
             reasoning=None,
         )
 
-    def test_string_args_decoded(self) -> None:
-        """vLLM's native format — arguments arrive as a JSON string."""
-        assert self._call('{"city": "Paris"}') == [
-            ToolCall(tool="lookup", args={"city": "Paris"}),
+    def test_argument_shapes_forward_shared_decoder_results(self) -> None:
+        cases = [
+            ("json string", '{"city": "Paris"}', {"city": "Paris"}),
+            ("decoded dict", {"city": "Paris"}, {"city": "Paris"}),
+            ("empty string", "", {}),
+            ("malformed json", '{"city": ', '{"city": '),
+            ("unexpected type", 123, 123),
         ]
-
-    def test_dict_passed_through(self) -> None:
-        """Some downstream wrappers send dict args directly — pass through."""
-        assert self._call({"city": "Paris"}) == [
-            ToolCall(tool="lookup", args={"city": "Paris"}),
-        ]
-
-    def test_empty_string_returns_empty_dict(self) -> None:
-        """No-arg tool calls — empty string args is valid."""
-        assert self._call("") == [ToolCall(tool="lookup", args={})]
-
-    def test_malformed_json_kept_as_raw_args(self) -> None:
-        """Malformed args are NOT coerced to {} or collapsed to a TextResponse:
-        the raw (non-dict) string rides through on the ToolCall so
-        ResponseValidator routes it to the tool-error channel."""
-        assert self._call('{"city": ') == [
-            ToolCall(tool="lookup", args='{"city": '),
-        ]
-
-    def test_unexpected_type_kept_as_raw_args(self) -> None:
-        """Unknown shape (list, int, etc.) is a non-dict — kept for the
-        validator's args-shape check, not raised as a BackendError."""
-        assert self._call(123) == [ToolCall(tool="lookup", args=123)]
+        for case, raw, expected in cases:
+            assert self._call(raw) == [ToolCall(tool="lookup", args=expected)], case
 
     def test_missing_function_is_defensive(self) -> None:
         """A broken tool-call entry (no "function") must not KeyError."""

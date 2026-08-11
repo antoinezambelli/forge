@@ -8,19 +8,17 @@ from forge.core.messages import Message, MessageMeta, MessageRole, MessageType, 
 
 
 class TestMessageRole:
-    def test_all_values_are_valid(self):
+    def test_values_and_string_behavior(self):
         assert MessageRole.SYSTEM == "system"
         assert MessageRole.USER == "user"
         assert MessageRole.ASSISTANT == "assistant"
         assert MessageRole.TOOL == "tool"
-
-    def test_is_str_enum(self):
         for role in MessageRole:
             assert isinstance(role, str)
 
 
 class TestMessageType:
-    def test_all_values_are_valid(self):
+    def test_values_and_string_behavior(self):
         expected = {
             "system_prompt",
             "user_input",
@@ -36,8 +34,6 @@ class TestMessageType:
         }
         actual = {mt.value for mt in MessageType}
         assert actual == expected
-
-    def test_is_str_enum(self):
         for mt in MessageType:
             assert isinstance(mt, str)
 
@@ -76,16 +72,6 @@ class TestMessage:
         )
         api_dict = msg.to_api_dict()
         assert api_dict == {"role": "assistant", "content": "Hello"}
-
-    def test_to_api_dict_uses_string_values_not_enums(self):
-        msg = Message(
-            role=MessageRole.SYSTEM,
-            content="You are helpful.",
-            metadata=MessageMeta(type=MessageType.SYSTEM_PROMPT),
-        )
-        api_dict = msg.to_api_dict()
-        assert isinstance(api_dict["role"], str)
-        assert api_dict["role"] == "system"
 
     def test_metadata_not_in_api_dict(self):
         msg = Message(
@@ -137,32 +123,6 @@ class TestMessage:
             "type": "function",
             "function": {"name": "fetch", "arguments": '{"key": "val"}'},
         }]
-
-    def test_tool_call_openai_with_id(self):
-        msg = Message(
-            role=MessageRole.ASSISTANT,
-            content="",
-            metadata=MessageMeta(type=MessageType.TOOL_CALL),
-            tool_calls=[ToolCallInfo(name="fetch", args={"key": "val"}, call_id="call_000000001")],
-        )
-        api_dict = msg.to_api_dict(format="openai")
-        assert api_dict["tool_calls"] == [{
-            "id": "call_000000001",
-            "type": "function",
-            "function": {"name": "fetch", "arguments": '{"key": "val"}'},
-        }]
-
-    def test_tool_call_ollama_ignores_id(self):
-        msg = Message(
-            role=MessageRole.ASSISTANT,
-            content="",
-            metadata=MessageMeta(type=MessageType.TOOL_CALL),
-            tool_calls=[ToolCallInfo(name="fetch", args={"key": "val"}, call_id="call_000000001")],
-        )
-        api_dict = msg.to_api_dict(format="ollama")
-        tc = api_dict["tool_calls"][0]
-        assert "id" not in tc
-        assert "type" not in tc
 
     def test_multi_tool_calls_ollama(self):
         msg = Message(

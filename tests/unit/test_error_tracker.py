@@ -73,16 +73,18 @@ class TestErrorTrackerToolErrors:
 class TestErrorTrackerIndependence:
     """Retry and tool error counters are independent."""
 
-    def test_retry_does_not_affect_tool_errors(self):
-        tracker = ErrorTracker(max_retries=1, max_tool_errors=1)
-        tracker.record_retry()
-        tracker.record_retry()
-        assert tracker.retries_exhausted is True
-        assert tracker.tool_errors_exhausted is False
-
-    def test_tool_error_does_not_affect_retries(self):
-        tracker = ErrorTracker(max_retries=1, max_tool_errors=1)
-        tracker.record_result(success=False)
-        tracker.record_result(success=False)
-        assert tracker.tool_errors_exhausted is True
-        assert tracker.retries_exhausted is False
+    def test_retry_and_tool_error_budgets_are_independent(self):
+        cases = [
+            ("retry", lambda tracker: tracker.record_retry()),
+            ("tool error", lambda tracker: tracker.record_result(success=False)),
+        ]
+        for label, record in cases:
+            tracker = ErrorTracker(max_retries=1, max_tool_errors=1)
+            record(tracker)
+            record(tracker)
+            if label == "retry":
+                assert tracker.retries_exhausted is True, label
+                assert tracker.tool_errors_exhausted is False, label
+            else:
+                assert tracker.tool_errors_exhausted is True, label
+                assert tracker.retries_exhausted is False, label
