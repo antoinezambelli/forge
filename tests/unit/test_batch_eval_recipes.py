@@ -142,6 +142,13 @@ def test_managed_config_roster_and_sets_are_pinned() -> None:
             "NVIDIA-Nemotron-3-Super-120B-A12B-UD-Q4_K_M-00001-of-00003.gguf",
         ),
     ]
+    deepseek_v4_rpc = [
+        (
+            "DeepSeek-V4-Flash-0731-UD-Q4_K_XL",
+            "llamaserver", "native", "default",
+            "DeepSeek-V4-Flash-0731-UD-Q4_K_XL-00001-of-00005.gguf",
+        ),
+    ]
     new_models = {
         "LFM2.5-8B-A1B-Q4_K_M",
         "Mellum2-12B-A2.5B-Thinking-Q4_K_M",
@@ -155,6 +162,7 @@ def test_managed_config_roster_and_sets_are_pinned() -> None:
         "llamaserver-native": [entry for entry in llamaserver if entry[2] == "native"],
         "llamaserver-prompt": [entry for entry in llamaserver if entry[2] == "prompt"],
         "reasoning-high": reasoning_high,
+        "deepseek-v4-rpc": deepseek_v4_rpc,
         "new-models": [entry for entry in llamaserver if entry[0] in new_models],
         "new-models-native": [
             entry for entry in llamaserver
@@ -182,6 +190,21 @@ def test_managed_recipe_mapping_matches_pinned_literals() -> None:
 
     for config in batch_eval.OLLAMA_CONFIGS + batch_eval.LLAMAFILE_CONFIGS:
         assert config.server_recipe.extra_flags == (), _identity(config)
+
+    deepseek = batch_eval.DEEPSEEK_V4_RPC_CONFIGS[0]
+    assert deepseek.server_recipe.extra_flags == (
+        "--fit", "off",
+        "-b", "2048", "-ub", "128",
+        "--cache-type-k", "q8_0", "--cache-type-v", "q8_0",
+        "--no-mmap", "-fa", "on",
+        "--reasoning-budget", "32768", "--reasoning-format", "auto",
+        "--no-prefill-assistant",
+    )
+    assert deepseek.server_recipe.rpc is None
+    assert deepseek.sampling_override is None
+    assert deepseek.reasoning_level == "default"
+    for manager_owned in ("-ngl", "--jinja", "--rpc", "--device", "--tensor-split"):
+        assert manager_owned not in deepseek.server_recipe.extra_flags
 
     recipe = batch_eval._BatchServerRecipe(("--reasoning-format", "auto"))
     with pytest.raises(FrozenInstanceError):

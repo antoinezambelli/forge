@@ -14,16 +14,22 @@ import asyncio
 import json
 import os
 import re
+import shlex
 import subprocess
 import sys
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
 from forge.clients.sampling_defaults import get_sampling_defaults
 from forge.core.reasoning import DEFAULT_REASONING_REPLAY, REASONING_REPLAY_CHOICES, ReasoningReplay
-from forge.rpc import LlamaCppRpcConfig
+from forge.rpc import (
+    LlamaCppRpcConfig,
+    LlamaCppRpcWorkerConfig,
+    render_rpc_coordinator_args,
+    render_rpc_worker_command,
+)
 from forge.server import BudgetMode, ServerManager, setup_backend
 
 from tests.eval.ablation import ABLATION_PRESETS, AblationConfig
@@ -77,6 +83,17 @@ _LARGE_120B_SERVER_RECIPE = _BatchServerRecipe((
     "--cache-type-k", "q8_0", "--cache-type-v", "q8_0", "-fa", "1",
     "--no-prefill-assistant", "--no-mmap",
 ))
+_DEEPSEEK_V4_RPC_SERVER_RECIPE = _BatchServerRecipe((
+    "--fit", "off",
+    "-b", "2048", "-ub", "128",
+    "--cache-type-k", "q8_0", "--cache-type-v", "q8_0",
+    "--no-mmap", "-fa", "on",
+    "--reasoning-budget", "32768", "--reasoning-format", "auto",
+    "--no-prefill-assistant",
+))
+
+_DEEPSEEK_V4_MODEL = "DeepSeek-V4-Flash-0731-UD-Q4_K_XL"
+_DEEPSEEK_V4_GGUF = f"{_DEEPSEEK_V4_MODEL}-00001-of-00005.gguf"
 
 
 # GGUF files and their literal per-configuration server options. Mode-derived
@@ -275,6 +292,20 @@ _REASONING_HIGH_CONFIGS: list[BatchConfig] = [
     ),
 ]
 
+# Explicit large-model campaign. Machine-local RPC values are attached from
+# --rpc-topology at invocation time; reasoning effort comes only from the
+# sampling-registry row for this model.
+DEEPSEEK_V4_RPC_CONFIGS: list[BatchConfig] = [
+    BatchConfig(
+        model=_DEEPSEEK_V4_MODEL,
+        backend="llamaserver",
+        mode="native",
+        think=None,
+        gguf_filename=_DEEPSEEK_V4_GGUF,
+        server_recipe=_DEEPSEEK_V4_RPC_SERVER_RECIPE,
+    ),
+]
+
 # Named subsets for quick iteration
 CONFIG_SETS: dict[str, list[BatchConfig]] = {
     "all": ALL_CONFIGS,
@@ -284,10 +315,90 @@ CONFIG_SETS: dict[str, list[BatchConfig]] = {
     "llamaserver-native": [c for c in LLAMASERVER_CONFIGS if c.mode == "native"],
     "llamaserver-prompt": [c for c in LLAMASERVER_CONFIGS if c.mode == "prompt"],
     "reasoning-high": _REASONING_HIGH_CONFIGS,
+    "deepseek-v4-rpc": DEEPSEEK_V4_RPC_CONFIGS,
     "new-models": NEW_MODEL_CONFIGS,
     "new-models-native": [c for c in NEW_MODEL_CONFIGS if c.mode == "native"],
     "new-models-prompt": [c for c in NEW_MODEL_CONFIGS if c.mode == "prompt"],
 }
+
+
+def _load_rpc_topology(path: Path) -> LlamaCppRpcConfig:
+    """Load one explicit batch RPC topology from a small JSON file."""
+    topology_data = dict(json.loads(path.read_text(encoding="utf-8")))
+    worker_data = dict(topology_data.pop("worker"))
+    if "environment" in worker_data:
+        worker_data["environment"] = tuple(
+            tuple(pair) for pair in worker_data["environment"]
+        )
+    if "ssh_options" in worker_data:
+        worker_data["ssh_options"] = tuple(worker_data["ssh_options"])
+    worker = LlamaCppRpcWorkerConfig(**worker_data)
+
+    topology_data["worker"] = worker
+    topology_data["devices"] = tuple(topology_data["devices"])
+    topology_data["tensor_split"] = tuple(topology_data["tensor_split"])
+    if "coordinator_environment" in topology_data:
+        topology_data["coordinator_environment"] = tuple(
+            tuple(pair) for pair in topology_data["coordinator_environment"]
+        )
+    return LlamaCppRpcConfig(**topology_data)
+
+
+def _attach_deepseek_rpc_topology(
+    configs: list[BatchConfig], rpc: LlamaCppRpcConfig,
+) -> list[BatchConfig]:
+    """Attach machine-local RPC values without mutating the registry config."""
+    return [
+        replace(
+            config,
+            server_recipe=replace(config.server_recipe, rpc=rpc),
+        )
+        if config.model == _DEEPSEEK_V4_MODEL else config
+        for config in configs
+    ]
+
+
+def _print_rpc_recipe(
+    config: BatchConfig,
+    models_dir: Path,
+    budget_mode: BudgetMode,
+    manual_tokens: int | None,
+) -> None:
+    """Render the complete normalized launch recipe for an RPC batch config."""
+    rpc = config.server_recipe.rpc
+    assert rpc is not None
+    assert config.gguf_filename is not None
+    artifact = str(models_dir / config.gguf_filename)
+
+    sampling = get_sampling_defaults(config.model)
+    template_kwargs = sampling.get("chat_template_kwargs", {})
+    effort = (
+        template_kwargs.get("reasoning_effort")
+        if isinstance(template_kwargs, dict) else None
+    )
+
+    coordinator_command = [
+        "env",
+        *(f"{key}={value}" for key, value in rpc.coordinator_environment),
+        rpc.coordinator_executable,
+        "-m", artifact,
+        "-ngl", "999",
+        "--port", str(_eval_port()),
+        *render_rpc_coordinator_args(rpc),
+    ]
+    if config.mode == "native":
+        coordinator_command.append("--jinja")
+    coordinator_command.extend(config.server_recipe.extra_flags)
+    if budget_mode == BudgetMode.MANUAL and manual_tokens is not None:
+        coordinator_command.extend(["-c", str(manual_tokens)])
+
+    print("  Managed RPC recipe:")
+    print(f"    model: {config.model}")
+    print(f"    reasoning effort (sampling registry): {effort}")
+    print(f"    worker command: {shlex.join(render_rpc_worker_command(rpc.worker))}")
+    print(f"    coordinator command: {shlex.join(coordinator_command)}")
+    print(f"    startup timeout: {rpc.startup_timeout:g}s")
+    print(f"    log directory: {rpc.log_directory or '<temporary>'}")
 
 
 # ── Anthropic pricing (USD per million tokens) ──────────────────
@@ -851,6 +962,14 @@ async def run_batch(
             "batch_eval supports only managed backends "
             f"{sorted(supported_backends)}; unsupported: {unsupported_backends}"
         )
+    if any(
+        config.model == _DEEPSEEK_V4_MODEL
+        and config.server_recipe.rpc is None
+        for config in configs
+    ):
+        raise ValueError(
+            "DeepSeek V4 RPC batch config requires an attached RPC topology"
+        )
 
     if scenario_names:
         name_set = set(scenario_names)
@@ -909,6 +1028,11 @@ async def run_batch(
             f"{'='*70}",
             flush=True,
         )
+        if (
+            config.model == _DEEPSEEK_V4_MODEL
+            and config.server_recipe.rpc is not None
+        ):
+            _print_rpc_recipe(config, models_dir, budget_mode, manual_tokens)
 
         # ── Dry run ───────────────────────────────────────
         if dry_run:
@@ -1149,6 +1273,12 @@ async def main() -> None:
         help="Which config set to run",
     )
     parser.add_argument(
+        "--rpc-topology",
+        type=str,
+        default=None,
+        help="JSON topology file required by --config deepseek-v4-rpc.",
+    )
+    parser.add_argument(
         "--scenario", nargs="*",
         help="Run specific scenarios by name (e.g. --scenario basic_2step sequential_reasoning)",
     )
@@ -1219,6 +1349,16 @@ async def main() -> None:
         configs = [c for c in configs if args.model in c.model]
         if not configs:
             parser.error(f"No configs match --model '{args.model}' in set '{args.config}'")
+    if args.config == "deepseek-v4-rpc":
+        if args.rpc_topology is None:
+            parser.error("--config deepseek-v4-rpc requires --rpc-topology")
+        try:
+            rpc_topology = _load_rpc_topology(Path(args.rpc_topology))
+        except (OSError, ValueError, TypeError, KeyError) as exc:
+            parser.error(f"cannot load --rpc-topology: {exc}")
+        configs = _attach_deepseek_rpc_topology(configs, rpc_topology)
+    elif args.rpc_topology is not None:
+        parser.error("--rpc-topology is only valid with --config deepseek-v4-rpc")
     output_path = Path(args.output) if args.output else Path("eval_results.jsonl")
 
     if args.scenario:
@@ -1243,6 +1383,8 @@ async def main() -> None:
     print(f"  Runs/scenario: {args.runs}")
     print(f"  Output:        {output_path}")
     print(f"  Models dir:    {args.models_dir}")
+    if args.rpc_topology:
+        print(f"  RPC topology:  {args.rpc_topology}")
     print(f"  Total max runs: {len(configs) * scenario_count * args.runs}")
 
     models_dir = Path(args.models_dir)

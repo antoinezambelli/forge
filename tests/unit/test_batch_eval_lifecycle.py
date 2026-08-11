@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import sys
 from types import SimpleNamespace
 from typing import Any
 
 import pytest
 
 import tests.eval.batch_eval as batch_eval
+from forge.clients.sampling_defaults import get_sampling_defaults
 from forge.server import BudgetMode
 from tests.eval.batch_eval import BatchConfig, _BatchServerRecipe, run_batch
 from tests.eval.eval_runner import RunResult
@@ -237,6 +239,133 @@ def test_client_factory_uses_manager_url_and_request_timeout(
     assert constructed[0][1]["timeout"] == 600
     assert constructed[1][1]["base_url"] == "http://coordinator:8080/v1"
     assert constructed[1][1]["timeout"] == 7200
+
+
+@pytest.mark.asyncio
+async def test_deepseek_topology_client_and_dry_run_are_one_integrated_path(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    topology_path = tmp_path / "deepseek-rpc.json"
+    topology_path.write_text(
+        json.dumps({
+            "worker": {
+                "ssh_target": "operator@10.35.0.5",
+                "rpc_host": "10.35.0.5",
+                "rpc_port": 50052,
+                "executable": "/opt/llama/build/bin/ggml-rpc-server",
+                "device": "Vulkan0",
+                "tensor_cache": True,
+                "environment": [
+                    ["AMD_VULKAN_ICD", "RADV"],
+                    ["RADV_PERFTEST", "nogttspill"],
+                ],
+            },
+            "coordinator_executable": "/opt/llama/build/bin/llama-server",
+            "coordinator_environment": [
+                ["AMD_VULKAN_ICD", "RADV"],
+                ["RADV_PERFTEST", "nogttspill"],
+            ],
+            "devices": ["Vulkan0", "RPC0"],
+            "tensor_split": [1, 1],
+            "split_mode": "layer",
+            "startup_timeout": 1800,
+            "log_directory": str(tmp_path / "logs"),
+        }),
+        encoding="utf-8",
+    )
+    model_path = (
+        tmp_path
+        / "DeepSeek-V4-Flash-0731-UD-Q4_K_XL-00001-of-00005.gguf"
+    )
+    model_path.touch()
+
+    rpc = batch_eval._load_rpc_topology(topology_path)
+    assert rpc.worker.tensor_cache is True
+    assert rpc.worker.environment == (
+        ("AMD_VULKAN_ICD", "RADV"),
+        ("RADV_PERFTEST", "nogttspill"),
+    )
+    assert rpc.devices == ("Vulkan0", "RPC0")
+    assert rpc.tensor_split == (1, 1)
+    assert rpc.startup_timeout == 1800
+
+    base_config = batch_eval.DEEPSEEK_V4_RPC_CONFIGS[0]
+    with pytest.raises(ValueError, match="requires an attached RPC topology"):
+        await run_batch(
+            [base_config], 1, tmp_path / "unconfigured.jsonl", dry_run=True,
+        )
+    attached = batch_eval._attach_deepseek_rpc_topology([base_config], rpc)
+    assert base_config.server_recipe.rpc is None
+    assert attached[0] is not base_config
+    assert attached[0].server_recipe.rpc is rpc
+
+    client = batch_eval._build_client(
+        attached[0], tmp_path, "http://localhost:8080/v1", 7200,
+    )
+    selected_effort = get_sampling_defaults(base_config.model)[
+        "chat_template_kwargs"
+    ]["reasoning_effort"]
+    assert selected_effort in {"low", "high", "max"}
+    assert client.temperature == 1.0
+    assert client.top_p == 0.95
+    assert client.chat_template_kwargs == {"reasoning_effort": selected_effort}
+    await client.aclose()
+
+    def fail(*args: Any, **kwargs: Any) -> Any:
+        pytest.fail("dry-run reached backend, client, subprocess, or output activity")
+
+    monkeypatch.setattr(batch_eval, "setup_backend", fail)
+    monkeypatch.setattr(batch_eval, "_build_client", fail)
+    monkeypatch.setattr(batch_eval, "_append_jsonl_row", fail)
+    monkeypatch.setattr(batch_eval.subprocess, "run", fail)
+    output_path = tmp_path / "must-not-exist.jsonl"
+    monkeypatch.setattr(sys, "argv", [
+        "batch_eval",
+        "--config", "deepseek-v4-rpc",
+        "--rpc-topology", str(topology_path),
+        "--tags", "plumbing", "model_quality", "advanced_reasoning",
+        "--runs", "50",
+        "--budget-mode", "manual",
+        "--num-ctx", "262144",
+        "--request-timeout", "7200",
+        "--run-timeout", "7200",
+        "--ablation", "reforged",
+        "--reasoning-replay", "none",
+        "--generation", "3",
+        "--models-dir", str(tmp_path),
+        "--output", str(output_path),
+        "--dry-run",
+    ])
+
+    await batch_eval.main()
+
+    output = capsys.readouterr().out
+    assert "Config set:    deepseek-v4-rpc (1 configs)" in output
+    assert "Scenarios:     26" in output
+    assert "Total max runs: 1300" in output
+    assert (
+        f"reasoning effort (sampling registry): {selected_effort}" in output
+    )
+    assert "startup timeout: 1800s" in output
+    worker_line = next(
+        line for line in output.splitlines() if "worker command:" in line
+    )
+    coordinator_line = next(
+        line for line in output.splitlines() if "coordinator command:" in line
+    )
+    assert worker_line.endswith("-H 10.35.0.5 -p 50052 -d Vulkan0 -c'")
+    for owned_arg in (
+        "-ngl 999", "--jinja", "--fit off", "-b 2048", "-ub 128",
+        "--cache-type-k q8_0", "--cache-type-v q8_0", "--no-mmap",
+        "-fa on", "--reasoning-budget 32768", "--reasoning-format auto",
+        "--no-prefill-assistant", "--rpc 10.35.0.5:50052",
+        "--device Vulkan0,RPC0", "--split-mode layer",
+        "--tensor-split 1,1", "-c 262144",
+    ):
+        assert coordinator_line.count(owned_arg) == 1, owned_arg
+    assert not output_path.exists()
 
 
 @pytest.mark.asyncio

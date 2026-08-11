@@ -105,6 +105,10 @@ MODEL_SAMPLING_DEFAULTS: dict[str, dict[str, float | int]] = {
     # smoke clean. enable_thinking left as template default (true server-side
     # but reasoning-budget=0 caps it to 0 tokens).
     "Qwen3.5-122B-A10B-Q4_K_M":             {"temperature": 0.7, "top_p": 0.8, "top_k": 20},                                                                 # https://huggingface.co/Qwen/Qwen3.5-122B-A10B
+    # DeepSeek-V4-Flash-0731 — agentic profile: T=1.0, top_p=0.95. The card
+    # supports low/high/max reasoning effort. This one registry value is the
+    # deliberate campaign selector; change only it between effort campaigns.
+    "DeepSeek-V4-Flash-0731-UD-Q4_K_XL":      {"temperature": 1.0, "top_p": 0.95, "chat_template_kwargs": {"reasoning_effort": "max"}},                  # https://huggingface.co/deepseek-ai/DeepSeek-V4-Flash-0731
     # gpt-oss-120b — OpenAI open-weight MoE (117B total, 5.1B active). Reasoning model with three
     # discrete levels: "low" / "medium" / "high", controlled via chat_template_kwargs.reasoning_effort
     # (per llama.cpp guide: `--chat-template-kwargs '{"reasoning_effort": "high"}'`). Defaulting to

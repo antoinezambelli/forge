@@ -1,5 +1,8 @@
 # Eval Guide
 
+For the managed two-rig DeepSeek V4 campaign, see
+[DeepSeek V4 RPC campaign](DEEPSEEK_RPC_CAMPAIGN.md).
+
 Internal tooling for measuring how reliably a model + backend combo navigates multi-step tool-calling workflows. Not a test suite — run manually against a live backend.
 
 ## Eval Harness

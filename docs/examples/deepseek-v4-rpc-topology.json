@@ -1,0 +1,30 @@
+{
+  "worker": {
+    "ssh_target": "operator@WORKER_HOST",
+    "rpc_host": "WORKER_HOST",
+    "rpc_port": 50052,
+    "executable": "/absolute/path/to/llama.cpp/build/bin/ggml-rpc-server",
+    "device": "Vulkan0",
+    "tensor_cache": true,
+    "environment": [
+      ["AMD_VULKAN_ICD", "RADV"],
+      ["RADV_PERFTEST", "nogttspill"]
+    ],
+    "ssh_options": [
+      "-o",
+      "BatchMode=yes",
+      "-o",
+      "ConnectTimeout=5"
+    ]
+  },
+  "coordinator_executable": "/absolute/path/to/llama.cpp/build/bin/llama-server",
+  "coordinator_environment": [
+    ["AMD_VULKAN_ICD", "RADV"],
+    ["RADV_PERFTEST", "nogttspill"]
+  ],
+  "devices": ["Vulkan0", "RPC0"],
+  "tensor_split": [1, 1],
+  "split_mode": "layer",
+  "startup_timeout": 1800,
+  "log_directory": "/absolute/path/to/forge-rpc-logs"
+}
