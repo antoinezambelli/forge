@@ -117,28 +117,6 @@ _AR_SCENARIOS: set[str] = {
 # ── Data loading ────────────────────────────────────────────────
 
 
-# Reasoning-effort DISPLAY vocabulary, keyed by model stem. Maps a row's stored
-# reasoning_level ("default" = the model's registry baseline effort, plus any
-# explicit variant like "high") to the model's native vendor term. Only stems
-# present here render an effort tag; models with no chat-template reasoning knob
-# (qwen's reasoning is a server-side budget; plain instruct models) show nothing.
-# Storage stays generic ("default"/"high" in the JSONL); the bespoke terms live
-# here so display is decoupled from what's stored.
-_REASONING_VOCAB: dict[str, dict[str, str]] = {
-    "gpt-oss-120b-Q4_K_M": {"default": "medium", "high": "high"},
-    "NVIDIA-Nemotron-3-Super-120B-A12B-UD-Q4_K_M": {"default": "low", "high": "high"},
-}
-
-
-def _reasoning_display(model: str, level: str) -> str | None:
-    """Native effort term for a model's reasoning_level, or None when the model
-    has no reasoning-effort axis (so no effort tag is shown)."""
-    vocab = _REASONING_VOCAB.get(model)
-    if vocab is None:
-        return None
-    return vocab.get(level, level)
-
-
 @dataclass
 class ConfigKey:
     model: str
@@ -148,9 +126,8 @@ class ConfigKey:
     tool_choice: str = "auto"
     # Pre-knob rows ran unbounded replay — legacy behavior == "full".
     reasoning_replay: str = "full"
-    # Reasoning-effort level. "default" = the model's registry baseline effort
-    # (pre-axis rows have no field); explicit variants like "high" coexist as
-    # parallel display rows. Rendered via _REASONING_VOCAB in _tag.
+    # Effective reasoning-effort level. Pre-axis rows have no field and resolve
+    # to "default", which is intentionally omitted from display labels.
     reasoning_level: str = "default"
 
     @property
@@ -166,9 +143,8 @@ class ConfigKey:
             base = self.ablation
         if self.reasoning_replay != "none":
             base = f"{base}:{self.reasoning_replay}"
-        effort = _reasoning_display(self.model, self.reasoning_level)
-        if effort is not None:
-            base = f"{base}@{effort}"
+        if self.reasoning_level != "default":
+            base = f"{base}@{self.reasoning_level}"
         return f"[{base}]"
 
     @property

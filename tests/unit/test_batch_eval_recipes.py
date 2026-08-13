@@ -112,6 +112,12 @@ _EXPECTED_SPECIAL_FLAGS = {
     "NVIDIA-Nemotron-3-Super-120B-A12B-UD-Q4_K_M": _LARGE_120B_FLAGS,
 }
 
+_EXPECTED_REASONING_LEVELS = {
+    "gpt-oss-120b-Q4_K_M": "medium",
+    "NVIDIA-Nemotron-3-Super-120B-A12B-UD-Q4_K_M": "low",
+    "Muse-Glimmer-30B-UD-Q4_K_XL": "xhigh",
+}
+
 
 def _identity(config: batch_eval.BatchConfig) -> tuple[str, str, str, str, str | None]:
     return (
@@ -126,9 +132,10 @@ def _identity(config: batch_eval.BatchConfig) -> tuple[str, str, str, str, str |
 def _expected_llamaserver_identities() -> list[tuple[str, str, str, str, str]]:
     identities: list[tuple[str, str, str, str, str]] = []
     for model, filename in _EXPECTED_GGUFS:
+        reasoning_level = _EXPECTED_REASONING_LEVELS.get(model, "default")
         if model != "phi-4-Q4_K_M":
-            identities.append((model, "llamaserver", "native", "default", filename))
-        identities.append((model, "llamaserver", "prompt", "default", filename))
+            identities.append((model, "llamaserver", "native", reasoning_level, filename))
+        identities.append((model, "llamaserver", "prompt", reasoning_level, filename))
     return identities
 
 
@@ -156,7 +163,7 @@ def test_managed_config_roster_and_sets_are_pinned() -> None:
     deepseek_v4_rpc = [
         (
             "DeepSeek-V4-Flash-0731-UD-Q4_K_XL",
-            "llamaserver", "native", "default",
+            "llamaserver", "native", "low",
             "DeepSeek-V4-Flash-0731-UD-Q4_K_XL-00001-of-00005.gguf",
         ),
     ]
@@ -208,6 +215,28 @@ def test_managed_recipe_mapping_matches_pinned_literals() -> None:
     )
     assert glimmer.server_recipe.draft_filename == "dflash-kquant.gguf"
 
+    for model, reasoning_level in _EXPECTED_REASONING_LEVELS.items():
+        configs = [
+            config
+            for config in batch_eval.LLAMASERVER_CONFIGS
+            if config.model == model
+        ]
+        assert {config.mode for config in configs} == {"native", "prompt"}
+        assert {config.reasoning_level for config in configs} == {reasoning_level}
+
+    assert (
+        batch_eval.get_sampling_defaults("gpt-oss-120b-Q4_K_M")
+        ["chat_template_kwargs"]["reasoning_effort"]
+        == "medium"
+    )
+    assert (
+        batch_eval.get_sampling_defaults(
+            "NVIDIA-Nemotron-3-Super-120B-A12B-UD-Q4_K_M"
+        )["chat_template_kwargs"]["low_effort"]
+        is True
+    )
+    assert '{"reasoning_strength":"xhigh"}' in glimmer.server_recipe.extra_flags
+
     deepseek = batch_eval.DEEPSEEK_V4_RPC_CONFIGS[0]
     assert deepseek.server_recipe.extra_flags == (
         "--fit", "off",
@@ -219,7 +248,12 @@ def test_managed_recipe_mapping_matches_pinned_literals() -> None:
     )
     assert deepseek.server_recipe.rpc is None
     assert deepseek.sampling_override is None
-    assert deepseek.reasoning_level == "default"
+    assert deepseek.reasoning_level == "low"
+    assert (
+        batch_eval.get_sampling_defaults(deepseek.model)
+        ["chat_template_kwargs"]["reasoning_effort"]
+        == deepseek.reasoning_level
+    )
     for manager_owned in ("-ngl", "--jinja", "--rpc", "--device", "--tensor-split"):
         assert manager_owned not in deepseek.server_recipe.extra_flags
 

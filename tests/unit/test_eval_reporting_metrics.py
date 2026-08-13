@@ -78,6 +78,21 @@ def test_report_keeps_all_three_denominators_independent() -> None:
     assert "scenarioRuns" not in dashboard
 
 
+def test_report_labels_only_explicit_reasoning_levels() -> None:
+    legacy = report.ConfigKey("model-q4", "llamaserver", "native")
+    explicit_default = report.ConfigKey(
+        "model-q4", "llamaserver", "native", reasoning_level="default"
+    )
+
+    assert legacy.short_label == explicit_default.short_label
+    assert "@" not in legacy.short_label
+    for level in ("low", "medium", "high", "xhigh"):
+        key = report.ConfigKey(
+            "model-q4", "llamaserver", "native", reasoning_level=level
+        )
+        assert f"@{level}]" in key.short_label
+
+
 def test_significance_identity_does_not_pool_replay_or_reasoning() -> None:
     base = _row()
     none = significance.configuration_identity(

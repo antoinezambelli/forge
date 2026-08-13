@@ -291,10 +291,11 @@ All {column_count} columns use one explicit v2 schema:
   metadata, canonical configuration/arm identifiers, selection status, and view
   membership.
 
-Released source JSONLs remain byte-for-byte immutable. Their legacy
-`accuracy`/`completeness` spelling is normalized to published
-`correct`/`completed`; the legacy aliases do not appear in the Parquet schema.
-Sparse source fields become null.
+The builder never modifies source JSONLs. Each accepted source revision is
+pinned by its exact hash, so intentional provenance corrections require an
+explicit pin update. Legacy `accuracy`/`completeness` spelling is normalized to
+published `correct`/`completed`; the legacy aliases do not appear in the
+Parquet schema. Sparse source fields become null.
 
 ## Generations, replay, and carried evidence
 

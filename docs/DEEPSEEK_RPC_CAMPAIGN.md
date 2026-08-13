@@ -9,9 +9,10 @@ The sole effort control is
 `MODEL_SAMPLING_DEFAULTS["DeepSeek-V4-Flash-0731-UD-Q4_K_XL"]` in
 `src/forge/clients/sampling_defaults.py`. Its
 `chat_template_kwargs.reasoning_effort` must be one of `low`, `high`, or
-`max`. Change only that value between isolated effort campaigns; the dry-run
-prints the selected value for confirmation. The batch config deliberately keeps
-`reasoning_level="default"` and has no sampling override.
+`max`. Change only that value between isolated effort campaigns; the DeepSeek
+batch config reads it into `reasoning_level` so result provenance and resume
+identity match the effort actually run. The dry-run prints the selected value
+for confirmation. The config has no sampling override.
 
 ## Supply the machine-local topology
 

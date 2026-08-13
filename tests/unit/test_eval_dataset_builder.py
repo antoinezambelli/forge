@@ -125,6 +125,7 @@ def test_card_documents_replay_reasoning_and_carried_evidence_semantics(
     ) in body
     assert "raw `reasoning_replay` field preserves the source value" in body
     assert "Missing raw\n`reasoning_level` resolves to effective `default`" in body
+    assert "Each accepted source revision is\npinned by its exact hash" in body
     assert (
         "Carried evidence is an older\nselected cohort retained only because no "
         "newer matching cohort exists."

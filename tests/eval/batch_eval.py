@@ -107,6 +107,20 @@ _DEEPSEEK_V4_RPC_SERVER_RECIPE = _BatchServerRecipe((
 
 _DEEPSEEK_V4_MODEL = "DeepSeek-V4-Flash-0731-UD-Q4_K_XL"
 _DEEPSEEK_V4_GGUF = f"{_DEEPSEEK_V4_MODEL}-00001-of-00005.gguf"
+_DEEPSEEK_V4_SAMPLING: dict[str, Any] = get_sampling_defaults(_DEEPSEEK_V4_MODEL)
+_DEEPSEEK_V4_REASONING_LEVEL: str = _DEEPSEEK_V4_SAMPLING[
+    "chat_template_kwargs"
+]["reasoning_effort"]
+
+# Effective reasoning levels for model configurations with an explicitly
+# controlled effort axis.  "default" remains reserved for configurations that
+# do not record a tested effort level; it is also the fallback for legacy rows
+# written before the field existed.
+_EFFECTIVE_REASONING_LEVELS: dict[str, str] = {
+    "gpt-oss-120b-Q4_K_M": "medium",
+    "NVIDIA-Nemotron-3-Super-120B-A12B-UD-Q4_K_M": "low",
+    "Muse-Glimmer-30B-UD-Q4_K_XL": "xhigh",
+}
 
 
 # GGUF files and their literal per-configuration server options. Mode-derived
@@ -198,11 +212,12 @@ class BatchConfig:
     tool_choice: str | None = None
     gguf_filename: str | None = None  # llamaserver/llamafile only
     server_recipe: _BatchServerRecipe = _DEFAULT_SERVER_RECIPE
-    # Reasoning-effort axis. reasoning_level tags rows so effort variants of the
-    # same stem coexist in the resume key + report ("default" = registry
-    # recommended sampling). sampling_override, when set, bypasses recommended
-    # sampling in _build_client and passes an explicit param set (its keys match
-    # LlamafileClient kwargs). See forge_eval_reasoning_level_axis design.
+    # Reasoning-effort axis. reasoning_level records the effective tested level
+    # so variants of the same stem coexist in the resume key + report. "default"
+    # means no explicit level was recorded (and is the legacy missing-field
+    # fallback), not "look up the current registry value". sampling_override,
+    # when set, bypasses recommended sampling in _build_client and passes an
+    # explicit param set (its keys match LlamafileClient kwargs).
     reasoning_level: str = "default"
     sampling_override: dict[str, Any] | None = None
 
@@ -238,6 +253,7 @@ for _filename, _server_recipe in _GGUF_FILES:
                 model=_stem, backend="llamaserver", mode="native",
                 think=None, gguf_filename=_filename,
                 server_recipe=_server_recipe,
+                reasoning_level=_EFFECTIVE_REASONING_LEVELS.get(_stem, "default"),
             )
         )
     LLAMASERVER_CONFIGS.append(
@@ -245,6 +261,7 @@ for _filename, _server_recipe in _GGUF_FILES:
             model=_stem, backend="llamaserver", mode="prompt",
             think=None, gguf_filename=_filename,
             server_recipe=_server_recipe,
+            reasoning_level=_EFFECTIVE_REASONING_LEVELS.get(_stem, "default"),
         )
     )
 
@@ -277,9 +294,10 @@ NEW_MODEL_CONFIGS: list[BatchConfig] = [
 # recommended sampling is bypassed (sampling_override) so chat_template_kwargs
 # swaps the effort knob to HIGH while get_sampling_defaults preserves the rest
 # of the registry baseline (temp/top_p/...). reasoning_level="high" tags the
-# rows so they coexist with the baseline ("default") rows in the resume key +
-# report instead of colliding (silent-skip). Kept OUT of LLAMASERVER_CONFIGS /
-# "all" so only an explicit --config reasoning-high runs them.
+# rows so they coexist with the explicitly stamped baseline rows in the resume
+# key + report instead of colliding (silent-skip). Kept OUT of
+# LLAMASERVER_CONFIGS / "all" so only an explicit --config reasoning-high runs
+# them.
 _REASONING_HIGH_CONFIGS: list[BatchConfig] = [
     BatchConfig(
         model="gpt-oss-120b-Q4_K_M", backend="llamaserver", mode="native",
@@ -317,6 +335,7 @@ DEEPSEEK_V4_RPC_CONFIGS: list[BatchConfig] = [
         think=None,
         gguf_filename=_DEEPSEEK_V4_GGUF,
         server_recipe=_DEEPSEEK_V4_RPC_SERVER_RECIPE,
+        reasoning_level=_DEEPSEEK_V4_REASONING_LEVEL,
     ),
 ]
 
