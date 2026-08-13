@@ -93,6 +93,9 @@ MODEL_SAMPLING_DEFAULTS: dict[str, dict[str, float | int]] = {
     "gemma-4-E4B-it-Q4_K_M":              {"temperature": 1.0, "top_p": 0.95, "top_k": 64},  # https://huggingface.co/google/gemma-4-e4b-it
     "gemma4:e4b-it-q8_0":                 {"temperature": 1.0, "top_p": 0.95, "top_k": 64},  # https://huggingface.co/google/gemma-4-e4b-it
     "gemma-4-E4B-it-Q8_0":                {"temperature": 1.0, "top_p": 0.95, "top_k": 64},  # https://huggingface.co/google/gemma-4-e4b-it
+    # Muse Glimmer 30B — card recommends one sampling profile; min_p and
+    # repetition/presence penalties are not specified and remain unset.
+    "Muse-Glimmer-30B-UD-Q4_K_XL":       {"temperature": 1.0, "top_p": 0.95, "top_k": 64},  # https://huggingface.co/unsloth/Muse-Glimmer-30B-GGUF
     # Mistral Small 4 — card gives T=0.7 for reasoning_effort="high" and "between 0.0 and 0.7" for
     # reasoning_effort="none" (task-dependent). Picking the high-effort profile (T=0.7 + explicit
     # reasoning_effort="high" via chat_template_kwargs envelope) as the safer default. top_p/top_k

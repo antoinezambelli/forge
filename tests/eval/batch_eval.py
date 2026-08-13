@@ -74,6 +74,7 @@ _GGUF_FILES: list[str] = [
     "Qwen3.6-27B-Q4_K_M.gguf",
     "Qwen3.6-35B-A3B-UD-Q4_K_M.gguf",
     "Nemotron-3-Nano-30B-A3B-Q4_K_M.gguf",
+    "Muse-Glimmer-30B-UD-Q4_K_XL.gguf",
     # Gemma-4 large (rig-04, az/eval-large): 26B-A4B MoE + 31B dense. Native FC;
     # serving recipe in _SERVER_EXTRA_FLAGS (SWA + q8-KV serving fixes).
     "gemma-4-26B-A4B-it-UD-Q4_K_M.gguf",
@@ -604,6 +605,15 @@ _SERVER_EXTRA_FLAGS: dict[str, list[str]] = {
     "Qwen3.6-27B-Q4_K_M": ["--reasoning-format", "auto"],
     "Qwen3.6-35B-A3B-UD-Q4_K_M": ["--reasoning-format", "auto"],
     "Nemotron-3-Nano-30B-A3B-Q4_K_M": ["--reasoning-format", "auto"],
+    "Muse-Glimmer-30B-UD-Q4_K_XL": [
+        "--reasoning", "on", "--reasoning-format", "auto",
+        "--chat-template-kwargs", '{"reasoning_strength":"xhigh"}',
+        "--ctx-checkpoints", "1", "--cache-type-k", "q8_0",
+        "--cache-type-v", "q8_0", "-fa", "1",
+        "--samplers", "temperature;top_p;top_k",
+        "--spec-type", "draft-dflash", "--device-draft", "CUDA0",
+        "--gpu-layers-draft", "all", "--spec-draft-n-max", "15",
+    ],
     # 16GB tier reasoning models: LFM2.5 emits explicit CoT, Mellum2 Thinking
     # emits <think> (qwen3-style) — both need server-side parsing. Mellum2
     # Instruct is direct (no <think>), so it gets no extra flag.
@@ -653,6 +663,10 @@ _SERVER_EXTRA_FLAGS: dict[str, list[str]] = {
     ],
 }
 
+_SERVER_DRAFT_FILES: dict[str, str] = {
+    "Muse-Glimmer-30B-UD-Q4_K_XL": "dflash-kquant.gguf",
+}
+
 
 def _ollama_models() -> set[str]:
     """Return set of locally available Ollama model names."""
@@ -680,6 +694,9 @@ def _check_model_available(
             return f"no GGUF/llamafile filename on config for {config.model}"
         if not (models_dir / config.gguf_filename).exists():
             return f"file not found: {models_dir / config.gguf_filename}"
+        draft_filename = _SERVER_DRAFT_FILES.get(config.model)
+        if draft_filename and not (models_dir / draft_filename).exists():
+            return f"draft file not found: {models_dir / draft_filename}"
     elif config.backend == "ollama":
         available = _ollama_models()
         if config.model not in available:
@@ -687,11 +704,18 @@ def _check_model_available(
     return None
 
 
-def _get_server_flags(model: str, mode: str) -> list[str]:
+def _get_server_flags(
+    model: str,
+    mode: str,
+    models_dir: Path = MODELS_DIR_DEFAULT,
+) -> list[str]:
     """Build llama-server CLI flags for a given model and mode."""
     flags: list[str] = []
     if mode == "native":
         flags.append("--jinja")
+    draft_filename = _SERVER_DRAFT_FILES.get(model)
+    if draft_filename:
+        flags.extend(["--model-draft", str(models_dir / draft_filename)])
     flags.extend(_SERVER_EXTRA_FLAGS.get(model, []))
     return flags
 
@@ -1131,7 +1155,7 @@ async def run_batch(
             # Start server and get extra flags. For non-Ollama backends pass
             # the GGUF path as the cache-equality key (matches setup_backend
             # convention from server.py); for Ollama, pass the model string.
-            extra_flags = _get_server_flags(config.model, config.mode)
+            extra_flags = _get_server_flags(config.model, config.mode, models_dir)
             cache_identity = config.model if config.backend == "ollama" else gguf_path
             try:
                 # Prod path: launches with the budget-appropriate context
