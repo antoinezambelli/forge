@@ -108,7 +108,7 @@ MODEL_SAMPLING_DEFAULTS: dict[str, dict[str, float | int]] = {
     # DeepSeek-V4-Flash-0731 — agentic profile: T=1.0, top_p=0.95. The card
     # supports low/high/max reasoning effort. This one registry value is the
     # deliberate campaign selector; change only it between effort campaigns.
-    "DeepSeek-V4-Flash-0731-UD-Q4_K_XL":      {"temperature": 1.0, "top_p": 0.95, "chat_template_kwargs": {"reasoning_effort": "max"}},                  # https://huggingface.co/deepseek-ai/DeepSeek-V4-Flash-0731
+    "DeepSeek-V4-Flash-0731-UD-Q4_K_XL":      {"temperature": 1.0, "top_p": 0.95, "chat_template_kwargs": {"reasoning_effort": "low"}},                  # https://huggingface.co/deepseek-ai/DeepSeek-V4-Flash-0731
     # Inkling-Small — Unsloth recommends T=1.0/top_p=1.0 for most tasks and
     # includes min_p=0.0 in its llama.cpp recipes. Use high effort (0.9) for
     # the DGE pressure smoke; xhigh/max both map to the benchmark's 0.99.
