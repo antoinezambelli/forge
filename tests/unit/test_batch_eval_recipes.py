@@ -30,6 +30,7 @@ _EXPECTED_GGUFS = [
     ("Qwen3.6-27B-Q4_K_M", "Qwen3.6-27B-Q4_K_M.gguf"),
     ("Qwen3.6-35B-A3B-UD-Q4_K_M", "Qwen3.6-35B-A3B-UD-Q4_K_M.gguf"),
     ("Nemotron-3-Nano-30B-A3B-Q4_K_M", "Nemotron-3-Nano-30B-A3B-Q4_K_M.gguf"),
+    ("Muse-Glimmer-30B-UD-Q4_K_XL", "Muse-Glimmer-30B-UD-Q4_K_XL.gguf"),
     ("gemma-4-26B-A4B-it-UD-Q4_K_M", "gemma-4-26B-A4B-it-UD-Q4_K_M.gguf"),
     ("gemma-4-31B-it-Q4_K_M", "gemma-4-31B-it-Q4_K_M.gguf"),
     ("gpt-oss-120b-Q4_K_M", "gpt-oss-120b-Q4_K_M-00001-of-00002.gguf"),
@@ -82,6 +83,15 @@ _LARGE_120B_FLAGS = (
     "--cache-type-k", "q8_0", "--cache-type-v", "q8_0", "-fa", "1",
     "--no-prefill-assistant", "--no-mmap",
 )
+_GLIMMER_FLAGS = (
+    "--reasoning", "on", "--reasoning-format", "auto",
+    "--chat-template-kwargs", '{"reasoning_strength":"xhigh"}',
+    "--ctx-checkpoints", "1", "--cache-type-k", "q8_0",
+    "--cache-type-v", "q8_0", "-fa", "1",
+    "--samplers", "temperature;top_p;top_k",
+    "--spec-type", "draft-dflash", "--device-draft", "CUDA0",
+    "--gpu-layers-draft", "all", "--spec-draft-n-max", "15",
+)
 
 _EXPECTED_SPECIAL_FLAGS = {
     "Qwen3-8B-Q4_K_M": _REASONING_FLAGS,
@@ -92,6 +102,7 @@ _EXPECTED_SPECIAL_FLAGS = {
     "Qwen3.6-27B-Q4_K_M": _REASONING_FLAGS,
     "Qwen3.6-35B-A3B-UD-Q4_K_M": _REASONING_FLAGS,
     "Nemotron-3-Nano-30B-A3B-Q4_K_M": _REASONING_FLAGS,
+    "Muse-Glimmer-30B-UD-Q4_K_XL": _GLIMMER_FLAGS,
     "LFM2.5-8B-A1B-Q4_K_M": _REASONING_FLAGS,
     "Mellum2-12B-A2.5B-Thinking-Q4_K_M": _REASONING_FLAGS,
     "gemma-4-26B-A4B-it-UD-Q4_K_M": _GEMMA4_LARGE_FLAGS,
@@ -190,6 +201,12 @@ def test_managed_recipe_mapping_matches_pinned_literals() -> None:
 
     for config in batch_eval.OLLAMA_CONFIGS + batch_eval.LLAMAFILE_CONFIGS:
         assert config.server_recipe.extra_flags == (), _identity(config)
+
+    glimmer = next(
+        config for config in batch_eval.LLAMASERVER_CONFIGS
+        if config.model == "Muse-Glimmer-30B-UD-Q4_K_XL"
+    )
+    assert glimmer.server_recipe.draft_filename == "dflash-kquant.gguf"
 
     deepseek = batch_eval.DEEPSEEK_V4_RPC_CONFIGS[0]
     assert deepseek.server_recipe.extra_flags == (

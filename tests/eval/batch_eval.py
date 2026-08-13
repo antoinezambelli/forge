@@ -62,6 +62,7 @@ class _BatchServerRecipe:
 
     extra_flags: tuple[str, ...] = ()
     rpc: LlamaCppRpcConfig | None = None
+    draft_filename: str | None = None
 
 
 _DEFAULT_SERVER_RECIPE = _BatchServerRecipe()
@@ -83,6 +84,18 @@ _LARGE_120B_SERVER_RECIPE = _BatchServerRecipe((
     "--cache-type-k", "q8_0", "--cache-type-v", "q8_0", "-fa", "1",
     "--no-prefill-assistant", "--no-mmap",
 ))
+_GLIMMER_SERVER_RECIPE = _BatchServerRecipe(
+    extra_flags=(
+        "--reasoning", "on", "--reasoning-format", "auto",
+        "--chat-template-kwargs", '{"reasoning_strength":"xhigh"}',
+        "--ctx-checkpoints", "1", "--cache-type-k", "q8_0",
+        "--cache-type-v", "q8_0", "-fa", "1",
+        "--samplers", "temperature;top_p;top_k",
+        "--spec-type", "draft-dflash", "--device-draft", "CUDA0",
+        "--gpu-layers-draft", "all", "--spec-draft-n-max", "15",
+    ),
+    draft_filename="dflash-kquant.gguf",
+)
 _DEEPSEEK_V4_RPC_SERVER_RECIPE = _BatchServerRecipe((
     "--fit", "off",
     "-b", "2048", "-ub", "128",
@@ -120,6 +133,7 @@ _GGUF_FILES: list[tuple[str, _BatchServerRecipe]] = [
     ("Qwen3.6-27B-Q4_K_M.gguf", _REASONING_SERVER_RECIPE),
     ("Qwen3.6-35B-A3B-UD-Q4_K_M.gguf", _REASONING_SERVER_RECIPE),
     ("Nemotron-3-Nano-30B-A3B-Q4_K_M.gguf", _REASONING_SERVER_RECIPE),
+    ("Muse-Glimmer-30B-UD-Q4_K_XL.gguf", _GLIMMER_SERVER_RECIPE),
     # Gemma-4 large (rig-04, az/eval-large): 26B-A4B MoE + 31B dense. Native FC;
     # literal serving recipe includes the SWA + q8-KV serving fixes.
     ("gemma-4-26B-A4B-it-UD-Q4_K_M.gguf", _GEMMA4_LARGE_SERVER_RECIPE),
@@ -358,6 +372,21 @@ def _attach_deepseek_rpc_topology(
     ]
 
 
+def _resolve_server_recipe_flags(
+    config: BatchConfig,
+    models_dir: Path,
+) -> list[str]:
+    """Resolve one recipe's runtime paths and literal llama-server flags."""
+    flags: list[str] = []
+    if config.server_recipe.draft_filename is not None:
+        flags.extend([
+            "--model-draft",
+            str(models_dir / config.server_recipe.draft_filename),
+        ])
+    flags.extend(config.server_recipe.extra_flags)
+    return flags
+
+
 def _print_rpc_recipe(
     config: BatchConfig,
     models_dir: Path,
@@ -388,7 +417,7 @@ def _print_rpc_recipe(
     ]
     if config.mode == "native":
         coordinator_command.append("--jinja")
-    coordinator_command.extend(config.server_recipe.extra_flags)
+    coordinator_command.extend(_resolve_server_recipe_flags(config, models_dir))
     if budget_mode == BudgetMode.MANUAL and manual_tokens is not None:
         coordinator_command.extend(["-c", str(manual_tokens)])
 
@@ -735,6 +764,9 @@ def _check_model_available(
             return f"no GGUF/llamafile filename on config for {config.model}"
         if not (models_dir / config.gguf_filename).exists():
             return f"file not found: {models_dir / config.gguf_filename}"
+        draft_filename = config.server_recipe.draft_filename
+        if draft_filename and not (models_dir / draft_filename).exists():
+            return f"draft file not found: {models_dir / draft_filename}"
     elif config.backend == "ollama":
         available = _ollama_models()
         if config.model not in available:
@@ -1088,6 +1120,7 @@ async def run_batch(
             assert config.gguf_filename, f"missing gguf_filename: {config.model}"
             gguf_path = str(models_dir / config.gguf_filename)
 
+        server_flags = _resolve_server_recipe_flags(config, models_dir)
         try:
             server, setup_context = await setup_backend(
                 backend=config.backend,
@@ -1097,10 +1130,7 @@ async def run_batch(
                 port=_eval_port(),
                 budget_mode=budget_mode,
                 manual_tokens=manual_tokens,
-                extra_flags=(
-                    list(config.server_recipe.extra_flags)
-                    if config.server_recipe.extra_flags else None
-                ),
+                extra_flags=server_flags or None,
                 rpc=config.server_recipe.rpc,
             )
         except RuntimeError:
