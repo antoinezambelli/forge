@@ -129,6 +129,7 @@ _EFFECTIVE_REASONING_LEVELS: dict[str, str] = {
     "gpt-oss-120b-Q4_K_M": "medium",
     "NVIDIA-Nemotron-3-Super-120B-A12B-UD-Q4_K_M": "low",
     "Muse-Glimmer-30B-UD-Q4_K_XL": "xhigh",
+    "Qwen3.8-27B-UD-Q4_K_XL": "xhigh",
 }
 
 
@@ -155,6 +156,7 @@ _GGUF_FILES: list[tuple[str, _BatchServerRecipe]] = [
     ("Qwen3.5-35B-A3B-Q4_K_M.gguf", _REASONING_SERVER_RECIPE),
     ("Qwen3.6-27B-Q4_K_M.gguf", _REASONING_SERVER_RECIPE),
     ("Qwen3.6-35B-A3B-UD-Q4_K_M.gguf", _REASONING_SERVER_RECIPE),
+    ("Qwen3.8-27B-UD-Q4_K_XL.gguf", _REASONING_SERVER_RECIPE),
     ("Nemotron-3-Nano-30B-A3B-Q4_K_M.gguf", _REASONING_SERVER_RECIPE),
     ("Muse-Glimmer-30B-UD-Q4_K_XL.gguf", _GLIMMER_SERVER_RECIPE),
     # Gemma-4 large (rig-04, az/eval-large): 26B-A4B MoE + 31B dense. Native FC;
@@ -298,6 +300,10 @@ NEW_MODEL_CONFIGS: list[BatchConfig] = [
     c for c in LLAMASERVER_CONFIGS if c.model in _NEW_MODEL_STEMS
 ]
 
+QWEN38_CONFIGS: list[BatchConfig] = [
+    c for c in LLAMASERVER_CONFIGS if c.model == "Qwen3.8-27B-UD-Q4_K_XL"
+]
+
 # Reasoning-effort axis (rig-03): gpt-oss@high + nemotron@high as PARALLEL
 # configs to the medium/low-effort baselines. Same GGUF + native FC, but
 # recommended sampling is bypassed (sampling_override) so chat_template_kwargs
@@ -376,6 +382,7 @@ CONFIG_SETS: dict[str, list[BatchConfig]] = {
     "glimmer-medium": _GLIMMER_EFFORT_CONFIGS["medium"],
     "glimmer-low": _GLIMMER_EFFORT_CONFIGS["low"],
     "deepseek-v4-rpc": DEEPSEEK_V4_RPC_CONFIGS,
+    "qwen38": QWEN38_CONFIGS,
     "new-models": NEW_MODEL_CONFIGS,
     "new-models-native": [c for c in NEW_MODEL_CONFIGS if c.mode == "native"],
     "new-models-prompt": [c for c in NEW_MODEL_CONFIGS if c.mode == "prompt"],

@@ -43,6 +43,19 @@ class TestGetSamplingDefaults:
         assert result["min_p"] == 0.0
         assert result["presence_penalty"] == 1.5
 
+    def test_qwen3_8_uses_thinking_profile_at_xhigh(self) -> None:
+        """Qwen3.8 uses Unsloth's thinking-mode profile at xhigh effort."""
+        result = get_sampling_defaults("Qwen3.8-27B-UD-Q4_K_XL")
+        assert result == {
+            "temperature": 1.0,
+            "top_p": 0.95,
+            "top_k": 20,
+            "min_p": 0.0,
+            "presence_penalty": 0.0,
+            "repeat_penalty": 1.0,
+            "chat_template_kwargs": {"reasoning_effort": "xhigh"},
+        }
+
     def test_qwen3_coder_uses_repeat_penalty(self) -> None:
         """Qwen3-Coder card specifies repeat_penalty=1.05, no min_p."""
         result = get_sampling_defaults("qwen3-coder:30b-a3b-instruct-q4_K_M")
