@@ -84,18 +84,27 @@ _LARGE_120B_SERVER_RECIPE = _BatchServerRecipe((
     "--cache-type-k", "q8_0", "--cache-type-v", "q8_0", "-fa", "1",
     "--no-prefill-assistant", "--no-mmap",
 ))
-_GLIMMER_SERVER_RECIPE = _BatchServerRecipe(
-    extra_flags=(
-        "--reasoning", "on", "--reasoning-format", "auto",
-        "--chat-template-kwargs", '{"reasoning_strength":"xhigh"}',
-        "--ctx-checkpoints", "1", "--cache-type-k", "q8_0",
-        "--cache-type-v", "q8_0", "-fa", "1",
-        "--samplers", "temperature;top_p;top_k",
-        "--spec-type", "draft-dflash", "--device-draft", "CUDA0",
-        "--gpu-layers-draft", "all", "--spec-draft-n-max", "15",
-    ),
-    draft_filename="dflash-kquant.gguf",
-)
+
+
+def _glimmer_server_recipe(reasoning_strength: str) -> _BatchServerRecipe:
+    return _BatchServerRecipe(
+        extra_flags=(
+            "--reasoning", "on", "--reasoning-format", "auto",
+            "--chat-template-kwargs",
+            json.dumps(
+                {"reasoning_strength": reasoning_strength}, separators=(",", ":")
+            ),
+            "--ctx-checkpoints", "1", "--cache-type-k", "q8_0",
+            "--cache-type-v", "q8_0", "-fa", "1",
+            "--samplers", "temperature;top_p;top_k",
+            "--spec-type", "draft-dflash", "--device-draft", "CUDA0",
+            "--gpu-layers-draft", "all", "--spec-draft-n-max", "15",
+        ),
+        draft_filename="dflash-kquant.gguf",
+    )
+
+
+_GLIMMER_SERVER_RECIPE = _glimmer_server_recipe("xhigh")
 _DEEPSEEK_V4_RPC_SERVER_RECIPE = _BatchServerRecipe((
     "--fit", "off",
     "-b", "2048", "-ub", "128",
@@ -324,6 +333,21 @@ _REASONING_HIGH_CONFIGS: list[BatchConfig] = [
     ),
 ]
 
+_GLIMMER_EFFORT_CONFIGS: dict[str, list[BatchConfig]] = {
+    effort: [
+        BatchConfig(
+            model="Muse-Glimmer-30B-UD-Q4_K_XL",
+            backend="llamaserver",
+            mode="native",
+            think=None,
+            gguf_filename="Muse-Glimmer-30B-UD-Q4_K_XL.gguf",
+            server_recipe=_glimmer_server_recipe(effort),
+            reasoning_level=effort,
+        )
+    ]
+    for effort in ("high", "medium", "low")
+}
+
 # Explicit large-model campaign. Machine-local RPC values are attached from
 # --rpc-topology at invocation time; reasoning effort comes only from the
 # sampling-registry row for this model.
@@ -348,6 +372,9 @@ CONFIG_SETS: dict[str, list[BatchConfig]] = {
     "llamaserver-native": [c for c in LLAMASERVER_CONFIGS if c.mode == "native"],
     "llamaserver-prompt": [c for c in LLAMASERVER_CONFIGS if c.mode == "prompt"],
     "reasoning-high": _REASONING_HIGH_CONFIGS,
+    "glimmer-high": _GLIMMER_EFFORT_CONFIGS["high"],
+    "glimmer-medium": _GLIMMER_EFFORT_CONFIGS["medium"],
+    "glimmer-low": _GLIMMER_EFFORT_CONFIGS["low"],
     "deepseek-v4-rpc": DEEPSEEK_V4_RPC_CONFIGS,
     "new-models": NEW_MODEL_CONFIGS,
     "new-models-native": [c for c in NEW_MODEL_CONFIGS if c.mode == "native"],

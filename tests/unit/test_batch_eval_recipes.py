@@ -83,15 +83,22 @@ _LARGE_120B_FLAGS = (
     "--cache-type-k", "q8_0", "--cache-type-v", "q8_0", "-fa", "1",
     "--no-prefill-assistant", "--no-mmap",
 )
-_GLIMMER_FLAGS = (
-    "--reasoning", "on", "--reasoning-format", "auto",
-    "--chat-template-kwargs", '{"reasoning_strength":"xhigh"}',
-    "--ctx-checkpoints", "1", "--cache-type-k", "q8_0",
-    "--cache-type-v", "q8_0", "-fa", "1",
-    "--samplers", "temperature;top_p;top_k",
-    "--spec-type", "draft-dflash", "--device-draft", "CUDA0",
-    "--gpu-layers-draft", "all", "--spec-draft-n-max", "15",
-)
+
+
+def _glimmer_flags(reasoning_strength: str) -> tuple[str, ...]:
+    return (
+        "--reasoning", "on", "--reasoning-format", "auto",
+        "--chat-template-kwargs",
+        f'{{"reasoning_strength":"{reasoning_strength}"}}',
+        "--ctx-checkpoints", "1", "--cache-type-k", "q8_0",
+        "--cache-type-v", "q8_0", "-fa", "1",
+        "--samplers", "temperature;top_p;top_k",
+        "--spec-type", "draft-dflash", "--device-draft", "CUDA0",
+        "--gpu-layers-draft", "all", "--spec-draft-n-max", "15",
+    )
+
+
+_GLIMMER_FLAGS = _glimmer_flags("xhigh")
 
 _EXPECTED_SPECIAL_FLAGS = {
     "Qwen3-8B-Q4_K_M": _REASONING_FLAGS,
@@ -180,6 +187,24 @@ def test_managed_config_roster_and_sets_are_pinned() -> None:
         "llamaserver-native": [entry for entry in llamaserver if entry[2] == "native"],
         "llamaserver-prompt": [entry for entry in llamaserver if entry[2] == "prompt"],
         "reasoning-high": reasoning_high,
+        "glimmer-high": [
+            (
+                "Muse-Glimmer-30B-UD-Q4_K_XL", "llamaserver", "native",
+                "high", "Muse-Glimmer-30B-UD-Q4_K_XL.gguf",
+            ),
+        ],
+        "glimmer-medium": [
+            (
+                "Muse-Glimmer-30B-UD-Q4_K_XL", "llamaserver", "native",
+                "medium", "Muse-Glimmer-30B-UD-Q4_K_XL.gguf",
+            ),
+        ],
+        "glimmer-low": [
+            (
+                "Muse-Glimmer-30B-UD-Q4_K_XL", "llamaserver", "native",
+                "low", "Muse-Glimmer-30B-UD-Q4_K_XL.gguf",
+            ),
+        ],
         "deepseek-v4-rpc": deepseek_v4_rpc,
         "new-models": [entry for entry in llamaserver if entry[0] in new_models],
         "new-models-native": [
@@ -236,6 +261,13 @@ def test_managed_recipe_mapping_matches_pinned_literals() -> None:
         is True
     )
     assert '{"reasoning_strength":"xhigh"}' in glimmer.server_recipe.extra_flags
+
+    for effort, configs in batch_eval._GLIMMER_EFFORT_CONFIGS.items():
+        assert len(configs) == 1
+        config = configs[0]
+        assert config.reasoning_level == effort
+        assert config.server_recipe.extra_flags == _glimmer_flags(effort)
+        assert config.server_recipe.draft_filename == "dflash-kquant.gguf"
 
     deepseek = batch_eval.DEEPSEEK_V4_RPC_CONFIGS[0]
     assert deepseek.server_recipe.extra_flags == (
