@@ -67,6 +67,10 @@ class _BatchServerRecipe:
 
 _DEFAULT_SERVER_RECIPE = _BatchServerRecipe()
 _REASONING_SERVER_RECIPE = _BatchServerRecipe(("--reasoning-format", "auto"))
+_QWEN38_SERVER_RECIPE = _BatchServerRecipe((
+    "--reasoning-format", "auto",
+    "--cache-type-k", "q8_0", "--cache-type-v", "q8_0", "-fa", "1",
+))
 _GEMMA4_LARGE_SERVER_RECIPE = _BatchServerRecipe((
     "--reasoning-format", "auto",
     "--ctx-checkpoints", "1", "--cache-type-k", "q8_0",
@@ -156,7 +160,7 @@ _GGUF_FILES: list[tuple[str, _BatchServerRecipe]] = [
     ("Qwen3.5-35B-A3B-Q4_K_M.gguf", _REASONING_SERVER_RECIPE),
     ("Qwen3.6-27B-Q4_K_M.gguf", _REASONING_SERVER_RECIPE),
     ("Qwen3.6-35B-A3B-UD-Q4_K_M.gguf", _REASONING_SERVER_RECIPE),
-    ("Qwen3.8-27B-UD-Q4_K_XL.gguf", _REASONING_SERVER_RECIPE),
+    ("Qwen3.8-27B-UD-Q4_K_XL.gguf", _QWEN38_SERVER_RECIPE),
     ("Nemotron-3-Nano-30B-A3B-Q4_K_M.gguf", _REASONING_SERVER_RECIPE),
     ("Muse-Glimmer-30B-UD-Q4_K_XL.gguf", _GLIMMER_SERVER_RECIPE),
     # Gemma-4 large (rig-04, az/eval-large): 26B-A4B MoE + 31B dense. Native FC;
@@ -301,7 +305,8 @@ NEW_MODEL_CONFIGS: list[BatchConfig] = [
 ]
 
 QWEN38_CONFIGS: list[BatchConfig] = [
-    c for c in LLAMASERVER_CONFIGS if c.model == "Qwen3.8-27B-UD-Q4_K_XL"
+    c for c in LLAMASERVER_CONFIGS
+    if c.model == "Qwen3.8-27B-UD-Q4_K_XL" and c.mode == "native"
 ]
 
 # Reasoning-effort axis (rig-03): gpt-oss@high + nemotron@high as PARALLEL

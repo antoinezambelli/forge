@@ -67,6 +67,10 @@ _EXPECTED_OLLAMA_MODELS = [
 ]
 
 _REASONING_FLAGS = ("--reasoning-format", "auto")
+_QWEN38_FLAGS = (
+    "--reasoning-format", "auto",
+    "--cache-type-k", "q8_0", "--cache-type-v", "q8_0", "-fa", "1",
+)
 _GEMMA4_LARGE_FLAGS = (
     "--reasoning-format", "auto",
     "--ctx-checkpoints", "1", "--cache-type-k", "q8_0",
@@ -109,7 +113,7 @@ _EXPECTED_SPECIAL_FLAGS = {
     "Qwen3.5-35B-A3B-Q4_K_M": _REASONING_FLAGS,
     "Qwen3.6-27B-Q4_K_M": _REASONING_FLAGS,
     "Qwen3.6-35B-A3B-UD-Q4_K_M": _REASONING_FLAGS,
-    "Qwen3.8-27B-UD-Q4_K_XL": _REASONING_FLAGS,
+    "Qwen3.8-27B-UD-Q4_K_XL": _QWEN38_FLAGS,
     "Nemotron-3-Nano-30B-A3B-Q4_K_M": _REASONING_FLAGS,
     "Muse-Glimmer-30B-UD-Q4_K_XL": _GLIMMER_FLAGS,
     "LFM2.5-8B-A1B-Q4_K_M": _REASONING_FLAGS,
@@ -209,7 +213,10 @@ def test_managed_config_roster_and_sets_are_pinned() -> None:
             ),
         ],
         "deepseek-v4-rpc": deepseek_v4_rpc,
-        "qwen38": [entry for entry in llamaserver if entry[0] == "Qwen3.8-27B-UD-Q4_K_XL"],
+        "qwen38": [
+            entry for entry in llamaserver
+            if entry[0] == "Qwen3.8-27B-UD-Q4_K_XL" and entry[2] == "native"
+        ],
         "new-models": [entry for entry in llamaserver if entry[0] in new_models],
         "new-models-native": [
             entry for entry in llamaserver
