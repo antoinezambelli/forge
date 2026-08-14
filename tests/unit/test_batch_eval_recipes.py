@@ -29,6 +29,7 @@ _EXPECTED_GGUFS = [
     ("Qwen3.5-35B-A3B-Q4_K_M", "Qwen3.5-35B-A3B-Q4_K_M.gguf"),
     ("Qwen3.6-27B-Q4_K_M", "Qwen3.6-27B-Q4_K_M.gguf"),
     ("Qwen3.6-35B-A3B-UD-Q4_K_M", "Qwen3.6-35B-A3B-UD-Q4_K_M.gguf"),
+    ("Qwen3.8-27B-UD-Q4_K_XL", "Qwen3.8-27B-UD-Q4_K_XL.gguf"),
     ("Nemotron-3-Nano-30B-A3B-Q4_K_M", "Nemotron-3-Nano-30B-A3B-Q4_K_M.gguf"),
     ("Muse-Glimmer-30B-UD-Q4_K_XL", "Muse-Glimmer-30B-UD-Q4_K_XL.gguf"),
     ("gemma-4-26B-A4B-it-UD-Q4_K_M", "gemma-4-26B-A4B-it-UD-Q4_K_M.gguf"),
@@ -101,6 +102,7 @@ _EXPECTED_SPECIAL_FLAGS = {
     "Qwen3.5-35B-A3B-Q4_K_M": _REASONING_FLAGS,
     "Qwen3.6-27B-Q4_K_M": _REASONING_FLAGS,
     "Qwen3.6-35B-A3B-UD-Q4_K_M": _REASONING_FLAGS,
+    "Qwen3.8-27B-UD-Q4_K_XL": _REASONING_FLAGS,
     "Nemotron-3-Nano-30B-A3B-Q4_K_M": _REASONING_FLAGS,
     "Muse-Glimmer-30B-UD-Q4_K_XL": _GLIMMER_FLAGS,
     "LFM2.5-8B-A1B-Q4_K_M": _REASONING_FLAGS,
@@ -116,6 +118,7 @@ _EXPECTED_REASONING_LEVELS = {
     "gpt-oss-120b-Q4_K_M": "medium",
     "NVIDIA-Nemotron-3-Super-120B-A12B-UD-Q4_K_M": "low",
     "Muse-Glimmer-30B-UD-Q4_K_XL": "xhigh",
+    "Qwen3.8-27B-UD-Q4_K_XL": "xhigh",
 }
 
 
@@ -181,6 +184,7 @@ def test_managed_config_roster_and_sets_are_pinned() -> None:
         "llamaserver-prompt": [entry for entry in llamaserver if entry[2] == "prompt"],
         "reasoning-high": reasoning_high,
         "deepseek-v4-rpc": deepseek_v4_rpc,
+        "qwen38": [entry for entry in llamaserver if entry[0] == "Qwen3.8-27B-UD-Q4_K_XL"],
         "new-models": [entry for entry in llamaserver if entry[0] in new_models],
         "new-models-native": [
             entry for entry in llamaserver
