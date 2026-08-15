@@ -9,7 +9,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import httpx
 import pytest
 
-from forge._backend_profiles import managed_profile
+from forge._backend_profiles import BackendFamily, managed_profile
 from forge._endpoint_layouts import ConnectionInputKind
 from forge._resolved_backend import resolve_backend
 from forge.context.manager import ContextManager
@@ -18,6 +18,8 @@ from forge.errors import BudgetResolutionError
 from forge.server import (
     BudgetMode,
     ServerManager,
+    _ServerLaunch,
+    _render_launch_command,
     _setup_managed_backend,
     setup_backend,
 )
@@ -46,6 +48,101 @@ class TestBudgetMode:
 # ── ServerManager.start() ───────────────────────────────────────
 
 
+def _launch(**overrides: object) -> _ServerLaunch:
+    values = {
+        "model": "model",
+        "gguf_path": "/models/model.gguf",
+        "model_path": None,
+        "mode": "native",
+        "extra_flags": (),
+        "ctx_override": None,
+        "cache_type_k": None,
+        "cache_type_v": None,
+        "n_slots": None,
+        "kv_unified": False,
+        "rpc": None,
+    }
+    values.update(overrides)
+    return _ServerLaunch(**values)
+
+
+LLAMAFILE_RUNTIME = Path("/runtime/llamafile-0.9.2")
+
+
+@pytest.mark.parametrize(
+    ("family", "launch", "runtime", "expected"),
+    [
+        (
+            BackendFamily.LLAMA_SERVER,
+            _launch(),
+            None,
+            [
+                "llama-server", "-m", "/models/model.gguf", "-ngl", "999",
+                "--port", "8080", "--jinja",
+            ],
+        ),
+        (
+            BackendFamily.LLAMA_SERVER,
+            _launch(
+                mode="prompt",
+                extra_flags=("--reasoning-format", "auto"),
+                ctx_override=8192,
+                cache_type_k="q8_0",
+                cache_type_v="q4_0",
+                n_slots=2,
+                kv_unified=True,
+            ),
+            None,
+            [
+                "llama-server", "-m", "/models/model.gguf", "-ngl", "999",
+                "--port", "8080", "--reasoning-format", "auto", "-c", "8192",
+                "--cache-type-k", "q8_0", "--cache-type-v", "q4_0",
+                "--parallel", "2", "--kv-unified",
+            ],
+        ),
+        (
+            BackendFamily.LLAMAFILE,
+            _launch(mode="prompt"),
+            LLAMAFILE_RUNTIME,
+            [
+                str(LLAMAFILE_RUNTIME), "--server", "--nobrowser", "-m",
+                "/models/model.gguf", "-ngl", "999", "--port", "8080",
+            ],
+        ),
+        (
+            BackendFamily.VLLM,
+            _launch(gguf_path=None, model_path="org/model"),
+            None,
+            ["vllm", "serve", "org/model", "--port", "8080"],
+        ),
+        (
+            BackendFamily.VLLM,
+            _launch(
+                gguf_path=None,
+                model_path="/models/gemma",
+                extra_flags=("--tensor-parallel-size", "2"),
+                ctx_override=113000,
+            ),
+            None,
+            [
+                "vllm", "serve", "/models/gemma", "--port", "8080",
+                "--tensor-parallel-size", "2", "--max-model-len", "113000",
+            ],
+        ),
+    ],
+    ids=["llama-native", "llama-prompt-options", "llamafile", "vllm", "vllm-options"],
+)
+def test_render_launch_command(
+    family: BackendFamily,
+    launch: _ServerLaunch,
+    runtime: Path | None,
+    expected: list[str],
+) -> None:
+    assert _render_launch_command(
+        family, 8080, launch, llamafile_runtime=runtime
+    ) == expected
+
+
 class TestServerManagerStart:
     """start() process launching and reuse logic."""
 
@@ -62,14 +159,9 @@ class TestServerManagerStart:
         ):
             await sm.start("llama3", gguf_path="/models/llama3.gguf")
 
-        args = mock_popen.call_args[0][0]
-        assert "llama-server" in args
-        assert "-m" in args
-        assert "/models/llama3.gguf" in args
-        assert "-ngl" in args
-        assert "999" in args
-        assert "--port" in args
-        assert "8080" in args
+        mock_popen.assert_called_once()
+        assert sm._proc is mock_proc
+        assert sm._active_launch is not None
 
     @pytest.mark.asyncio
     async def test_start_readiness_failure_cleans_spawned_process(
@@ -91,60 +183,6 @@ class TestServerManagerStart:
 
         mock_proc.terminate.assert_called_once()
         assert sm._proc is None
-
-    @pytest.mark.asyncio
-    async def test_start_native_mode_adds_jinja(self, sm: ServerManager) -> None:
-        mock_proc = MagicMock()
-        with (
-            patch("forge.server.subprocess.Popen", return_value=mock_proc) as mock_popen,
-            patch.object(sm, "_wait_healthy", new_callable=AsyncMock),
-        ):
-            await sm.start("llama3", gguf_path="/models/llama3.gguf", mode="native")
-
-        args = mock_popen.call_args[0][0]
-        assert args.count("--jinja") == 1
-
-    @pytest.mark.asyncio
-    async def test_start_prompt_mode_no_jinja(self, sm: ServerManager) -> None:
-        mock_proc = MagicMock()
-        with (
-            patch("forge.server.subprocess.Popen", return_value=mock_proc) as mock_popen,
-            patch.object(sm, "_wait_healthy", new_callable=AsyncMock),
-        ):
-            await sm.start("llama3", gguf_path="/models/llama3.gguf", mode="prompt")
-
-        args = mock_popen.call_args[0][0]
-        assert args.count("--jinja") == 0
-
-    @pytest.mark.asyncio
-    async def test_start_with_extra_flags(self, sm: ServerManager) -> None:
-        mock_proc = MagicMock()
-        with (
-            patch("forge.server.subprocess.Popen", return_value=mock_proc) as mock_popen,
-            patch.object(sm, "_wait_healthy", new_callable=AsyncMock),
-        ):
-            await sm.start(
-                "qwen3", gguf_path="/models/qwen3.gguf",
-                extra_flags=["--reasoning-format", "auto"],
-            )
-
-        args = mock_popen.call_args[0][0]
-        assert "--reasoning-format" in args
-        assert "auto" in args
-
-    @pytest.mark.asyncio
-    async def test_start_with_ctx_override(self, sm: ServerManager) -> None:
-        mock_proc = MagicMock()
-        with (
-            patch("forge.server.subprocess.Popen", return_value=mock_proc) as mock_popen,
-            patch.object(sm, "_wait_healthy", new_callable=AsyncMock),
-        ):
-            await sm.start("llama3", gguf_path="/models/llama3.gguf", ctx_override=8000)
-
-        args = mock_popen.call_args[0][0]
-        assert "-c" in args
-        assert "8000" in args
-
     @pytest.mark.asyncio
     async def test_start_reuses_same_config(self) -> None:
         cases = [
@@ -182,6 +220,11 @@ class TestServerManagerStart:
                 "extra flags",
                 {"mode": "native"},
                 {"mode": "native", "extra_flags": ["--reasoning-format", "auto"]},
+            ),
+            (
+                "cache type",
+                {"cache_type_k": "q8_0"},
+                {"cache_type_k": "q4_0"},
             ),
         ]
         for label, initial_options, changed_options in cases:
@@ -231,31 +274,6 @@ class TestServerManagerStart:
         sm = ServerManager(backend="ollama")
         with pytest.raises(ValueError, match=message):
             await sm.start("llama3", **kwargs)
-
-    @pytest.mark.asyncio
-    async def test_start_llamafile_uses_runtime_binary(self, tmp_path: Path) -> None:
-        sm = ServerManager(backend="llamafile", port=8080)
-        # Create a fake llamafile runtime in tmp_path
-        runtime = tmp_path / "llamafile-0.9.2.exe"
-        runtime.touch()
-        model_path = tmp_path / "Model.Q4_K_M.llamafile"
-        model_path.touch()
-
-        mock_proc = MagicMock()
-        with (
-            patch("forge.server.subprocess.Popen", return_value=mock_proc) as mock_popen,
-            patch.object(sm, "_wait_healthy", new_callable=AsyncMock),
-        ):
-            await sm.start("llama3", gguf_path=str(model_path), mode="prompt")
-
-        args = mock_popen.call_args[0][0]
-        assert str(runtime) in args
-        assert "--server" in args
-        assert "--nobrowser" in args
-        assert "-m" in args
-        assert str(model_path) in args
-        assert "llama-server" not in args
-
     @pytest.mark.asyncio
     async def test_start_llamafile_no_runtime_raises(self, tmp_path: Path) -> None:
         sm = ServerManager(backend="llamafile", port=8080)
@@ -284,93 +302,6 @@ class TestServerManagerStart:
 
         args = mock_popen.call_args[0][0]
         assert str(tmp_path / "llamafile-0.9.2.exe") in args
-
-    @pytest.mark.asyncio
-    async def test_start_with_cache_type_k_v(self) -> None:
-        sm = ServerManager(backend="llamaserver", port=8080)
-        mock_proc = MagicMock()
-        with (
-            patch("forge.server.subprocess.Popen", return_value=mock_proc) as mock_popen,
-            patch.object(sm, "_wait_healthy", new_callable=AsyncMock),
-        ):
-            await sm.start(
-                "llama3", gguf_path="/models/llama3.gguf",
-                cache_type_k="q8_0", cache_type_v="q8_0",
-            )
-
-        cmd = mock_popen.call_args[0][0]
-        assert "--cache-type-k" in cmd
-        assert "q8_0" in cmd
-        assert "--cache-type-v" in cmd
-        # Flags appear in order
-        k_idx = cmd.index("--cache-type-k")
-        v_idx = cmd.index("--cache-type-v")
-        assert cmd[k_idx + 1] == "q8_0"
-        assert cmd[v_idx + 1] == "q8_0"
-
-    @pytest.mark.asyncio
-    async def test_start_without_cache_type_omits_flags(self) -> None:
-        sm = ServerManager(backend="llamaserver", port=8080)
-        mock_proc = MagicMock()
-        with (
-            patch("forge.server.subprocess.Popen", return_value=mock_proc) as mock_popen,
-            patch.object(sm, "_wait_healthy", new_callable=AsyncMock),
-        ):
-            await sm.start("llama3", gguf_path="/models/llama3.gguf")
-
-        cmd = mock_popen.call_args[0][0]
-        assert "--cache-type-k" not in cmd
-        assert "--cache-type-v" not in cmd
-
-    @pytest.mark.asyncio
-    async def test_start_restarts_on_cache_type_change(self) -> None:
-        sm = ServerManager(backend="llamaserver", port=8080)
-        mock_proc = MagicMock()
-        with (
-            patch("forge.server.subprocess.Popen", return_value=mock_proc),
-            patch.object(sm, "_wait_healthy", new_callable=AsyncMock),
-            patch("forge.server.asyncio.sleep", new_callable=AsyncMock),
-        ):
-            await sm.start("llama3", gguf_path="/models/llama3.gguf", cache_type_k="q8_0")
-            assert sm._current_cache_type_k == "q8_0"
-
-            # Same config — should reuse (no restart)
-            await sm.start("llama3", gguf_path="/models/llama3.gguf", cache_type_k="q8_0")
-
-            # Different cache type — should restart
-            await sm.start("llama3", gguf_path="/models/llama3.gguf", cache_type_k="q4_0")
-            assert sm._current_cache_type_k == "q4_0"
-
-    @pytest.mark.asyncio
-    async def test_start_with_n_slots(self) -> None:
-        sm = ServerManager(backend="llamaserver", port=8080)
-        mock_proc = MagicMock()
-        with (
-            patch("forge.server.subprocess.Popen", return_value=mock_proc) as mock_popen,
-            patch.object(sm, "_wait_healthy", new_callable=AsyncMock),
-        ):
-            await sm.start("llama3", gguf_path="/models/llama3.gguf", n_slots=2)
-
-        cmd = mock_popen.call_args[0][0]
-        assert "--parallel" in cmd
-        idx = cmd.index("--parallel")
-        assert cmd[idx + 1] == "2"
-        assert sm._current_n_slots == 2
-
-    @pytest.mark.asyncio
-    async def test_start_without_n_slots_omits_flag(self) -> None:
-        sm = ServerManager(backend="llamaserver", port=8080)
-        mock_proc = MagicMock()
-        with (
-            patch("forge.server.subprocess.Popen", return_value=mock_proc) as mock_popen,
-            patch.object(sm, "_wait_healthy", new_callable=AsyncMock),
-        ):
-            await sm.start("llama3", gguf_path="/models/llama3.gguf")
-
-        cmd = mock_popen.call_args[0][0]
-        assert "--parallel" not in cmd
-
-
 # ── ServerManager.start() — vllm backend ────────────────────────
 
 
@@ -380,86 +311,6 @@ class TestServerManagerStartVllm:
     @pytest.fixture()
     def sm(self) -> ServerManager:
         return ServerManager(backend="vllm", port=8000)
-
-    @pytest.mark.asyncio
-    async def test_start_launches_vllm_serve(self, sm: ServerManager) -> None:
-        mock_proc = MagicMock()
-        with (
-            patch("forge.server.subprocess.Popen", return_value=mock_proc) as mock_popen,
-            patch.object(sm, "_wait_healthy", new_callable=AsyncMock),
-        ):
-            await sm.start(
-                "gemma-4-AWQ",
-                model_path="/models/gemma-4-26B-A4B-it-AWQ-4bit",
-            )
-
-        cmd = mock_popen.call_args[0][0]
-        assert cmd[0] == "vllm"
-        assert cmd[1] == "serve"
-        assert "/models/gemma-4-26B-A4B-it-AWQ-4bit" in cmd
-        assert "--port" in cmd
-        assert "8000" in cmd
-
-    @pytest.mark.asyncio
-    async def test_start_does_not_pass_llamacpp_flags(self, sm: ServerManager) -> None:
-        """vLLM should never receive llama.cpp-specific flags like --jinja."""
-        mock_proc = MagicMock()
-        with (
-            patch("forge.server.subprocess.Popen", return_value=mock_proc) as mock_popen,
-            patch.object(sm, "_wait_healthy", new_callable=AsyncMock),
-        ):
-            await sm.start(
-                "gemma-4-AWQ",
-                model_path="/models/gemma",
-                mode="native",
-            )
-
-        cmd = mock_popen.call_args[0][0]
-        assert "--jinja" not in cmd
-        assert "-c" not in cmd  # llama.cpp ctx flag
-        assert "-m" not in cmd  # llama.cpp model flag
-
-    @pytest.mark.asyncio
-    async def test_ctx_override_passes_max_model_len(self, sm: ServerManager) -> None:
-        mock_proc = MagicMock()
-        with (
-            patch("forge.server.subprocess.Popen", return_value=mock_proc) as mock_popen,
-            patch.object(sm, "_wait_healthy", new_callable=AsyncMock),
-        ):
-            await sm.start(
-                "gemma-4-AWQ",
-                model_path="/models/gemma",
-                ctx_override=113000,
-            )
-
-        cmd = mock_popen.call_args[0][0]
-        assert "--max-model-len" in cmd
-        idx = cmd.index("--max-model-len")
-        assert cmd[idx + 1] == "113000"
-
-    @pytest.mark.asyncio
-    async def test_extra_flags_appended(self, sm: ServerManager) -> None:
-        mock_proc = MagicMock()
-        with (
-            patch("forge.server.subprocess.Popen", return_value=mock_proc) as mock_popen,
-            patch.object(sm, "_wait_healthy", new_callable=AsyncMock),
-        ):
-            await sm.start(
-                "gemma-4-AWQ",
-                model_path="/models/gemma",
-                extra_flags=[
-                    "--tensor-parallel-size", "2",
-                    "--reasoning-parser", "gemma4",
-                    "--tool-call-parser", "gemma4",
-                    "--enable-auto-tool-choice",
-                ],
-            )
-
-        cmd = mock_popen.call_args[0][0]
-        assert "--tensor-parallel-size" in cmd
-        assert "--reasoning-parser" in cmd
-        assert "gemma4" in cmd
-
     @pytest.mark.asyncio
     async def test_rejects_gguf_path(self, sm: ServerManager) -> None:
         with pytest.raises(ValueError, match="does not accept gguf_path"):
@@ -841,24 +692,90 @@ class TestStartWithBudget:
     """start_with_budget() mode-specific startup dance."""
 
     @pytest.mark.asyncio
-    async def test_start_with_budget_backend(self) -> None:
+    @pytest.mark.parametrize(
+        ("mode", "manual_tokens", "n_slots", "kv_unified", "budget", "ctx_override"),
+        [
+            (BudgetMode.BACKEND, None, None, False, 13568, None),
+            (BudgetMode.MANUAL, 8000, None, False, 8000, 8000),
+            (BudgetMode.FORGE_FULL, None, 2, False, 35000, None),
+            (BudgetMode.FORGE_FULL, None, 2, True, 70000, None),
+        ],
+        ids=["backend", "manual", "per-slot", "unified"],
+    )
+    async def test_non_fast_startup_behavior(
+        self,
+        mode: BudgetMode,
+        manual_tokens: int | None,
+        n_slots: int | None,
+        kv_unified: bool,
+        budget: int,
+        ctx_override: int | None,
+    ) -> None:
         sm = ServerManager(backend="llamaserver")
         with (
-            patch.object(sm, "start", new_callable=AsyncMock) as mock_start,
-            patch.object(sm, "get_server_context", new_callable=AsyncMock, return_value=13568),
+            patch.object(sm, "start", new_callable=AsyncMock) as start,
+            patch.object(
+                sm, "resolve_budget", new_callable=AsyncMock, return_value=budget
+            ),
         ):
             result = await sm.start_with_budget(
-                "llama3", gguf_path="/models/llama3.gguf",
-                budget_mode=BudgetMode.BACKEND,
+                "llama3",
+                gguf_path="/models/llama3.gguf",
+                budget_mode=mode,
+                manual_tokens=manual_tokens,
+                n_slots=n_slots,
+                kv_unified=kv_unified,
             )
 
-        mock_start.assert_called_once_with(
-            "llama3", gguf_path="/models/llama3.gguf", model_path=None,
-            mode="native", extra_flags=None, ctx_override=None,
-            cache_type_k=None, cache_type_v=None, n_slots=None, kv_unified=False,
-        )
-        assert result == 13568
+        assert result == budget
+        assert start.await_count == 1
+        assert start.await_args.kwargs["ctx_override"] == ctx_override
+        assert start.await_args.kwargs["n_slots"] == n_slots
+        assert start.await_args.kwargs["kv_unified"] is kv_unified
 
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("n_slots", "kv_unified", "contexts", "half_total", "budget"),
+        [
+            (None, False, [13568, 6784], 6784, 6784),
+            (1, False, [13568, 6784], 6784, 6784),
+            (2, False, [35000, 17500], 35000, 17500),
+            (1, True, [70000, 35000], 35000, 35000),
+            (2, True, [70000, 35000], 35000, 35000),
+        ],
+        ids=["default", "one-slot", "two-slots", "one-unified", "two-unified"],
+    )
+    async def test_forge_fast_slot_and_unified_behavior(
+        self,
+        n_slots: int | None,
+        kv_unified: bool,
+        contexts: list[int],
+        half_total: int,
+        budget: int,
+    ) -> None:
+        sm = ServerManager(backend="llamaserver")
+        with (
+            patch.object(sm, "start", new_callable=AsyncMock) as start,
+            patch.object(
+                sm,
+                "get_server_context",
+                new_callable=AsyncMock,
+                side_effect=contexts,
+            ),
+        ):
+            result = await sm.start_with_budget(
+                "llama3",
+                gguf_path="/models/llama3.gguf",
+                budget_mode=BudgetMode.FORGE_FAST,
+                n_slots=n_slots,
+                kv_unified=kv_unified,
+            )
+
+        assert result == budget
+        assert start.await_count == 2
+        assert start.await_args.kwargs["ctx_override"] == half_total
+        assert start.await_args.kwargs["n_slots"] == n_slots
+        assert start.await_args.kwargs["kv_unified"] is kv_unified
     @pytest.mark.asyncio
     async def test_ollama_restart_replays_last_attached_model(self) -> None:
         sm = ServerManager(backend="ollama")
@@ -872,27 +789,6 @@ class TestStartWithBudget:
 
         stop.assert_awaited_once()
         assert sm._current_model == "llama3"
-
-    @pytest.mark.asyncio
-    async def test_start_with_budget_manual(self) -> None:
-        sm = ServerManager(backend="llamaserver")
-        with (
-            patch.object(sm, "start", new_callable=AsyncMock) as mock_start,
-            patch.object(sm, "get_server_context", new_callable=AsyncMock, return_value=8000),
-        ):
-            result = await sm.start_with_budget(
-                "llama3", gguf_path="/models/llama3.gguf",
-                budget_mode=BudgetMode.MANUAL,
-                manual_tokens=8000,
-            )
-
-        mock_start.assert_called_once_with(
-            "llama3", gguf_path="/models/llama3.gguf", model_path=None,
-            mode="native", extra_flags=None, ctx_override=8000,
-            cache_type_k=None, cache_type_v=None, n_slots=None, kv_unified=False,
-        )
-        assert result == 8000
-
     @pytest.mark.asyncio
     async def test_start_with_budget_manual_requires_positive_tokens(self) -> None:
         for manual_tokens in [None, 0, -1]:
@@ -922,59 +818,6 @@ class TestStartWithBudget:
         sm = ServerManager(backend="ollama")
         with pytest.raises(ValueError, match="backend='ollama' does not support"):
             await sm.start_with_budget("llama3", extra_flags=["--flag"])
-
-    @pytest.mark.asyncio
-    async def test_start_with_budget_forge_full(self) -> None:
-        sm = ServerManager(backend="llamaserver")
-        with (
-            patch.object(sm, "start", new_callable=AsyncMock) as mock_start,
-            patch.object(sm, "get_server_context", new_callable=AsyncMock, return_value=13568),
-        ):
-            result = await sm.start_with_budget(
-                "llama3", gguf_path="/models/llama3.gguf",
-                budget_mode=BudgetMode.FORGE_FULL,
-            )
-
-        mock_start.assert_called_once_with(
-            "llama3", gguf_path="/models/llama3.gguf", model_path=None,
-            mode="native", extra_flags=None, ctx_override=None,
-            cache_type_k=None, cache_type_v=None, n_slots=None, kv_unified=False,
-        )
-        assert result == 13568
-
-    @pytest.mark.asyncio
-    async def test_start_with_budget_forge_fast(self) -> None:
-        """FORGE_FAST: start → read 13568 → restart with 6784 → read 6784."""
-        sm = ServerManager(backend="llamaserver")
-        # First get_server_context returns 13568 (auto-tuned max),
-        # second returns 6784 (after restart with -c 6784)
-        with (
-            patch.object(sm, "start", new_callable=AsyncMock) as mock_start,
-            patch.object(
-                sm, "get_server_context", new_callable=AsyncMock,
-                side_effect=[13568, 6784],
-            ),
-        ):
-            result = await sm.start_with_budget(
-                "llama3", gguf_path="/models/llama3.gguf",
-                budget_mode=BudgetMode.FORGE_FAST,
-            )
-
-        assert mock_start.call_count == 2
-        # Phase 1: start without -c
-        mock_start.assert_any_call(
-            "llama3", gguf_path="/models/llama3.gguf", model_path=None,
-            mode="native", extra_flags=None, ctx_override=None,
-            cache_type_k=None, cache_type_v=None, n_slots=None, kv_unified=False,
-        )
-        # Phase 2: restart with half (13568 // 2 = 6784)
-        mock_start.assert_any_call(
-            "llama3", gguf_path="/models/llama3.gguf", model_path=None,
-            mode="native", extra_flags=None, ctx_override=6784,
-            cache_type_k=None, cache_type_v=None, n_slots=None, kv_unified=False,
-        )
-        assert result == 6784
-
     @pytest.mark.asyncio
     async def test_start_with_budget_forge_fast_no_ctx_raises(self) -> None:
         sm = ServerManager(backend="llamaserver")
@@ -1011,191 +854,6 @@ class TestStartWithBudget:
                 budget_mode=BudgetMode.FORGE_FAST,
             )
         assert result == 2048  # half of 4096 tier for <24 GB
-
-    @pytest.mark.asyncio
-    async def test_forge_fast_multi_slot_no_double_divide(self) -> None:
-        """FORGE_FAST with 2 slots: recovers total before halving."""
-        sm = ServerManager(backend="llamaserver")
-        # /props reports 35K per-slot (from 70K total / 2 slots)
-        # After restart with -c 35K (half of 70K), /props reports 17.5K per-slot
-        with (
-            patch.object(sm, "start", new_callable=AsyncMock) as mock_start,
-            patch.object(
-                sm, "get_server_context", new_callable=AsyncMock,
-                side_effect=[35000, 17500],
-            ),
-        ):
-            result = await sm.start_with_budget(
-                "llama3", gguf_path="/models/llama3.gguf",
-                budget_mode=BudgetMode.FORGE_FAST,
-                n_slots=2,
-            )
-
-        assert mock_start.call_count == 2
-        # Phase 2: -c should be 35000 (half of 70K total), NOT 17500 (half of per-slot)
-        mock_start.assert_any_call(
-            "llama3", gguf_path="/models/llama3.gguf", model_path=None,
-            mode="native", extra_flags=None, ctx_override=35000,
-            cache_type_k=None, cache_type_v=None, n_slots=2, kv_unified=False,
-        )
-        # Budget returned is per-slot (non-unified): 17500
-        assert result == 17500
-
-    @pytest.mark.asyncio
-    async def test_forge_fast_single_slot_unchanged(self) -> None:
-        """FORGE_FAST with 1 slot: same behavior as before."""
-        sm = ServerManager(backend="llamaserver")
-        with (
-            patch.object(sm, "start", new_callable=AsyncMock) as mock_start,
-            patch.object(
-                sm, "get_server_context", new_callable=AsyncMock,
-                side_effect=[13568, 6784],
-            ),
-        ):
-            result = await sm.start_with_budget(
-                "llama3", gguf_path="/models/llama3.gguf",
-                budget_mode=BudgetMode.FORGE_FAST,
-                n_slots=1,
-            )
-
-        mock_start.assert_any_call(
-            "llama3", gguf_path="/models/llama3.gguf", model_path=None,
-            mode="native", extra_flags=None, ctx_override=6784,
-            cache_type_k=None, cache_type_v=None, n_slots=1, kv_unified=False,
-        )
-        assert result == 6784
-
-    @pytest.mark.asyncio
-    async def test_kv_unified_returns_full_budget(self) -> None:
-        """kv_unified=True with 2 slots: /props reports full context, budget matches."""
-        sm = ServerManager(backend="llamaserver")
-
-        async def fake_start(*args, **kwargs):
-            sm._current_kv_unified = kwargs.get("kv_unified", False)
-            sm._current_n_slots = kwargs.get("n_slots")
-
-        # With kv_unified, /props reports full context (not divided by slots)
-        with (
-            patch.object(sm, "start", side_effect=fake_start),
-            patch.object(sm, "get_server_context", new_callable=AsyncMock, return_value=70000),
-        ):
-            result = await sm.start_with_budget(
-                "llama3", gguf_path="/models/llama3.gguf",
-                budget_mode=BudgetMode.FORGE_FULL,
-                n_slots=2,
-                kv_unified=True,
-            )
-
-        # Budget is what /props reports — no multiplication needed
-        assert result == 70000
-
-    @pytest.mark.asyncio
-    async def test_kv_unified_single_slot_no_change(self) -> None:
-        """kv_unified with 1 slot: same as without — /props reports full context."""
-        sm = ServerManager(backend="llamaserver")
-
-        with (
-            patch.object(sm, "start", new_callable=AsyncMock),
-            patch.object(sm, "get_server_context", new_callable=AsyncMock, return_value=70000),
-        ):
-            result = await sm.start_with_budget(
-                "llama3", gguf_path="/models/llama3.gguf",
-                budget_mode=BudgetMode.FORGE_FULL,
-                n_slots=1,
-                kv_unified=True,
-            )
-
-        assert result == 70000
-
-    @pytest.mark.asyncio
-    async def test_non_unified_returns_per_slot_budget(self) -> None:
-        """Without kv_unified, 2 slots: budget is per-slot context."""
-        sm = ServerManager(backend="llamaserver")
-        with (
-            patch.object(sm, "start", new_callable=AsyncMock),
-            patch.object(sm, "get_server_context", new_callable=AsyncMock, return_value=35000),
-        ):
-            result = await sm.start_with_budget(
-                "llama3", gguf_path="/models/llama3.gguf",
-                budget_mode=BudgetMode.FORGE_FULL,
-                n_slots=2,
-                kv_unified=False,
-            )
-
-        # Non-unified: per-slot is the correct budget
-        assert result == 35000
-
-    @pytest.mark.asyncio
-    async def test_kv_unified_injects_flag(self) -> None:
-        """kv_unified=True passes --kv-unified to start()."""
-        sm = ServerManager(backend="llamaserver")
-        with (
-            patch.object(sm, "start", new_callable=AsyncMock) as mock_start,
-            patch.object(sm, "get_server_context", new_callable=AsyncMock, return_value=35000),
-        ):
-            await sm.start_with_budget(
-                "llama3", gguf_path="/models/llama3.gguf",
-                budget_mode=BudgetMode.FORGE_FULL,
-                n_slots=2,
-                kv_unified=True,
-            )
-
-        mock_start.assert_called_once_with(
-            "llama3", gguf_path="/models/llama3.gguf", model_path=None,
-            mode="native", extra_flags=None, ctx_override=None,
-            cache_type_k=None, cache_type_v=None, n_slots=2, kv_unified=True,
-        )
-
-    @pytest.mark.asyncio
-    async def test_forge_fast_kv_unified_multi_slot(self) -> None:
-        """FORGE_FAST + kv_unified + 2 slots: /props reports full context."""
-        sm = ServerManager(backend="llamaserver")
-
-        # With unified, /props reports full context (not per-slot).
-        # Phase 1: /props reports 70K (full). FORGE_FAST halves: -c 35K.
-        # Phase 2: /props reports 35K (full at new size). Budget = 35K.
-        with (
-            patch.object(sm, "start", new_callable=AsyncMock),
-            patch.object(
-                sm, "get_server_context", new_callable=AsyncMock,
-                side_effect=[70000, 35000],
-            ),
-        ):
-            result = await sm.start_with_budget(
-                "llama3", gguf_path="/models/llama3.gguf",
-                budget_mode=BudgetMode.FORGE_FAST,
-                n_slots=2,
-                kv_unified=True,
-            )
-
-        assert result == 35000
-
-    @pytest.mark.asyncio
-    async def test_forge_fast_kv_unified_single_slot(self) -> None:
-        """FORGE_FAST + kv_unified + 1 slot: straightforward halving."""
-        sm = ServerManager(backend="llamaserver")
-        with (
-            patch.object(sm, "start", new_callable=AsyncMock) as mock_start,
-            patch.object(
-                sm, "get_server_context", new_callable=AsyncMock,
-                side_effect=[70000, 35000],
-            ),
-        ):
-            result = await sm.start_with_budget(
-                "llama3", gguf_path="/models/llama3.gguf",
-                budget_mode=BudgetMode.FORGE_FAST,
-                n_slots=1,
-                kv_unified=True,
-            )
-
-        mock_start.assert_any_call(
-            "llama3", gguf_path="/models/llama3.gguf", model_path=None,
-            mode="native", extra_flags=None, ctx_override=35000,
-            cache_type_k=None, cache_type_v=None, n_slots=1, kv_unified=True,
-        )
-        assert result == 35000
-
-
 # ── setup_backend() ──────────────────────────────────────────────
 
 

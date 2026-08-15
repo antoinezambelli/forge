@@ -82,6 +82,74 @@ class _ServerLaunch:
     rpc: LlamaCppRpcConfig | None
 
 
+def _render_launch_command(
+    family: BackendFamily,
+    port: int,
+    launch: _ServerLaunch,
+    *,
+    llamafile_runtime: Path | None = None,
+) -> list[str]:
+    """Render the exact process argv for a validated server launch."""
+
+    if family == BackendFamily.LLAMAFILE:
+        if llamafile_runtime is None:
+            raise ValueError("llamafile_runtime is required for llamafile launches")
+        cmd = [
+            str(llamafile_runtime),
+            "--server",
+            "--nobrowser",
+            "-m",
+            str(launch.gguf_path),
+            "-ngl",
+            "999",
+            "--port",
+            str(port),
+        ]
+    elif family == BackendFamily.LLAMA_SERVER:
+        cmd = [
+            (
+                launch.rpc.coordinator_executable
+                if launch.rpc is not None
+                else "llama-server"
+            ),
+            "-m",
+            str(launch.gguf_path),
+            "-ngl",
+            "999",
+            "--port",
+            str(port),
+        ]
+        if launch.rpc is not None:
+            cmd.extend(render_rpc_coordinator_args(launch.rpc))
+    else:
+        cmd = [
+            "vllm",
+            "serve",
+            str(launch.model_path),
+            "--port",
+            str(port),
+        ]
+        cmd.extend(launch.extra_flags)
+        if launch.ctx_override is not None:
+            cmd.extend(["--max-model-len", str(launch.ctx_override)])
+        return cmd
+
+    if launch.mode == "native":
+        cmd.append("--jinja")
+    cmd.extend(launch.extra_flags)
+    if launch.ctx_override is not None:
+        cmd.extend(["-c", str(launch.ctx_override)])
+    if launch.cache_type_k is not None:
+        cmd.extend(["--cache-type-k", launch.cache_type_k])
+    if launch.cache_type_v is not None:
+        cmd.extend(["--cache-type-v", launch.cache_type_v])
+    if launch.n_slots is not None:
+        cmd.extend(["--parallel", str(launch.n_slots)])
+    if launch.kv_unified:
+        cmd.append("--kv-unified")
+    return cmd
+
+
 class ServerManager:
     """Manages or attaches to a backend and resolves context budgets.
 
@@ -290,71 +358,15 @@ class ServerManager:
 
         await self.stop()
 
+        runtime = None
         if family == BackendFamily.LLAMAFILE:
             runtime = self._find_llamafile_runtime(Path(gguf_path).parent)
-            cmd: list[str] = [
-                str(runtime),
-                "--server",
-                "--nobrowser",
-                "-m",
-                str(gguf_path),
-                "-ngl",
-                "999",
-                "--port",
-                str(self._port),
-            ]
-            if mode == "native":
-                cmd.append("--jinja")
-            if extra_flags:
-                cmd.extend(extra_flags)
-            if ctx_override is not None:
-                cmd.extend(["-c", str(ctx_override)])
-            if cache_type_k is not None:
-                cmd.extend(["--cache-type-k", cache_type_k])
-            if cache_type_v is not None:
-                cmd.extend(["--cache-type-v", cache_type_v])
-            if n_slots is not None:
-                cmd.extend(["--parallel", str(n_slots)])
-            if kv_unified:
-                cmd.append("--kv-unified")
-        elif family == BackendFamily.LLAMA_SERVER:
-            cmd = [
-                rpc.coordinator_executable if rpc is not None else "llama-server",
-                "-m",
-                str(gguf_path),
-                "-ngl",
-                "999",
-                "--port",
-                str(self._port),
-            ]
-            if rpc is not None:
-                cmd.extend(render_rpc_coordinator_args(rpc))
-            if mode == "native":
-                cmd.append("--jinja")
-            if extra_flags:
-                cmd.extend(extra_flags)
-            if ctx_override is not None:
-                cmd.extend(["-c", str(ctx_override)])
-            if cache_type_k is not None:
-                cmd.extend(["--cache-type-k", cache_type_k])
-            if cache_type_v is not None:
-                cmd.extend(["--cache-type-v", cache_type_v])
-            if n_slots is not None:
-                cmd.extend(["--parallel", str(n_slots)])
-            if kv_unified:
-                cmd.append("--kv-unified")
-        else:  # vllm
-            cmd = [
-                "vllm",
-                "serve",
-                str(model_path),
-                "--port",
-                str(self._port),
-            ]
-            if extra_flags:
-                cmd.extend(extra_flags)
-            if ctx_override is not None:
-                cmd.extend(["--max-model-len", str(ctx_override)])
+        cmd = _render_launch_command(
+            family,
+            self._port,
+            launch,
+            llamafile_runtime=runtime,
+        )
 
         try:
             if rpc is not None:

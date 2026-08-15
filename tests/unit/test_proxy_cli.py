@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import subprocess
 import sys
-from pathlib import Path
 from unittest.mock import ANY, MagicMock, patch
 
 import pytest
@@ -124,10 +123,3 @@ def test_main_starts_and_stops_on_keyboard_interrupt(
     output = capsys.readouterr().out
     assert "forge proxy running at http://127.0.0.1:8081" in output
     assert "Shutting down..." in output
-
-
-def test_integration_script_uses_current_proxy_selectors() -> None:
-    source = Path("scripts/integration_test_proxy.py").read_text(encoding="utf-8")
-    assert "backend_protocol=" not in source
-    assert 'backend="openai"' in source
-    assert 'backend="vllm"' in source

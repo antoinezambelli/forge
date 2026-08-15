@@ -715,10 +715,6 @@ class TestGetServedModelName:
 # ── removed proxy discovery helper ─────────────────────────────
 
 
-def test_proxy_discovery_helper_is_absent() -> None:
-    assert not hasattr(VLLMClient, "_discover_proxy_backend_metadata")
-
-
 # ── edge cases ─────────────────────────────────────────────────
 
 

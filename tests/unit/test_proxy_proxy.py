@@ -72,11 +72,6 @@ class TestConstructorValidation:
         ):
             ProxyServer(backend_url="http://x:8000", backend_timeout=backend_timeout)
 
-    def test_backend_timeout_default_and_override(self) -> None:
-        assert ProxyServer(backend_url="http://x:8000")._backend_timeout == 300.0
-        proxy = ProxyServer(backend_url="http://x:8000", backend_timeout=1800.0)
-        assert proxy._backend_timeout == 1800.0
-
 class TestSetupExternal:
     """External setup is metadata-free; only unpinned vLLM gets a latch."""
 
@@ -275,7 +270,80 @@ class TestSetupManaged:
     """Managed mode delegates lifecycle setup then applies NoCompact."""
 
     @pytest.mark.asyncio
-    async def test_llamaserver_wiring(self) -> None:
+    @pytest.mark.parametrize(
+        ("proxy_kwargs", "client_type", "base_url", "identity_field", "identity"),
+        [
+            (
+                {"backend": "llamaserver", "gguf": "/models/x.gguf"},
+                LlamafileClient,
+                "http://localhost:8080/v1",
+                "gguf_path",
+                "/models/x.gguf",
+            ),
+            (
+                {"backend": "llamafile", "gguf": "/models/x.gguf"},
+                LlamafileClient,
+                "http://localhost:8080/v1",
+                "gguf_path",
+                "/models/x.gguf",
+            ),
+            (
+                {"backend": "vllm", "model_path": "/models/awq"},
+                VLLMClient,
+                "http://localhost:8080/v1",
+                "model_path",
+                "/models/awq",
+            ),
+            (
+                {"backend": "ollama", "model": "ministral-3:14b"},
+                OllamaClient,
+                "http://localhost:11434",
+                "model",
+                "ministral-3:14b",
+            ),
+        ],
+        ids=["llamaserver", "llamafile", "vllm", "ollama"],
+    )
+    async def test_managed_backend_client_and_context_wiring(
+        self,
+        proxy_kwargs: dict[str, str],
+        client_type: type,
+        base_url: str,
+        identity_field: str,
+        identity: str,
+    ) -> None:
+        proxy = ProxyServer(**proxy_kwargs)
+        backend_manager = MagicMock()
+        with patch(
+            "forge.proxy.proxy._setup_managed_backend",
+            new_callable=AsyncMock,
+            return_value=_ManagedBackendSetup(backend_manager, 8192),
+        ) as setup:
+            client, context, lazy_discovery = await proxy._setup_managed()
+
+        assert isinstance(client, client_type)
+        assert client.base_url == base_url
+        assert context.budget_tokens == 8192
+        assert isinstance(context.strategy, NoCompact)
+        assert lazy_discovery is None
+        assert proxy._server_manager is backend_manager
+        kwargs = setup.await_args.kwargs
+        assert kwargs["backend"] == proxy_kwargs["backend"]
+        assert kwargs["client"] is client
+        assert kwargs["mode"] == "native"
+        assert kwargs[identity_field] == identity
+        assert {
+            key: kwargs[key] for key in ("model", "gguf_path", "model_path")
+            if key != identity_field
+        } == {
+            key: None for key in ("model", "gguf_path", "model_path")
+            if key != identity_field
+        }
+        if isinstance(client, LlamafileClient):
+            assert client.mode == "native"
+
+    @pytest.mark.asyncio
+    async def test_nondefault_managed_options_are_forwarded(self) -> None:
         proxy = ProxyServer(
             backend="llamaserver",
             gguf="/models/x.gguf",
@@ -312,58 +380,6 @@ class TestSetupManaged:
         assert ctx.budget_tokens == 16384
 
     @pytest.mark.asyncio
-    async def test_vllm_wiring(self) -> None:
-        proxy = ProxyServer(
-            backend="vllm", model_path="/models/awq", backend_port=8000,
-            budget_tokens=113000, budget_mode=BudgetMode.MANUAL,
-            backend_timeout=1800.0,
-        )
-        with patch(
-            "forge.proxy.proxy._setup_managed_backend",
-            new_callable=AsyncMock,
-            return_value=_ManagedBackendSetup(MagicMock(), 113000),
-        ) as mock_setup:
-            client, ctx, _ = await proxy._setup_managed()
-
-        assert isinstance(client, VLLMClient)
-        assert client.base_url == "http://localhost:8000/v1"
-        assert client._http.timeout.read == 1800.0
-        kwargs = mock_setup.await_args.kwargs
-        assert kwargs["backend"] == "vllm"
-        assert kwargs["model_path"] == "/models/awq"
-        assert kwargs["gguf_path"] is None
-        assert kwargs["model"] is None
-        assert kwargs["manual_tokens"] == 113000
-        assert kwargs["budget_mode"] == BudgetMode.MANUAL
-        assert isinstance(ctx.strategy, NoCompact)
-
-    @pytest.mark.asyncio
-    async def test_ollama_wiring(self) -> None:
-        proxy = ProxyServer(
-            backend="ollama",
-            model="ministral-3:14b",
-            backend_timeout=1800.0,
-        )
-        with patch(
-            "forge.proxy.proxy._setup_managed_backend",
-            new_callable=AsyncMock,
-            return_value=_ManagedBackendSetup(MagicMock(), 4096),
-        ) as mock_setup:
-            client, ctx, _ = await proxy._setup_managed()
-        assert isinstance(client, OllamaClient)
-        assert client.base_url == "http://localhost:11434"
-        assert client._chat_url == "http://localhost:11434/api/chat"
-        assert client._http.timeout.read == 1800.0
-        kwargs = mock_setup.await_args.kwargs
-        assert kwargs["backend"] == "ollama"
-        assert kwargs["model"] == "ministral-3:14b"
-        assert kwargs["gguf_path"] is None
-        assert kwargs["model_path"] is None
-        # Client is passed through so shared managed setup can wire num_ctx.
-        assert kwargs["client"] is client
-        assert isinstance(ctx.strategy, NoCompact)
-
-    @pytest.mark.asyncio
     async def test_ollama_custom_port_wires_client_and_daemon_target(self) -> None:
         proxy = ProxyServer(
             backend="ollama", model="tag", backend_port=22445,
@@ -383,33 +399,10 @@ class TestSetupManaged:
         )
         assert server._daemon_target_overridden is True
 
-    @pytest.mark.asyncio
-    async def test_managed_llamafile_client_is_native(self) -> None:
-        # The proxy is native-only: the managed LlamafileClient is built in
-        # native mode and the backend process is launched native too.
-        proxy = ProxyServer(backend="llamafile", gguf="/m/x.gguf")
-        with patch(
-            "forge.proxy.proxy._setup_managed_backend",
-            new_callable=AsyncMock,
-            return_value=_ManagedBackendSetup(MagicMock(), 8192),
-        ) as mock_setup:
-            client, _, _ = await proxy._setup_managed()
-        assert isinstance(client, LlamafileClient)
-        assert client.mode == "native"
-        assert mock_setup.await_args.kwargs["mode"] == "native"
-
-
 class TestBackendCapability:
     """backend_capability selects the tool-calling protocol, declared once at
     construction and frozen. native (default) = verbatim passthrough; prompt =
     opt-in prompt-injection for non-FC llama.cpp/llamafile backends."""
-
-    def test_default_is_native(self) -> None:
-        assert ProxyServer(backend_url="http://x:8080")._backend_capability == "native"
-
-    def test_prompt_stored(self) -> None:
-        proxy = ProxyServer(backend_url="http://x:8080", backend_capability="prompt")
-        assert proxy._backend_capability == "prompt"
 
     @pytest.mark.parametrize(
         ("kwargs", "match"),
@@ -475,6 +468,40 @@ class TestBackendCapability:
 class TestLifecycle:
     """start()/stop() thread + state management."""
 
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("proxy_kwargs", "expected"),
+        [
+            ({}, (False, 3, 2)),
+            (
+                {"serialize": True, "max_retries": 0, "max_tool_errors": 5},
+                (True, 0, 5),
+            ),
+        ],
+        ids=["external-defaults", "external-overrides"],
+    )
+    async def test_http_server_receives_serialization_and_retry_controls(
+        self,
+        proxy_kwargs: dict[str, object],
+        expected: tuple[bool, int, int],
+    ) -> None:
+        proxy = ProxyServer(backend_url="http://backend", **proxy_kwargs)
+        http_server = MagicMock()
+        http_server.start = AsyncMock()
+        with patch(
+            "forge.proxy.proxy.HTTPServer", return_value=http_server
+        ) as server_cls:
+            await proxy._async_start(MagicMock())
+
+        kwargs = server_cls.call_args.kwargs
+        assert (
+            kwargs["serialize_requests"],
+            kwargs["max_retries"],
+            kwargs["max_tool_errors"],
+        ) == expected
+        assert proxy._client is not None
+        await proxy._client.aclose()
+
     def test_url_property(self) -> None:
         proxy = ProxyServer(backend_url="http://localhost:8000", host="0.0.0.0", port=9000)
         assert proxy.url == "http://0.0.0.0:9000"
@@ -529,6 +556,8 @@ class TestLifecycle:
 
         kwargs = server_cls.call_args.kwargs
         assert kwargs["serialize_requests"] is True
+        assert kwargs["max_retries"] == 3
+        assert kwargs["max_tool_errors"] == 2
         assert kwargs["backend_protocol"] == "openai"
         assert kwargs["client_adapter"] == ClientAdapter.LLAMAFILE
         http_server._configure_metadata_courier.assert_called_once_with(

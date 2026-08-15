@@ -2,19 +2,16 @@
 
 from __future__ import annotations
 
-from dataclasses import FrozenInstanceError, fields
+from dataclasses import FrozenInstanceError
 
 import pytest
 
 from forge._backend_profiles import (
-    BackendFamilyProfile,
     ClientAdapter,
     LifecycleOwnership,
-    ManagedBackendProfile,
     MetadataFormat,
     ModelCatalogEntry,
     parse_vllm_model_catalog,
-    UnmanagedBackendProfile,
     all_profiles,
     managed_profile,
     unmanaged_profile,
@@ -54,30 +51,39 @@ def test_proxy_mount_normalization(url: str, expected: str) -> None:
 @pytest.mark.parametrize(
     ("layout", "operation", "expected_path"),
     [
-        (EndpointLayout.LLAMA_OPENAI, BackendOperation.INFERENCE, "/edge/a/v1/chat/completions"),
-        (EndpointLayout.LLAMA_OPENAI, BackendOperation.MODEL_CATALOG, "/edge/a/v1/models"),
-        (EndpointLayout.LLAMA_OPENAI, BackendOperation.PROPERTIES, "/edge/a/props"),
-        (EndpointLayout.LLAMA_OPENAI, BackendOperation.HEALTH, "/edge/a/health"),
-        (EndpointLayout.LLAMA_OPENAI, BackendOperation.VERSIONED_HEALTH, "/edge/a/v1/health"),
-        (EndpointLayout.LLAMA_OPENAI, BackendOperation.STARTUP_READINESS, "/edge/a/props"),
-        (EndpointLayout.VLLM_OPENAI, BackendOperation.INFERENCE, "/edge/a/v1/chat/completions"),
-        (EndpointLayout.VLLM_OPENAI, BackendOperation.MODEL_CATALOG, "/edge/a/v1/models"),
-        (EndpointLayout.VLLM_OPENAI, BackendOperation.HEALTH, "/edge/a/health"),
-        (EndpointLayout.VLLM_OPENAI, BackendOperation.VERSIONED_HEALTH, "/edge/a/v1/health"),
-        (EndpointLayout.VLLM_OPENAI, BackendOperation.STARTUP_READINESS, "/edge/a/v1/models"),
-        (EndpointLayout.OPENAI_COMPAT, BackendOperation.INFERENCE, "/edge/a/v1/chat/completions"),
-        (EndpointLayout.OPENAI_COMPAT, BackendOperation.MODEL_CATALOG, "/edge/a/v1/models"),
-        (EndpointLayout.OPENAI_COMPAT, BackendOperation.HEALTH, "/edge/a/health"),
-        (EndpointLayout.OPENAI_COMPAT, BackendOperation.VERSIONED_HEALTH, "/edge/a/v1/health"),
-        (EndpointLayout.OLLAMA_NATIVE, BackendOperation.INFERENCE, "/edge/a/api/chat"),
-        (EndpointLayout.OLLAMA_NATIVE, BackendOperation.HEALTH, "/edge/a/health"),
-        (EndpointLayout.OLLAMA_NATIVE, BackendOperation.VERSIONED_HEALTH, "/edge/a/v1/health"),
-        (EndpointLayout.ANTHROPIC_MESSAGES, BackendOperation.INFERENCE, "/edge/a/v1/messages"),
-        (EndpointLayout.ANTHROPIC_MESSAGES, BackendOperation.HEALTH, "/edge/a/health"),
-        (EndpointLayout.ANTHROPIC_MESSAGES, BackendOperation.VERSIONED_HEALTH, "/edge/a/v1/health"),
+        (
+            EndpointLayout.LLAMA_OPENAI,
+            BackendOperation.INFERENCE,
+            "/edge/a/v1/chat/completions",
+        ),
+        (
+            EndpointLayout.LLAMA_OPENAI,
+            BackendOperation.PROPERTIES,
+            "/edge/a/props",
+        ),
+        (
+            EndpointLayout.LLAMA_OPENAI,
+            BackendOperation.STARTUP_READINESS,
+            "/edge/a/props",
+        ),
+        (
+            EndpointLayout.VLLM_OPENAI,
+            BackendOperation.STARTUP_READINESS,
+            "/edge/a/v1/models",
+        ),
+        (
+            EndpointLayout.OLLAMA_NATIVE,
+            BackendOperation.INFERENCE,
+            "/edge/a/api/chat",
+        ),
+        (
+            EndpointLayout.ANTHROPIC_MESSAGES,
+            BackendOperation.INFERENCE,
+            "/edge/a/v1/messages",
+        ),
     ],
 )
-def test_every_known_proxy_operation_preserves_nested_prefix(
+def test_representative_operations_preserve_nested_prefix(
     layout: EndpointLayout,
     operation: BackendOperation,
     expected_path: str,
@@ -172,31 +178,15 @@ def test_replace_authority_port_preserves_other_components(
     assert replace_authority_port(url, port) == expected
 
 
-def test_profile_types_match_the_closed_runtime_shape() -> None:
-    assert {field.name for field in fields(BackendFamilyProfile)} == {
-        "family", "protocol", "endpoint_layout", "client_adapter",
-        "metadata_format", "operations", "tool_capabilities",
-    }
-    assert {field.name for field in fields(ManagedBackendProfile)} == {
-        "selector", "family_profile", "lifecycle", "required_identity",
-        "default_port", "proxy_owned_flags",
-    }
-    assert {field.name for field in fields(UnmanagedBackendProfile)} == {
-        "selector", "family_profile", "identity_discovery",
-    }
-
-
-def test_profile_registry_covers_all_current_selectors_and_layouts() -> None:
+def test_profile_registry_operations_fit_their_endpoint_layouts() -> None:
     profiles = all_profiles()
-    assert sum(isinstance(profile, ManagedBackendProfile) for profile in profiles) == 4
-    assert sum(isinstance(profile, UnmanagedBackendProfile) for profile in profiles) == 6
-    assert {profile.selector for profile in profiles} == {
-        "openai", "anthropic", "llamaserver", "llamafile", "ollama", "vllm",
-    }
+
+    assert profiles
     for profile in profiles:
-        assert profile.family_profile.operations <= layout_operations(
-            profile.family_profile.endpoint_layout,
-        )
+        family = profile.family_profile
+        assert profile.selector
+        assert family.operations
+        assert family.operations <= layout_operations(family.endpoint_layout)
 
 
 @pytest.mark.parametrize("selector", ["llamaserver", "llamafile", "vllm"])

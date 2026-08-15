@@ -11,7 +11,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 from forge.clients.ollama import OllamaClient
 from forge.core.workflow import TextResponse, ToolSpec
-from forge.clients.base import ChunkType, format_tool
+from forge.clients.base import ChunkType
 from forge.errors import BackendError, ThinkingNotSupportedError
 
 
@@ -115,11 +115,20 @@ class TestOllamaSend:
 
     @pytest.mark.asyncio
     async def test_formats_tools_in_request(self) -> None:
+        class SearchParams(BaseModel):
+            query: str = Field(description="Query")
+            order: Literal["asc", "desc"] = Field(description="Sort order")
+            limit: int | None = Field(default=None, description="Limit")
+
         client = _make_client()
         client._http.post.return_value = _mock_response({
             "message": {"role": "assistant", "content": "ok"}
         })
-        spec = _make_spec()
+        spec = ToolSpec(
+            name="search",
+            description="Search items",
+            parameters=SearchParams,
+        )
         await client.send([{"role": "user", "content": "test"}], tools=[spec])
 
         call_args = client._http.post.call_args
@@ -127,8 +136,10 @@ class TestOllamaSend:
         assert "tools" in body
         tool = body["tools"][0]
         assert tool["type"] == "function"
-        assert tool["function"]["name"] == "get_pricing"
-        assert "parameters" in tool["function"]
+        assert tool["function"]["name"] == "search"
+        parameters = tool["function"]["parameters"]
+        assert parameters["properties"]["order"]["enum"] == ["asc", "desc"]
+        assert set(parameters["required"]) == {"query", "order"}
 
     @pytest.mark.asyncio
     async def test_request_body_structure(self) -> None:
@@ -142,9 +153,41 @@ class TestOllamaSend:
         body = call_args.kwargs.get("json") or call_args[1].get("json")
         assert body["model"] == "test-model"
         assert body["stream"] is False
-        assert "options" in body
-        # Default constructor sends no temperature; backend default applies.
-        assert "temperature" not in body["options"]
+        assert body["options"] == {}
+
+    @pytest.mark.asyncio
+    async def test_instance_options_and_num_ctx_reset_on_wire(self) -> None:
+        client = OllamaClient(
+            base_url="http://test:11434",
+            model="test-model",
+            temperature=0.6,
+            top_p=0.95,
+            top_k=20,
+            min_p=0.0,
+            repeat_penalty=1.05,
+            presence_penalty=1.5,
+        )
+        client._http.post.return_value = _mock_response({
+            "message": {"role": "assistant", "content": "ok"}
+        })
+
+        client.set_num_ctx(8000)
+        await client.send([{"role": "user", "content": "first"}])
+        client.set_num_ctx(None)
+        await client.send([{"role": "user", "content": "second"}])
+
+        expected_sampling = {
+            "temperature": 0.6,
+            "top_p": 0.95,
+            "top_k": 20,
+            "min_p": 0.0,
+            "repeat_penalty": 1.05,
+            "presence_penalty": 1.5,
+        }
+        first_options = client._http.post.await_args_list[0].kwargs["json"]["options"]
+        second_options = client._http.post.await_args_list[1].kwargs["json"]["options"]
+        assert first_options == {**expected_sampling, "num_ctx": 8000}
+        assert second_options == expected_sampling
 
     @pytest.mark.asyncio
     async def test_tool_role_passes_through(self) -> None:
@@ -936,145 +979,7 @@ class TestOllamaGetContextLength:
         assert result == 8000
 
 
-class TestSetNumCtx:
-    """Tests for set_num_ctx() public setter."""
-
-    def test_set_value(self) -> None:
-        client = _make_client()
-        client.set_num_ctx(4096)
-        assert client._num_ctx == 4096
-
-    def test_set_none(self) -> None:
-        client = _make_client()
-        client.set_num_ctx(4096)
-        client.set_num_ctx(None)
-        assert client._num_ctx is None
-
-
-class TestBuildOptions:
-    """Tests for _build_options() with and without num_ctx."""
-
-    def test_without_num_ctx(self) -> None:
-        """Fresh client: options is empty (no temperature, no num_ctx)."""
-        client = _make_client()
-        opts = client._build_options()
-        assert "temperature" not in opts
-        assert "num_ctx" not in opts
-
-    def test_with_num_ctx(self) -> None:
-        """After setting num_ctx, it appears in options."""
-        client = _make_client()
-        client.set_num_ctx(8000)
-        opts = client._build_options()
-        assert opts["num_ctx"] == 8000
-
-    def test_sampling_defaults_absent_when_none(self) -> None:
-        """top_p/top_k/min_p/repeat_penalty/presence_penalty absent from options when unset."""
-        client = _make_client()
-        opts = client._build_options()
-        assert "top_p" not in opts
-        assert "top_k" not in opts
-        assert "min_p" not in opts
-        assert "repeat_penalty" not in opts
-        assert "presence_penalty" not in opts
-
-    def test_sampling_params_land_in_options(self) -> None:
-        """All sampling kwargs propagate into the options dict when set."""
-        client = OllamaClient(
-            base_url="http://test:11434",
-            model="test-model",
-            temperature=0.6,
-            top_p=0.95,
-            top_k=20,
-            min_p=0.0,
-            repeat_penalty=1.05,
-            presence_penalty=1.5,
-        )
-        opts = client._build_options()
-        assert opts["temperature"] == 0.6
-        assert opts["top_p"] == 0.95
-        assert opts["top_k"] == 20
-        assert opts["min_p"] == 0.0
-        assert opts["repeat_penalty"] == 1.05
-        assert opts["presence_penalty"] == 1.5
-
-
 # ── format_tool ──────────────────────────────────────────────────
-
-
-class TestFormatTool:
-    def test_basic_format(self) -> None:
-        spec = _make_spec()
-        result = format_tool(spec)
-        assert result["type"] == "function"
-        assert result["function"]["name"] == "get_pricing"
-        assert "properties" in result["function"]["parameters"]
-        assert "required" in result["function"]["parameters"]
-
-    def test_enum_included(self) -> None:
-        class SortOrderParams(BaseModel):
-            order: Literal["asc", "desc"] = Field(description="Sort order")
-
-        spec = ToolSpec(
-            name="sort",
-            description="Sort items",
-            parameters=SortOrderParams,
-        )
-        result = format_tool(spec)
-        props = result["function"]["parameters"]["properties"]
-        assert props["order"]["enum"] == ["asc", "desc"]
-
-    def test_optional_not_in_required(self) -> None:
-        class SearchOptionalParams(BaseModel):
-            query: str = Field(description="Query")
-            limit: int | None = Field(default=None, description="Limit")
-
-        spec = ToolSpec(
-            name="search",
-            description="Search",
-            parameters=SearchOptionalParams,
-        )
-        result = format_tool(spec)
-        required = result["function"]["parameters"]["required"]
-        assert "query" in required
-        assert "limit" not in required
-
-
-class TestTemperatureOptional:
-    """Issue C: temperature is optional; default constructor sends nothing."""
-
-    @pytest.mark.asyncio
-    async def test_no_temperature_when_default(self) -> None:
-        """Default constructor (no temperature kwarg): options has no temperature field."""
-        client = _make_client()
-        client._http.post.return_value = _mock_response({
-            "message": {"role": "assistant", "content": "ok"}
-        })
-
-        await client.send([{"role": "user", "content": "hi"}])
-
-        call_args = client._http.post.call_args
-        body = call_args.kwargs.get("json") or call_args[1].get("json")
-        assert "temperature" not in body["options"]
-
-    @pytest.mark.asyncio
-    async def test_explicit_temperature_in_options(self) -> None:
-        """Explicit temperature kwarg appears in options."""
-        client = OllamaClient(
-            base_url="http://test:11434", model="test-model", temperature=0.5,
-        )
-        mock_http = AsyncMock()
-        mock_http.stream = MagicMock()
-        client._http = mock_http
-        client._http.post.return_value = _mock_response({
-            "message": {"role": "assistant", "content": "ok"}
-        })
-
-        await client.send([{"role": "user", "content": "hi"}])
-
-        call_args = client._http.post.call_args
-        body = call_args.kwargs.get("json") or call_args[1].get("json")
-        assert body["options"]["temperature"] == 0.5
 
 
 class TestRecommendedSampling:

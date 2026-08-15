@@ -1050,14 +1050,6 @@ class TestLlamafileSendStream:
 
 
 class TestMode:
-    def test_native_is_default(self) -> None:
-        client = LlamafileClient(gguf_path="test")
-        assert client.mode == "native"
-
-    def test_prompt_mode(self) -> None:
-        client = LlamafileClient(gguf_path="test", mode="prompt")
-        assert client.mode == "prompt"
-
     def test_auto_mode_rejected(self) -> None:
         # Runtime auto-detection was removed — capability is declared-and-frozen.
         with pytest.raises(ValueError, match="mode must be 'native' or 'prompt'"):
@@ -1070,27 +1062,40 @@ class TestMode:
 class TestApplySampling:
     """Tests that sampling kwargs land in llama-server request bodies."""
 
-    def test_sampling_absent_by_default(self) -> None:
-        """Unset sampling params don't appear in the body."""
-        client = LlamafileClient(gguf_path="test", mode="native")
-        body: dict = {}
-        client._apply_sampling(body)
-        assert body == {}
-
-    def test_sampling_params_populate_body(self) -> None:
-        """All sampling kwargs land as top-level body fields when set."""
+    @pytest.mark.parametrize(
+        "mode_kwargs",
+        [{}, {"mode": "prompt"}],
+        ids=["native-default", "prompt"],
+    )
+    @pytest.mark.asyncio
+    async def test_instance_sampling_on_wire(
+        self, mode_kwargs: dict[str, str]
+    ) -> None:
         client = LlamafileClient(
-            gguf_path="test",
-            mode="native",
+            base_url="http://test:8080/v1",
+            gguf_path="test-model",
+            temperature=0.6,
             top_p=0.95,
             top_k=20,
             min_p=0.0,
             repeat_penalty=1.05,
             presence_penalty=1.5,
+            **mode_kwargs,
         )
-        body: dict = {}
-        client._apply_sampling(body)
-        assert body == {
+        client._http.post.return_value = _mock_response(_openai_text_response("hi"))
+
+        await client.send([{"role": "user", "content": "hi"}])
+
+        body = client._http.post.await_args.kwargs["json"]
+        assert {key: body[key] for key in (
+            "temperature",
+            "top_p",
+            "top_k",
+            "min_p",
+            "repeat_penalty",
+            "presence_penalty",
+        )} == {
+            "temperature": 0.6,
             "top_p": 0.95,
             "top_k": 20,
             "min_p": 0.0,
@@ -1098,38 +1103,39 @@ class TestApplySampling:
             "presence_penalty": 1.5,
         }
 
+    @pytest.mark.parametrize(
+        "mode_kwargs",
+        [{}, {"mode": "prompt"}],
+        ids=["native-default", "prompt"],
+    )
     @pytest.mark.asyncio
-    async def test_native_send_includes_sampling(self) -> None:
-        """_send_native request body includes sampling params."""
-        client = _make_client(mode="native")
-        client.top_p = 0.95
-        client.top_k = 20
-        client.min_p = 0.0
-        client.repeat_penalty = 1.05
-        client._http.post = AsyncMock(return_value=_mock_response({
-            "choices": [{"message": {"content": "hi"}}],
-        }))
-        await client._send_native([{"role": "user", "content": "hi"}], None)
-        sent_body = client._http.post.call_args.kwargs["json"]
-        assert sent_body["top_p"] == 0.95
-        assert sent_body["top_k"] == 20
-        assert sent_body["min_p"] == 0.0
-        assert sent_body["repeat_penalty"] == 1.05
+    async def test_default_sampling_absent_on_wire(
+        self, mode_kwargs: dict[str, str]
+    ) -> None:
+        client = LlamafileClient(
+            base_url="http://test:8080/v1",
+            gguf_path="test-model",
+            **mode_kwargs,
+        )
+        client._http.post.return_value = _mock_response(_openai_text_response("hi"))
 
-    @pytest.mark.asyncio
-    async def test_prompt_send_includes_sampling(self) -> None:
-        """_send_prompt request body includes sampling params."""
-        client = _make_client(mode="prompt")
-        client.top_p = 0.95
-        client._http.post = AsyncMock(return_value=_mock_response({
-            "choices": [{"message": {"content": "hi"}}],
-        }))
-        await client._send_prompt([{"role": "user", "content": "hi"}], None)
-        sent_body = client._http.post.call_args.kwargs["json"]
-        assert sent_body["top_p"] == 0.95
+        await client.send([{"role": "user", "content": "hi"}])
+
+        body = client._http.post.await_args.kwargs["json"]
+        assert not {
+            "temperature",
+            "top_p",
+            "top_k",
+            "min_p",
+            "repeat_penalty",
+            "presence_penalty",
+        } & body.keys()
 
 
 # ── _merge_consecutive ────────────────────────────────────────────
+
+
+# ── think flag behavior — sync ────────────────────────────────────
 
 
 class TestMergeConsecutive:
@@ -1158,7 +1164,6 @@ class TestMergeConsecutive:
         assert "[tool_call]" in result[2]["content"]
 
     def test_does_not_merge_across_tool_calls(self) -> None:
-        """Assistant messages with tool_calls are never merged."""
         messages = [
             {"role": "assistant", "content": "thinking..."},
             {"role": "assistant", "content": "", "tool_calls": [
@@ -1170,46 +1175,34 @@ class TestMergeConsecutive:
         assert "tool_calls" in result[1]
 
     def test_does_not_merge_tool_role(self) -> None:
-        """role='tool' messages are never merged."""
         messages = [
             {"role": "tool", "content": "result1"},
             {"role": "tool", "content": "result2"},
         ]
-        result = _merge_consecutive(messages)
-        assert len(result) == 2
+        assert len(_merge_consecutive(messages)) == 2
 
     def test_preserves_correct_alternation(self) -> None:
-        """Already-alternating messages pass through unchanged."""
         messages = [
             {"role": "system", "content": "sys"},
             {"role": "user", "content": "go"},
             {"role": "assistant", "content": "ok"},
             {"role": "user", "content": "next"},
         ]
-        result = _merge_consecutive(messages)
-        assert len(result) == 4
+        assert len(_merge_consecutive(messages)) == 4
 
     def test_empty_messages(self) -> None:
         assert _merge_consecutive([]) == []
 
     def test_does_not_merge_into_tool_calls(self) -> None:
-        """A plain assistant message before a tool_calls message stays separate."""
         messages = [
             {"role": "assistant", "content": "", "tool_calls": [
                 {"function": {"name": "a", "arguments": {}}}
             ]},
             {"role": "assistant", "content": "reasoning"},
         ]
-        result = _merge_consecutive(messages)
-        assert len(result) == 2
+        assert len(_merge_consecutive(messages)) == 2
 
     def test_merges_users_separated_by_invisible_messages(self) -> None:
-        """User messages separated by assistant(tc)+tool are merged.
-
-        The Jinja parity checker ignores assistant(tool_calls) and tool
-        messages, so two user messages with only invisible messages between
-        them are consecutive from the checker's perspective.
-        """
         messages = [
             {"role": "system", "content": "sys"},
             {"role": "user", "content": "go"},
@@ -1223,14 +1216,10 @@ class TestMergeConsecutive:
             {"role": "user", "content": "step nudge"},
         ]
         result = _merge_consecutive(messages)
-        # user messages merged, invisible messages preserved between
         user_msgs = [m for m in result if m["role"] == "user" and "tool_calls" not in m]
         assert len(user_msgs) == 1
         assert "go" in user_msgs[0]["content"]
         assert "step nudge" in user_msgs[0]["content"]
-
-
-# ── think flag behavior — sync ────────────────────────────────────
 
 
 class TestThinkFlagSync:
@@ -1500,38 +1489,14 @@ class TestThinkFlagStream:
 class TestSlotId:
     """slot_id injection into request bodies."""
 
-    def test_slot_id_stored(self) -> None:
-        client = LlamafileClient(
-            base_url="http://test:8080/v1", gguf_path="test", mode="native", slot_id=1
-        )
-        assert client._slot_id == 1
-
-    def test_slot_id_default_none(self) -> None:
-        client = LlamafileClient(
-            base_url="http://test:8080/v1", gguf_path="test", mode="native"
-        )
-        assert client._slot_id is None
-
-    def test_apply_slot_id_injects(self) -> None:
-        client = LlamafileClient(
-            base_url="http://test:8080/v1", gguf_path="test", mode="native", slot_id=1
-        )
-        body: dict = {"model": "test"}
-        client._apply_slot_id(body)
-        assert body["slot_id"] == 1
-
-    def test_apply_slot_id_noop_when_none(self) -> None:
-        client = LlamafileClient(
-            base_url="http://test:8080/v1", gguf_path="test", mode="native"
-        )
-        body: dict = {"model": "test"}
-        client._apply_slot_id(body)
-        assert "slot_id" not in body
-
+    @pytest.mark.parametrize("slot_id", [None, 1])
     @pytest.mark.asyncio
-    async def test_native_send_includes_slot_id(self) -> None:
+    async def test_native_send_slot_id_on_wire(self, slot_id: int | None) -> None:
         client = LlamafileClient(
-            base_url="http://test:8080/v1", gguf_path="test", mode="native", slot_id=1
+            base_url="http://test:8080/v1",
+            gguf_path="test",
+            mode="native",
+            slot_id=slot_id,
         )
         mock_http = AsyncMock()
         client._http = mock_http
@@ -1553,53 +1518,10 @@ class TestSlotId:
 
         call_kwargs = mock_http.post.call_args
         body = call_kwargs.kwargs.get("json") or call_kwargs[1].get("json")
-        assert body["slot_id"] == 1
-
-
-class TestTemperatureOptional:
-    """Issue C: temperature is optional; default constructor sends nothing."""
-
-    @pytest.mark.asyncio
-    async def test_no_temperature_when_default(self) -> None:
-        """Default constructor (no temperature kwarg): outbound body has no temperature field."""
-        client = _make_client(mode="native")
-        client._http.post.return_value = _mock_response({
-            "choices": [{
-                "message": {"content": "ok", "tool_calls": None},
-                "finish_reason": "stop",
-            }],
-        })
-
-        await client.send([{"role": "user", "content": "hi"}], tools=None)
-
-        call_kwargs = client._http.post.call_args
-        body = call_kwargs.kwargs.get("json") or call_kwargs[1].get("json")
-        assert "temperature" not in body
-
-    @pytest.mark.asyncio
-    async def test_explicit_temperature_in_body(self) -> None:
-        """Explicit temperature kwarg appears in outbound body."""
-        client = LlamafileClient(
-            base_url="http://test:8080/v1",
-            gguf_path="test-model",
-            mode="native",
-            temperature=0.5,
-        )
-        mock_http = AsyncMock()
-        mock_http.stream = MagicMock()
-        client._http = mock_http
-        client._http.post.return_value = _mock_response({
-            "choices": [{
-                "message": {"content": "ok", "tool_calls": None},
-                "finish_reason": "stop",
-            }],
-        })
-
-        await client.send([{"role": "user", "content": "hi"}], tools=None)
-
-        call_kwargs = client._http.post.call_args
-        body = call_kwargs.kwargs.get("json") or call_kwargs[1].get("json")
-        assert body["temperature"] == 0.5
+        if slot_id is None:
+            assert "slot_id" not in body
+        else:
+            assert body["slot_id"] == slot_id
 
 
 class TestRecommendedSampling:
@@ -1736,10 +1658,10 @@ class TestPerCallSampling:
 # ── Issue #121: Path.stem truncates dotted model names ─────────────
 
 
-class TestDeriveSamplingKey:
-    """LlamafileClient._derive_sampling_key() preserves dots in model identifiers."""
+class TestModelIdentityInvariant:
+    """client.model == client.sampling_key is an invariant."""
 
-    def test_derives_every_supported_path_shape(self) -> None:
+    def test_model_equals_sampling_key_for_every_path_shape(self) -> None:
         cases = [
             (Path("mimo-v2.5.gguf"), "mimo-v2.5"),
             (Path("Model.Q4_K_M.llamafile"), "Model.Q4_K_M"),
@@ -1752,20 +1674,6 @@ class TestDeriveSamplingKey:
                 Path("Mistral-Nemo-Instruct-2407.Q4_K_M.llamafile"),
                 "Mistral-Nemo-Instruct-2407.Q4_K_M",
             ),
-        ]
-        for model_path, expected in cases:
-            assert LlamafileClient._derive_sampling_key(model_path) == expected, model_path
-
-
-class TestModelIdentityInvariant:
-    """client.model == client.sampling_key is an invariant."""
-
-    def test_model_equals_sampling_key_for_every_path_shape(self) -> None:
-        cases = [
-            ("qwen3:8b-q4_K_M", "qwen3:8b-q4_K_M"),
-            ("mimo-v2.5", "mimo-v2.5"),
-            ("mimo-v2.5.gguf", "mimo-v2.5"),
-            ("model-00001-of-00003.gguf", "model"),
         ]
         for model_path, expected in cases:
             client = LlamafileClient(gguf_path=model_path)

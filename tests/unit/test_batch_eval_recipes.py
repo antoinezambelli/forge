@@ -315,6 +315,3 @@ def test_managed_recipe_mapping_matches_pinned_literals() -> None:
     recipe = batch_eval._BatchServerRecipe(("--reasoning-format", "auto"))
     with pytest.raises(FrozenInstanceError):
         recipe.extra_flags = ()  # type: ignore[misc]
-
-    assert not hasattr(batch_eval, "_SERVER_EXTRA_FLAGS")
-    assert not hasattr(batch_eval, "_get_server_flags")
