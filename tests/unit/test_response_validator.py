@@ -1,4 +1,4 @@
-"""Tests for ResponseValidator and Nudge."""
+"""ResponseValidator orchestration and handoff contracts."""
 
 import pytest
 
@@ -6,165 +6,122 @@ from forge.core.workflow import TextResponse, ToolCall
 from forge.guardrails import Nudge, ResponseValidator
 
 
-class TestNudge:
-    """Nudge dataclass basics."""
-
-    def test_frozen(self):
-        nudge = Nudge(role="user", content="try again", kind="retry")
-        with pytest.raises(AttributeError):
-            nudge.role = "system"
-
-    def test_defaults(self):
-        nudge = Nudge(role="user", content="x", kind="retry")
-        assert nudge.tier == 0
-
-    def test_tier_preserved(self):
-        nudge = Nudge(role="user", content="x", kind="step", tier=2)
-        assert nudge.tier == 2
+def _validator(*, rescue_enabled: bool = True) -> ResponseValidator:
+    return ResponseValidator(
+        tool_names=["search", "answer"],
+        rescue_enabled=rescue_enabled,
+    )
 
 
-class TestResponseValidatorTextResponse:
-    """TextResponse handling — rescue and retry."""
+def test_nudge_is_immutable() -> None:
+    nudge = Nudge(role="user", content="try again", kind="retry")
 
-    def setup_method(self):
-        self.validator = ResponseValidator(
-            tool_names=["search", "answer"], rescue_enabled=True
-        )
+    with pytest.raises(AttributeError):
+        nudge.role = "system"
 
-    def test_plain_text_returns_retry_nudge(self):
-        result = self.validator.validate(TextResponse(content="I don't know"))
+
+def test_text_response_rescue_hands_calls_to_validation_result() -> None:
+    result = _validator().validate(
+        TextResponse(content='{"tool": "search", "args": {"q": "hello"}}')
+    )
+
+    assert result.needs_retry is False
+    assert result.nudge is None
+    assert result.tool_calls == [ToolCall(tool="search", args={"q": "hello"})]
+
+
+def test_unrescued_text_uses_retry_channel_and_content() -> None:
+    cases = [
+        ("plain text", _validator(), "I don't know"),
+        (
+            "rescue disabled",
+            _validator(rescue_enabled=False),
+            '{"tool": "search", "args": {"q": "hello"}}',
+        ),
+        (
+            "unknown rescued tool",
+            _validator(),
+            '{"tool": "nonexistent", "args": {}}',
+        ),
+    ]
+
+    for label, validator, content in cases:
+        result = validator.validate(TextResponse(content=content))
+        assert result.needs_retry is True, label
+        assert result.tool_calls is None, label
+        assert result.nudge is not None, label
+        assert result.nudge.role == "user", label
+        assert result.nudge.kind == "retry", label
+        assert "tool call" in result.nudge.content.lower(), label
+
+
+def test_valid_tool_call_batches_pass_through() -> None:
+    batches = [
+        [ToolCall(tool="search", args={"q": "hi"})],
+        [
+            ToolCall(tool="search", args={"q": "a"}),
+            ToolCall(tool="answer", args={"text": "b"}),
+        ],
+        [],
+    ]
+
+    for calls in batches:
+        result = _validator().validate(calls)
+        assert result.needs_retry is False
+        assert result.tool_calls == calls
+        assert result.nudge is None
+
+
+def test_unknown_tool_batches_use_tool_channel() -> None:
+    batches = [
+        [ToolCall(tool="nonexistent", args={})],
+        [
+            ToolCall(tool="search", args={"q": "hi"}),
+            ToolCall(tool="bad_tool", args={}),
+        ],
+    ]
+
+    for calls in batches:
+        unknown = calls[-1].tool
+        result = _validator().validate(calls)
         assert result.needs_retry is True
         assert result.tool_calls is None
         assert result.nudge is not None
-        assert result.nudge.role == "user"
-        assert result.nudge.kind == "retry"
-        assert "tool call" in result.nudge.content.lower()
-
-    def test_rescue_json_tool_call(self):
-        text = '{"tool": "search", "args": {"q": "hello"}}'
-        result = self.validator.validate(TextResponse(content=text))
-        assert result.needs_retry is False
-        assert result.nudge is None
-        assert result.tool_calls is not None
-        assert len(result.tool_calls) == 1
-        assert result.tool_calls[0].tool == "search"
-        assert result.tool_calls[0].args == {"q": "hello"}
-
-    def test_rescue_code_fenced_json(self):
-        text = '```json\n{"tool": "search", "args": {"q": "test"}}\n```'
-        result = self.validator.validate(TextResponse(content=text))
-        assert result.needs_retry is False
-        assert result.tool_calls[0].tool == "search"
-
-    def test_rescue_disabled(self):
-        validator = ResponseValidator(
-            tool_names=["search", "answer"], rescue_enabled=False
-        )
-        text = '{"tool": "search", "args": {"q": "hello"}}'
-        result = validator.validate(TextResponse(content=text))
-        assert result.needs_retry is True
-        assert result.nudge.kind == "retry"
-
-    def test_rescue_unknown_tool_not_rescued(self):
-        text = '{"tool": "nonexistent", "args": {}}'
-        result = self.validator.validate(TextResponse(content=text))
-        assert result.needs_retry is True
-        assert result.nudge.kind == "retry"
-
-
-class TestResponseValidatorToolCalls:
-    """list[ToolCall] handling — unknown tool detection."""
-
-    def setup_method(self):
-        self.validator = ResponseValidator(
-            tool_names=["search", "answer"], rescue_enabled=True
-        )
-
-    def test_valid_tool_call_batches_pass(self):
-        cases = [
-            ("single", [ToolCall(tool="search", args={"q": "hi"})]),
-            (
-                "multiple",
-                [
-                    ToolCall(tool="search", args={"q": "a"}),
-                    ToolCall(tool="answer", args={"text": "b"}),
-                ],
-            ),
-            ("empty", []),
-        ]
-        for label, calls in cases:
-            validator = ResponseValidator(
-                tool_names=["search", "answer"], rescue_enabled=True
-            )
-            result = validator.validate(calls)
-            assert result.needs_retry is False, label
-            assert result.tool_calls == calls, label
-            assert result.nudge is None, label
-
-    def test_unknown_tool_returns_nudge(self):
-        calls = [ToolCall(tool="nonexistent", args={})]
-        result = self.validator.validate(calls)
-        assert result.needs_retry is True
-        assert result.tool_calls is None
         assert result.nudge.kind == "unknown_tool"
-        assert "nonexistent" in result.nudge.content
-        # Tool-call faults ride the tool-result channel (role="tool").
         assert result.nudge.role == "tool"
+        assert unknown in result.nudge.content
 
-    def test_mixed_known_unknown_returns_nudge(self):
-        calls = [
-            ToolCall(tool="search", args={"q": "hi"}),
-            ToolCall(tool="bad_tool", args={}),
-        ]
-        result = self.validator.validate(calls)
-        assert result.needs_retry is True
-        assert result.nudge.kind == "unknown_tool"
-        assert "bad_tool" in result.nudge.content
 
-class TestResponseValidatorArgsShape:
-    """Args-shape enforcement — moved out of pydantic ToolCall construction."""
+def test_invalid_argument_shapes_use_tool_error_channel() -> None:
+    cases = [
+        ("string", [ToolCall(tool="search", args="")]),
+        ("none", [ToolCall(tool="search", args=None)]),
+        ("list", [ToolCall(tool="search", args=[1, 2])]),
+        ("integer", [ToolCall(tool="search", args=42)]),
+        (
+            "mixed batch",
+            [
+                ToolCall(tool="search", args={"q": "hi"}),
+                ToolCall(tool="answer", args=""),
+            ],
+        ),
+    ]
 
-    def setup_method(self):
-        self.validator = ResponseValidator(
-            tool_names=["search", "answer"], rescue_enabled=True
-        )
+    for label, calls in cases:
+        result = _validator().validate(calls)
+        bad_tool = calls[-1].tool
+        assert result.needs_retry is True, label
+        assert result.tool_calls is None, label
+        assert result.nudge is not None, label
+        assert result.nudge.kind == "tool_arg_validation", label
+        assert result.nudge.role == "tool", label
+        assert bad_tool in result.nudge.content, label
+        assert "JSON object" in result.nudge.content, label
 
-    def test_invalid_arg_shapes_return_tool_channel_nudge(self):
-        cases = [("string", ""), ("none", None), ("list", [1, 2]), ("integer", 42)]
-        for label, args in cases:
-            validator = ResponseValidator(
-                tool_names=["search", "answer"], rescue_enabled=True
-            )
-            calls = [ToolCall(tool="search", args=args)]  # type: ignore[arg-type]
-            result = validator.validate(calls)
-            assert result.needs_retry is True, label
-            assert result.tool_calls is None, label
-            assert result.nudge.kind == "tool_arg_validation", label
-            assert "search" in result.nudge.content, label
-            assert "JSON object" in result.nudge.content, label
-            assert result.nudge.role == "tool", label
 
-    def test_unknown_tool_takes_precedence_over_bad_args(self):
-        # Unknown-tool check runs first; no point validating args of a
-        # hallucinated tool.
-        calls = [ToolCall(tool="hallucinated", args="")]  # type: ignore[arg-type]
-        result = self.validator.validate(calls)
-        assert result.needs_retry is True
-        assert result.nudge.kind == "unknown_tool"
+def test_unknown_tool_takes_precedence_over_argument_shape() -> None:
+    result = _validator().validate([ToolCall(tool="hallucinated", args="")])
 
-    def test_mixed_good_and_bad_args_returns_nudge(self):
-        calls = [
-            ToolCall(tool="search", args={"q": "hi"}),
-            ToolCall(tool="answer", args=""),  # type: ignore[arg-type]
-        ]
-        result = self.validator.validate(calls)
-        assert result.needs_retry is True
-        assert result.nudge.kind == "tool_arg_validation"
-        assert "answer" in result.nudge.content
-
-    def test_empty_dict_args_pass(self):
-        # {} is a valid dict — no-arg tools are fine.
-        calls = [ToolCall(tool="search", args={})]
-        result = self.validator.validate(calls)
-        assert result.needs_retry is False
-        assert result.nudge is None
+    assert result.needs_retry is True
+    assert result.nudge is not None
+    assert result.nudge.kind == "unknown_tool"

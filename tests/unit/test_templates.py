@@ -1,11 +1,15 @@
-"""Tests for forge.prompts.templates — build_tool_prompt, extract_tool_call, rescue_tool_call."""
+"""Prompt rendering and text tool-call parser contracts."""
 
 from typing import Literal
 
 from pydantic import BaseModel, Field
 
 from forge.core.workflow import ToolCall, ToolSpec
-from forge.prompts.templates import build_tool_prompt, extract_tool_call, rescue_tool_call
+from forge.prompts.templates import (
+    build_tool_prompt,
+    extract_tool_call,
+    rescue_tool_call,
+)
 
 
 class GetPricingParams(BaseModel):
@@ -15,398 +19,290 @@ class GetPricingParams(BaseModel):
 def _make_spec(
     name: str = "get_pricing",
     description: str = "Get pricing for a part",
-    params: type[BaseModel] | None = None,
+    params: type[BaseModel] = GetPricingParams,
 ) -> ToolSpec:
-    if params is None:
-        params = GetPricingParams
     return ToolSpec(name=name, description=description, parameters=params)
 
 
-# ── build_tool_prompt ────────────────────────────────────────────
+def _signatures(calls: list[ToolCall]) -> list[tuple[str, object]]:
+    return [(call.tool, call.args) for call in calls]
 
 
-class TestBuildToolPrompt:
-    def test_single_tool_contains_name_and_description(self) -> None:
-        spec = _make_spec()
-        result = build_tool_prompt([spec])
-        assert "get_pricing" in result
-        assert "Get pricing for a part" in result
-
-    def test_single_tool_contains_parameter_info(self) -> None:
-        spec = _make_spec()
-        result = build_tool_prompt([spec])
-        assert "part_number" in result
-        assert "string" in result
-        assert "The part number" in result
-
-    def test_multiple_tools_all_included(self) -> None:
-        specs = [
-            _make_spec("get_pricing", "Get pricing"),
+def test_build_tool_prompt_describes_tools_and_call_format() -> None:
+    prompt = build_tool_prompt(
+        [
+            _make_spec(),
             _make_spec("get_history", "Get history"),
         ]
-        result = build_tool_prompt(specs)
-        assert "get_pricing" in result
-        assert "get_history" in result
+    )
 
-    def test_includes_json_format_instruction(self) -> None:
-        spec = _make_spec()
-        result = build_tool_prompt([spec])
-        assert '"tool"' in result
-        assert '"args"' in result
-
-    def test_required_parameter_marked(self) -> None:
-        spec = _make_spec()
-        result = build_tool_prompt([spec])
-        assert "required" in result.lower()
-
-    def test_optional_parameter_marked(self) -> None:
-        class OptionalQueryParams(BaseModel):
-            query: str | None = Field(default=None, description="Search query")
-
-        spec = _make_spec(params=OptionalQueryParams)
-        result = build_tool_prompt([spec])
-        assert "optional" in result.lower()
-
-    def test_enum_values_shown(self) -> None:
-        class SortParams(BaseModel):
-            sort: Literal["asc", "desc"] = Field(description="Sort order")
-
-        spec = _make_spec(params=SortParams)
-        result = build_tool_prompt([spec])
-        assert "asc" in result
-        assert "desc" in result
+    for expected in (
+        "get_pricing",
+        "Get pricing for a part",
+        "get_history",
+        "part_number",
+        "string",
+        "The part number",
+        '"tool"',
+        '"args"',
+    ):
+        assert expected in prompt
 
 
-# ── extract_tool_call ────────────────────────────────────────────
+def test_build_tool_prompt_marks_parameter_styles() -> None:
+    class QueryParams(BaseModel):
+        query: str = Field(description="Search query")
+        limit: int | None = Field(default=None, description="Result limit")
+        sort: Literal["asc", "desc"] = Field(description="Sort order")
+
+    prompt = build_tool_prompt([_make_spec(params=QueryParams)])
+
+    assert "required" in prompt.lower()
+    assert "optional" in prompt.lower()
+    assert "asc" in prompt
+    assert "desc" in prompt
 
 
-class TestExtractToolCall:
-    def test_valid_json(self) -> None:
-        text = '{"tool": "get_pricing", "args": {"part": "X123"}}'
-        result = extract_tool_call(text, ["get_pricing"])
-        assert len(result) == 1
-        assert isinstance(result[0], ToolCall)
-        assert result[0].tool == "get_pricing"
-        assert result[0].args == {"part": "X123"}
+def test_extract_tool_call_positive_matrix() -> None:
+    cases = [
+        (
+            "forge JSON",
+            '{"tool": "get_pricing", "args": {"part": "X123"}}',
+            ["get_pricing"],
+            [("get_pricing", {"part": "X123"})],
+        ),
+        (
+            "JSON fence",
+            '```json\n{"tool": "get_pricing", "args": {"part": "X"}}\n```',
+            ["get_pricing"],
+            [("get_pricing", {"part": "X"})],
+        ),
+        (
+            "bare fence",
+            '```\n{"tool": "get_pricing", "args": {}}\n```',
+            ["get_pricing"],
+            [("get_pricing", {})],
+        ),
+        (
+            "embedded nested JSON",
+            'Calling: {"tool": "search", "args": {"filter": {"type": "active"}}}.',
+            ["search"],
+            [("search", {"filter": {"type": "active"}})],
+        ),
+        (
+            "OpenAI keys",
+            '{"name": "get_pricing", "arguments": {"part": "X123"}}',
+            ["get_pricing"],
+            [("get_pricing", {"part": "X123"})],
+        ),
+        (
+            "Granite wrapper",
+            '<tool_call>{"name": "get_pricing", "arguments": {"part": "X"}}</tool_call>',
+            ["get_pricing"],
+            [("get_pricing", {"part": "X"})],
+        ),
+        (
+            "missing args",
+            '{"tool": "get_pricing"}',
+            ["get_pricing"],
+            [("get_pricing", {})],
+        ),
+        (
+            "multiple calls",
+            '{"tool": "get_pricing", "args": {"part": "A"}} '
+            '{"tool": "search", "args": {"q": "B"}}',
+            ["get_pricing", "search"],
+            [
+                ("get_pricing", {"part": "A"}),
+                ("search", {"q": "B"}),
+            ],
+        ),
+    ]
 
-    def test_json_in_code_fences(self) -> None:
-        text = '```json\n{"tool": "get_pricing", "args": {"part": "X"}}\n```'
-        result = extract_tool_call(text, ["get_pricing"])
-        assert len(result) == 1
-        assert result[0].tool == "get_pricing"
-
-    def test_json_in_bare_code_fences(self) -> None:
-        text = '```\n{"tool": "get_pricing", "args": {}}\n```'
-        result = extract_tool_call(text, ["get_pricing"])
-        assert len(result) == 1
-        assert result[0].tool == "get_pricing"
-
-    def test_json_embedded_in_text(self) -> None:
-        text = 'Sure, I will call the tool: {"tool": "get_pricing", "args": {"part": "X"}} Hope that helps!'
-        result = extract_tool_call(text, ["get_pricing"])
-        assert len(result) == 1
-        assert result[0].tool == "get_pricing"
-
-    def test_tool_not_in_available_tools(self) -> None:
-        text = '{"tool": "delete_everything", "args": {}}'
-        result = extract_tool_call(text, ["get_pricing", "get_history"])
-        assert result == []
-
-    def test_no_json(self) -> None:
-        text = "I think we should look at the pricing data first."
-        result = extract_tool_call(text, ["get_pricing"])
-        assert result == []
-
-    def test_malformed_json(self) -> None:
-        text = '{"tool": "get_pricing", "args": {bad json}'
-        result = extract_tool_call(text, ["get_pricing"])
-        assert result == []
-
-    def test_json_without_tool_or_name_key(self) -> None:
-        text = '{"function": "get_pricing", "params": {}}'
-        result = extract_tool_call(text, ["get_pricing"])
-        assert result == []
-
-    def test_missing_args_defaults_to_empty(self) -> None:
-        text = '{"tool": "get_pricing"}'
-        result = extract_tool_call(text, ["get_pricing"])
-        assert len(result) == 1
-        assert result[0].args == {}
-
-    def test_nested_json_in_args(self) -> None:
-        text = '{"tool": "search", "args": {"filter": {"type": "active"}}}'
-        result = extract_tool_call(text, ["search"])
-        assert len(result) == 1
-        assert result[0].args == {"filter": {"type": "active"}}
-
-    def test_openai_style_keys(self) -> None:
-        """Granite 4.0 and OpenAI-format models use name/arguments instead of tool/args."""
-        text = '{"name": "get_pricing", "arguments": {"part": "X123"}}'
-        result = extract_tool_call(text, ["get_pricing"])
-        assert len(result) == 1
-        assert result[0].tool == "get_pricing"
-        assert result[0].args == {"part": "X123"}
-
-    def test_granite_tool_call_tags(self) -> None:
-        """Granite 4.0 wraps OpenAI-style JSON in <tool_call> tags."""
-        text = '<tool_call>{"name": "get_pricing", "arguments": {"part": "X123"}}</tool_call>'
-        result = extract_tool_call(text, ["get_pricing"])
-        assert len(result) == 1
-        assert result[0].tool == "get_pricing"
-        assert result[0].args == {"part": "X123"}
-
-    def test_multiple_tool_calls(self) -> None:
-        text = '{"tool": "get_pricing", "args": {"part": "A"}} {"tool": "search", "args": {"q": "B"}}'
-        result = extract_tool_call(text, ["get_pricing", "search"])
-        assert len(result) == 2
-        assert result[0].tool == "get_pricing"
-        assert result[1].tool == "search"
+    for label, text, available, expected in cases:
+        assert _signatures(extract_tool_call(text, available)) == expected, label
 
 
-# ── rescue_tool_call ────────────────────────────────────────────
+def test_extract_tool_call_negative_matrix() -> None:
+    cases = [
+        (
+            "unknown tool",
+            '{"tool": "delete_everything", "args": {}}',
+            ["get_pricing"],
+        ),
+        ("plain text", "We should inspect pricing first.", ["get_pricing"]),
+        (
+            "malformed JSON",
+            '{"tool": "get_pricing", "args": {bad json}',
+            ["get_pricing"],
+        ),
+        (
+            "unsupported keys",
+            '{"function": "get_pricing", "params": {}}',
+            ["get_pricing"],
+        ),
+    ]
+
+    for label, text, available in cases:
+        assert extract_tool_call(text, available) == [], label
 
 
-class TestRescueToolCall:
-    def test_json_tool_call_in_free_text(self) -> None:
-        text = 'I will call the tool now: {"tool": "fetch", "args": {"key": "val"}}'
-        result = rescue_tool_call(text, ["fetch", "submit"])
-        assert len(result) == 1
-        assert result[0].tool == "fetch"
-        assert result[0].args == {"key": "val"}
-
-    def test_rehearsal_syntax(self) -> None:
-        text = 'fetch[ARGS]{"key": "value"}'
-        result = rescue_tool_call(text, ["fetch", "submit"])
-        assert len(result) == 1
-        assert result[0].tool == "fetch"
-        assert result[0].args == {"key": "value"}
-
-    def test_rehearsal_inside_think_tags(self) -> None:
-        text = '[THINK]reasoning here[/THINK] report[ARGS]{"findings": "data"}'
-        result = rescue_tool_call(text, ["report", "submit"])
-        assert len(result) == 1
-        assert result[0].tool == "report"
-        assert result[0].args == {"findings": "data"}
-
-    def test_rehearsal_inside_xml_think_tags(self) -> None:
-        text = '<think>reasoning here</think> fetch[ARGS]{"id": 42}'
-        result = rescue_tool_call(text, ["fetch", "submit"])
-        assert len(result) == 1
-        assert result[0].tool == "fetch"
-        assert result[0].args == {"id": 42}
-
-    def test_unknown_tool_returns_empty(self) -> None:
-        text = 'delete_everything[ARGS]{"force": true}'
-        result = rescue_tool_call(text, ["fetch", "submit"])
-        assert result == []
-
-    def test_plain_text_returns_empty(self) -> None:
-        text = "I think we should analyze the data first and then report."
-        result = rescue_tool_call(text, ["fetch", "submit"])
-        assert result == []
-
-    def test_malformed_json_in_rehearsal_returns_empty(self) -> None:
-        text = 'fetch[ARGS]{bad json here}'
-        result = rescue_tool_call(text, ["fetch", "submit"])
-        assert result == []
-
-    def test_empty_string_returns_empty(self) -> None:
-        result = rescue_tool_call("", ["fetch", "submit"])
-        assert result == []
-
-    def test_only_think_tags_returns_empty(self) -> None:
-        text = "[THINK]just thinking, no tool call[/THINK]"
-        result = rescue_tool_call(text, ["fetch", "submit"])
-        assert result == []
-
-    def test_json_in_code_fences(self) -> None:
-        text = '```json\n{"tool": "fetch", "args": {"q": "test"}}\n```'
-        result = rescue_tool_call(text, ["fetch", "submit"])
-        assert len(result) == 1
-        assert result[0].tool == "fetch"
-
-    def test_json_preferred_over_rehearsal(self) -> None:
-        """If both JSON and rehearsal syntax are present, JSON wins (tried first)."""
-        text = '{"tool": "fetch", "args": {"a": 1}} submit[ARGS]{"b": 2}'
-        result = rescue_tool_call(text, ["fetch", "submit"])
-        # JSON extraction finds both tool calls
-        assert len(result) >= 1
-        assert result[0].tool == "fetch"
-        assert result[0].args == {"a": 1}
-
-
-# ── Qwen Coder XML format ───────────────────────────────────────
-
-
-class TestQwenXmlRescue:
-    def test_single_parameter(self) -> None:
-        text = "<function=fetch>\n<parameter=query>hello world</parameter>\n</function>"
-        result = rescue_tool_call(text, ["fetch", "submit"])
-        assert len(result) == 1
-        assert result[0].tool == "fetch"
-        assert result[0].args == {"query": "hello world"}
-
-    def test_multiple_parameters(self) -> None:
-        text = (
-            "<function=fetch>\n"
-            "<parameter=query>hello</parameter>\n"
-            "<parameter=limit>10</parameter>\n"
-            "</function>"
-        )
-        result = rescue_tool_call(text, ["fetch", "submit"])
-        assert len(result) == 1
-        assert result[0].tool == "fetch"
-        assert result[0].args == {"query": "hello", "limit": "10"}
-
-    def test_multiline_parameter_value(self) -> None:
-        """Issue #55 reproducer — bash command spans multiple lines."""
-        text = (
-            "<function=bash>\n"
-            "<parameter=command>\n"
-            'find . -name "*.py" -exec grep -l "percentage" {} \\;\n'
-            "</parameter>\n"
-            "</function>"
-        )
-        result = rescue_tool_call(text, ["bash", "edit"])
-        assert len(result) == 1
-        assert result[0].tool == "bash"
-        # The leading/trailing newlines around the command are stripped
-        assert result[0].args["command"] == 'find . -name "*.py" -exec grep -l "percentage" {} \\;'
-
-    def test_multiple_function_calls(self) -> None:
-        text = (
+def test_rescue_tool_call_style_matrix() -> None:
+    multiline_command = 'find . -name "*.py" -exec grep -l "percentage" {} \\;'
+    cases = [
+        (
+            "JSON in prose",
+            'I will call: {"tool": "fetch", "args": {"key": "val"}}',
+            ["fetch", "submit"],
+            [("fetch", {"key": "val"})],
+        ),
+        (
+            "rehearsal",
+            'fetch[ARGS]{"key": "value"}',
+            ["fetch", "submit"],
+            [("fetch", {"key": "value"})],
+        ),
+        (
+            "rehearsal after bracket thinking",
+            '[THINK]reasoning[/THINK] report[ARGS]{"findings": "data"}',
+            ["report", "submit"],
+            [("report", {"findings": "data"})],
+        ),
+        (
+            "rehearsal after XML thinking",
+            '<think>reasoning</think> fetch[ARGS]{"id": 42}',
+            ["fetch", "submit"],
+            [("fetch", {"id": 42})],
+        ),
+        (
+            "Qwen parameters",
+            "<function=fetch>\n<parameter=query>hello</parameter>\n"
+            "<parameter=limit>10</parameter>\n</function>",
+            ["fetch", "submit"],
+            [("fetch", {"query": "hello", "limit": "10"})],
+        ),
+        (
+            "Qwen multiline parameter",
+            "<function=bash>\n<parameter=command>\n"
+            f"{multiline_command}\n</parameter>\n</function>",
+            ["bash", "edit"],
+            [("bash", {"command": multiline_command})],
+        ),
+        (
+            "multiple Qwen calls",
             "<function=fetch><parameter=q>one</parameter></function>\n"
-            "<function=submit><parameter=data>two</parameter></function>"
-        )
-        result = rescue_tool_call(text, ["fetch", "submit"])
-        assert len(result) == 2
-        assert result[0].tool == "fetch"
-        assert result[0].args == {"q": "one"}
-        assert result[1].tool == "submit"
-        assert result[1].args == {"data": "two"}
-
-    def test_unknown_tool_ignored(self) -> None:
-        text = "<function=unknown_tool><parameter=x>1</parameter></function>"
-        result = rescue_tool_call(text, ["fetch", "submit"])
-        assert result == []
-
-    def test_mixed_with_thinking(self) -> None:
-        text = (
-            "<think>I should call fetch here</think>\n"
-            "<function=fetch><parameter=query>weather</parameter></function>"
-        )
-        result = rescue_tool_call(text, ["fetch", "submit"])
-        assert len(result) == 1
-        assert result[0].tool == "fetch"
-        assert result[0].args == {"query": "weather"}
-
-    def test_malformed_unclosed_function_falls_through(self) -> None:
-        text = "<function=fetch><parameter=q>never closed"
-        result = rescue_tool_call(text, ["fetch", "submit"])
-        assert result == []
-
-    def test_json_preferred_over_qwen_xml(self) -> None:
-        """JSON extraction runs first; XML is only tried when JSON finds nothing."""
-        text = (
-            '{"tool": "fetch", "args": {"q": "json"}}\n'
-            "<function=submit><parameter=data>xml</parameter></function>"
-        )
-        result = rescue_tool_call(text, ["fetch", "submit"])
-        assert len(result) >= 1
-        assert result[0].tool == "fetch"
-        assert result[0].args == {"q": "json"}
-
-
-class TestMistralBracketRescue:
-    """Mistral native ``[TOOL_CALLS]<name>{<args>}`` format.
-
-    Emitted by Devstral-Small-2 and Mistral-Small-3.x family in prompt mode.
-    """
-
-    def test_no_separator(self) -> None:
-        text = '[TOOL_CALLS]read{"file_path": "transformer.py"}'
-        result = rescue_tool_call(text, ["read", "edit"])
-        assert len(result) == 1
-        assert result[0].tool == "read"
-        assert result[0].args == {"file_path": "transformer.py"}
-
-    def test_whitespace_separator(self) -> None:
-        text = '[TOOL_CALLS]read {"file_path": "transformer.py"}'
-        result = rescue_tool_call(text, ["read", "edit"])
-        assert len(result) == 1
-        assert result[0].args == {"file_path": "transformer.py"}
-
-    def test_newline_separator(self) -> None:
-        text = '[TOOL_CALLS]read\n{"file_path": "transformer.py"}'
-        result = rescue_tool_call(text, ["read", "edit"])
-        assert len(result) == 1
-        assert result[0].args == {"file_path": "transformer.py"}
-
-    def test_nested_braces_in_args(self) -> None:
-        text = (
+            "<function=submit><parameter=data>two</parameter></function>",
+            ["fetch", "submit"],
+            [("fetch", {"q": "one"}), ("submit", {"data": "two"})],
+        ),
+        (
+            "Qwen after thinking",
+            "<think>reasoning</think>"
+            "<function=fetch><parameter=query>weather</parameter></function>",
+            ["fetch", "submit"],
+            [("fetch", {"query": "weather"})],
+        ),
+        (
+            "Mistral no separator",
+            '[TOOL_CALLS]read{"file_path": "transformer.py"}',
+            ["read", "edit"],
+            [("read", {"file_path": "transformer.py"})],
+        ),
+        (
+            "Mistral space separator",
+            '[TOOL_CALLS]read {"file_path": "transformer.py"}',
+            ["read", "edit"],
+            [("read", {"file_path": "transformer.py"})],
+        ),
+        (
+            "Mistral newline separator",
+            '[TOOL_CALLS]read\n{"file_path": "transformer.py"}',
+            ["read", "edit"],
+            [("read", {"file_path": "transformer.py"})],
+        ),
+        (
+            "Mistral nested braces",
             '[TOOL_CALLS]edit{"file_path": "x.py", '
             '"old_string": "if x: { print(1) }", '
-            '"new_string": "if x: { print(2) }"}'
-        )
-        result = rescue_tool_call(text, ["read", "edit"])
-        assert len(result) == 1
-        assert result[0].tool == "edit"
-        assert result[0].args["old_string"] == "if x: { print(1) }"
-
-    def test_string_with_escaped_quote(self) -> None:
-        # The brace-balance scan must treat "..." as a string literal and
-        # not count braces inside it. Test with an escaped quote in the value.
-        text = '[TOOL_CALLS]edit{"file_path": "x.py", "old_string": "say \\"hi\\""}'
-        result = rescue_tool_call(text, ["read", "edit"])
-        assert len(result) == 1
-        assert result[0].args["old_string"] == 'say "hi"'
-
-    def test_multiple_calls(self) -> None:
-        text = (
+            '"new_string": "if x: { print(2) }"}',
+            ["read", "edit"],
+            [
+                (
+                    "edit",
+                    {
+                        "file_path": "x.py",
+                        "old_string": "if x: { print(1) }",
+                        "new_string": "if x: { print(2) }",
+                    },
+                )
+            ],
+        ),
+        (
+            "Mistral escaped quote",
+            '[TOOL_CALLS]edit{"file_path": "x.py", "old_string": "say \\"hi\\""}',
+            ["read", "edit"],
+            [("edit", {"file_path": "x.py", "old_string": 'say "hi"'})],
+        ),
+        (
+            "multiple Mistral calls",
             '[TOOL_CALLS]read{"file_path": "a.py"}\n'
-            '[TOOL_CALLS]read{"file_path": "b.py"}'
-        )
-        result = rescue_tool_call(text, ["read", "edit"])
-        assert len(result) == 2
-        assert result[0].args["file_path"] == "a.py"
-        assert result[1].args["file_path"] == "b.py"
+            '[TOOL_CALLS]read{"file_path": "b.py"}',
+            ["read", "edit"],
+            [
+                ("read", {"file_path": "a.py"}),
+                ("read", {"file_path": "b.py"}),
+            ],
+        ),
+        (
+            "Mistral after apology and thinking",
+            "I apologize.\n<think>read first</think>\n"
+            '[TOOL_CALLS]read{"file_path": "x.py"}',
+            ["read", "edit"],
+            [("read", {"file_path": "x.py"})],
+        ),
+    ]
 
-    def test_unknown_tool_ignored(self) -> None:
-        text = '[TOOL_CALLS]not_a_real_tool{"x": 1}'
-        result = rescue_tool_call(text, ["read", "edit"])
-        assert result == []
+    for label, text, available, expected in cases:
+        assert _signatures(rescue_tool_call(text, available)) == expected, label
 
-    def test_apology_preamble_then_bracket(self) -> None:
-        """Mistral-Small-3.2 mid-conversation pattern: natural-language apology
-        followed by a bracket-tagged tool call."""
-        text = (
-            "I apologize for the confusion earlier. Let me try again.\n"
-            '[TOOL_CALLS]read{"file_path": "transformer.py"}'
-        )
-        result = rescue_tool_call(text, ["read", "edit"])
-        assert len(result) == 1
-        assert result[0].tool == "read"
 
-    def test_malformed_unclosed_brace_falls_through(self) -> None:
-        text = '[TOOL_CALLS]read{"file_path": "never closed'
-        result = rescue_tool_call(text, ["read", "edit"])
-        assert result == []
+def test_rescue_tool_call_negative_matrix() -> None:
+    cases = [
+        ("unknown rehearsal", 'unknown[ARGS]{"force": true}'),
+        ("malformed rehearsal", "fetch[ARGS]{bad json}"),
+        ("unknown Qwen", "<function=unknown><parameter=x>1</parameter></function>"),
+        ("unclosed Qwen", "<function=fetch><parameter=q>never closed"),
+        ("unknown Mistral", '[TOOL_CALLS]unknown{"x": 1}'),
+        ("unclosed Mistral", '[TOOL_CALLS]fetch{"x": "never closed"'),
+        ("plain text", "Analyze the data first."),
+        ("empty", ""),
+        ("thinking only", "[THINK]just thinking[/THINK]"),
+    ]
 
-    def test_json_preferred_over_mistral_bracket(self) -> None:
-        """JSON extraction runs first; bracket parser only fires when JSON empty."""
-        text = (
-            '{"tool": "read", "args": {"file_path": "from_json.py"}}\n'
-            '[TOOL_CALLS]read{"file_path": "from_bracket.py"}'
-        )
-        result = rescue_tool_call(text, ["read", "edit"])
-        assert len(result) == 1
-        assert result[0].args["file_path"] == "from_json.py"
+    for label, text in cases:
+        assert rescue_tool_call(text, ["fetch", "submit"]) == [], label
 
-    def test_bracket_with_thinking(self) -> None:
-        text = (
-            "<think>Let me read the file first.</think>\n"
-            '[TOOL_CALLS]read{"file_path": "x.py"}'
-        )
-        result = rescue_tool_call(text, ["read", "edit"])
-        assert len(result) == 1
-        assert result[0].args == {"file_path": "x.py"}
+
+def test_rescue_tool_call_precedence_matrix() -> None:
+    cases = [
+        (
+            "rehearsal",
+            '{"tool": "fetch", "args": {"source": "json"}} '
+            'submit[ARGS]{"source": "rehearsal"}',
+        ),
+        (
+            "Qwen",
+            '{"tool": "fetch", "args": {"source": "json"}} '
+            "<function=submit><parameter=source>qwen</parameter></function>",
+        ),
+        (
+            "Mistral",
+            '{"tool": "fetch", "args": {"source": "json"}} '
+            '[TOOL_CALLS]submit{"source": "mistral"}',
+        ),
+    ]
+
+    for label, text in cases:
+        assert _signatures(rescue_tool_call(text, ["fetch", "submit"])) == [
+            ("fetch", {"source": "json"})
+        ], label

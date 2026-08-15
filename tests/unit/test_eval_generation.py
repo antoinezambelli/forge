@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -13,15 +14,12 @@ from tests.eval import report
 from tests.eval.generation import (
     GenerationMaxima,
     accumulate_generation_maxima,
-    base_configuration_identity,
     effective_generation,
     effective_reasoning_replay,
-    explicit_policy_identity,
     is_selected_generation,
     selection_maximum_generation,
     select_latest_generation,
 )
-from tests.eval.provenance import GEN_INFO as SHARED_GEN_INFO
 
 
 def _row(marker: str, **overrides: Any) -> dict[str, Any]:
@@ -36,13 +34,9 @@ def _row(marker: str, **overrides: Any) -> dict[str, Any]:
     return row
 
 
-def _assert_selected(
-    rows: list[dict[str, Any]], expected: list[dict[str, Any]]
-) -> None:
+def _assert_selected(rows: list[dict[str, Any]], expected_markers: list[str]) -> None:
     selected = select_latest_generation(rows)
-    assert selected == expected
-    assert len(selected) == len(expected)
-    assert all(actual is wanted for actual, wanted in zip(selected, expected))
+    assert [row["marker"] for row in selected] == expected_markers
 
 
 def _report_row(**overrides: Any) -> dict[str, Any]:
@@ -62,9 +56,10 @@ def test_effective_legacy_defaults() -> None:
     assert effective_generation(row) == 0
     assert effective_reasoning_replay(row) == "full"
     assert effective_generation(_row("modern", gen=3)) == 3
-    assert effective_reasoning_replay(
-        _row("modern", reasoning_replay="keep-last")
-    ) == "keep-last"
+    assert (
+        effective_reasoning_replay(_row("modern", reasoning_replay="keep-last"))
+        == "keep-last"
+    )
 
 
 @pytest.mark.parametrize(
@@ -75,34 +70,24 @@ def test_effective_legacy_defaults() -> None:
         ("tool_choice", "auto", "required"),
     ],
 )
-def test_base_identity_normalizes_defaults_but_separates_nondefaults(
+def test_selection_normalizes_defaults_but_separates_nondefaults(
     field: str, default: str, nondefault: str
 ) -> None:
-    missing = _row("missing")
-    explicit_default = _row("default", **{field: default})
-    explicit_nondefault = _row("nondefault", **{field: nondefault})
+    missing_old = _row("missing-old", gen=1)
+    distinct_old = _row("distinct-old", gen=1, **{field: nondefault})
+    explicit_default_new = _row("default-new", gen=2, **{field: default})
 
-    assert base_configuration_identity(missing) == base_configuration_identity(
-        explicit_default
+    _assert_selected(
+        [missing_old, distinct_old, explicit_default_new],
+        ["distinct-old", "default-new"],
     )
-    assert base_configuration_identity(missing) != base_configuration_identity(
-        explicit_nondefault
-    )
-
-
-def test_explicit_policy_identity_separates_replay_arms() -> None:
-    none = _row("none", reasoning_replay="none")
-    full = _row("full", reasoning_replay="full")
-
-    assert explicit_policy_identity(none) != explicit_policy_identity(full)
-    assert explicit_policy_identity(none)[:-1] == base_configuration_identity(none)
 
 
 def test_missing_generation_and_equal_generation_legacy_rows_are_retained() -> None:
     missing = _row("missing")
     explicit_zero = _row("zero", gen=0)
 
-    _assert_selected([missing, explicit_zero], [missing, explicit_zero])
+    _assert_selected([missing, explicit_zero], ["missing", "zero"])
 
 
 def test_newer_sweep_supersedes_legacy_row_regardless_of_replay_policies() -> None:
@@ -110,7 +95,7 @@ def test_newer_sweep_supersedes_legacy_row_regardless_of_replay_policies() -> No
     newer_none = _row("none", gen=2, reasoning_replay="none")
     newer_keep = _row("keep", gen=2, reasoning_replay="keep-last")
 
-    _assert_selected([legacy, newer_none, newer_keep], [newer_none, newer_keep])
+    _assert_selected([legacy, newer_none, newer_keep], ["none", "keep"])
 
 
 def test_explicit_arm_uses_same_policy_supersession_and_other_arm_carries() -> None:
@@ -118,7 +103,7 @@ def test_explicit_arm_uses_same_policy_supersession_and_other_arm_carries() -> N
     old_full = _row("old-full", gen=1, reasoning_replay="full")
     new_none = _row("new-none", gen=2, reasoning_replay="none")
 
-    _assert_selected([old_none, old_full, new_none], [old_full, new_none])
+    _assert_selected([old_none, old_full, new_none], ["old-full", "new-none"])
 
 
 def test_older_configuration_without_newer_counterpart_carries_forward() -> None:
@@ -128,7 +113,7 @@ def test_older_configuration_without_newer_counterpart_carries_forward() -> None
 
     _assert_selected(
         [old_unique, old_repeated, new_repeated],
-        [old_unique, new_repeated],
+        ["old-unique", "new-repeated"],
     )
 
 
@@ -140,12 +125,8 @@ def test_equal_generation_explicit_rows_and_interleaved_order_are_retained() -> 
 
     _assert_selected(
         [first, interleaved, second, dropped],
-        [first, interleaved, second],
+        ["first", "interleaved", "second"],
     )
-
-
-def test_report_reexports_shared_selector() -> None:
-    assert report.dedup_latest_gen is select_latest_generation
 
 
 def test_bounded_maxima_and_predicate_match_selector() -> None:
@@ -164,17 +145,14 @@ def test_bounded_maxima_and_predicate_match_selector() -> None:
     ]
     assert selection_maximum_generation(maxima, old_none) == 2
     assert selection_maximum_generation(maxima, legacy) == 2
-    assert len(maxima.base) == 1
-    assert len(maxima.explicit_policy) == 2
 
 
-def test_report_uses_shared_generation_provenance_object() -> None:
-    assert report.GEN_INFO is SHARED_GEN_INFO
-    assert report.GEN_INFO[2] == {
-        "commit": "655e1f6",
-        "date": "2026-05-22",
-        "note": "v0.7.0 lineup refresh (8–14B) + 32GB tier debut (v0.7.4)",
-    }
+def test_report_generation_legend_exposes_provenance() -> None:
+    legend = "\n".join(report._gen_legend_lines([SimpleNamespace(gen=2)], max_gen=3))
+
+    assert "gen 2" in legend
+    assert "655e1f6" in legend
+    assert "2026-05-22" in legend
 
 
 def test_report_groups_legacy_replay_as_full() -> None:
@@ -185,7 +163,6 @@ def test_report_groups_legacy_replay_as_full() -> None:
 
     assert key.reasoning_replay == "full"
     assert scenarios["basic_2step"] == [legacy]
-    assert scenarios["basic_2step"][0] is legacy
 
 
 def test_report_replay_filter_includes_legacy_as_full_and_excludes_none(

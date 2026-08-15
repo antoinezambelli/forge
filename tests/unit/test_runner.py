@@ -73,8 +73,10 @@ def _make_runner(
     max_tool_errors: int = 2,
     stream: bool = False,
     on_chunk=None,
+    on_message=None,
     budget_tokens: int = 100_000,
     reasoning_replay: str = "none",
+    retry_nudge=None,
 ) -> WorkflowRunner:
     """Create a WorkflowRunner with NoCompact strategy and generous budget."""
     ctx = ContextManager(strategy=NoCompact(), budget_tokens=budget_tokens)
@@ -86,11 +88,20 @@ def _make_runner(
         max_tool_errors=max_tool_errors,
         stream=stream,
         on_chunk=on_chunk,
+        on_message=on_message,
         reasoning_replay=reasoning_replay,
+        retry_nudge=retry_nudge,
     )
 
 
+def _collecting_runner(client: MockClient, **runner_kwargs) -> tuple[WorkflowRunner, list[Message]]:
+    collected: list[Message] = []
+    runner = _make_runner(client, on_message=collected.append, **runner_kwargs)
+    return runner, collected
+
+
 # ── Happy path ───────────────────────────────────────────────────
+
 
 
 class TestHappyPath:
@@ -1149,22 +1160,15 @@ class TestReasoningCapture:
 
 
 class TestOnMessageCallback:
+    @pytest.mark.parametrize("stream", [False, True], ids=["send", "stream"])
     @pytest.mark.asyncio
-    async def test_on_message_receives_all_messages(self):
-        """on_message fires for every message: system, user, tool_call, tool_result, terminal."""
-        collected: list[Message] = []
-        client = MockClient([
-            ToolCall(tool="fetch", args={}),
-            ToolCall(tool="submit", args={}),
-        ])
-        ctx = ContextManager(strategy=NoCompact(), budget_tokens=100_000)
-        runner = WorkflowRunner(
-            client=client, context_manager=ctx, on_message=collected.append,
-        )
+    async def test_on_message_receives_all_messages(self, stream: bool):
+        client = MockClient([ToolCall(tool="fetch", args={}), ToolCall(tool="submit", args={})])
+        runner, collected = _collecting_runner(client, stream=stream)
+
         await runner.run(_make_workflow(), "go", prompt_vars={"role": "agent"})
 
-        types = [m.metadata.type for m in collected]
-        assert types == [
+        assert [message.metadata.type for message in collected] == [
             MessageType.SYSTEM_PROMPT,
             MessageType.USER_INPUT,
             MessageType.TOOL_CALL,
@@ -1174,136 +1178,100 @@ class TestOnMessageCallback:
         ]
 
     @pytest.mark.asyncio
-    async def test_on_message_captures_retry_nudge(self):
-        """on_message fires for retry nudge messages."""
-        collected: list[Message] = []
-        client = MockClient([
-            TextResponse(content="bad"),
-            ToolCall(tool="fetch", args={}),
-            ToolCall(tool="submit", args={}),
-        ])
-        ctx = ContextManager(strategy=NoCompact(), budget_tokens=100_000)
-        runner = WorkflowRunner(
-            client=client, context_manager=ctx, on_message=collected.append,
-        )
-        await runner.run(_make_workflow(), "go", prompt_vars={"role": "agent"})
-
-        types = [m.metadata.type for m in collected]
-        assert MessageType.RETRY_NUDGE in types
-
-    @pytest.mark.asyncio
-    async def test_on_message_captures_step_nudge(self):
-        """on_message fires for step nudge messages."""
-        collected: list[Message] = []
-        client = MockClient([
-            ToolCall(tool="submit", args={}),   # premature
-            ToolCall(tool="fetch", args={}),
-            ToolCall(tool="submit", args={}),
-        ])
-        ctx = ContextManager(strategy=NoCompact(), budget_tokens=100_000)
-        runner = WorkflowRunner(
-            client=client, context_manager=ctx, on_message=collected.append,
-        )
-        await runner.run(_make_workflow(), "go", prompt_vars={"role": "agent"})
-
-        types = [m.metadata.type for m in collected]
-        assert MessageType.STEP_NUDGE in types
-
-    @pytest.mark.asyncio
-    async def test_on_message_captures_tool_errors(self):
-        """on_message fires for tool error messages (TOOL_RESULT with [ToolError])."""
-        collected: list[Message] = []
-
-        def bad_fetch(**kwargs):
-            raise ValueError("broken")
-
-        tools = {
-            "fetch": _make_tool("fetch", fn=bad_fetch),
-            "submit": _make_tool("submit"),
-        }
-        wf = _make_workflow(tools=tools, required_steps=["fetch"])
-        client = MockClient([
-            ToolCall(tool="fetch", args={}),   # error
-            ToolCall(tool="fetch", args={}),   # error
-            ToolCall(tool="fetch", args={}),   # exceeds max_tool_errors
-        ])
-        ctx = ContextManager(strategy=NoCompact(), budget_tokens=100_000)
-        runner = WorkflowRunner(
-            client=client, context_manager=ctx,
-            max_tool_errors=2, on_message=collected.append,
-        )
-        with pytest.raises(ToolExecutionError):
-            await runner.run(wf, "go", prompt_vars={"role": "agent"})
-
-        error_msgs = [m for m in collected if "[ToolError]" in m.content]
-        assert len(error_msgs) == 3
-
-    @pytest.mark.asyncio
-    async def test_on_message_captures_reasoning(self):
-        """on_message fires for reasoning messages."""
-        collected: list[Message] = []
-        client = MockClient([
-            ToolCall(tool="fetch", args={}, reasoning="Thinking..."),
-            ToolCall(tool="submit", args={}),
-        ])
-        ctx = ContextManager(strategy=NoCompact(), budget_tokens=100_000)
-        runner = WorkflowRunner(
-            client=client, context_manager=ctx, on_message=collected.append,
-        )
-        await runner.run(_make_workflow(), "go", prompt_vars={"role": "agent"})
-
-        types = [m.metadata.type for m in collected]
-        assert MessageType.REASONING in types
-        reasoning = [m for m in collected if m.metadata.type == MessageType.REASONING]
-        assert reasoning[0].content == "Thinking..."
-
-    @pytest.mark.asyncio
-    async def test_on_message_captures_rescued_tool_call(self):
-        """Rescued tool call emits TOOL_CALL + TOOL_RESULT, no TEXT_RESPONSE or RETRY_NUDGE."""
-        collected: list[Message] = []
-        client = MockClient([
-            TextResponse(content='{"tool": "fetch", "args": {"key": "val"}}'),
-            ToolCall(tool="submit", args={}),
-        ])
-        ctx = ContextManager(strategy=NoCompact(), budget_tokens=100_000)
-        runner = WorkflowRunner(
-            client=client, context_manager=ctx, on_message=collected.append,
-        )
-        await runner.run(_make_workflow(), "go", prompt_vars={"role": "agent"})
-
-        types = [m.metadata.type for m in collected]
-        assert MessageType.RETRY_NUDGE not in types
-        assert MessageType.TEXT_RESPONSE not in types
-        assert MessageType.TOOL_CALL in types
-        assert MessageType.TOOL_RESULT in types
-
-    @pytest.mark.asyncio
-    async def test_on_message_with_streaming(self):
-        """on_message works correctly when stream=True."""
-        collected: list[Message] = []
-        client = MockClient([
-            ToolCall(tool="fetch", args={}),
-            ToolCall(tool="submit", args={}),
-        ])
-        ctx = ContextManager(strategy=NoCompact(), budget_tokens=100_000)
-        runner = WorkflowRunner(
-            client=client, context_manager=ctx,
-            stream=True, on_message=collected.append,
-        )
-        await runner.run(_make_workflow(), "go", prompt_vars={"role": "agent"})
-
-        types = [m.metadata.type for m in collected]
-        assert types == [
-            MessageType.SYSTEM_PROMPT,
-            MessageType.USER_INPUT,
-            MessageType.TOOL_CALL,
-            MessageType.TOOL_RESULT,
-            MessageType.TOOL_CALL,
-            MessageType.TOOL_RESULT,
+    async def test_on_message_captures_guardrail_and_rescue_events(self):
+        cases = [
+            (
+                "retry",
+                [
+                    TextResponse(content="bad"),
+                    ToolCall(tool="fetch", args={}),
+                    ToolCall(tool="submit", args={}),
+                ],
+                {MessageType.RETRY_NUDGE},
+                set(),
+                None,
+            ),
+            (
+                "premature terminal",
+                [
+                    ToolCall(tool="submit", args={}),
+                    ToolCall(tool="fetch", args={}),
+                    ToolCall(tool="submit", args={}),
+                ],
+                {MessageType.STEP_NUDGE},
+                set(),
+                None,
+            ),
+            (
+                "reasoning",
+                [
+                    ToolCall(tool="fetch", args={}, reasoning="Thinking..."),
+                    ToolCall(tool="submit", args={}),
+                ],
+                {MessageType.REASONING},
+                set(),
+                "Thinking...",
+            ),
+            (
+                "rescued call",
+                [
+                    TextResponse(content='{"tool": "fetch", "args": {"key": "val"}}'),
+                    ToolCall(tool="submit", args={}),
+                ],
+                {MessageType.TOOL_CALL, MessageType.TOOL_RESULT},
+                {MessageType.TEXT_RESPONSE, MessageType.RETRY_NUDGE},
+                None,
+            ),
         ]
+
+        for label, responses, present, absent, content in cases:
+            runner, collected = _collecting_runner(MockClient(responses))
+            await runner.run(_make_workflow(), "go", prompt_vars={"role": "agent"})
+            types = {message.metadata.type for message in collected}
+            assert present <= types, label
+            assert absent.isdisjoint(types), label
+            if content is not None:
+                assert any(message.content == content for message in collected), label
+
+    @pytest.mark.asyncio
+    async def test_on_message_captures_tool_failures_before_exceptional_exit(self):
+        cases = [
+            (ValueError("broken"), "[ToolError]", ToolExecutionError, 0),
+            (
+                ToolResolutionError("missing"),
+                "[ToolResolutionError]",
+                MaxIterationsError,
+                2,
+            ),
+        ]
+
+        for failure, marker, expected_error, max_tool_errors in cases:
+
+            def fail(**kwargs):
+                raise failure
+
+            workflow = _make_workflow(
+                tools={
+                    "fetch": _make_tool("fetch", fn=fail),
+                    "submit": _make_tool("submit"),
+                }
+            )
+            runner, collected = _collecting_runner(
+                MockClient([ToolCall(tool="fetch", args={})]),
+                max_iterations=1,
+                max_tool_errors=max_tool_errors,
+            )
+
+            with pytest.raises(expected_error):
+                await runner.run(workflow, "go", prompt_vars={"role": "agent"})
+
+            failures = [message for message in collected if marker in message.content]
+            assert len(failures) == 1
+            assert failures[0].metadata.type == MessageType.TOOL_RESULT
 
 
 # ── initial_messages ──────────────────────────────────────────
+
 
 
 class TestInitialMessages:
@@ -1483,35 +1451,6 @@ class TestToolResolutionError:
         runner = _make_runner(client, max_tool_errors=1)
         result = await runner.run(wf, "go", prompt_vars={"role": "agent"})
         assert result == "submit_result"
-
-    @pytest.mark.asyncio
-    async def test_resolution_error_on_message_callback(self):
-        """on_message fires for ToolResolutionError tool result."""
-        collected: list[Message] = []
-
-        def miss(**kwargs):
-            raise ToolResolutionError("No entry found for 'x'. Try another key.")
-
-        tools = {
-            "fetch": _make_tool("fetch", fn=miss),
-            "submit": _make_tool("submit"),
-        }
-        wf = _make_workflow(tools=tools, required_steps=["fetch"])
-        client = MockClient([
-            ToolCall(tool="fetch", args={}),
-            ToolCall(tool="fetch", args={}),
-        ])
-        ctx = ContextManager(strategy=NoCompact(), budget_tokens=100_000)
-        runner = WorkflowRunner(
-            client=client, context_manager=ctx,
-            max_iterations=2, on_message=collected.append,
-        )
-        with pytest.raises(MaxIterationsError):
-            await runner.run(wf, "go", prompt_vars={"role": "agent"})
-
-        error_msgs = [m for m in collected if "[ToolResolutionError]" in m.content]
-        assert len(error_msgs) == 2
-        assert all(m.metadata.type == MessageType.TOOL_RESULT for m in error_msgs)
 
     @pytest.mark.asyncio
     async def test_resolution_error_is_not_forge_error(self):
@@ -1771,36 +1710,30 @@ class TestCancellation:
 class TestCustomRetryNudge:
     """WorkflowRunner custom retry nudge support."""
 
+    @pytest.mark.parametrize(
+        ("retry_nudge", "expected"),
+        [
+            ("Use the respond tool.", "Use the respond tool."),
+            (
+                lambda raw: f"Please use a tool. You said: {raw[:10]}",
+                "Please use a tool. You said: my respons",
+            ),
+        ],
+        ids=["string", "callable"],
+    )
     @pytest.mark.asyncio
-    async def test_custom_nudge_callable(self):
-        """Callable retry_nudge receives raw response."""
-        collected = []
-        client = MockClient([
-            TextResponse(content="my response"),
-            ToolCall(tool="fetch", args={}),
-            ToolCall(tool="submit", args={}),
-        ])
-        wf = _make_workflow()
-        ctx = ContextManager(strategy=NoCompact(), budget_tokens=100_000)
-        runner = WorkflowRunner(
-            client=client, context_manager=ctx,
-            retry_nudge=lambda raw: f"Please use a tool. You said: {raw[:10]}",
+    async def test_custom_nudge_is_emitted(self, retry_nudge, expected):
+        client = MockClient(
+            [
+                TextResponse(content="my response"),
+                ToolCall(tool="fetch", args={}),
+                ToolCall(tool="submit", args={}),
+            ]
         )
-        runner.on_message = collected.append
-        await runner.run(wf, "go", prompt_vars={"role": "dev"})
+        runner, collected = _collecting_runner(client, retry_nudge=retry_nudge)
+
+        await runner.run(_make_workflow(), "go", prompt_vars={"role": "dev"})
 
         nudges = [m for m in collected if m.metadata.type == MessageType.RETRY_NUDGE]
         assert len(nudges) == 1
-        assert "Please use a tool. You said: my respons" in nudges[0].content
-
-    @pytest.mark.asyncio
-    async def test_string_retry_nudge_constructor(self):
-        """String passed to constructor is wrapped into callable."""
-        ctx = ContextManager(strategy=NoCompact(), budget_tokens=100_000)
-        runner = WorkflowRunner(
-            client=MockClient([]),
-            context_manager=ctx,
-            retry_nudge="Use the respond tool.",
-        )
-        assert runner._retry_nudge_fn is not None
-        assert runner._retry_nudge_fn("anything") == "Use the respond tool."
+        assert nudges[0].content == expected

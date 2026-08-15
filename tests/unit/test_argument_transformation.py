@@ -1,16 +1,9 @@
-"""Tests for the argument_transformation scenario.
-
-Verifies:
-- Each tool callable returns the expected content (transactions table,
-  approved vendors, vendor alias resolution, currency conversion, etc.)
-- The validator accepts a canonical-correct terminal call and rejects
-  each top-tier failure mode (skipped currency conversion, vendor case-
-  mismatch over-flag, strict > instead of >=, wrong top vendor)
-- The stateful variant's ExpenseAuditSystem tracks calls correctly so
-  validate_state can verify the model used the right reasoning path
-"""
+"""Behavioral contracts for the argument-transformation benchmark."""
 
 from __future__ import annotations
+
+from collections.abc import Callable
+from typing import Any
 
 from tests.eval.scenarios._model_reasoning import (
     _argument_transformation_tools,
@@ -23,316 +16,301 @@ from tests.eval.scenarios._stateful_model_reasoning import (
 )
 
 
-# ── Lambda tool callables ───────────────────────────────────────
+VALIDATORS: tuple[Callable[[dict[str, Any]], bool], ...] = (
+    _validate_argument_transformation,
+    _validate_argument_transformation_stateful,
+)
 
 
-class TestLambdaTools:
-    """Each tool returns the data the model needs to derive the answer."""
+def _call_tool(implementation: str, tool_name: str, kwargs: dict[str, Any]) -> str:
+    if implementation == "lambda":
+        return _argument_transformation_tools[tool_name].callable(**kwargs)
+    return getattr(ExpenseAuditSystem(), tool_name)(**kwargs)
 
-    def _call(self, tool_name: str, **kwargs: object) -> str:
-        tool = _argument_transformation_tools[tool_name]
-        return tool.callable(**kwargs)
 
-    def test_list_transactions_returns_q4_2024_set(self) -> None:
-        out = self._call("list_transactions", quarter="Q4", year=2024)
-        # All 13 transaction IDs present
-        for i in range(1, 14):
-            assert f"TX-10{i:02d}" in out
-        # Mixed currencies — both USD and EUR transactions visible
-        assert "EUR" in out
-        assert "USD" in out
-        # Boundary case at $5,000 exactly
-        assert "5,000.00 USD" in out
-        # The case-mismatch alias is in the transaction list verbatim
-        assert "ACME Corp" in out
-        # The largest flagged transaction's vendor is in the list
-        assert "Wonka Industries" in out
+def _canonical_args() -> dict[str, str]:
+    return {
+        "transaction_ids": "TX-1001, TX-1005, TX-1006, TX-1008",
+        "total_flagged_usd": "$28,980.00",
+        "top_vendor": "Wonka Industries",
+    }
 
-    def test_list_transactions_unknown_quarter_returns_empty(self) -> None:
-        out = self._call("list_transactions", quarter="Q3", year=2024)
-        assert "No transactions found" in out
-        # No transaction IDs leaked
-        assert "TX-1001" not in out
 
-    def test_get_approved_vendors_returns_canonical_six(self) -> None:
-        out = self._call("get_approved_vendors")
-        for v in (
-            "Acme Corp", "Globex Industries", "Initech Systems",
-            "Umbrella Logistics", "Wayne Enterprises", "Stark Industries",
-        ):
-            assert v in out
-        # Case-mismatch alias must NOT appear in the canonical list
-        assert "ACME Corp" not in out
-
-    def test_get_vendor_details_resolves_acme_alias(self) -> None:
-        out = self._call("get_vendor_details", vendor_name="ACME Corp")
-        # The whole point of this tool: model can disambiguate by reading
-        # this. "alias of Acme Corp" is the key signal.
-        assert "alias of Acme Corp" in out
-        assert "unified entity" in out
-
-    def test_get_vendor_details_acme_corp_lists_alias(self) -> None:
-        out = self._call("get_vendor_details", vendor_name="Acme Corp")
-        assert "master account" in out
-        assert "ACME Corp" in out  # alias listed under master record
-
-    def test_get_vendor_details_unknown_vendor_returns_not_found(self) -> None:
-        out = self._call("get_vendor_details", vendor_name="Cyberdyne LLC")
-        # Unapproved vendors return a no-record stub — model can still
-        # proceed by trusting the approved-vendors list directly.
-        assert "not found in vendor master" in out
-
-    def test_currency_convert_eur_to_usd_uses_fixed_rate(self) -> None:
-        out = self._call(
-            "currency_convert", amount=4800, from_currency="EUR", to_currency="USD",
-        )
-        # 4800 * 1.10 = 5280
-        assert "5,280.00 USD" in out
-        assert "1 EUR = 1.1 USD" in out
-
-    def test_currency_convert_under_threshold_eur(self) -> None:
-        # TX-1011: 2400 EUR = 2640 USD < $5K (correctly excluded)
-        out = self._call(
-            "currency_convert", amount=2400, from_currency="EUR", to_currency="USD",
-        )
-        assert "2,640.00 USD" in out
-
-    def test_currency_convert_unsupported_pair(self) -> None:
-        out = self._call(
-            "currency_convert", amount=100, from_currency="GBP", to_currency="JPY",
-        )
-        assert "Unsupported" in out
-
-    def test_categorize_expense_is_distractor_no_audit_info(self) -> None:
-        out = self._call("categorize_expense", amount=7500, category="contractor")
-        # Distractor: no flagging signal, just GL bucket noise
-        assert "GL-" in out
-        assert "TX-1001" not in out
-        assert "approved" not in out.lower()
-
-    def test_lookup_transaction_redundant_helper(self) -> None:
-        # Returns the same data the model already has from list_transactions
-        out = self._call("lookup_transaction", transaction_id="TX-1006")
-        assert "Pied Piper" in out
-        assert "4,800.00 EUR" in out
-
-    def test_lookup_transaction_unknown_id(self) -> None:
-        out = self._call("lookup_transaction", transaction_id="TX-9999")
-        assert "No transaction found" in out
-
-    def test_submit_audit_report_acks_inputs(self) -> None:
-        out = self._call(
+def test_lambda_and_stateful_tools_share_output_contracts() -> None:
+    transaction_signals = tuple(f"TX-10{i:02d}" for i in range(1, 14))
+    cases = [
+        (
+            "Q4 transactions",
+            "list_transactions",
+            {"quarter": "Q4", "year": 2024},
+            transaction_signals
+            + (
+                "EUR",
+                "USD",
+                "5,000.00 USD",
+                "ACME Corp",
+                "Wonka Industries",
+            ),
+            (),
+        ),
+        (
+            "unknown quarter",
+            "list_transactions",
+            {"quarter": "Q3", "year": 2024},
+            ("No transactions found",),
+            ("TX-1001",),
+        ),
+        (
+            "approved vendors",
+            "get_approved_vendors",
+            {},
+            (
+                "Acme Corp",
+                "Globex Industries",
+                "Initech Systems",
+                "Umbrella Logistics",
+                "Wayne Enterprises",
+                "Stark Industries",
+            ),
+            ("ACME Corp",),
+        ),
+        (
+            "alias resolution",
+            "get_vendor_details",
+            {"vendor_name": "ACME Corp"},
+            ("alias of Acme Corp", "unified entity"),
+            (),
+        ),
+        (
+            "master vendor",
+            "get_vendor_details",
+            {"vendor_name": "Acme Corp"},
+            ("master account", "ACME Corp"),
+            (),
+        ),
+        (
+            "unknown vendor",
+            "get_vendor_details",
+            {"vendor_name": "Cyberdyne LLC"},
+            ("not found in vendor master",),
+            (),
+        ),
+        (
+            "flagged EUR conversion",
+            "currency_convert",
+            {
+                "amount": 4800,
+                "from_currency": "EUR",
+                "to_currency": "USD",
+            },
+            ("5,280.00 USD", "1 EUR = 1.1 USD"),
+            (),
+        ),
+        (
+            "under-threshold EUR conversion",
+            "currency_convert",
+            {
+                "amount": 2400,
+                "from_currency": "EUR",
+                "to_currency": "USD",
+            },
+            ("2,640.00 USD",),
+            (),
+        ),
+        (
+            "unsupported conversion",
+            "currency_convert",
+            {
+                "amount": 100,
+                "from_currency": "GBP",
+                "to_currency": "JPY",
+            },
+            ("Unsupported",),
+            (),
+        ),
+        (
+            "categorization distractor",
+            "categorize_expense",
+            {"amount": 7500, "category": "contractor"},
+            ("GL-",),
+            ("TX-1001", "approved"),
+        ),
+        (
+            "transaction lookup",
+            "lookup_transaction",
+            {"transaction_id": "TX-1006"},
+            ("Pied Piper", "4,800.00 EUR"),
+            (),
+        ),
+        (
+            "unknown transaction",
+            "lookup_transaction",
+            {"transaction_id": "TX-9999"},
+            ("No transaction found",),
+            (),
+        ),
+        (
+            "terminal acknowledgement",
             "submit_audit_report",
-            transaction_ids="TX-1001, TX-1005, TX-1006, TX-1008",
-            total_flagged_usd="$28,980.00",
-            top_vendor="Wonka Industries",
-        )
-        assert "TX-1001" in out
-        assert "Wonka Industries" in out
+            {
+                "transaction_ids": "TX-1001, TX-1005, TX-1006, TX-1008",
+                "total_flagged_usd": "$28,980.00",
+                "top_vendor": "Wonka Industries",
+            },
+            ("TX-1001", "Wonka Industries"),
+            (),
+        ),
+    ]
+
+    for implementation in ("lambda", "stateful"):
+        for label, tool_name, kwargs, required, forbidden in cases:
+            output = _call_tool(implementation, tool_name, kwargs)
+            assert all(signal in output for signal in required), (
+                implementation,
+                label,
+                output,
+            )
+            assert all(signal not in output for signal in forbidden), (
+                implementation,
+                label,
+                output,
+            )
 
 
-# ── Validator ───────────────────────────────────────────────────
-
-
-class TestValidator:
-    """All four IDs, the correct USD total, and the correct top vendor
-    must appear in the terminal call args. Each top-tier failure mode
-    must be rejected."""
-
-    def _canonical_args(self) -> dict[str, str]:
-        return {
-            "transaction_ids": "TX-1001, TX-1005, TX-1006, TX-1008",
-            "total_flagged_usd": "$28,980.00",
-            "top_vendor": "Wonka Industries",
-        }
-
-    def test_canonical_args_pass(self) -> None:
-        assert _validate_argument_transformation(self._canonical_args())
-
-    def test_alt_format_no_comma_no_dollar_passes(self) -> None:
-        # Validator should be permissive on formatting — what matters is
-        # that the right values are present.
-        args = {
+def test_lambda_and_stateful_validators_accept_equivalent_formats() -> None:
+    alternatives = [
+        _canonical_args(),
+        {
             "transaction_ids": "TX-1001 TX-1005 TX-1006 TX-1008",
             "total_flagged_usd": "28980 USD",
             "top_vendor": "wonka industries",
-        }
-        assert _validate_argument_transformation(args)
+        },
+    ]
 
-    def test_top_tier_failure_modes_are_rejected(self) -> None:
-        cases = (
-            (
-                "skipped EUR conversion",
-                {
-                    "transaction_ids": "TX-1001, TX-1005, TX-1008",
-                    "total_flagged_usd": "$23,700",
-                },
-            ),
-            (
-                "ACME alias over-flag",
-                {
-                    "transaction_ids": (
-                        "TX-1001, TX-1005, TX-1006, TX-1008, TX-1009"
-                    ),
-                    "total_flagged_usd": "$35,480",
-                },
-            ),
-            (
-                "strict greater-than threshold",
-                {
-                    "transaction_ids": "TX-1001, TX-1006, TX-1008",
-                    "total_flagged_usd": "$23,980",
-                },
-            ),
-            ("wrong top vendor", {"top_vendor": "Cyberdyne LLC"}),
-            (
-                "missing transaction",
-                {"transaction_ids": "TX-1001, TX-1005, TX-1008"},
-            ),
-            ("missing total", {"total_flagged_usd": ""}),
-        )
+    for validator in VALIDATORS:
+        for args in alternatives:
+            assert validator(args), (validator.__name__, args)
 
-        for case, updates in cases:
-            args = self._canonical_args()
+
+def test_lambda_and_stateful_validators_reject_benchmark_failure_modes() -> None:
+    cases = [
+        (
+            "skipped EUR conversion",
+            {
+                "transaction_ids": "TX-1001, TX-1005, TX-1008",
+                "total_flagged_usd": "$23,700",
+            },
+        ),
+        (
+            "ACME alias over-flag",
+            {
+                "transaction_ids": ("TX-1001, TX-1005, TX-1006, TX-1008, TX-1009"),
+                "total_flagged_usd": "$35,480",
+            },
+        ),
+        (
+            "strict greater-than threshold",
+            {
+                "transaction_ids": "TX-1001, TX-1006, TX-1008",
+                "total_flagged_usd": "$23,980",
+            },
+        ),
+        ("wrong top vendor", {"top_vendor": "Cyberdyne LLC"}),
+        (
+            "missing transaction",
+            {"transaction_ids": "TX-1001, TX-1005, TX-1008"},
+        ),
+        ("missing total", {"total_flagged_usd": ""}),
+    ]
+
+    for validator in VALIDATORS:
+        for label, updates in cases:
+            args = _canonical_args()
             args.update(updates)
-            assert not _validate_argument_transformation(args), case
+            assert not validator(args), (validator.__name__, label)
 
 
-# ── Stateful backend ────────────────────────────────────────────
+def test_stateful_tools_record_successful_reasoning_path() -> None:
+    system = ExpenseAuditSystem()
+
+    assert "TX-1001" in system.list_transactions("Q4", 2024)
+    assert "Acme Corp" in system.get_approved_vendors()
+    assert "alias of Acme Corp" in system.get_vendor_details("ACME Corp")
+    assert "5,280.00 USD" in system.currency_convert(4800, "EUR", "USD")
+    system.submit_audit_report(
+        transaction_ids="TX-1001",
+        total_flagged_usd="$1.00",
+        top_vendor="Anyone",
+    )
+
+    assert system.list_called_for == ("Q4", 2024)
+    assert system.approved_called is True
+    assert system.vendor_details_called_for == {"ACME Corp"}
+    assert system.eur_conversion_called is True
+    assert system.submitted_args == {
+        "transaction_ids": "TX-1001",
+        "total_flagged_usd": "$1.00",
+        "top_vendor": "Anyone",
+    }
 
 
-class TestExpenseAuditSystem:
-    """Backend tracks call state so validate_state can verify the model
-    used currency_convert (for EUR) and get_vendor_details (for ACME Corp)."""
+def test_stateful_tools_do_not_record_rejected_paths() -> None:
+    system = ExpenseAuditSystem()
 
-    def test_initial_state_empty(self) -> None:
-        db = ExpenseAuditSystem()
-        assert db.list_called_for is None
-        assert db.approved_called is False
-        assert db.vendor_details_called_for == set()
-        assert db.eur_conversion_called is False
-        assert db.submitted_args is None
+    assert "No transactions found" in system.list_transactions("Q3", 2024)
+    system.currency_convert(1000, "USD", "EUR")
 
-    def test_list_transactions_q4_2024_records_state(self) -> None:
-        db = ExpenseAuditSystem()
-        out = db.list_transactions("Q4", 2024)
-        assert "TX-1001" in out
-        assert db.list_called_for == ("Q4", 2024)
-
-    def test_list_transactions_wrong_quarter_no_state(self) -> None:
-        db = ExpenseAuditSystem()
-        out = db.list_transactions("Q3", 2024)
-        assert "No transactions found" in out
-        assert db.list_called_for is None
-
-    def test_get_approved_vendors_records_state(self) -> None:
-        db = ExpenseAuditSystem()
-        out = db.get_approved_vendors()
-        assert "Acme Corp" in out
-        assert db.approved_called is True
-
-    def test_get_vendor_details_acme_alias_records_state(self) -> None:
-        db = ExpenseAuditSystem()
-        out = db.get_vendor_details("ACME Corp")
-        assert "alias of Acme Corp" in out
-        assert "ACME Corp" in db.vendor_details_called_for
-
-    def test_currency_convert_eur_records_state(self) -> None:
-        db = ExpenseAuditSystem()
-        out = db.currency_convert(4800, "EUR", "USD")
-        assert "5,280.00 USD" in out
-        assert db.eur_conversion_called is True
-
-    def test_currency_convert_usd_to_eur_does_not_record_eur_flag(self) -> None:
-        # The state flag is specifically for the EUR->USD path the model
-        # needs for the audit.
-        db = ExpenseAuditSystem()
-        db.currency_convert(1000, "USD", "EUR")
-        assert db.eur_conversion_called is False
-
-    def test_submit_audit_report_records_args(self) -> None:
-        db = ExpenseAuditSystem()
-        db.submit_audit_report(
-            transaction_ids="TX-1001",
-            total_flagged_usd="$1.00",
-            top_vendor="Anyone",
-        )
-        assert db.submitted_args == {
-            "transaction_ids": "TX-1001",
-            "total_flagged_usd": "$1.00",
-            "top_vendor": "Anyone",
-        }
+    assert system.list_called_for is None
+    assert system.eur_conversion_called is False
 
 
-class TestStatefulValidateState:
-    def test_validate_state_requires_full_reasoning_path(self) -> None:
-        workflow, validate_state = _build_argument_transformation_stateful()
-        assert not validate_state()
-        # Just calling list/approved is not enough
-        workflow.tools["list_transactions"].callable(quarter="Q4", year=2024)
-        workflow.tools["get_approved_vendors"].callable()
-        assert not validate_state()
-        # Need EUR conversion AND ACME Corp lookup
-        workflow.tools["currency_convert"].callable(
-            amount=4800, from_currency="EUR", to_currency="USD",
-        )
-        assert not validate_state()
-        workflow.tools["get_vendor_details"].callable(vendor_name="ACME Corp")
-        assert not validate_state()
-        # Plus the canonical submit
-        workflow.tools["submit_audit_report"].callable(
-            transaction_ids="TX-1001, TX-1005, TX-1006, TX-1008",
-            total_flagged_usd="$28,980",
-            top_vendor="Wonka Industries",
-        )
-        assert validate_state()
-
-    def test_validate_state_false_when_skipped_currency_convert(self) -> None:
-        workflow, validate_state = _build_argument_transformation_stateful()
-        workflow.tools["list_transactions"].callable(quarter="Q4", year=2024)
-        workflow.tools["get_approved_vendors"].callable()
-        workflow.tools["get_vendor_details"].callable(vendor_name="ACME Corp")
-        # Skipped currency_convert — even if model guessed the right answer,
-        # state validation fails.
-        workflow.tools["submit_audit_report"].callable(
-            transaction_ids="TX-1001, TX-1005, TX-1006, TX-1008",
-            total_flagged_usd="$28,980",
-            top_vendor="Wonka Industries",
-        )
-        assert not validate_state()
-
-    def test_validate_state_false_when_wrong_args_submitted(self) -> None:
-        workflow, validate_state = _build_argument_transformation_stateful()
-        workflow.tools["list_transactions"].callable(quarter="Q4", year=2024)
-        workflow.tools["get_approved_vendors"].callable()
-        workflow.tools["currency_convert"].callable(
-            amount=4800, from_currency="EUR", to_currency="USD",
-        )
-        workflow.tools["get_vendor_details"].callable(vendor_name="ACME Corp")
-        # Used the right tools but submitted the wrong total
-        workflow.tools["submit_audit_report"].callable(
-            transaction_ids="TX-1001, TX-1005, TX-1006, TX-1008",
-            total_flagged_usd="$99,999",
-            top_vendor="Wonka Industries",
-        )
-        assert not validate_state()
+def _exercise_required_stateful_calls(workflow: Any) -> None:
+    workflow.tools["list_transactions"].callable(quarter="Q4", year=2024)
+    workflow.tools["get_approved_vendors"].callable()
+    workflow.tools["currency_convert"].callable(
+        amount=4800,
+        from_currency="EUR",
+        to_currency="USD",
+    )
+    workflow.tools["get_vendor_details"].callable(vendor_name="ACME Corp")
 
 
-class TestStatefulValidator:
-    """Sanity check that the stateful validator behaves like the lambda one."""
+def test_validate_state_requires_full_reasoning_path_and_submission() -> None:
+    workflow, validate_state = _build_argument_transformation_stateful()
 
-    def test_canonical_passes(self) -> None:
-        args = {
-            "transaction_ids": "TX-1001, TX-1005, TX-1006, TX-1008",
-            "total_flagged_usd": "$28,980.00",
-            "top_vendor": "Wonka Industries",
-        }
-        assert _validate_argument_transformation_stateful(args)
+    assert not validate_state()
+    workflow.tools["list_transactions"].callable(quarter="Q4", year=2024)
+    workflow.tools["get_approved_vendors"].callable()
+    assert not validate_state()
+    workflow.tools["currency_convert"].callable(
+        amount=4800,
+        from_currency="EUR",
+        to_currency="USD",
+    )
+    assert not validate_state()
+    workflow.tools["get_vendor_details"].callable(vendor_name="ACME Corp")
+    assert not validate_state()
+    workflow.tools["submit_audit_report"].callable(**_canonical_args())
+    assert validate_state()
 
-    def test_skip_currency_fails(self) -> None:
-        args = {
-            "transaction_ids": "TX-1001, TX-1005, TX-1008",
-            "total_flagged_usd": "$23,700",
-            "top_vendor": "Wonka Industries",
-        }
-        assert not _validate_argument_transformation_stateful(args)
+
+def test_validate_state_rejects_skipped_conversion() -> None:
+    workflow, validate_state = _build_argument_transformation_stateful()
+
+    workflow.tools["list_transactions"].callable(quarter="Q4", year=2024)
+    workflow.tools["get_approved_vendors"].callable()
+    workflow.tools["get_vendor_details"].callable(vendor_name="ACME Corp")
+    workflow.tools["submit_audit_report"].callable(**_canonical_args())
+
+    assert not validate_state()
+
+
+def test_validate_state_rejects_wrong_submission() -> None:
+    workflow, validate_state = _build_argument_transformation_stateful()
+
+    _exercise_required_stateful_calls(workflow)
+    args = _canonical_args()
+    args["total_flagged_usd"] = "$99,999"
+    workflow.tools["submit_audit_report"].callable(**args)
+
+    assert not validate_state()
