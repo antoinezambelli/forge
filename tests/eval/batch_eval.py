@@ -309,6 +309,20 @@ QWEN38_CONFIGS: list[BatchConfig] = [
     if c.model == "Qwen3.8-27B-UD-Q4_K_XL" and c.mode == "native"
 ]
 
+_QWEN38_EFFORT_CONFIGS: dict[str, list[BatchConfig]] = {
+    effort: [
+        replace(
+            QWEN38_CONFIGS[0],
+            reasoning_level=effort,
+            sampling_override={
+                **get_sampling_defaults("Qwen3.8-27B-UD-Q4_K_XL"),
+                "chat_template_kwargs": {"reasoning_effort": effort},
+            },
+        )
+    ]
+    for effort in ("medium", "low")
+}
+
 # Reasoning-effort axis (rig-03): gpt-oss@high + nemotron@high as PARALLEL
 # configs to the medium/low-effort baselines. Same GGUF + native FC, but
 # recommended sampling is bypassed (sampling_override) so chat_template_kwargs
@@ -388,6 +402,8 @@ CONFIG_SETS: dict[str, list[BatchConfig]] = {
     "glimmer-low": _GLIMMER_EFFORT_CONFIGS["low"],
     "deepseek-v4-rpc": DEEPSEEK_V4_RPC_CONFIGS,
     "qwen38": QWEN38_CONFIGS,
+    "qwen38-medium": _QWEN38_EFFORT_CONFIGS["medium"],
+    "qwen38-low": _QWEN38_EFFORT_CONFIGS["low"],
     "new-models": NEW_MODEL_CONFIGS,
     "new-models-native": [c for c in NEW_MODEL_CONFIGS if c.mode == "native"],
     "new-models-prompt": [c for c in NEW_MODEL_CONFIGS if c.mode == "prompt"],

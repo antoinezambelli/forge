@@ -217,6 +217,18 @@ def test_managed_config_roster_and_sets_are_pinned() -> None:
             entry for entry in llamaserver
             if entry[0] == "Qwen3.8-27B-UD-Q4_K_XL" and entry[2] == "native"
         ],
+        "qwen38-medium": [
+            (
+                "Qwen3.8-27B-UD-Q4_K_XL", "llamaserver", "native",
+                "medium", "Qwen3.8-27B-UD-Q4_K_XL.gguf",
+            ),
+        ],
+        "qwen38-low": [
+            (
+                "Qwen3.8-27B-UD-Q4_K_XL", "llamaserver", "native",
+                "low", "Qwen3.8-27B-UD-Q4_K_XL.gguf",
+            ),
+        ],
         "new-models": [entry for entry in llamaserver if entry[0] in new_models],
         "new-models-native": [
             entry for entry in llamaserver
