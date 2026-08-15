@@ -579,6 +579,10 @@ MODEL_FAMILIES: dict[str, dict[str, str]] = {
     "qwen3.6:35b-a3b-q4_K_M":               {"family": "qwen3.6-35b-a3b", "cross_backend_key": "qwen3.6-35b-a3b-q4_K_M"},
     # qwen3.8 (llama-server only; UD is a quant variant)
     "Qwen3.8-27B-UD-Q4_K_XL":                {"family": "qwen3.8-27b", "cross_backend_key": "qwen3.8-27b-q4_K_XL"},
+    # Muse Glimmer 30B (llama-server only; UD is a quant variant)
+    "Muse-Glimmer-30B-UD-Q4_K_XL":           {"family": "muse-glimmer-30b", "cross_backend_key": "muse-glimmer-30b-q4_K_XL"},
+    # DeepSeek V4 Flash 0731 (managed llama.cpp RPC; UD is a quant variant)
+    "DeepSeek-V4-Flash-0731-UD-Q4_K_XL":     {"family": "deepseek-v4-flash", "cross_backend_key": "deepseek-v4-flash-0731-q4_K_XL"},
     # lfm2.5 8b-a1b (llama-server only)
     "LFM2.5-8B-A1B-Q4_K_M":                 {"family": "lfm2.5-8b-a1b", "cross_backend_key": "lfm2.5-8b-a1b-q4_K_M"},
     # mellum2 12b-a2.5b (llama-server only; instruct + thinking share a family)
@@ -658,6 +662,8 @@ def extract_quant(model: str) -> str:
     low = model.lower()
     if "q4_k_m" in low:
         return "q4_K_M"
+    if "q4_k_xl" in low:
+        return "q4_K_XL"
     if "q8_0" in low:
         return "q8_0"
     return "n/a"

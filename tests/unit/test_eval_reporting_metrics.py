@@ -93,6 +93,13 @@ def test_report_labels_only_explicit_reasoning_levels() -> None:
         assert f"@{level}]" in key.short_label
 
 
+def test_report_extracts_known_quantizations() -> None:
+    assert report.extract_quant("model-Q4_K_M") == "q4_K_M"
+    assert report.extract_quant("model-Q4_K_XL") == "q4_K_XL"
+    assert report.extract_quant("model-Q8_0") == "q8_0"
+    assert report.extract_quant("unquantized-model") == "n/a"
+
+
 def test_significance_identity_does_not_pool_replay_or_reasoning() -> None:
     base = _row()
     none = significance.configuration_identity(
