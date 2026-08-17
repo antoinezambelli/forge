@@ -242,7 +242,7 @@ def test_client_factory_uses_manager_url_and_request_timeout(
 
 
 @pytest.mark.asyncio
-async def test_deepseek_topology_client_and_dry_run_are_one_integrated_path(
+async def test_rpc_campaign_topology_client_and_dry_run_are_one_integrated_path(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
@@ -296,7 +296,7 @@ async def test_deepseek_topology_client_and_dry_run_are_one_integrated_path(
         await run_batch(
             [base_config], 1, tmp_path / "unconfigured.jsonl", dry_run=True,
         )
-    attached = batch_eval._attach_deepseek_rpc_topology([base_config], rpc)
+    attached = batch_eval._attach_rpc_topology([base_config], rpc)
     assert base_config.server_recipe.rpc is None
     assert attached[0] is not base_config
     assert attached[0].server_recipe.rpc is rpc
@@ -312,6 +312,24 @@ async def test_deepseek_topology_client_and_dry_run_are_one_integrated_path(
     assert client.top_p == 0.95
     assert client.chat_template_kwargs == {"reasoning_effort": selected_effort}
     await client.aclose()
+
+    inkling_path = tmp_path / "Inkling-Small-UD-IQ4_XS-00001-of-00004.gguf"
+    inkling_path.touch()
+    inkling_config = batch_eval.INKLING_SMALL_RPC_CONFIGS[0]
+    with pytest.raises(ValueError, match="requires an attached RPC topology"):
+        await run_batch(
+            [inkling_config], 1, tmp_path / "inkling-unconfigured.jsonl",
+            dry_run=True,
+        )
+    inkling_attached = batch_eval._attach_rpc_topology([inkling_config], rpc)
+    inkling_client = batch_eval._build_client(
+        inkling_attached[0], tmp_path, "http://localhost:8080/v1", 7200,
+    )
+    assert inkling_client.temperature == 1.0
+    assert inkling_client.top_p == 1.0
+    assert inkling_client.min_p == 0.0
+    assert inkling_client.chat_template_kwargs == {"reasoning_effort": "max"}
+    await inkling_client.aclose()
 
     def fail(*args: Any, **kwargs: Any) -> Any:
         pytest.fail("dry-run reached backend, client, subprocess, or output activity")
@@ -366,6 +384,49 @@ async def test_deepseek_topology_client_and_dry_run_are_one_integrated_path(
     ):
         assert coordinator_line.count(owned_arg) == 1, owned_arg
     assert not output_path.exists()
+
+    inkling_output_path = tmp_path / "inkling-must-not-exist.jsonl"
+    monkeypatch.setattr(sys, "argv", [
+        "batch_eval",
+        "--config", "inkling-small-rpc",
+        "--rpc-topology", str(topology_path),
+        "--tags", "plumbing", "model_quality", "advanced_reasoning",
+        "--runs", "50",
+        "--budget-mode", "manual",
+        "--num-ctx", "262144",
+        "--request-timeout", "7200",
+        "--run-timeout", "7200",
+        "--ablation", "reforged",
+        "--reasoning-replay", "none",
+        "--generation", "3",
+        "--models-dir", str(tmp_path),
+        "--output", str(inkling_output_path),
+        "--dry-run",
+    ])
+    await batch_eval.main()
+
+    inkling_output = capsys.readouterr().out
+    assert "Config set:    inkling-small-rpc (1 configs)" in inkling_output
+    assert "Scenarios:     26" in inkling_output
+    assert "Total max runs: 1300" in inkling_output
+    assert "reasoning effort (sampling registry): max" in inkling_output
+    inkling_coordinator = next(
+        line for line in inkling_output.splitlines()
+        if "coordinator command:" in line
+    )
+    for owned_arg in (
+        "-ngl 999", "--jinja", "--fit off", "-b 512", "-ub 128",
+        "--cache-type-k f16", "--cache-type-v f16", "--no-mmap",
+        "-fa on", "--parallel 1", "--rpc 10.35.0.5:50052",
+        "--device Vulkan0,RPC0", "--split-mode layer",
+        "--tensor-split 1,1", "-c 262144",
+    ):
+        assert inkling_coordinator.count(owned_arg) == 1, owned_arg
+    for deepseek_only in (
+        "q8_0", "--reasoning-budget", "--no-prefill-assistant",
+    ):
+        assert deepseek_only not in inkling_coordinator
+    assert not inkling_output_path.exists()
 
 
 @pytest.mark.asyncio

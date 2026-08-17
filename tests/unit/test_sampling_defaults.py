@@ -75,14 +75,14 @@ class TestGetSamplingDefaults:
             "low", "high", "max",
         }
 
-    def test_inkling_small_uses_recommended_sampling_and_high_effort(self) -> None:
-        """Inkling uses Unsloth's sampling profile and the smoke's high effort."""
+    def test_inkling_small_uses_recommended_sampling_and_max_effort(self) -> None:
+        """Inkling uses Unsloth's sampling profile and the selected max effort."""
         result = get_sampling_defaults("Inkling-Small-UD-IQ4_XS")
         assert result == {
             "temperature": 1.0,
             "top_p": 1.0,
             "min_p": 0.0,
-            "chat_template_kwargs": {"reasoning_effort": "high"},
+            "chat_template_kwargs": {"reasoning_effort": "max"},
         }
 
     def test_get_does_not_log_for_unknown_model(

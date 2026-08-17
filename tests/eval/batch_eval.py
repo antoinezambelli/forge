@@ -117,11 +117,24 @@ _DEEPSEEK_V4_RPC_SERVER_RECIPE = _BatchServerRecipe((
     "--reasoning-budget", "32768", "--reasoning-format", "auto",
     "--no-prefill-assistant",
 ))
+_INKLING_SMALL_RPC_SERVER_RECIPE = _BatchServerRecipe((
+    "--fit", "off",
+    "-b", "512", "-ub", "128",
+    "--cache-type-k", "f16", "--cache-type-v", "f16",
+    "--no-mmap", "-fa", "on",
+    "--parallel", "1",
+))
 
 _DEEPSEEK_V4_MODEL = "DeepSeek-V4-Flash-0731-UD-Q4_K_XL"
 _DEEPSEEK_V4_GGUF = f"{_DEEPSEEK_V4_MODEL}-00001-of-00005.gguf"
 _DEEPSEEK_V4_SAMPLING: dict[str, Any] = get_sampling_defaults(_DEEPSEEK_V4_MODEL)
 _DEEPSEEK_V4_REASONING_LEVEL: str = _DEEPSEEK_V4_SAMPLING[
+    "chat_template_kwargs"
+]["reasoning_effort"]
+_INKLING_SMALL_MODEL = "Inkling-Small-UD-IQ4_XS"
+_INKLING_SMALL_GGUF = f"{_INKLING_SMALL_MODEL}-00001-of-00004.gguf"
+_INKLING_SMALL_SAMPLING: dict[str, Any] = get_sampling_defaults(_INKLING_SMALL_MODEL)
+_INKLING_SMALL_REASONING_LEVEL: str = _INKLING_SMALL_SAMPLING[
     "chat_template_kwargs"
 ]["reasoning_effort"]
 
@@ -235,6 +248,7 @@ class BatchConfig:
     # explicit param set (its keys match LlamafileClient kwargs).
     reasoning_level: str = "default"
     sampling_override: dict[str, Any] | None = None
+    requires_rpc: bool = False
 
 
 # Ollama configs: 10 instruct models, native FC, stream
@@ -385,6 +399,20 @@ DEEPSEEK_V4_RPC_CONFIGS: list[BatchConfig] = [
         gguf_filename=_DEEPSEEK_V4_GGUF,
         server_recipe=_DEEPSEEK_V4_RPC_SERVER_RECIPE,
         reasoning_level=_DEEPSEEK_V4_REASONING_LEVEL,
+        requires_rpc=True,
+    ),
+]
+
+INKLING_SMALL_RPC_CONFIGS: list[BatchConfig] = [
+    BatchConfig(
+        model=_INKLING_SMALL_MODEL,
+        backend="llamaserver",
+        mode="native",
+        think=None,
+        gguf_filename=_INKLING_SMALL_GGUF,
+        server_recipe=_INKLING_SMALL_RPC_SERVER_RECIPE,
+        reasoning_level=_INKLING_SMALL_REASONING_LEVEL,
+        requires_rpc=True,
     ),
 ]
 
@@ -404,6 +432,7 @@ CONFIG_SETS: dict[str, list[BatchConfig]] = {
     "qwen38": QWEN38_CONFIGS,
     "qwen38-medium": _QWEN38_EFFORT_CONFIGS["medium"],
     "qwen38-low": _QWEN38_EFFORT_CONFIGS["low"],
+    "inkling-small-rpc": INKLING_SMALL_RPC_CONFIGS,
     "new-models": NEW_MODEL_CONFIGS,
     "new-models-native": [c for c in NEW_MODEL_CONFIGS if c.mode == "native"],
     "new-models-prompt": [c for c in NEW_MODEL_CONFIGS if c.mode == "prompt"],
@@ -432,7 +461,7 @@ def _load_rpc_topology(path: Path) -> LlamaCppRpcConfig:
     return LlamaCppRpcConfig(**topology_data)
 
 
-def _attach_deepseek_rpc_topology(
+def _attach_rpc_topology(
     configs: list[BatchConfig], rpc: LlamaCppRpcConfig,
 ) -> list[BatchConfig]:
     """Attach machine-local RPC values without mutating the registry config."""
@@ -441,7 +470,7 @@ def _attach_deepseek_rpc_topology(
             config,
             server_recipe=replace(config.server_recipe, rpc=rpc),
         )
-        if config.model == _DEEPSEEK_V4_MODEL else config
+        if config.requires_rpc else config
         for config in configs
     ]
 
@@ -1068,13 +1097,14 @@ async def run_batch(
             "batch_eval supports only managed backends "
             f"{sorted(supported_backends)}; unsupported: {unsupported_backends}"
         )
-    if any(
-        config.model == _DEEPSEEK_V4_MODEL
-        and config.server_recipe.rpc is None
-        for config in configs
-    ):
+    missing_rpc = [
+        config.model for config in configs
+        if config.requires_rpc and config.server_recipe.rpc is None
+    ]
+    if missing_rpc:
         raise ValueError(
-            "DeepSeek V4 RPC batch config requires an attached RPC topology"
+            "RPC batch config requires an attached RPC topology: "
+            + ", ".join(missing_rpc)
         )
 
     if scenario_names:
@@ -1134,10 +1164,7 @@ async def run_batch(
             f"{'='*70}",
             flush=True,
         )
-        if (
-            config.model == _DEEPSEEK_V4_MODEL
-            and config.server_recipe.rpc is not None
-        ):
+        if config.requires_rpc and config.server_recipe.rpc is not None:
             _print_rpc_recipe(config, models_dir, budget_mode, manual_tokens)
 
         # ── Dry run ───────────────────────────────────────
@@ -1380,7 +1407,7 @@ async def main() -> None:
         "--rpc-topology",
         type=str,
         default=None,
-        help="JSON topology file required by --config deepseek-v4-rpc.",
+        help="JSON topology file required by a named RPC config set.",
     )
     parser.add_argument(
         "--scenario", nargs="*",
@@ -1453,16 +1480,20 @@ async def main() -> None:
         configs = [c for c in configs if args.model in c.model]
         if not configs:
             parser.error(f"No configs match --model '{args.model}' in set '{args.config}'")
-    if args.config == "deepseek-v4-rpc":
+    rpc_config_sets = {"deepseek-v4-rpc", "inkling-small-rpc"}
+    if args.config in rpc_config_sets:
         if args.rpc_topology is None:
-            parser.error("--config deepseek-v4-rpc requires --rpc-topology")
+            parser.error(f"--config {args.config} requires --rpc-topology")
         try:
             rpc_topology = _load_rpc_topology(Path(args.rpc_topology))
         except (OSError, ValueError, TypeError, KeyError) as exc:
             parser.error(f"cannot load --rpc-topology: {exc}")
-        configs = _attach_deepseek_rpc_topology(configs, rpc_topology)
+        configs = _attach_rpc_topology(configs, rpc_topology)
     elif args.rpc_topology is not None:
-        parser.error("--rpc-topology is only valid with --config deepseek-v4-rpc")
+        parser.error(
+            "--rpc-topology is only valid with --config "
+            + " or ".join(sorted(rpc_config_sets))
+        )
     output_path = Path(args.output) if args.output else Path("eval_results.jsonl")
 
     if args.scenario:

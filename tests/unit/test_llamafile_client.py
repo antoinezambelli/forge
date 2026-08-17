@@ -1547,7 +1547,7 @@ class TestRecommendedSampling:
             recommended_sampling=True,
         )
         assert client.model == "Inkling-Small-UD-IQ4_XS"
-        assert client.chat_template_kwargs == {"reasoning_effort": "high"}
+        assert client.chat_template_kwargs == {"reasoning_effort": "max"}
         assert client.temperature == 1.0
         assert client.top_p == 1.0
         assert client.top_k is None

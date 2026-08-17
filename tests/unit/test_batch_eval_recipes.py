@@ -181,6 +181,13 @@ def test_managed_config_roster_and_sets_are_pinned() -> None:
             "DeepSeek-V4-Flash-0731-UD-Q4_K_XL-00001-of-00005.gguf",
         ),
     ]
+    inkling_small_rpc = [
+        (
+            "Inkling-Small-UD-IQ4_XS",
+            "llamaserver", "native", "max",
+            "Inkling-Small-UD-IQ4_XS-00001-of-00004.gguf",
+        ),
+    ]
     new_models = {
         "LFM2.5-8B-A1B-Q4_K_M",
         "Mellum2-12B-A2.5B-Thinking-Q4_K_M",
@@ -229,6 +236,7 @@ def test_managed_config_roster_and_sets_are_pinned() -> None:
                 "low", "Qwen3.8-27B-UD-Q4_K_XL.gguf",
             ),
         ],
+        "inkling-small-rpc": inkling_small_rpc,
         "new-models": [entry for entry in llamaserver if entry[0] in new_models],
         "new-models-native": [
             entry for entry in llamaserver
@@ -311,6 +319,33 @@ def test_managed_recipe_mapping_matches_pinned_literals() -> None:
     )
     for manager_owned in ("-ngl", "--jinja", "--rpc", "--device", "--tensor-split"):
         assert manager_owned not in deepseek.server_recipe.extra_flags
+
+    inkling = batch_eval.INKLING_SMALL_RPC_CONFIGS[0]
+    assert inkling.server_recipe.extra_flags == (
+        "--fit", "off",
+        "-b", "512", "-ub", "128",
+        "--cache-type-k", "f16", "--cache-type-v", "f16",
+        "--no-mmap", "-fa", "on",
+        "--parallel", "1",
+    )
+    assert inkling.server_recipe.rpc is None
+    assert inkling.sampling_override is None
+    assert inkling.reasoning_level == "max"
+    assert (
+        batch_eval.get_sampling_defaults(inkling.model)
+        == {
+            "temperature": 1.0,
+            "top_p": 1.0,
+            "min_p": 0.0,
+            "chat_template_kwargs": {"reasoning_effort": "max"},
+        }
+    )
+    for deepseek_only in (
+        "q8_0", "--reasoning-budget", "--no-prefill-assistant",
+    ):
+        assert deepseek_only not in inkling.server_recipe.extra_flags
+    for manager_owned in ("-ngl", "--jinja", "--rpc", "--device", "--tensor-split"):
+        assert manager_owned not in inkling.server_recipe.extra_flags
 
     recipe = batch_eval._BatchServerRecipe(("--reasoning-format", "auto"))
     with pytest.raises(FrozenInstanceError):
