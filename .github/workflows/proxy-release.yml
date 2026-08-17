@@ -1,0 +1,250 @@
+name: Publish exact-tag Proxy release
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing exact Forge tag and GitHub Release (vX.Y.Z)
+        required: true
+        type: string
+
+concurrency:
+  group: proxy-release-${{ inputs.tag }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  identity:
+    runs-on: ubuntu-22.04
+    outputs:
+      version: ${{ steps.identity.outputs.version }}
+      commit: ${{ steps.identity.outputs.commit }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag }}
+          fetch-depth: 0
+      - id: identity
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag }}
+          DISPATCH_REF: ${{ github.ref }}
+          DISPATCH_SHA: ${{ github.sha }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          version=$(python3 -c "from scripts.standalone.release import project_version; print(project_version())")
+          test "$TAG" = "v$version"
+          test "$DISPATCH_REF" = "refs/tags/$TAG"
+          checkout=$(git rev-parse HEAD)
+          peeled=$(git rev-parse "$TAG^{commit}")
+          test "$checkout" = "$peeled"
+          test "$DISPATCH_SHA" = "$peeled"
+          release=$(gh api "repos/$REPOSITORY/releases/tags/$TAG")
+          test "$(printf '%s' "$release" | jq -r .tag_name)" = "$TAG"
+          printf 'Release target_commitish (informational only): %s\n' "$(printf '%s' "$release" | jq -r .target_commitish)"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "commit=$peeled" >> "$GITHUB_OUTPUT"
+
+  native:
+    needs: identity
+    name: Tag bytes / ${{ matrix.target }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: windows-x86_64
+            runner: windows-2022
+            artifact: standalone-dist/windows-x86_64/onefile/forge-proxy.exe
+          - target: linux-x86_64-gnu
+            runner: ubuntu-22.04
+            artifact: standalone-dist/linux-x86_64-gnu/onefile/forge-proxy
+          - target: macos-arm64
+            runner: macos-14
+            artifact: standalone-dist/macos-arm64/onefile/forge-proxy
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.14'
+      - run: python -m pip install '.[anthropic]' pyinstaller pytest
+      - name: Build once and run packaged smoke
+        run: python -m scripts.standalone.build --target ${{ matrix.target }} --form all
+      - name: Run Windows installer acceptance
+        if: runner.os == 'Windows'
+        run: >-
+          python -m pytest -m acceptance
+          tests/integration/platform_acceptance -v --tb=short
+      - name: Run lifecycle on the selected bytes
+        shell: bash
+        run: |
+          digest=$(python -c "from pathlib import Path; from scripts.standalone.release import sha256; print(sha256(Path(r'${{ matrix.artifact }}')))")
+          python -m scripts.standalone.lifecycle_smoke '${{ matrix.artifact }}' --version '${{ needs.identity.outputs.version }}' --sha256 "$digest" --target '${{ matrix.target }}' --output 'standalone-dist/${{ matrix.target }}/lifecycle.json'
+      - name: Archive tested exact bytes with digest evidence
+        shell: bash
+        run: |
+          python -m scripts.standalone.release record --artifact '${{ matrix.artifact }}' --target '${{ matrix.target }}' --output 'release-input/${{ matrix.target }}' --evidence 'standalone-dist/${{ matrix.target }}/onefile/evidence.json' --evidence 'standalone-dist/${{ matrix.target }}/lifecycle.json'
+          python -m scripts.standalone.release verify 'release-input/${{ matrix.target }}'
+          tar -czf 'proxy-${{ matrix.target }}.tgz' -C release-input '${{ matrix.target }}'
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tag-proxy-${{ matrix.target }}
+          path: proxy-${{ matrix.target }}.tgz
+          if-no-files-found: error
+
+  linux_compat:
+    needs: [identity, native]
+    name: Tag Linux bytes / ${{ matrix.name }}
+    runs-on: ubuntu-22.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: ubuntu-22.04
+            image: ubuntu:22.04
+            setup: apt-get update && apt-get install -y python3 ca-certificates curl
+          - name: debian-12
+            image: debian:12
+            setup: apt-get update && apt-get install -y python3 ca-certificates curl
+          - name: fedora-44
+            image: fedora:44
+            setup: dnf install -y python3 ca-certificates curl
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: tag-proxy-linux-x86_64-gnu
+      - name: Verify download and execute identical Linux bytes
+        run: |
+          tar -xzf proxy-linux-x86_64-gnu.tgz
+          python3 -m scripts.standalone.release verify release-input/linux-x86_64-gnu
+          mkdir -p 'linux-evidence/${{ matrix.name }}'
+          docker run --rm -v "$PWD:/work" -w /work '${{ matrix.image }}' bash -lc '${{ matrix.setup }} && python3 -m scripts.standalone.release verify release-input/linux-x86_64-gnu && cat /etc/os-release > /work/linux-evidence/${{ matrix.name }}/os-release.txt && ldd --version > /work/linux-evidence/${{ matrix.name }}/glibc.txt 2>&1 && sha256sum release-input/linux-x86_64-gnu/forge-proxy-linux-x86_64-gnu > /work/linux-evidence/${{ matrix.name }}/sha256.txt && python3 -m scripts.standalone.smoke release-input/linux-x86_64-gnu/forge-proxy-linux-x86_64-gnu --form onefile --expected-version "${{ needs.identity.outputs.version }}" > /work/linux-evidence/${{ matrix.name }}/packaged-smoke.json && digest=$(python3 -c "import json; print(json.load(open(\"release-input/linux-x86_64-gnu/selection.json\"))[\"sha256\"])") && python3 -m scripts.standalone.lifecycle_smoke release-input/linux-x86_64-gnu/forge-proxy-linux-x86_64-gnu --version "${{ needs.identity.outputs.version }}" --sha256 "$digest" --target linux-x86_64-gnu --output /work/linux-evidence/${{ matrix.name }}/lifecycle.json'
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tag-linux-runtime-${{ matrix.name }}
+          path: linux-evidence/${{ matrix.name }}
+          if-no-files-found: error
+
+  staging:
+    needs: [identity, native, linux_compat]
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag }}
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: tag-proxy-*
+          path: downloads
+      - name: Re-hash every download and assemble one immutable complete set
+        run: |
+          mkdir inputs
+          find downloads -name '*.tgz' -print0 | while IFS= read -r -d '' archive; do tar -xzf "$archive" -C inputs; done
+          for target in windows-x86_64 linux-x86_64-gnu macos-arm64; do python3 -m scripts.standalone.release verify "inputs/$target"; done
+          python3 -m scripts.standalone.release assemble --input inputs/windows-x86_64 --input inputs/linux-x86_64-gnu --input inputs/macos-arm64 --output publication
+          python3 -m scripts.standalone.release verify-staging publication
+          tar -czf proxy-publication.tgz publication
+      - uses: actions/upload-artifact@v4
+        with:
+          name: immutable-proxy-publication
+          path: proxy-publication.tgz
+          if-no-files-found: error
+
+  publish:
+    needs: [identity, staging]
+    runs-on: ubuntu-22.04
+    environment: proxy-release
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag }}
+          fetch-depth: 0
+      - uses: actions/download-artifact@v4
+        with:
+          name: immutable-proxy-publication
+      - name: Re-hash the immutable staged set and recheck exact identity
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          tar -xzf proxy-publication.tgz
+          python3 -m scripts.standalone.release verify-staging publication
+          test "$(git rev-parse "$TAG^{commit}")" = '${{ needs.identity.outputs.commit }}'
+          test "$(git rev-parse HEAD)" = '${{ needs.identity.outputs.commit }}'
+          test "$(python3 -c "from scripts.standalone.release import project_version; print('v' + project_version())")" = "$TAG"
+          test "$(gh api "repos/$REPOSITORY/releases/tags/$TAG" --jq .tag_name)" = "$TAG"
+      - name: Attest all three platform artifacts
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: |
+            publication/forge-proxy-windows-x86_64.exe
+            publication/forge-proxy-linux-x86_64-gnu
+            publication/forge-proxy-macos-arm64
+      - name: Publish with journaled rollback and manifest last
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 -m scripts.standalone.release publish --repository '${{ github.repository }}' --tag '${{ inputs.tag }}' --peeled-commit '${{ needs.identity.outputs.commit }}' --expected-commit '${{ github.sha }}' publication
+
+  exact_install:
+    needs: [identity, publish]
+    name: Published exact install / ${{ matrix.target }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: windows-x86_64
+            runner: windows-2022
+          - target: linux-x86_64-gnu
+            runner: ubuntu-22.04
+          - target: macos-arm64
+            runner: macos-14
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag }}
+      - name: Exact install, initialize, check, and uninstall on Windows
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $root = Join-Path $env:RUNNER_TEMP 'proxy exact install'
+          $env:APPDATA = Join-Path $env:RUNNER_TEMP 'proxy-appdata'
+          $env:LOCALAPPDATA = Join-Path $env:RUNNER_TEMP 'proxy-localappdata'
+          $env:FORGE_PROXY_PATH_FILE = Join-Path $env:RUNNER_TEMP 'proxy-path.txt'
+          Set-Content -NoNewline $env:FORGE_PROXY_PATH_FILE 'existing-path'
+          .\install.ps1 -Version '${{ needs.identity.outputs.version }}' -NoInit -InstallRoot $root
+          $proxy = Join-Path $root 'bin\forge-proxy.cmd'
+          & $proxy init --non-interactive --force --backend-url 'http://127.0.0.1:1'
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & $proxy check
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & $proxy uninstall
+          $deadline = (Get-Date).AddSeconds(20)
+          while ((Test-Path $root) -and (Get-Date) -lt $deadline) { Start-Sleep -Milliseconds 100 }
+          if (Test-Path $root) { throw 'exact installation remained after uninstall' }
+      - name: Exact install, initialize, check, and uninstall on POSIX
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          root="$RUNNER_TEMP/proxy exact install"
+          export HOME="$RUNNER_TEMP/proxy-home"
+          export XDG_CONFIG_HOME="$HOME/.config"
+          mkdir -p "$HOME"
+          sh install.sh --version '${{ needs.identity.outputs.version }}' --no-init --install-root "$root"
+          "$root/bin/forge-proxy" init --non-interactive --force --backend-url 'http://127.0.0.1:1'
+          "$root/bin/forge-proxy" check
+          "$root/bin/forge-proxy" uninstall
+          for attempt in $(seq 1 200); do test ! -e "$root" && break; sleep 0.1; done
+          test ! -e "$root"

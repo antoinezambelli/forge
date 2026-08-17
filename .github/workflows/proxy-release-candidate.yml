@@ -1,0 +1,139 @@
+name: Proxy release candidate
+
+on:
+  workflow_dispatch:
+    inputs:
+      real_backends:
+        description: Run llama-server, Ollama, and vLLM sanity on the configured self-hosted runner
+        type: boolean
+        default: false
+  workflow_call:
+    inputs:
+      real_backends:
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  native:
+    name: Native ${{ matrix.target }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: windows-x86_64
+            runner: windows-2022
+            artifact: standalone-dist/windows-x86_64/onefile/forge-proxy.exe
+          - target: linux-x86_64-gnu
+            runner: ubuntu-22.04
+            artifact: standalone-dist/linux-x86_64-gnu/onefile/forge-proxy
+          - target: macos-arm64
+            runner: macos-14
+            artifact: standalone-dist/macos-arm64/onefile/forge-proxy
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.14'
+      - run: python -m pip install '.[anthropic]' pyinstaller pytest
+      - name: Build once and run packaged smoke
+        run: python -m scripts.standalone.build --target ${{ matrix.target }} --form all
+      - name: Run Windows installer acceptance
+        if: runner.os == 'Windows'
+        run: >-
+          python -m pytest -m acceptance
+          tests/integration/platform_acceptance -v --tb=short
+      - name: Run selected-artifact lifecycle smoke
+        shell: bash
+        run: |
+          version=$(python -c "from scripts.standalone.release import project_version; print(project_version())")
+          digest=$(python -c "from pathlib import Path; from scripts.standalone.release import sha256; print(sha256(Path(r'${{ matrix.artifact }}')))")
+          python -m scripts.standalone.lifecycle_smoke '${{ matrix.artifact }}' --version "$version" --sha256 "$digest" --target '${{ matrix.target }}' --output 'standalone-dist/${{ matrix.target }}/lifecycle.json'
+      - name: Record selected immutable bytes and portable evidence
+        shell: bash
+        run: |
+          python -m scripts.standalone.release record --artifact '${{ matrix.artifact }}' --target '${{ matrix.target }}' --output 'release-input/${{ matrix.target }}' --evidence 'standalone-dist/${{ matrix.target }}/onefile/evidence.json' --evidence 'standalone-dist/${{ matrix.target }}/lifecycle.json'
+          python -m scripts.standalone.release verify 'release-input/${{ matrix.target }}'
+          tar -czf 'proxy-${{ matrix.target }}.tgz' -C release-input '${{ matrix.target }}'
+      - uses: actions/upload-artifact@v4
+        with:
+          name: proxy-${{ matrix.target }}
+          path: proxy-${{ matrix.target }}.tgz
+          if-no-files-found: error
+
+  linux_compat:
+    name: Same Linux bytes / ${{ matrix.name }}
+    needs: native
+    runs-on: ubuntu-22.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: ubuntu-22.04
+            image: ubuntu:22.04
+            setup: apt-get update && apt-get install -y python3 ca-certificates curl
+          - name: debian-12
+            image: debian:12
+            setup: apt-get update && apt-get install -y python3 ca-certificates curl
+          - name: fedora-44
+            image: fedora:44
+            setup: dnf install -y python3 ca-certificates curl
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: proxy-linux-x86_64-gnu
+      - name: Extract permission-preserving archive and verify downloaded digest
+        run: |
+          tar -xzf proxy-linux-x86_64-gnu.tgz
+          python3 -m scripts.standalone.release verify release-input/linux-x86_64-gnu
+      - name: Execute identical bytes in ${{ matrix.name }}
+        run: |
+          mkdir -p 'linux-evidence/${{ matrix.name }}'
+          docker run --rm -v "$PWD:/work" -w /work '${{ matrix.image }}' bash -lc '${{ matrix.setup }} && python3 -m scripts.standalone.release verify release-input/linux-x86_64-gnu && version=$(python3 -c "import json; print(json.load(open(\"release-input/linux-x86_64-gnu/selection.json\"))[\"version\"])") && digest=$(python3 -c "import json; print(json.load(open(\"release-input/linux-x86_64-gnu/selection.json\"))[\"sha256\"])") && cat /etc/os-release > /work/linux-evidence/${{ matrix.name }}/os-release.txt && ldd --version > /work/linux-evidence/${{ matrix.name }}/glibc.txt 2>&1 && sha256sum release-input/linux-x86_64-gnu/forge-proxy-linux-x86_64-gnu > /work/linux-evidence/${{ matrix.name }}/sha256.txt && python3 -m scripts.standalone.smoke release-input/linux-x86_64-gnu/forge-proxy-linux-x86_64-gnu --form onefile --expected-version "$version" > /work/linux-evidence/${{ matrix.name }}/packaged-smoke.json && python3 -m scripts.standalone.lifecycle_smoke release-input/linux-x86_64-gnu/forge-proxy-linux-x86_64-gnu --version "$version" --sha256 "$digest" --target linux-x86_64-gnu --output /work/linux-evidence/${{ matrix.name }}/lifecycle.json'
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-runtime-${{ matrix.name }}
+          path: linux-evidence/${{ matrix.name }}
+          if-no-files-found: error
+
+  real_backends:
+    name: Optional real llama-server, Ollama, and vLLM sanity
+    if: inputs.real_backends
+    runs-on: [self-hosted, proxy-real-backends]
+    environment: proxy-real-backends
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install -e '.[anthropic]'
+      - name: Run separately provisioned real backends
+        run: python scripts/integration_test_proxy.py --gguf "$FORGE_PROXY_GGUF" --vllm-url "$FORGE_PROXY_VLLM_URL"
+
+  aggregate:
+    name: Assemble candidate evidence
+    if: always() && needs.native.result == 'success' && needs.linux_compat.result == 'success' && (needs.real_backends.result == 'success' || needs.real_backends.result == 'skipped')
+    needs: [native, linux_compat, real_backends]
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: proxy-*
+          path: downloads
+      - name: Verify every download and assemble complete candidate
+        run: |
+          mkdir inputs
+          find downloads -name '*.tgz' -print0 | while IFS= read -r -d '' archive; do tar -xzf "$archive" -C inputs; done
+          for target in windows-x86_64 linux-x86_64-gnu macos-arm64; do python3 -m scripts.standalone.release verify "inputs/$target"; done
+          python3 -m scripts.standalone.release assemble --input inputs/windows-x86_64 --input inputs/linux-x86_64-gnu --input inputs/macos-arm64 --output candidate
+          python3 -m scripts.standalone.release verify-staging candidate
+      - uses: actions/upload-artifact@v4
+        with:
+          name: proxy-candidate-evidence
+          path: candidate
+          if-no-files-found: error

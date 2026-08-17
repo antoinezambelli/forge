@@ -4,6 +4,8 @@ __pycache__/
 *.egg-info/
 dist/
 build/
+standalone-dist/
+.standalone-build-env/
 *.egg
 
 # Virtual environments

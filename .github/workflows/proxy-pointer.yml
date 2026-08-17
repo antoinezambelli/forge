@@ -1,0 +1,27 @@
+name: Proxy stable pointer validation
+
+on:
+  pull_request:
+    paths:
+      - installer/proxy-stable.txt
+      - scripts/standalone/release.py
+      - .github/workflows/proxy-pointer.yml
+  push:
+    paths:
+      - installer/proxy-stable.txt
+      - scripts/standalone/release.py
+      - .github/workflows/proxy-pointer.yml
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Validate optional pointer through the exact release manifest
+        run: python -m scripts.standalone.release pointer

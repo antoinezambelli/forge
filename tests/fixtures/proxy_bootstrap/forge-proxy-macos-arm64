@@ -1,0 +1,5 @@
+#!/bin/sh
+printf '%s\n' "$@" > "$FORGE_BOOTSTRAP_HANDOFF_LOG"
+printf 'shell handoff stdout\n'
+printf 'shell handoff stderr\n' >&2
+exit "${FORGE_BOOTSTRAP_HANDOFF_STATUS:-0}"
