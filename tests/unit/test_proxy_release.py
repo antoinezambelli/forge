@@ -11,7 +11,7 @@ from scripts.standalone import release
 from scripts.standalone.inputs import SUPPORTED_TARGETS
 
 
-VERSION = "0.9.0"
+VERSION = "0.9.1"
 
 
 def selections(tmp_path: Path) -> list[Path]:
@@ -46,7 +46,7 @@ def test_assembly_rejects_incomplete_or_changed_inputs(tmp_path: Path, failure: 
         record_path = inputs[0] / "selection.json"
         record = json.loads(record_path.read_text())
         if failure == "version":
-            record["version"] = "0.9.1"
+            record["version"] = "0.9.2"
         elif failure == "name":
             record["name"] = "wrong"
         elif failure == "size":

@@ -2,6 +2,48 @@
 
 All notable changes to forge are documented here.
 
+## [0.9.1] — 2026-08-16
+
+A distribution and evaluation maintenance release. Forge 0.9.1 adds a
+standalone, dependency-free delivery path for Forge Proxy without changing the
+0.9 forwarding, routing, or guardrail contract. It also extends managed
+llama.cpp operation and publishes the latest v0.9 evaluation work.
+
+### Added
+
+- **Standalone Forge Proxy distribution.** One-file artifacts for Windows x64,
+  Linux x64/glibc, and macOS ARM64 include Forge and their private Python 3.14
+  runtime. Thin PowerShell and POSIX bootstraps verify exact release manifests
+  and checksums before handing installation to the frozen executable.
+- **Profile and installation lifecycle commands.** `forge-proxy init`,
+  `check`, `update`, and `uninstall` provide sparse TOML profiles, offline
+  validation, immutable version slots, forward updates, exact-version recovery,
+  PATH integration, and profile-preserving removal. Installation remains
+  noninteractive and prints explicit configuration steps for humans and
+  external wrappers.
+- **Cross-platform Proxy release gates.** Candidate and exact-tag workflows
+  build and exercise Windows, Linux, and macOS artifacts; the selected Linux
+  bytes are additionally checked on Ubuntu 22.04, Debian 12, and Fedora. Frozen
+  lifecycle coverage includes installation, initialization, health checking,
+  update/recovery, safe failure before promotion, and uninstall.
+- **Managed llama.cpp RPC operation.** Forge can own a one-worker RPC topology,
+  use it from canonical managed-backend lifecycles, and stop the worker through
+  its foreground SSH session. DeepSeek V4 campaign guidance and topology
+  examples accompany the new path. #143
+- **Expanded v0.9 evaluation publication.** Published results now include Muse
+  Glimmer and Qwen3.8 27B reasoning-effort sweeps, with explicit effort metadata
+  and updated managed-server recipes. #143, #144
+
+### Changed
+
+- **Evaluation outcome and publication vocabulary is explicit.** Collection,
+  reports, dashboards, dataset metadata, and citation guidance now distinguish
+  task outcomes from run health and carry the clarified publication contract
+  consistently. #141
+- **Python 3.14 is supported.** The source package remains compatible with
+  Python 3.12 and 3.13, while CI now covers 3.14 and standalone Proxy artifacts
+  use Python 3.14 as their bundled private runtime.
+
 ## [0.9.0] — 2026-08-09
 
 Forge's Proxy has become its most-used integration surface while backend
