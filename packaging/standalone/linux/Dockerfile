@@ -5,7 +5,7 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends software-properties-common binutils gpg-agent \
     && add-apt-repository ppa:deadsnakes/ppa \
     && apt-get update \
-    && apt-get install -y --no-install-recommends python3.14 python3.14-venv \
+    && apt-get install -y --no-install-recommends python3.14 python3.14-venv libpython3.14 \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /forge

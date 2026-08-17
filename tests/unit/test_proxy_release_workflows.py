@@ -91,7 +91,7 @@ def test_linux_builder_uses_ubuntu_2404_and_python_314() -> None:
     ).read_text(encoding="utf-8")
     assert dockerfile.startswith("FROM ubuntu:24.04\n")
     assert "gpg-agent" in dockerfile
-    assert "python3.14 python3.14-venv" in dockerfile
+    assert "python3.14 python3.14-venv libpython3.14" in dockerfile
     assert "RUN python3.14 -m venv /build-env" in dockerfile
     assert "python3.12" not in dockerfile
 
