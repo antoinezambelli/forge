@@ -16,7 +16,7 @@ Forge takes an 8B local model from single digits to 84% across forge's 26-scenar
 
 **Three ways to use it:**
 
-- **Proxy server** — Drop-in proxy (`python -m forge.proxy`) speaking both the OpenAI chat-completions and Anthropic Messages (`/v1/messages`) APIs, sitting between any client and a local model server. Point OpenAI-compatible tools (opencode, Continue, aider) **or Claude Code** at it and forge applies guardrails transparently — the client thinks it's talking to a smarter model. Most popular entry point.
+- **Proxy server** — Drop-in proxy (`forge-proxy`, or `python -m forge.proxy` from the Python package) speaking both the OpenAI chat-completions and Anthropic Messages (`/v1/messages`) APIs, sitting between any client and a local model server. Point OpenAI-compatible tools (opencode, Continue, aider) **or Claude Code** at it and forge applies guardrails transparently — the client thinks it's talking to a smarter model. Most popular entry point.
 
 - **WorkflowRunner** — Define tools, pick a backend, run structured agent loops. Forge manages the full lifecycle: system prompts, tool execution, context compaction, and guardrails. **SlotWorker** adds priority-queued access to a shared inference slot with auto-preemption — for multi-agent architectures where specialist workflows share a GPU slot. Best when you're building on forge directly.
 
@@ -25,12 +25,47 @@ Forge takes an 8B local model from single digits to 84% across forge's 26-scenar
 Supports generic OpenAI-compatible endpoints, Ollama, llama-server (llama.cpp),
 Llamafile, vLLM, and Anthropic as backends.
 
-## Requirements
+## Standalone Forge Proxy
+
+Forge Proxy is a self-contained developer sidecar: point an OpenAI- or
+Anthropic-compatible client at it to add Forge guardrails without rewriting the
+client or integrating the Python library. The command bundles Forge, its private
+Python runtime, and the Anthropic SDK, so the host does not need Python or pip.
+It does not install a backend executable, model, GPU stack, service,
+credentials, or client configuration.
+
+Install the latest verified standalone Proxy release:
+
+Linux and macOS:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/antoinezambelli/forge/main/install.sh | sh
+```
+
+Windows PowerShell:
+
+```powershell
+irm https://raw.githubusercontent.com/antoinezambelli/forge/main/install.ps1 | iex
+```
+
+Open a refreshed terminal, then create and validate a profile:
+
+```bash
+forge-proxy init
+forge-proxy check
+```
+
+See [Forge Proxy Installation](docs/PROXY_INSTALLATION.md) for supported
+platforms, exact-version installation, profiles, updates, recovery, and
+uninstall.
+
+## Python Library Install
+
+Use the Python package for `WorkflowRunner`, guardrails middleware, development,
+or a Python-managed Proxy. It requires:
 
 - Python 3.12+
 - A running LLM backend (see below)
-
-## Install
 
 ```bash
 pip install forge-guardrails                # core only
@@ -320,6 +355,7 @@ tests/
 
 ## Documentation
 
+- [Forge Proxy Installation](docs/PROXY_INSTALLATION.md) — Standalone platform installation, profiles, updates, recovery, and uninstall
 - [User Guide](docs/USER_GUIDE.md) — Usage patterns, multi-turn, context management, guardrails, slot worker, long-running session advisory
 - [Model Guide](docs/MODEL_GUIDE.md) — Which model and backend for your hardware
 - [Backend Setup](docs/BACKEND_SETUP.md) — Backend installation and server setup
