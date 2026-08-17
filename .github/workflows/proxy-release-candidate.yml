@@ -4,36 +4,14 @@ on:
   pull_request:
     branches: [main]
     paths:
-      - .gitattributes
-      - .github/workflows/proxy-release-candidate.yml
-      - install.ps1
-      - install.sh
-      - packaging/standalone/**
-      - pyproject.toml
-      - scripts/standalone/**
-      - src/forge/**
-      - tests/fixtures/proxy_bootstrap/**
-      - tests/integration/**
-      - tests/unit/test_proxy_*.py
-      - tests/unit/test_standalone_build.py
-  workflow_dispatch:
-    inputs:
-      real_backends:
-        description: Run llama-server, Ollama, and vLLM sanity on the configured self-hosted runner
-        type: boolean
-        default: false
-  workflow_call:
-    inputs:
-      real_backends:
-        type: boolean
-        default: false
+      - installer/proxy-stable.txt
 
 permissions:
   contents: read
 
 jobs:
   native:
-    name: Native ${{ matrix.target }}
+    name: Proxy ${{ matrix.target }}
     strategy:
       fail-fast: false
       matrix:
@@ -54,6 +32,17 @@ jobs:
         with:
           python-version: '3.14'
       - run: python -m pip install '.[anthropic]' pyinstaller pytest
+      - name: Verify Proxy and Forge versions agree
+        run: >-
+          python -c "from pathlib import Path; from scripts.standalone.release import project_version;
+          proxy_version = Path('installer/proxy-stable.txt').read_text(encoding='utf-8').strip();
+          forge_version = project_version();
+          assert proxy_version == forge_version,
+          f'Proxy version {proxy_version!r} does not match Forge version {forge_version!r}'"
+      - name: Run public bootstrap contracts
+        run: >-
+          python -m pytest -m integration
+          tests/integration/bootstrap_contract -v --tb=short
       - name: Build once and run packaged smoke
         run: python -m scripts.standalone.build --target ${{ matrix.target }} --form all
       - name: Run Windows installer acceptance
@@ -78,77 +67,28 @@ jobs:
           name: proxy-${{ matrix.target }}
           path: proxy-${{ matrix.target }}.tgz
           if-no-files-found: error
-
-  linux_compat:
-    name: Same Linux bytes / ${{ matrix.name }}
-    needs: native
-    runs-on: ubuntu-22.04
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - name: ubuntu-22.04
-            image: ubuntu:22.04
-            setup: apt-get update && apt-get install -y python3 ca-certificates curl
-          - name: debian-12
-            image: debian:12
-            setup: apt-get update && apt-get install -y python3 ca-certificates curl
-          - name: fedora-44
-            image: fedora:44
-            setup: dnf install -y python3 ca-certificates curl
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
-        with:
-          name: proxy-linux-x86_64-gnu
-      - name: Extract permission-preserving archive and verify downloaded digest
+      - name: Exercise identical Linux bytes on Ubuntu 22.04
+        if: runner.os == 'Linux'
+        shell: bash
         run: |
-          tar -xzf proxy-linux-x86_64-gnu.tgz
-          python3 -m scripts.standalone.release verify release-input/linux-x86_64-gnu
-      - name: Execute identical bytes in ${{ matrix.name }}
+          mkdir -p linux-evidence/ubuntu-22.04
+          docker run --rm -v "$PWD:/work" -w /work ubuntu:22.04 bash -lc 'apt-get update && apt-get install -y python3 ca-certificates curl && python3 -m scripts.standalone.release verify release-input/linux-x86_64-gnu && version=$(python3 -c "import json; print(json.load(open(\"release-input/linux-x86_64-gnu/selection.json\"))[\"version\"])") && digest=$(python3 -c "import json; print(json.load(open(\"release-input/linux-x86_64-gnu/selection.json\"))[\"sha256\"])") && cat /etc/os-release > /work/linux-evidence/ubuntu-22.04/os-release.txt && ldd --version > /work/linux-evidence/ubuntu-22.04/glibc.txt 2>&1 && sha256sum release-input/linux-x86_64-gnu/forge-proxy-linux-x86_64-gnu > /work/linux-evidence/ubuntu-22.04/sha256.txt && python3 -m scripts.standalone.smoke release-input/linux-x86_64-gnu/forge-proxy-linux-x86_64-gnu --form onefile --expected-version "$version" > /work/linux-evidence/ubuntu-22.04/packaged-smoke.json && python3 -m scripts.standalone.lifecycle_smoke release-input/linux-x86_64-gnu/forge-proxy-linux-x86_64-gnu --version "$version" --sha256 "$digest" --target linux-x86_64-gnu --output /work/linux-evidence/ubuntu-22.04/lifecycle.json'
+      - name: Exercise identical Linux bytes on Debian 12
+        if: runner.os == 'Linux'
+        shell: bash
         run: |
-          mkdir -p 'linux-evidence/${{ matrix.name }}'
-          docker run --rm -v "$PWD:/work" -w /work '${{ matrix.image }}' bash -lc '${{ matrix.setup }} && python3 -m scripts.standalone.release verify release-input/linux-x86_64-gnu && version=$(python3 -c "import json; print(json.load(open(\"release-input/linux-x86_64-gnu/selection.json\"))[\"version\"])") && digest=$(python3 -c "import json; print(json.load(open(\"release-input/linux-x86_64-gnu/selection.json\"))[\"sha256\"])") && cat /etc/os-release > /work/linux-evidence/${{ matrix.name }}/os-release.txt && ldd --version > /work/linux-evidence/${{ matrix.name }}/glibc.txt 2>&1 && sha256sum release-input/linux-x86_64-gnu/forge-proxy-linux-x86_64-gnu > /work/linux-evidence/${{ matrix.name }}/sha256.txt && python3 -m scripts.standalone.smoke release-input/linux-x86_64-gnu/forge-proxy-linux-x86_64-gnu --form onefile --expected-version "$version" > /work/linux-evidence/${{ matrix.name }}/packaged-smoke.json && python3 -m scripts.standalone.lifecycle_smoke release-input/linux-x86_64-gnu/forge-proxy-linux-x86_64-gnu --version "$version" --sha256 "$digest" --target linux-x86_64-gnu --output /work/linux-evidence/${{ matrix.name }}/lifecycle.json'
-      - uses: actions/upload-artifact@v4
-        with:
-          name: linux-runtime-${{ matrix.name }}
-          path: linux-evidence/${{ matrix.name }}
-          if-no-files-found: error
-
-  real_backends:
-    name: Optional real llama-server, Ollama, and vLLM sanity
-    if: inputs.real_backends
-    runs-on: [self-hosted, proxy-real-backends]
-    environment: proxy-real-backends
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
-      - run: python -m pip install -e '.[anthropic]'
-      - name: Run separately provisioned real backends
-        run: python scripts/integration_test_proxy.py --gguf "$FORGE_PROXY_GGUF" --vllm-url "$FORGE_PROXY_VLLM_URL"
-
-  aggregate:
-    name: Assemble candidate evidence
-    if: always() && needs.native.result == 'success' && needs.linux_compat.result == 'success' && (needs.real_backends.result == 'success' || needs.real_backends.result == 'skipped')
-    needs: [native, linux_compat, real_backends]
-    runs-on: ubuntu-22.04
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
-        with:
-          pattern: proxy-*
-          path: downloads
-      - name: Verify every download and assemble complete candidate
+          mkdir -p linux-evidence/debian-12
+          docker run --rm -v "$PWD:/work" -w /work debian:12 bash -lc 'apt-get update && apt-get install -y python3 ca-certificates curl && python3 -m scripts.standalone.release verify release-input/linux-x86_64-gnu && version=$(python3 -c "import json; print(json.load(open(\"release-input/linux-x86_64-gnu/selection.json\"))[\"version\"])") && digest=$(python3 -c "import json; print(json.load(open(\"release-input/linux-x86_64-gnu/selection.json\"))[\"sha256\"])") && cat /etc/os-release > /work/linux-evidence/debian-12/os-release.txt && ldd --version > /work/linux-evidence/debian-12/glibc.txt 2>&1 && sha256sum release-input/linux-x86_64-gnu/forge-proxy-linux-x86_64-gnu > /work/linux-evidence/debian-12/sha256.txt && python3 -m scripts.standalone.smoke release-input/linux-x86_64-gnu/forge-proxy-linux-x86_64-gnu --form onefile --expected-version "$version" > /work/linux-evidence/debian-12/packaged-smoke.json && python3 -m scripts.standalone.lifecycle_smoke release-input/linux-x86_64-gnu/forge-proxy-linux-x86_64-gnu --version "$version" --sha256 "$digest" --target linux-x86_64-gnu --output /work/linux-evidence/debian-12/lifecycle.json'
+      - name: Exercise identical Linux bytes on Fedora 44
+        if: runner.os == 'Linux'
+        shell: bash
         run: |
-          mkdir inputs
-          find downloads -name '*.tgz' -print0 | while IFS= read -r -d '' archive; do tar -xzf "$archive" -C inputs; done
-          for target in windows-x86_64 linux-x86_64-gnu macos-arm64; do python3 -m scripts.standalone.release verify "inputs/$target"; done
-          python3 -m scripts.standalone.release assemble --input inputs/windows-x86_64 --input inputs/linux-x86_64-gnu --input inputs/macos-arm64 --output candidate
-          python3 -m scripts.standalone.release verify-staging candidate
-      - uses: actions/upload-artifact@v4
+          mkdir -p linux-evidence/fedora-44
+          docker run --rm -v "$PWD:/work" -w /work fedora:44 bash -lc 'dnf install -y python3 ca-certificates curl && python3 -m scripts.standalone.release verify release-input/linux-x86_64-gnu && version=$(python3 -c "import json; print(json.load(open(\"release-input/linux-x86_64-gnu/selection.json\"))[\"version\"])") && digest=$(python3 -c "import json; print(json.load(open(\"release-input/linux-x86_64-gnu/selection.json\"))[\"sha256\"])") && cat /etc/os-release > /work/linux-evidence/fedora-44/os-release.txt && ldd --version > /work/linux-evidence/fedora-44/glibc.txt 2>&1 && sha256sum release-input/linux-x86_64-gnu/forge-proxy-linux-x86_64-gnu > /work/linux-evidence/fedora-44/sha256.txt && python3 -m scripts.standalone.smoke release-input/linux-x86_64-gnu/forge-proxy-linux-x86_64-gnu --form onefile --expected-version "$version" > /work/linux-evidence/fedora-44/packaged-smoke.json && python3 -m scripts.standalone.lifecycle_smoke release-input/linux-x86_64-gnu/forge-proxy-linux-x86_64-gnu --version "$version" --sha256 "$digest" --target linux-x86_64-gnu --output /work/linux-evidence/fedora-44/lifecycle.json'
+      - name: Upload Linux runtime evidence
+        if: runner.os == 'Linux'
+        uses: actions/upload-artifact@v4
         with:
-          name: proxy-candidate-evidence
-          path: candidate
+          name: linux-runtime-evidence
+          path: linux-evidence
           if-no-files-found: error

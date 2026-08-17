@@ -21,34 +21,42 @@ def load(name: str) -> tuple[dict, str]:
 
 def test_candidate_matrix_is_read_only_and_preserves_same_linux_bytes() -> None:
     document, text = load("proxy-release-candidate.yml")
+    trigger = document.get("on", document.get(True))
+    assert set(trigger) == {"pull_request"}
+    assert trigger["pull_request"]["paths"] == ["installer/proxy-stable.txt"]
     assert document["permissions"] == {"contents": "read"}
+    assert set(document["jobs"]) == {"native"}
     assert all("permissions" not in job for job in document["jobs"].values())
     assert {
         row["target"]
         for row in document["jobs"]["native"]["strategy"]["matrix"]["include"]
     } == {"windows-x86_64", "linux-x86_64-gnu", "macos-arm64"}
-    images = {
-        row["image"]
-        for row in document["jobs"]["linux_compat"]["strategy"]["matrix"]["include"]
-    }
-    assert images == {"ubuntu:22.04", "debian:12", "fedora:44"}
+    assert "ubuntu:22.04" in text
+    assert "debian:12" in text
+    assert "fedora:44" in text
     assert text.count("scripts.standalone.lifecycle_smoke") >= 2
     assert text.count("--target") >= 2
     assert "python3 ca-certificates curl" in text
     assert text.count("python-version: '3.14'") == 1
     assert "tar -czf" in text and "release verify" in text
-    assert "if: inputs.real_backends" in text
-    assert "needs.real_backends.result == 'success'" in text
-    assert "proxy-real-backends" in text
+    assert "tests/integration/bootstrap_contract" in text
+    assert "project_version" in text and "installer/proxy-stable.txt" in text
+    assert "linux-runtime-evidence" in text
+    assert "real_backends" not in text
+    assert "aggregate" not in document["jobs"]
+    assert not (WORKFLOWS / "proxy-pointer.yml").exists()
 
 
-def test_pointer_workflow_is_automatic_and_read_only() -> None:
-    document, text = load("proxy-pointer.yml")
+def test_general_ci_has_only_three_always_on_python_suites() -> None:
+    document, _text = load("tests.yml")
     trigger = document.get("on", document.get(True))
-    assert {"pull_request", "push"} <= set(trigger)
-    assert document["permissions"] == {"contents": "read"}
-    assert "scripts.standalone.release pointer" in text
-    assert "upload" not in text.lower()
+    assert set(trigger) == {"pull_request", "push"}
+    assert set(document["jobs"]) == {"test"}
+    assert document["jobs"]["test"]["strategy"]["matrix"]["python-version"] == [
+        "3.12",
+        "3.13",
+        "3.14",
+    ]
 
 
 def test_exact_release_has_one_mutation_job_after_every_gate() -> None:

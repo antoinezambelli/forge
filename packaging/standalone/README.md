@@ -51,17 +51,20 @@ publish release assets, tags, or remote state.
 
 ## Release automation and evidence
 
-`proxy-release-candidate.yml` builds the Windows x64, Ubuntu 22.04 Linux x64,
-and macOS arm64 targets once on their native runners. Each selected onefile is
-run through packaged smoke and the isolated install/init/check/same-version
-repair/uninstall lifecycle. The Ubuntu-built Linux archive is then executed
-unchanged on Ubuntu 22.04, Debian 12, and Fedora 44. Permission-preserving
-archives carry the selected byte, its SHA-256 identity, size, version, and the
-portable cold-start, extraction/layout, dependency/GLIBC, packaged-smoke, and
-lifecycle evidence. The optional `real_backends` input adds the separate
-llama-server, Ollama, and vLLM sanity pass on a self-hosted
-`proxy-real-backends` runner with `FORGE_PROXY_GGUF` and
-`FORGE_PROXY_VLLM_URL`; models and GPUs are not part of the default gate.
+Changing `installer/proxy-stable.txt` in a pull request declares that the Forge
+release is also a Proxy release and triggers `proxy-release-candidate.yml`.
+The workflow exposes exactly three jobs: Windows x64, Linux x64, and macOS.
+Each job runs its public bootstrap contracts, builds the native artifact, and
+exercises packaged smoke plus the isolated
+install/init/check/same-version-repair/uninstall lifecycle. The Linux job also
+executes the same Ubuntu-built bytes sequentially on Ubuntu 22.04, Debian 12,
+and Fedora 44. An ordinary Forge release leaves the pointer unchanged and does
+not run Proxy CI.
+
+The Proxy pointer and `pyproject.toml` must contain the same version in a Proxy
+release pull request. Permission-preserving archives carry the selected byte,
+its SHA-256 identity, size, version, and the portable cold-start,
+extraction/layout, dependency/GLIBC, packaged-smoke, and lifecycle evidence.
 
 `proxy-release.yml` must be manually dispatched from an existing exact
 `refs/tags/vX.Y.Z` whose version matches `pyproject.toml` and whose GitHub
@@ -75,24 +78,18 @@ rejects existing Proxy names and rolls back only assets journaled by that run.
 The Release's `target_commitish` is recorded for information, not used as tag
 identity.
 
-`proxy-pointer.yml` only validates `installer/proxy-stable.txt`. Its intentional
-absence before the first public Proxy release passes without a network lookup.
-If present, it must contain one bare `X.Y.Z` line and reference an existing,
-complete exact manifest. None of these workflows creates or advances it.
-
 ## Mould-owned human release handoff
 
 The combined procedure remains outside Forge and is performed in this order:
 
-1. Require the Proxy release-candidate gate (and the opt-in real-backend pass
-   when the operator calls for it).
-2. Follow the existing Forge PyPI release recipe.
-3. Dispatch the exact-tag Proxy workflow from that same Forge tag.
-4. Require complete manifest-last publication and all three published exact
-   install checks to pass.
-5. Human-review, create or advance, and commit the stable pointer in a later
-   change.
+1. In the release pull request, bump `pyproject.toml` and
+   `installer/proxy-stable.txt` to the same version.
+2. Require all three Proxy release-candidate jobs to pass.
+3. Follow the existing Forge PyPI release recipe.
+4. Dispatch the exact-tag Proxy workflow from that same Forge tag.
+5. Require complete manifest-last publication and all three published exact
+   install checks to pass. No later pointer change is required.
 
-An ordinary Forge/PyPI/GitHub release may omit Proxy artifacts. This
-implementation run does not dispatch workflows, create tags, publish, upload,
-attest, edit a Release, or create/advance the stable pointer.
+An ordinary Forge/PyPI/GitHub release may omit Proxy artifacts by leaving the
+pointer unchanged. This implementation run does not dispatch workflows, create
+tags, publish, upload, attest, or edit a Release.
