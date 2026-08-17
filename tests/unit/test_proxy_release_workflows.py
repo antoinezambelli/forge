@@ -1,4 +1,4 @@
-"""Structural safety and graph checks for Proxy release workflows."""
+"""Structural contracts for Proxy candidate and publication workflows."""
 
 from __future__ import annotations
 
@@ -19,31 +19,43 @@ def load(name: str) -> tuple[dict, str]:
     return document, text
 
 
-def test_candidate_matrix_is_read_only_and_preserves_same_linux_bytes() -> None:
+def test_candidate_has_exactly_three_platform_jobs_and_retains_final_bytes() -> None:
     document, text = load("proxy-release-candidate.yml")
     trigger = document.get("on", document.get(True))
     assert set(trigger) == {"pull_request"}
     assert trigger["pull_request"]["paths"] == ["installer/proxy-stable.txt"]
     assert document["permissions"] == {"contents": "read"}
-    assert set(document["jobs"]) == {"native"}
+    assert set(document["jobs"]) == {"windows", "macos", "linux"}
+    assert document["jobs"]["linux"]["needs"] == ["windows", "macos"]
     assert all("permissions" not in job for job in document["jobs"].values())
-    assert {
-        row["target"]
-        for row in document["jobs"]["native"]["strategy"]["matrix"]["include"]
-    } == {"windows-x86_64", "linux-x86_64-gnu", "macos-arm64"}
+
+    for target in ("windows-x86_64", "linux-x86_64-gnu", "macos-arm64"):
+        assert f"name: proxy-{target}" in text
+    assert r".\scripts\standalone\build_windows.ps1" in text
+    assert "sh ./scripts/standalone/build_macos.sh" in text
+    assert (
+        "docker build --file packaging/standalone/linux/Dockerfile "
+        "--tag forge-proxy-linux-builder ."
+    ) in text
+    assert 'docker start --attach "$container_id"' in text
+    assert (
+        'docker cp "${container_id}:/forge/standalone-dist/." standalone-dist/'
+        in text
+    )
+    assert "python -m scripts.standalone.build" not in text
+    assert text.count("python-version: '3.14'") == 3
+    assert text.count("tests/integration/bootstrap_contract") == 3
+    assert text.count("scripts.standalone.lifecycle_smoke") >= 6
     assert "ubuntu:22.04" in text
     assert "debian:12" in text
     assert "fedora:44" in text
-    assert text.count("scripts.standalone.lifecycle_smoke") >= 2
-    assert text.count("--target") >= 2
-    assert "python3 ca-certificates curl" in text
-    assert text.count("python-version: '3.14'") == 1
-    assert "tar -czf" in text and "release verify" in text
-    assert "tests/integration/bootstrap_contract" in text
-    assert "project_version" in text and "installer/proxy-stable.txt" in text
     assert "linux-runtime-evidence" in text
+    assert "scripts.standalone.release assemble" in text
+    assert "scripts.standalone.release verify-staging publication" in text
+    assert "scripts.standalone.release record-candidate" in text
+    assert "name: proxy-release-candidate" in text
+    assert "proxy-publication.tgz" in text
     assert "real_backends" not in text
-    assert "aggregate" not in document["jobs"]
     assert not (WORKFLOWS / "proxy-pointer.yml").exists()
 
 
@@ -59,63 +71,63 @@ def test_general_ci_has_only_three_always_on_python_suites() -> None:
     ]
 
 
-def test_exact_release_has_one_mutation_job_after_every_gate() -> None:
+def test_linux_builder_keeps_ubuntu_2204_and_uses_python_314() -> None:
+    dockerfile = (
+        ROOT / "packaging" / "standalone" / "linux" / "Dockerfile"
+    ).read_text(encoding="utf-8")
+    assert dockerfile.startswith("FROM ubuntu:22.04\n")
+    assert "python3.14 python3.14-venv" in dockerfile
+    assert "RUN python3.14 -m venv /build-env" in dockerfile
+    assert "python3.12" not in dockerfile
+
+
+def test_publication_only_verifies_and_uploads_a_successful_candidate() -> None:
     document, text = load("proxy-release.yml")
-    jobs = document["jobs"]
+    trigger = document.get("on", document.get(True))
+    assert set(trigger) == {"workflow_dispatch"}
+    assert set(trigger["workflow_dispatch"]["inputs"]) == {"tag", "candidate_run_id"}
+    assert document["permissions"] == {"actions": "read", "contents": "read"}
+    assert set(document["jobs"]) == {"identity", "publish"}
+    assert document["jobs"]["publish"]["needs"] == "identity"
+
     writers = [
         name
-        for name, job in jobs.items()
+        for name, job in document["jobs"].items()
         if job.get("permissions", {}).get("contents") == "write"
     ]
     assert writers == ["publish"]
-    assert jobs["publish"]["permissions"] == {
+    assert document["jobs"]["publish"]["permissions"] == {
+        "actions": "read",
         "contents": "write",
         "id-token": "write",
         "attestations": "write",
     }
-    assert set(jobs["staging"]["needs"]) == {"identity", "native", "linux_compat"}
-    assert set(jobs["publish"]["needs"]) == {"identity", "staging"}
-    assert set(jobs["exact_install"]["needs"]) == {"identity", "publish"}
     assert "environment: proxy-release" in text
     assert "actions/attest-build-provenance@v2" in text
-    assert "manifest last" in text.lower()
+    assert text.count("python-version: '3.14'") == 2
+    assert text.count("name: proxy-release-candidate") == 2
+    assert text.count("run-id: ${{ inputs.candidate_run_id }}") == 2
+    assert "scripts.standalone.build" not in text
+    assert "scripts.standalone.lifecycle_smoke" not in text
+    assert "install.sh" not in text and "install.ps1" not in text
 
 
-def test_exact_identity_and_install_matrices_cover_ruled_targets() -> None:
-    document, text = load("proxy-release.yml")
-    jobs = document["jobs"]
-    ruled = {"windows-x86_64", "linux-x86_64-gnu", "macos-arm64"}
-    assert {
-        row["target"] for row in jobs["native"]["strategy"]["matrix"]["include"]
-    } == ruled
-    assert {
-        row["target"] for row in jobs["exact_install"]["strategy"]["matrix"]["include"]
-    } == ruled
-    assert "refs/tags/$TAG" in text
-    assert 'git rev-parse "$TAG^{commit}"' in text
-    assert "target_commitish (informational only)" in text
-    assert "release verify-staging" in text
-    assert "install.sh --version" in text and "install.ps1 -Version" in text
-    assert text.count("--target") >= 2
-    assert text.count("python-version: '3.14'") == 1
-
-
-def test_windows_exact_install_propagates_native_init_and_check_failures() -> None:
+def test_publication_binds_candidate_tree_to_the_exact_release_tag() -> None:
     _document, text = load("proxy-release.yml")
-    windows = text.split(
-        "      - name: Exact install, initialize, check, and uninstall on Windows", 1
-    )[1].split(
-        "      - name: Exact install, initialize, check, and uninstall on POSIX", 1
-    )[0]
-    exit_check = "if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }"
-    assert (
-        "& $proxy init --non-interactive --force --backend-url "
-        "'http://127.0.0.1:1'\n          " + exit_check
-    ) in windows
-    assert "& $proxy check\n          " + exit_check in windows
+    assert 'git rev-parse "$TAG^{commit}"' in text
+    assert "git rev-parse 'HEAD^{tree}'" in text
+    assert "scripts.standalone.release verify-candidate" in text
+    assert 'jq -r .conclusion)" = "success"' in text
+    assert 'jq -r .event)" = "pull_request"' in text
+    assert ".github/workflows/proxy-release-candidate.yml" in text
+    assert "refs/tags/$TAG" not in text
+    assert 'test "$DISPATCH_REF" = "refs/heads/main"' in text
+    assert "DISPATCH_SHA" not in text
+    assert "--expected-commit '${{ needs.identity.outputs.commit }}'" in text
+    assert "--expected-commit '${{ github.sha }}'" not in text
 
 
-def test_release_graph_has_no_forbidden_release_or_pointer_operations() -> None:
+def test_release_graph_has_no_build_tag_pointer_or_clobber_operations() -> None:
     _document, text = load("proxy-release.yml")
     lowered = text.lower()
     for forbidden in (
@@ -128,5 +140,5 @@ def test_release_graph_has_no_forbidden_release_or_pointer_operations() -> None:
         "gpg --sign",
     ):
         assert forbidden not in lowered
-    publish_text = text.split("  publish:", 1)[1].split("  exact_install:", 1)[0]
-    assert "scripts.standalone.build" not in publish_text
+    assert "scripts.standalone.release verify-staging publication" in text
+    assert "manifest last" in text.lower()

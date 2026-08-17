@@ -11,6 +11,7 @@ import shutil
 import subprocess
 import tempfile
 import urllib.error
+import urllib.parse
 import urllib.request
 from collections.abc import Callable, Iterable
 from pathlib import Path
@@ -23,6 +24,7 @@ ROOT = Path(__file__).resolve().parents[2]
 POINTER = ROOT / "installer" / "proxy-stable.txt"
 VERSION_RE = re.compile(r"(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)")
 SHA256_RE = re.compile(r"[0-9a-f]{64}")
+TREE_RE = re.compile(r"[0-9a-f]{40}")
 
 
 def project_version(pyproject: Path = ROOT / "pyproject.toml") -> str:
@@ -38,6 +40,40 @@ def exact_tag(version: str) -> str:
     if VERSION_RE.fullmatch(version) is None:
         raise ValueError("version must be a canonical X.Y.Z value")
     return f"v{version}"
+
+
+def write_candidate_identity(
+    output: Path,
+    source_tree: str,
+    version: str | None = None,
+) -> dict[str, str]:
+    version = version or project_version()
+    exact_tag(version)
+    if TREE_RE.fullmatch(source_tree) is None:
+        raise ValueError("source tree must be a 40-character Git object ID")
+    identity = {"version": version, "source_tree": source_tree}
+    output.write_text(
+        json.dumps(identity, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    return identity
+
+
+def validate_candidate_identity(
+    path: Path,
+    expected_version: str,
+    expected_source_tree: str,
+) -> dict[str, str]:
+    identity = json.loads(path.read_text(encoding="utf-8"))
+    if identity != {
+        "version": expected_version,
+        "source_tree": expected_source_tree,
+    }:
+        raise ValueError("candidate identity does not match the release tag")
+    exact_tag(identity["version"])
+    if TREE_RE.fullmatch(identity["source_tree"]) is None:
+        raise ValueError("candidate source tree is not a Git object ID")
+    return identity
 
 
 def artifact_name(target: str) -> str:
@@ -246,7 +282,7 @@ def validate_pointer(
 class ReleaseClient(Protocol):
     def release(self, tag: str) -> dict[str, Any]: ...
     def assets(self, release_id: int) -> list[dict[str, Any]]: ...
-    def upload(self, tag: str, path: Path) -> int: ...
+    def upload(self, release_id: int, path: Path) -> int: ...
     def delete(self, asset_id: int) -> None: ...
 
 
@@ -296,7 +332,7 @@ def publish(
                 entry = next(item for item in manifest["artifacts"].values() if item["name"] == name)
                 if path.stat().st_size != entry["size"] or sha256(path) != entry["sha256"]:
                     raise ValueError(f"artifact identity changed before upload: {name}")
-            journal.append(client.upload(tag, path))
+            journal.append(client.upload(release_id, path))
         final_names = {asset["name"] for asset in client.assets(release_id)}
         if final_names & expected != expected:
             raise RuntimeError("published Proxy namespace is incomplete")
@@ -338,13 +374,22 @@ class GhReleaseClient:
     def assets(self, release_id: int) -> list[dict[str, Any]]:
         return self._json("api", f"repos/{self.repository}/releases/{release_id}/assets")
 
-    def upload(self, tag: str, path: Path) -> int:
-        subprocess.run(
-            ["gh", "release", "upload", tag, str(path), "--repo", self.repository],
-            check=True,
+    def upload(self, release_id: int, path: Path) -> int:
+        token = os.environ["GH_TOKEN"]
+        name = urllib.parse.quote(path.name, safe="")
+        request = urllib.request.Request(
+            "https://uploads.github.com/repos/"
+            f"{self.repository}/releases/{release_id}/assets?name={name}",
+            data=path.read_bytes(),
+            method="POST",
+            headers={
+                "Accept": "application/vnd.github+json",
+                "Authorization": f"Bearer {token}",
+                "Content-Type": "application/octet-stream",
+            },
         )
-        release_id = int(self.release(tag)["id"])
-        return int(next(asset["id"] for asset in self.assets(release_id) if asset["name"] == path.name))
+        with urllib.request.urlopen(request, timeout=120) as response:
+            return int(json.load(response)["id"])
 
     def delete(self, asset_id: int) -> None:
         subprocess.run(
@@ -368,6 +413,13 @@ def main() -> None:
     assembly.add_argument("--output", type=Path, required=True)
     staged = commands.add_parser("verify-staging")
     staged.add_argument("directory", type=Path)
+    candidate = commands.add_parser("record-candidate")
+    candidate.add_argument("--source-tree", required=True)
+    candidate.add_argument("--output", type=Path, required=True)
+    candidate_check = commands.add_parser("verify-candidate")
+    candidate_check.add_argument("path", type=Path)
+    candidate_check.add_argument("--version", required=True)
+    candidate_check.add_argument("--source-tree", required=True)
     commands.add_parser("pointer")
     publication = commands.add_parser("publish")
     publication.add_argument("--repository", required=True)
@@ -389,6 +441,12 @@ def main() -> None:
         print(assemble(args.input, args.output))
     elif args.command == "verify-staging":
         print(json.dumps(validate_staging(args.directory), sort_keys=True))
+    elif args.command == "record-candidate":
+        print(json.dumps(write_candidate_identity(args.output, args.source_tree), sort_keys=True))
+    elif args.command == "verify-candidate":
+        print(json.dumps(validate_candidate_identity(
+            args.path, args.version, args.source_tree,
+        ), sort_keys=True))
     elif args.command == "pointer":
         print(validate_pointer() or "no stable Proxy release")
     else:

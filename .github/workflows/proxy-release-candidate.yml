@@ -10,28 +10,15 @@ permissions:
   contents: read
 
 jobs:
-  native:
-    name: Proxy ${{ matrix.target }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - target: windows-x86_64
-            runner: windows-2022
-            artifact: standalone-dist/windows-x86_64/onefile/forge-proxy.exe
-          - target: linux-x86_64-gnu
-            runner: ubuntu-22.04
-            artifact: standalone-dist/linux-x86_64-gnu/onefile/forge-proxy
-          - target: macos-arm64
-            runner: macos-14
-            artifact: standalone-dist/macos-arm64/onefile/forge-proxy
-    runs-on: ${{ matrix.runner }}
+  windows:
+    name: Proxy windows-x86_64
+    runs-on: windows-2022
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: '3.14'
-      - run: python -m pip install '.[anthropic]' pyinstaller pytest
+      - run: python -m pip install '.[anthropic]' pytest
       - name: Verify Proxy and Forge versions agree
         run: >-
           python -c "from pathlib import Path; from scripts.standalone.release import project_version;
@@ -43,10 +30,9 @@ jobs:
         run: >-
           python -m pytest -m integration
           tests/integration/bootstrap_contract -v --tb=short
-      - name: Build once and run packaged smoke
-        run: python -m scripts.standalone.build --target ${{ matrix.target }} --form all
+      - name: Build through the Windows release entrypoint
+        run: .\scripts\standalone\build_windows.ps1
       - name: Run Windows installer acceptance
-        if: runner.os == 'Windows'
         run: >-
           python -m pytest -m acceptance
           tests/integration/platform_acceptance -v --tb=short
@@ -54,41 +40,147 @@ jobs:
         shell: bash
         run: |
           version=$(python -c "from scripts.standalone.release import project_version; print(project_version())")
-          digest=$(python -c "from pathlib import Path; from scripts.standalone.release import sha256; print(sha256(Path(r'${{ matrix.artifact }}')))")
-          python -m scripts.standalone.lifecycle_smoke '${{ matrix.artifact }}' --version "$version" --sha256 "$digest" --target '${{ matrix.target }}' --output 'standalone-dist/${{ matrix.target }}/lifecycle.json'
+          digest=$(python -c "from pathlib import Path; from scripts.standalone.release import sha256; print(sha256(Path(r'standalone-dist/windows-x86_64/onefile/forge-proxy.exe')))")
+          python -m scripts.standalone.lifecycle_smoke 'standalone-dist/windows-x86_64/onefile/forge-proxy.exe' --version "$version" --sha256 "$digest" --target windows-x86_64 --output 'standalone-dist/windows-x86_64/lifecycle.json'
       - name: Record selected immutable bytes and portable evidence
         shell: bash
         run: |
-          python -m scripts.standalone.release record --artifact '${{ matrix.artifact }}' --target '${{ matrix.target }}' --output 'release-input/${{ matrix.target }}' --evidence 'standalone-dist/${{ matrix.target }}/onefile/evidence.json' --evidence 'standalone-dist/${{ matrix.target }}/lifecycle.json'
-          python -m scripts.standalone.release verify 'release-input/${{ matrix.target }}'
-          tar -czf 'proxy-${{ matrix.target }}.tgz' -C release-input '${{ matrix.target }}'
+          python -m scripts.standalone.release record --artifact 'standalone-dist/windows-x86_64/onefile/forge-proxy.exe' --target windows-x86_64 --output 'release-input/windows-x86_64' --evidence 'standalone-dist/windows-x86_64/onefile/evidence.json' --evidence 'standalone-dist/windows-x86_64/lifecycle.json'
+          python -m scripts.standalone.release verify 'release-input/windows-x86_64'
+          tar -czf 'proxy-windows-x86_64.tgz' -C release-input windows-x86_64
       - uses: actions/upload-artifact@v4
         with:
-          name: proxy-${{ matrix.target }}
-          path: proxy-${{ matrix.target }}.tgz
+          name: proxy-windows-x86_64
+          path: proxy-windows-x86_64.tgz
+          if-no-files-found: error
+
+  macos:
+    name: Proxy macos-arm64
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.14'
+      - run: python -m pip install '.[anthropic]' pytest
+      - name: Verify Proxy and Forge versions agree
+        run: >-
+          python -c "from pathlib import Path; from scripts.standalone.release import project_version;
+          proxy_version = Path('installer/proxy-stable.txt').read_text(encoding='utf-8').strip();
+          forge_version = project_version();
+          assert proxy_version == forge_version,
+          f'Proxy version {proxy_version!r} does not match Forge version {forge_version!r}'"
+      - name: Run public bootstrap contracts
+        run: >-
+          python -m pytest -m integration
+          tests/integration/bootstrap_contract -v --tb=short
+      - name: Build through the macOS release entrypoint
+        run: sh ./scripts/standalone/build_macos.sh
+      - name: Run selected-artifact lifecycle smoke
+        shell: bash
+        run: |
+          version=$(python -c "from scripts.standalone.release import project_version; print(project_version())")
+          digest=$(python -c "from pathlib import Path; from scripts.standalone.release import sha256; print(sha256(Path(r'standalone-dist/macos-arm64/onefile/forge-proxy')))")
+          python -m scripts.standalone.lifecycle_smoke 'standalone-dist/macos-arm64/onefile/forge-proxy' --version "$version" --sha256 "$digest" --target macos-arm64 --output 'standalone-dist/macos-arm64/lifecycle.json'
+      - name: Record selected immutable bytes and portable evidence
+        shell: bash
+        run: |
+          python -m scripts.standalone.release record --artifact 'standalone-dist/macos-arm64/onefile/forge-proxy' --target macos-arm64 --output 'release-input/macos-arm64' --evidence 'standalone-dist/macos-arm64/onefile/evidence.json' --evidence 'standalone-dist/macos-arm64/lifecycle.json'
+          python -m scripts.standalone.release verify 'release-input/macos-arm64'
+          tar -czf 'proxy-macos-arm64.tgz' -C release-input macos-arm64
+      - uses: actions/upload-artifact@v4
+        with:
+          name: proxy-macos-arm64
+          path: proxy-macos-arm64.tgz
+          if-no-files-found: error
+
+  linux:
+    name: Proxy linux-x86_64-gnu
+    needs: [windows, macos]
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.14'
+      - run: python -m pip install '.[anthropic]' pytest
+      - name: Verify Proxy and Forge versions agree
+        run: >-
+          python -c "from pathlib import Path; from scripts.standalone.release import project_version;
+          proxy_version = Path('installer/proxy-stable.txt').read_text(encoding='utf-8').strip();
+          forge_version = project_version();
+          assert proxy_version == forge_version,
+          f'Proxy version {proxy_version!r} does not match Forge version {forge_version!r}'"
+      - name: Run public bootstrap contracts
+        run: >-
+          python -m pytest -m integration
+          tests/integration/bootstrap_contract -v --tb=short
+      - name: Build through the Linux release entrypoint
+        shell: bash
+        run: |
+          docker build --file packaging/standalone/linux/Dockerfile --tag forge-proxy-linux-builder .
+          container_id=$(docker create forge-proxy-linux-builder)
+          docker start --attach "$container_id"
+          mkdir -p standalone-dist
+          docker cp "${container_id}:/forge/standalone-dist/." standalone-dist/
+          docker rm "$container_id"
+      - name: Run selected-artifact lifecycle smoke
+        shell: bash
+        run: |
+          version=$(python -c "from scripts.standalone.release import project_version; print(project_version())")
+          digest=$(python -c "from pathlib import Path; from scripts.standalone.release import sha256; print(sha256(Path(r'standalone-dist/linux-x86_64-gnu/onefile/forge-proxy')))")
+          python -m scripts.standalone.lifecycle_smoke 'standalone-dist/linux-x86_64-gnu/onefile/forge-proxy' --version "$version" --sha256 "$digest" --target linux-x86_64-gnu --output 'standalone-dist/linux-x86_64-gnu/lifecycle.json'
+      - name: Record selected immutable bytes and portable evidence
+        shell: bash
+        run: |
+          python -m scripts.standalone.release record --artifact 'standalone-dist/linux-x86_64-gnu/onefile/forge-proxy' --target linux-x86_64-gnu --output 'release-input/linux-x86_64-gnu' --evidence 'standalone-dist/linux-x86_64-gnu/onefile/evidence.json' --evidence 'standalone-dist/linux-x86_64-gnu/lifecycle.json'
+          python -m scripts.standalone.release verify 'release-input/linux-x86_64-gnu'
+          tar -czf 'proxy-linux-x86_64-gnu.tgz' -C release-input linux-x86_64-gnu
+      - uses: actions/upload-artifact@v4
+        with:
+          name: proxy-linux-x86_64-gnu
+          path: proxy-linux-x86_64-gnu.tgz
           if-no-files-found: error
       - name: Exercise identical Linux bytes on Ubuntu 22.04
-        if: runner.os == 'Linux'
         shell: bash
         run: |
           mkdir -p linux-evidence/ubuntu-22.04
           docker run --rm -v "$PWD:/work" -w /work ubuntu:22.04 bash -lc 'apt-get update && apt-get install -y python3 ca-certificates curl && python3 -m scripts.standalone.release verify release-input/linux-x86_64-gnu && version=$(python3 -c "import json; print(json.load(open(\"release-input/linux-x86_64-gnu/selection.json\"))[\"version\"])") && digest=$(python3 -c "import json; print(json.load(open(\"release-input/linux-x86_64-gnu/selection.json\"))[\"sha256\"])") && cat /etc/os-release > /work/linux-evidence/ubuntu-22.04/os-release.txt && ldd --version > /work/linux-evidence/ubuntu-22.04/glibc.txt 2>&1 && sha256sum release-input/linux-x86_64-gnu/forge-proxy-linux-x86_64-gnu > /work/linux-evidence/ubuntu-22.04/sha256.txt && python3 -m scripts.standalone.smoke release-input/linux-x86_64-gnu/forge-proxy-linux-x86_64-gnu --form onefile --expected-version "$version" > /work/linux-evidence/ubuntu-22.04/packaged-smoke.json && python3 -m scripts.standalone.lifecycle_smoke release-input/linux-x86_64-gnu/forge-proxy-linux-x86_64-gnu --version "$version" --sha256 "$digest" --target linux-x86_64-gnu --output /work/linux-evidence/ubuntu-22.04/lifecycle.json'
       - name: Exercise identical Linux bytes on Debian 12
-        if: runner.os == 'Linux'
         shell: bash
         run: |
           mkdir -p linux-evidence/debian-12
           docker run --rm -v "$PWD:/work" -w /work debian:12 bash -lc 'apt-get update && apt-get install -y python3 ca-certificates curl && python3 -m scripts.standalone.release verify release-input/linux-x86_64-gnu && version=$(python3 -c "import json; print(json.load(open(\"release-input/linux-x86_64-gnu/selection.json\"))[\"version\"])") && digest=$(python3 -c "import json; print(json.load(open(\"release-input/linux-x86_64-gnu/selection.json\"))[\"sha256\"])") && cat /etc/os-release > /work/linux-evidence/debian-12/os-release.txt && ldd --version > /work/linux-evidence/debian-12/glibc.txt 2>&1 && sha256sum release-input/linux-x86_64-gnu/forge-proxy-linux-x86_64-gnu > /work/linux-evidence/debian-12/sha256.txt && python3 -m scripts.standalone.smoke release-input/linux-x86_64-gnu/forge-proxy-linux-x86_64-gnu --form onefile --expected-version "$version" > /work/linux-evidence/debian-12/packaged-smoke.json && python3 -m scripts.standalone.lifecycle_smoke release-input/linux-x86_64-gnu/forge-proxy-linux-x86_64-gnu --version "$version" --sha256 "$digest" --target linux-x86_64-gnu --output /work/linux-evidence/debian-12/lifecycle.json'
       - name: Exercise identical Linux bytes on Fedora 44
-        if: runner.os == 'Linux'
         shell: bash
         run: |
           mkdir -p linux-evidence/fedora-44
           docker run --rm -v "$PWD:/work" -w /work fedora:44 bash -lc 'dnf install -y python3 ca-certificates curl && python3 -m scripts.standalone.release verify release-input/linux-x86_64-gnu && version=$(python3 -c "import json; print(json.load(open(\"release-input/linux-x86_64-gnu/selection.json\"))[\"version\"])") && digest=$(python3 -c "import json; print(json.load(open(\"release-input/linux-x86_64-gnu/selection.json\"))[\"sha256\"])") && cat /etc/os-release > /work/linux-evidence/fedora-44/os-release.txt && ldd --version > /work/linux-evidence/fedora-44/glibc.txt 2>&1 && sha256sum release-input/linux-x86_64-gnu/forge-proxy-linux-x86_64-gnu > /work/linux-evidence/fedora-44/sha256.txt && python3 -m scripts.standalone.smoke release-input/linux-x86_64-gnu/forge-proxy-linux-x86_64-gnu --form onefile --expected-version "$version" > /work/linux-evidence/fedora-44/packaged-smoke.json && python3 -m scripts.standalone.lifecycle_smoke release-input/linux-x86_64-gnu/forge-proxy-linux-x86_64-gnu --version "$version" --sha256 "$digest" --target linux-x86_64-gnu --output /work/linux-evidence/fedora-44/lifecycle.json'
       - name: Upload Linux runtime evidence
-        if: runner.os == 'Linux'
         uses: actions/upload-artifact@v4
         with:
           name: linux-runtime-evidence
           path: linux-evidence
+          if-no-files-found: error
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: proxy-*
+          path: downloads
+      - name: Assemble the exact tested publication bundle
+        shell: bash
+        run: |
+          mkdir inputs
+          find downloads -name '*.tgz' -print0 | while IFS= read -r -d '' archive; do tar -xzf "$archive" -C inputs; done
+          for target in windows-x86_64 linux-x86_64-gnu macos-arm64; do python -m scripts.standalone.release verify "inputs/$target"; done
+          python -m scripts.standalone.release assemble --input inputs/windows-x86_64 --input inputs/linux-x86_64-gnu --input inputs/macos-arm64 --output publication
+          python -m scripts.standalone.release verify-staging publication
+          source_tree=$(git rev-parse 'HEAD^{tree}')
+          python -m scripts.standalone.release record-candidate --source-tree "$source_tree" --output candidate-identity.json
+          tar -czf proxy-publication.tgz publication
+      - uses: actions/upload-artifact@v4
+        with:
+          name: proxy-release-candidate
+          path: |
+            candidate-identity.json
+            proxy-publication.tgz
           if-no-files-found: error

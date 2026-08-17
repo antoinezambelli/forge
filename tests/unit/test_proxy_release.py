@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import io
 import json
 from pathlib import Path
 
@@ -11,7 +12,8 @@ from scripts.standalone import release
 from scripts.standalone.inputs import SUPPORTED_TARGETS
 
 
-VERSION = "0.9.1"
+VERSION = "0.9.2"
+SOURCE_TREE = "a" * 40
 
 
 def selections(tmp_path: Path) -> list[Path]:
@@ -35,6 +37,33 @@ def test_complete_assembly_is_canonical_and_revalidates(tmp_path: Path) -> None:
     ]
 
 
+def test_candidate_identity_binds_version_and_source_tree(tmp_path: Path) -> None:
+    path = tmp_path / "candidate-identity.json"
+    assert release.write_candidate_identity(path, SOURCE_TREE, VERSION) == {
+        "version": VERSION,
+        "source_tree": SOURCE_TREE,
+    }
+    assert release.validate_candidate_identity(path, VERSION, SOURCE_TREE) == {
+        "version": VERSION,
+        "source_tree": SOURCE_TREE,
+    }
+
+
+@pytest.mark.parametrize(
+    ("version", "source_tree"),
+    [("0.9.3", SOURCE_TREE), (VERSION, "b" * 40)],
+)
+def test_candidate_identity_rejects_a_different_tag_tree(
+    tmp_path: Path,
+    version: str,
+    source_tree: str,
+) -> None:
+    path = tmp_path / "candidate-identity.json"
+    release.write_candidate_identity(path, SOURCE_TREE, VERSION)
+    with pytest.raises(ValueError, match="does not match"):
+        release.validate_candidate_identity(path, version, source_tree)
+
+
 @pytest.mark.parametrize("failure", ["missing", "duplicate", "version", "name", "size", "digest"])
 def test_assembly_rejects_incomplete_or_changed_inputs(tmp_path: Path, failure: str) -> None:
     inputs = selections(tmp_path)
@@ -46,7 +75,7 @@ def test_assembly_rejects_incomplete_or_changed_inputs(tmp_path: Path, failure: 
         record_path = inputs[0] / "selection.json"
         record = json.loads(record_path.read_text())
         if failure == "version":
-            record["version"] = "0.9.2"
+            record["version"] = "0.9.3"
         elif failure == "name":
             record["name"] = "wrong"
         elif failure == "size":
@@ -134,7 +163,7 @@ class FakeClient:
         self.asset_calls += 1
         return list(self.current)
 
-    def upload(self, _tag: str, path: Path) -> int:
+    def upload(self, _release_id: int, path: Path) -> int:
         position = len(self.uploaded)
         if self.fail_upload == position:
             raise RuntimeError("upload failed")
@@ -160,6 +189,36 @@ def test_publication_ignores_branch_valued_target_commitish_and_uploads_manifest
     assert client.uploaded == release.proxy_asset_names(VERSION)
     assert client.uploaded[-1] == f"proxy-{VERSION}.json"
     assert client.current[0]["name"] == "forge-wheel.whl"
+
+
+def test_github_upload_returns_the_created_asset_id_directly(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    artifact = tmp_path / "proxy artifact.bin"
+    artifact.write_bytes(b"exact bytes")
+    captured: dict[str, object] = {}
+
+    def fake_urlopen(request: release.urllib.request.Request, timeout: int) -> io.BytesIO:
+        captured["request"] = request
+        captured["timeout"] = timeout
+        return io.BytesIO(b'{"id": 321}')
+
+    monkeypatch.setenv("GH_TOKEN", "release-token")
+    monkeypatch.setattr(release.urllib.request, "urlopen", fake_urlopen)
+
+    client = release.GhReleaseClient("owner/repo")
+    assert client.upload(7, artifact) == 321
+    request = captured["request"]
+    assert isinstance(request, release.urllib.request.Request)
+    assert request.full_url == (
+        "https://uploads.github.com/repos/owner/repo/releases/7/assets?"
+        "name=proxy%20artifact.bin"
+    )
+    assert request.data == b"exact bytes"
+    assert request.get_header("Authorization") == "Bearer release-token"
+    assert request.get_header("Content-type") == "application/octet-stream"
+    assert captured["timeout"] == 120
 
 
 @pytest.mark.parametrize("position", range(5))
