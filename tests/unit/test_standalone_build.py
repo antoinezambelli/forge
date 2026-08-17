@@ -254,6 +254,28 @@ def test_cli_capture_uses_child_windows_locale_under_parent_utf8_mode(
     assert "PYTHONIOENCODING" not in kwargs["env"]
 
 
+def test_cli_capture_uses_python_310_locale_fallback(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    executable = Path("forge-proxy")
+    completed = subprocess.CompletedProcess(
+        [str(executable), "--version"], 0, stdout="0.9.1\n", stderr=""
+    )
+    monkeypatch.delattr(smoke.locale, "getencoding")
+
+    with (
+        patch.object(
+            smoke.locale, "getpreferredencoding", return_value="UTF-8"
+        ) as fallback,
+        patch.object(smoke.subprocess, "run", return_value=completed) as run,
+    ):
+        smoke.cli_check(executable, "--version", tmp_path)
+
+    fallback.assert_called_once_with(False)
+    assert run.call_args.kwargs["encoding"] == "UTF-8"
+
+
 def test_windows_graceful_stop_uses_ctrl_break_and_requires_listener_close() -> None:
     process = MagicMock()
     process.returncode = 0

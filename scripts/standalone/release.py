@@ -10,7 +10,6 @@ import re
 import shutil
 import subprocess
 import tempfile
-import tomllib
 import urllib.error
 import urllib.request
 from collections.abc import Callable, Iterable
@@ -27,6 +26,8 @@ SHA256_RE = re.compile(r"[0-9a-f]{64}")
 
 
 def project_version(pyproject: Path = ROOT / "pyproject.toml") -> str:
+    import tomllib
+
     version = tomllib.loads(pyproject.read_text(encoding="utf-8"))["project"]["version"]
     if not isinstance(version, str) or VERSION_RE.fullmatch(version) is None:
         raise ValueError("pyproject.toml project version must be X.Y.Z")

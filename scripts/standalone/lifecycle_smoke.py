@@ -385,7 +385,10 @@ def assert_active(
     shim = shim_path(install_root, artifact.target)
     if state["current_version"] != artifact.version:
         raise RuntimeError("installed state reports the wrong active version")
-    if Path(state["command_dir"]) != shim.parent or not state["path_integration"]:
+    if (
+        Path(state["command_dir"]).resolve() != shim.parent.resolve()
+        or not state["path_integration"]
+    ):
         raise RuntimeError("owned shim/PATH state was not recorded")
     slot = slot_path(install_root, artifact)
     if artifact_sha256(slot) != artifact.sha256:

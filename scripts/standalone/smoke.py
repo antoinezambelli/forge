@@ -178,9 +178,13 @@ def cli_check(executable: Path, option: str, cwd: Path) -> subprocess.CompletedP
     env.pop("PYTHONPATH", None)
     env.pop("PYTHONIOENCODING", None)
     env.pop("PYTHONUTF8", None)
+    getencoding = getattr(locale, "getencoding", None)
+    encoding = (
+        getencoding() if getencoding is not None else locale.getpreferredencoding(False)
+    )
     return subprocess.run(
         [str(executable), option], cwd=cwd, env=env,
-        capture_output=True, text=True, encoding=locale.getencoding(),
+        capture_output=True, text=True, encoding=encoding,
         check=False, timeout=30,
     )
 
