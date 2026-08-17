@@ -15,8 +15,8 @@ guardrail behavior is unchanged.
   through their documented platform entrypoints, then retain the exact tested
   bytes as one release candidate.
 - **Linux artifacts use the declared compatibility build.** The published Linux
-  executable is produced by the Ubuntu 22.04/Python 3.14 Docker build and those
-  same bytes are exercised on Ubuntu 22.04, Debian 12, and Fedora.
+  executable is produced by the Ubuntu 24.04/Python 3.14 Docker build and those
+  same bytes are exercised on Ubuntu 24.04, Debian 13, and Fedora 43.
 - **Proxy publication no longer rebuilds release artifacts.** Post-merge
   publication verifies the retained candidate against the release tag and
   uploads it unchanged, with direct asset identities available for rollback.

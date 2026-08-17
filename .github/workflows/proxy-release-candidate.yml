@@ -96,7 +96,7 @@ jobs:
 
   linux:
     name: Proxy linux-x86_64-gnu
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -140,21 +140,21 @@ jobs:
           name: proxy-linux-x86_64-gnu
           path: proxy-linux-x86_64-gnu.tgz
           if-no-files-found: error
-      - name: Exercise identical Linux bytes on Ubuntu 22.04
+      - name: Exercise identical Linux bytes on Ubuntu 24.04
         shell: bash
         run: |
-          mkdir -p linux-evidence/ubuntu-22.04
-          docker run --rm -v "$PWD:/work" -w /work ubuntu:22.04 bash -lc 'apt-get update && apt-get install -y python3 ca-certificates curl && python3 -m scripts.standalone.release verify release-input/linux-x86_64-gnu && version=$(python3 -c "import json; print(json.load(open(\"release-input/linux-x86_64-gnu/selection.json\"))[\"version\"])") && digest=$(python3 -c "import json; print(json.load(open(\"release-input/linux-x86_64-gnu/selection.json\"))[\"sha256\"])") && cat /etc/os-release > /work/linux-evidence/ubuntu-22.04/os-release.txt && ldd --version > /work/linux-evidence/ubuntu-22.04/glibc.txt 2>&1 && sha256sum release-input/linux-x86_64-gnu/forge-proxy-linux-x86_64-gnu > /work/linux-evidence/ubuntu-22.04/sha256.txt && python3 -m scripts.standalone.smoke release-input/linux-x86_64-gnu/forge-proxy-linux-x86_64-gnu --form onefile --expected-version "$version" > /work/linux-evidence/ubuntu-22.04/packaged-smoke.json && python3 -m scripts.standalone.lifecycle_smoke release-input/linux-x86_64-gnu/forge-proxy-linux-x86_64-gnu --version "$version" --sha256 "$digest" --target linux-x86_64-gnu --output /work/linux-evidence/ubuntu-22.04/lifecycle.json'
-      - name: Exercise identical Linux bytes on Debian 12
+          mkdir -p linux-evidence/ubuntu-24.04
+          docker run --rm -v "$PWD:/work" -w /work ubuntu:24.04 bash -lc 'apt-get update && apt-get install -y python3 ca-certificates curl && python3 -m scripts.standalone.release verify release-input/linux-x86_64-gnu && version=$(python3 -c "import json; print(json.load(open(\"release-input/linux-x86_64-gnu/selection.json\"))[\"version\"])") && digest=$(python3 -c "import json; print(json.load(open(\"release-input/linux-x86_64-gnu/selection.json\"))[\"sha256\"])") && cat /etc/os-release > /work/linux-evidence/ubuntu-24.04/os-release.txt && ldd --version > /work/linux-evidence/ubuntu-24.04/glibc.txt 2>&1 && sha256sum release-input/linux-x86_64-gnu/forge-proxy-linux-x86_64-gnu > /work/linux-evidence/ubuntu-24.04/sha256.txt && python3 -m scripts.standalone.smoke release-input/linux-x86_64-gnu/forge-proxy-linux-x86_64-gnu --form onefile --expected-version "$version" > /work/linux-evidence/ubuntu-24.04/packaged-smoke.json && python3 -m scripts.standalone.lifecycle_smoke release-input/linux-x86_64-gnu/forge-proxy-linux-x86_64-gnu --version "$version" --sha256 "$digest" --target linux-x86_64-gnu --output /work/linux-evidence/ubuntu-24.04/lifecycle.json'
+      - name: Exercise identical Linux bytes on Debian 13
         shell: bash
         run: |
-          mkdir -p linux-evidence/debian-12
-          docker run --rm -v "$PWD:/work" -w /work debian:12 bash -lc 'apt-get update && apt-get install -y python3 ca-certificates curl && python3 -m scripts.standalone.release verify release-input/linux-x86_64-gnu && version=$(python3 -c "import json; print(json.load(open(\"release-input/linux-x86_64-gnu/selection.json\"))[\"version\"])") && digest=$(python3 -c "import json; print(json.load(open(\"release-input/linux-x86_64-gnu/selection.json\"))[\"sha256\"])") && cat /etc/os-release > /work/linux-evidence/debian-12/os-release.txt && ldd --version > /work/linux-evidence/debian-12/glibc.txt 2>&1 && sha256sum release-input/linux-x86_64-gnu/forge-proxy-linux-x86_64-gnu > /work/linux-evidence/debian-12/sha256.txt && python3 -m scripts.standalone.smoke release-input/linux-x86_64-gnu/forge-proxy-linux-x86_64-gnu --form onefile --expected-version "$version" > /work/linux-evidence/debian-12/packaged-smoke.json && python3 -m scripts.standalone.lifecycle_smoke release-input/linux-x86_64-gnu/forge-proxy-linux-x86_64-gnu --version "$version" --sha256 "$digest" --target linux-x86_64-gnu --output /work/linux-evidence/debian-12/lifecycle.json'
-      - name: Exercise identical Linux bytes on Fedora 44
+          mkdir -p linux-evidence/debian-13
+          docker run --rm -v "$PWD:/work" -w /work debian:13 bash -lc 'apt-get update && apt-get install -y python3 ca-certificates curl && python3 -m scripts.standalone.release verify release-input/linux-x86_64-gnu && version=$(python3 -c "import json; print(json.load(open(\"release-input/linux-x86_64-gnu/selection.json\"))[\"version\"])") && digest=$(python3 -c "import json; print(json.load(open(\"release-input/linux-x86_64-gnu/selection.json\"))[\"sha256\"])") && cat /etc/os-release > /work/linux-evidence/debian-13/os-release.txt && ldd --version > /work/linux-evidence/debian-13/glibc.txt 2>&1 && sha256sum release-input/linux-x86_64-gnu/forge-proxy-linux-x86_64-gnu > /work/linux-evidence/debian-13/sha256.txt && python3 -m scripts.standalone.smoke release-input/linux-x86_64-gnu/forge-proxy-linux-x86_64-gnu --form onefile --expected-version "$version" > /work/linux-evidence/debian-13/packaged-smoke.json && python3 -m scripts.standalone.lifecycle_smoke release-input/linux-x86_64-gnu/forge-proxy-linux-x86_64-gnu --version "$version" --sha256 "$digest" --target linux-x86_64-gnu --output /work/linux-evidence/debian-13/lifecycle.json'
+      - name: Exercise identical Linux bytes on Fedora 43
         shell: bash
         run: |
-          mkdir -p linux-evidence/fedora-44
-          docker run --rm -v "$PWD:/work" -w /work fedora:44 bash -lc 'dnf install -y python3 ca-certificates curl && python3 -m scripts.standalone.release verify release-input/linux-x86_64-gnu && version=$(python3 -c "import json; print(json.load(open(\"release-input/linux-x86_64-gnu/selection.json\"))[\"version\"])") && digest=$(python3 -c "import json; print(json.load(open(\"release-input/linux-x86_64-gnu/selection.json\"))[\"sha256\"])") && cat /etc/os-release > /work/linux-evidence/fedora-44/os-release.txt && ldd --version > /work/linux-evidence/fedora-44/glibc.txt 2>&1 && sha256sum release-input/linux-x86_64-gnu/forge-proxy-linux-x86_64-gnu > /work/linux-evidence/fedora-44/sha256.txt && python3 -m scripts.standalone.smoke release-input/linux-x86_64-gnu/forge-proxy-linux-x86_64-gnu --form onefile --expected-version "$version" > /work/linux-evidence/fedora-44/packaged-smoke.json && python3 -m scripts.standalone.lifecycle_smoke release-input/linux-x86_64-gnu/forge-proxy-linux-x86_64-gnu --version "$version" --sha256 "$digest" --target linux-x86_64-gnu --output /work/linux-evidence/fedora-44/lifecycle.json'
+          mkdir -p linux-evidence/fedora-43
+          docker run --rm -v "$PWD:/work" -w /work fedora:43 bash -lc 'dnf install -y python3 ca-certificates curl && python3 -m scripts.standalone.release verify release-input/linux-x86_64-gnu && version=$(python3 -c "import json; print(json.load(open(\"release-input/linux-x86_64-gnu/selection.json\"))[\"version\"])") && digest=$(python3 -c "import json; print(json.load(open(\"release-input/linux-x86_64-gnu/selection.json\"))[\"sha256\"])") && cat /etc/os-release > /work/linux-evidence/fedora-43/os-release.txt && ldd --version > /work/linux-evidence/fedora-43/glibc.txt 2>&1 && sha256sum release-input/linux-x86_64-gnu/forge-proxy-linux-x86_64-gnu > /work/linux-evidence/fedora-43/sha256.txt && python3 -m scripts.standalone.smoke release-input/linux-x86_64-gnu/forge-proxy-linux-x86_64-gnu --form onefile --expected-version "$version" > /work/linux-evidence/fedora-43/packaged-smoke.json && python3 -m scripts.standalone.lifecycle_smoke release-input/linux-x86_64-gnu/forge-proxy-linux-x86_64-gnu --version "$version" --sha256 "$digest" --target linux-x86_64-gnu --output /work/linux-evidence/fedora-43/lifecycle.json'
       - name: Upload Linux runtime evidence
         uses: actions/upload-artifact@v4
         with:
@@ -165,7 +165,7 @@ jobs:
   aggregate:
     name: Assemble tested Proxy candidate
     needs: [windows, macos, linux]
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

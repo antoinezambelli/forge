@@ -1,8 +1,8 @@
-FROM ubuntu:22.04
+FROM ubuntu:24.04
 
 ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends software-properties-common binutils \
+    && apt-get install -y --no-install-recommends software-properties-common binutils gpg-agent \
     && add-apt-repository ppa:deadsnakes/ppa \
     && apt-get update \
     && apt-get install -y --no-install-recommends python3.14 python3.14-venv \

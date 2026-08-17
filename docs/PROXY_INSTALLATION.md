@@ -28,7 +28,7 @@ any particular stable or exact standalone release has been published.
 | Host | Native target | Release artifact | Prerequisites |
 |---|---|---|---|
 | Windows x64 | `windows-x86_64` | `forge-proxy-windows-x86_64.exe` | PowerShell |
-| Linux x64 | `linux-x86_64-gnu` | `forge-proxy-linux-x86_64-gnu` | GNU libc 2.35 or newer, with `ldd`; `curl`; `mktemp`; `sha256sum` |
+| Linux x64 | `linux-x86_64-gnu` | `forge-proxy-linux-x86_64-gnu` | GNU libc 2.39 or newer, with `ldd`; `curl`; `mktemp`; `sha256sum` |
 | macOS arm64 | `macos-arm64` | `forge-proxy-macos-arm64` | `curl`; `mktemp`; `shasum -a 256` |
 
 Other operating systems, architectures, and libc combinations are unsupported

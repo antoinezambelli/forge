@@ -154,7 +154,7 @@ def run_shell(
     *,
     system: str | None = None,
     machine: str | None = None,
-    ldd_output: str = "ldd (Ubuntu GLIBC 2.35-0ubuntu3.8) 2.35",
+    ldd_output: str = "ldd (Ubuntu GLIBC 2.39-0ubuntu8) 2.39",
     status: int = 0,
 ) -> subprocess.CompletedProcess[str]:
     if not BASH.is_file():

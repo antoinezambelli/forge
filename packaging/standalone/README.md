@@ -21,9 +21,9 @@ removed and checks version, help, health, OpenAI-shaped forwarding,
 Anthropic-shaped SDK forwarding, `CTRL_BREAK_EVENT` shutdown, listener closure,
 and onefile extraction cleanup.
 
-## Linux x64 / glibc 2.35
+## Linux x64 / glibc 2.39
 
-Build natively in the Ubuntu 22.04 image (Docker output can be copied from the
+Build natively in the Ubuntu 24.04 image (Docker output can be copied from the
 container's `/forge/standalone-dist` directory):
 
 ```sh
@@ -33,7 +33,7 @@ docker run --name forge-proxy-linux-build forge-proxy-linux
 
 The completed artifact inspection checks every ELF object in the onedir bundle,
 the onefile launcher, and every ELF object recorded in its collection inventory,
-failing if any referenced GLIBC symbol exceeds 2.35.
+failing if any referenced GLIBC symbol exceeds 2.39.
 
 ## macOS arm64
 
@@ -59,8 +59,8 @@ plus the isolated install/init/check/reinstall/uninstall lifecycle. When an
 older standalone Proxy artifact is retrievable, each job additionally tests a
 forward update and exact-version reinstall; otherwise only those two
 cross-version checks are skipped. The Linux job also extracts the Docker-built
-artifact and executes those same bytes sequentially on Ubuntu 22.04, Debian 12,
-and Fedora 44. A fourth aggregation-only job combines the three passing outputs
+artifact and executes those same bytes sequentially on Ubuntu 24.04, Debian 13,
+and Fedora 43. A fourth aggregation-only job combines the three passing outputs
 into one retained release-candidate artifact. An ordinary Forge release leaves
 the pointer unchanged and does not run Proxy CI.
 

@@ -191,10 +191,10 @@ def test_nested_elf_failure_is_not_hidden_by_passing_launcher(tmp_path: Path) ->
         args: list[str],
         **_kwargs: object,
     ) -> subprocess.CompletedProcess[str]:
-        version = "GLIBC_2.35" if Path(args[-1]) == launcher else "GLIBC_2.36"
+        version = "GLIBC_2.39" if Path(args[-1]) == launcher else "GLIBC_2.40"
         return subprocess.CompletedProcess(args, 0, stdout=version, stderr="")
 
-    with pytest.raises(ValueError, match="pydantic_core.*GLIBC_2.36"):
+    with pytest.raises(ValueError, match="pydantic_core.*GLIBC_2.40"):
         evidence.inspect_glibc([launcher, nested], runner=fake_readelf)
 
 
@@ -214,11 +214,11 @@ def test_onefile_launcher_is_included_in_glibc_inspection(tmp_path: Path) -> Non
         args: list[str],
         **_kwargs: object,
     ) -> subprocess.CompletedProcess[str]:
-        version = "GLIBC_2.36" if Path(args[-1]) == launcher else "GLIBC_2.35"
+        version = "GLIBC_2.40" if Path(args[-1]) == launcher else "GLIBC_2.39"
         return subprocess.CompletedProcess(args, 0, stdout=version, stderr="")
 
     paths = evidence.onefile_elf_inventory(package_toc, launcher)
-    with pytest.raises(ValueError, match="forge-proxy.*GLIBC_2.36"):
+    with pytest.raises(ValueError, match="forge-proxy.*GLIBC_2.40"):
         evidence.inspect_glibc(paths, runner=fake_readelf)
 
 

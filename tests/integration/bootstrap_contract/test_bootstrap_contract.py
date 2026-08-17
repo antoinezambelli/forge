@@ -233,9 +233,9 @@ def test_explicit_version_download_failure_is_not_a_missing_stable_release(
             {
                 "system": "Linux",
                 "machine": "x86_64",
-                "ldd_output": "ldd (GNU libc) 2.34",
+                "ldd_output": "ldd (GNU libc) 2.38",
             },
-            "2.35 or newer",
+            "2.39 or newer",
             False,
         ),
         (
@@ -249,9 +249,9 @@ def test_explicit_version_download_failure_is_not_a_missing_stable_release(
             {
                 "system": "Linux",
                 "machine": "x86_64",
-                "ldd_output": "ldd (GNU libc) 2.34",
+                "ldd_output": "ldd (GNU libc) 2.38",
             },
-            "2.35 or newer",
+            "2.39 or newer",
             True,
         ),
     ],
@@ -281,8 +281,8 @@ def test_unsupported_hosts_make_zero_requests(
 @pytest.mark.parametrize(
     "banner",
     [
-        "ldd (Ubuntu GLIBC 2.35-0ubuntu3.8) 2.35",
-        "ldd (Debian GLIBC 2.36-9+deb12u4) 2.36",
+        "ldd (Ubuntu GLIBC 2.39-0ubuntu8) 2.39",
+        "ldd (Debian GLIBC 2.41-12+deb13u1) 2.41",
         "ldd (GNU libc) 2.100",
     ],
 )
@@ -411,7 +411,7 @@ def test_piped_posix_bootstrap_hands_off_without_consuming_user_input(
             "_FORGE_PROXY_BOOTSTRAP_TESTING": "1",
             "_FORGE_PROXY_BOOTSTRAP_SYSTEM": platform.system(),
             "_FORGE_PROXY_BOOTSTRAP_MACHINE": platform.machine(),
-            "_FORGE_PROXY_BOOTSTRAP_LDD_OUTPUT": "ldd (GNU libc) 2.35",
+            "_FORGE_PROXY_BOOTSTRAP_LDD_OUTPUT": "ldd (GNU libc) 2.39",
             "_FORGE_PROXY_BOOTSTRAP_TEMP_ROOT": bash_path(temp_root),
             "FORGE_BOOTSTRAP_HANDOFF_LOG": bash_path(handoff),
             "FORGE_BOOTSTRAP_HANDOFF_STATUS": "0",

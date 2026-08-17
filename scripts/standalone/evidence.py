@@ -177,7 +177,7 @@ def inspect_glibc(
     paths: Iterable[Path],
     runner: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
 ) -> dict[str, Any]:
-    """Inspect every supplied ELF object and enforce the Ubuntu 22.04 ceiling."""
+    """Inspect every supplied ELF object and enforce the Ubuntu 24.04 ceiling."""
 
     maximum = (0, 0)
     objects: list[str] = []
@@ -194,10 +194,10 @@ def inspect_glibc(
         versions = [(int(a), int(b)) for a, b in _GLIBC.findall(result.stdout)]
         if versions:
             maximum = max(maximum, *versions)
-        if any(version > (2, 35) for version in versions):
+        if any(version > (2, 39) for version in versions):
             rendered = max(versions)
             raise ValueError(
-                f"{path} references GLIBC_{rendered[0]}.{rendered[1]} above 2.35"
+                f"{path} references GLIBC_{rendered[0]}.{rendered[1]} above 2.39"
             )
     return {
         "verified": True,

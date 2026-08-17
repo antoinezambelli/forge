@@ -22,7 +22,7 @@ permissions:
 
 jobs:
   identity:
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-24.04
     outputs:
       version: ${{ steps.identity.outputs.version }}
       commit: ${{ steps.identity.outputs.commit }}
@@ -74,7 +74,7 @@ jobs:
 
   publish:
     needs: identity
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-24.04
     environment: proxy-release
     permissions:
       actions: read

@@ -60,9 +60,9 @@ def test_candidate_has_three_platform_jobs_and_one_aggregation_job() -> None:
     assert text.count("python-version: '3.14'") == 4
     assert text.count("tests/integration/bootstrap_contract") == 3
     assert text.count("scripts.standalone.lifecycle_smoke") >= 6
-    assert "ubuntu:22.04" in text
-    assert "debian:12" in text
-    assert "fedora:44" in text
+    assert "ubuntu:24.04" in text
+    assert "debian:13" in text
+    assert "fedora:43" in text
     assert "linux-runtime-evidence" in text
     assert "scripts.standalone.release assemble" in text
     assert "scripts.standalone.release verify-staging publication" in text
@@ -85,11 +85,12 @@ def test_general_ci_has_only_three_always_on_python_suites() -> None:
     ]
 
 
-def test_linux_builder_keeps_ubuntu_2204_and_uses_python_314() -> None:
+def test_linux_builder_uses_ubuntu_2404_and_python_314() -> None:
     dockerfile = (
         ROOT / "packaging" / "standalone" / "linux" / "Dockerfile"
     ).read_text(encoding="utf-8")
-    assert dockerfile.startswith("FROM ubuntu:22.04\n")
+    assert dockerfile.startswith("FROM ubuntu:24.04\n")
+    assert "gpg-agent" in dockerfile
     assert "python3.14 python3.14-venv" in dockerfile
     assert "RUN python3.14 -m venv /build-env" in dockerfile
     assert "python3.12" not in dockerfile

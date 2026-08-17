@@ -1,5 +1,5 @@
 #!/bin/sh
-# Forge Proxy bootstrap installer for Linux x64/glibc 2.35+ and macOS arm64.
+# Forge Proxy bootstrap installer for Linux x64/glibc 2.39+ and macOS arm64.
 # One line: curl -fsSL https://raw.githubusercontent.com/antoinezambelli/forge/main/install.sh | sh
 # Save, inspect, execute:
 #   curl -fsSLo install.sh https://raw.githubusercontent.com/antoinezambelli/forge/main/install.sh
@@ -117,8 +117,8 @@ case "$system:$machine" in
         [ -n "$libc_version" ] || die 'unsupported Linux libc: glibc version is unknown'
         libc_major=${libc_version% *}
         libc_minor=${libc_version#* }
-        if [ "$libc_major" -lt 2 ] || { [ "$libc_major" -eq 2 ] && [ "$libc_minor" -lt 35 ]; }; then
-            die 'unsupported Linux libc: glibc 2.35 or newer is required'
+        if [ "$libc_major" -lt 2 ] || { [ "$libc_major" -eq 2 ] && [ "$libc_minor" -lt 39 ]; }; then
+            die 'unsupported Linux libc: glibc 2.39 or newer is required'
         fi
         target=linux-x86_64-gnu
         ;;
