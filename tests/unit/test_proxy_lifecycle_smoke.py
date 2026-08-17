@@ -65,10 +65,52 @@ def test_missing_stable_pointer_means_no_published_baseline(tmp_path: Path) -> N
         return None
 
     assert (
-        lifecycle_smoke.resolve_published_baseline(
+        lifecycle_smoke.retrievable_published_baseline(
             "windows-x86_64",
             tmp_path,
             pointer_url="https://fixture.invalid/pointer",
+            reader=reader,
+        )
+        is None
+    )
+
+
+def test_unavailable_published_manifest_means_no_cross_version_checks(
+    tmp_path: Path,
+) -> None:
+    def reader(url: str, *, missing_ok: bool = False) -> bytes | None:
+        if url == "https://fixture.invalid/pointer":
+            assert missing_ok is True
+            return b"1.2.3\n"
+        raise RuntimeError(f"download unavailable: {url}")
+
+    assert (
+        lifecycle_smoke.retrievable_published_baseline(
+            "windows-x86_64",
+            tmp_path,
+            pointer_url="https://fixture.invalid/pointer",
+            release_base_url="https://fixture.invalid/releases",
+            reader=reader,
+        )
+        is None
+    )
+
+
+def test_invalid_published_manifest_means_no_cross_version_checks(
+    tmp_path: Path,
+) -> None:
+    def reader(url: str, *, missing_ok: bool = False) -> bytes | None:
+        if url == "https://fixture.invalid/pointer":
+            assert missing_ok is True
+            return b"1.2.3\n"
+        return b"not a manifest"
+
+    assert (
+        lifecycle_smoke.retrievable_published_baseline(
+            "windows-x86_64",
+            tmp_path,
+            pointer_url="https://fixture.invalid/pointer",
+            release_base_url="https://fixture.invalid/releases",
             reader=reader,
         )
         is None

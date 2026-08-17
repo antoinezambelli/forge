@@ -53,15 +53,16 @@ publish release assets, tags, or remote state.
 
 Changing `installer/proxy-stable.txt` in a pull request declares that the Forge
 release is also a Proxy release and triggers `proxy-release-candidate.yml`.
-The workflow exposes exactly three jobs: Windows x64, Linux x64, and macOS.
-Each job runs its public bootstrap contracts, builds through the documented
-platform release entrypoint, and exercises packaged smoke plus the isolated
-install/init/check/same-version-repair/uninstall lifecycle. The Linux job also
-extracts the Docker-built artifact and executes those same bytes sequentially
-on Ubuntu 22.04, Debian 12, and Fedora 44. After all three jobs pass, the Linux
-job assembles their exact tested bytes, checksums, and manifest into one
-retained release-candidate artifact. An ordinary Forge release leaves the
-pointer unchanged and does not run Proxy CI.
+Three independent platform jobs build Windows x64, Linux x64, and macOS ARM64
+through their documented release entrypoints. Each exercises packaged smoke
+plus the isolated install/init/check/reinstall/uninstall lifecycle. When an
+older standalone Proxy artifact is retrievable, each job additionally tests a
+forward update and exact-version reinstall; otherwise only those two
+cross-version checks are skipped. The Linux job also extracts the Docker-built
+artifact and executes those same bytes sequentially on Ubuntu 22.04, Debian 12,
+and Fedora 44. A fourth aggregation-only job combines the three passing outputs
+into one retained release-candidate artifact. An ordinary Forge release leaves
+the pointer unchanged and does not run Proxy CI.
 
 The Proxy pointer and `pyproject.toml` must contain the same version in a Proxy
 release pull request. Permission-preserving archives carry the selected byte,

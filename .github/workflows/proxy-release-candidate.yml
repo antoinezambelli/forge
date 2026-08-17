@@ -96,7 +96,6 @@ jobs:
 
   linux:
     name: Proxy linux-x86_64-gnu
-    needs: [windows, macos]
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
@@ -162,6 +161,16 @@ jobs:
           name: linux-runtime-evidence
           path: linux-evidence
           if-no-files-found: error
+
+  aggregate:
+    name: Assemble tested Proxy candidate
+    needs: [windows, macos, linux]
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.14'
       - uses: actions/download-artifact@v4
         with:
           pattern: proxy-*

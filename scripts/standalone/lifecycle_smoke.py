@@ -238,6 +238,26 @@ def resolve_published_baseline(
     return ReleaseArtifact(path, pointer, entry["sha256"], target)
 
 
+def retrievable_published_baseline(
+    target: str,
+    destination: Path,
+    *,
+    pointer_url: str = STABLE_POINTER_URL,
+    release_base_url: str = RELEASE_BASE_URL,
+    reader: Callable[..., bytes | None] = _read_url,
+) -> ReleaseArtifact | None:
+    try:
+        return resolve_published_baseline(
+            target,
+            destination,
+            pointer_url=pointer_url,
+            release_base_url=release_base_url,
+            reader=reader,
+        )
+    except Exception:
+        return None
+
+
 def release_manifest(artifact: ReleaseArtifact, *, sha256: str | None = None) -> bytes:
     document = {
         "version": artifact.version,
@@ -468,7 +488,7 @@ def run_lifecycle(
             )
         )
 
-        baseline = resolve_published_baseline(
+        baseline = retrievable_published_baseline(
             target,
             isolation / "baseline",
             pointer_url=pointer_url,
@@ -609,8 +629,8 @@ def run_lifecycle(
             else:
                 final_active = candidate
                 baseline_status = (
-                    "inaugural-release: update/recovery success cases not applicable; "
-                    "missing-artifact failure exercised"
+                    "cross-version checks skipped: no retrievable older Proxy artifact; "
+                    "candidate lifecycle and update failure paths exercised"
                 )
 
             steps.append(

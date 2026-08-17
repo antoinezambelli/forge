@@ -19,14 +19,28 @@ def load(name: str) -> tuple[dict, str]:
     return document, text
 
 
-def test_candidate_has_exactly_three_platform_jobs_and_retains_final_bytes() -> None:
+def test_candidate_has_three_platform_jobs_and_one_aggregation_job() -> None:
     document, text = load("proxy-release-candidate.yml")
     trigger = document.get("on", document.get(True))
     assert set(trigger) == {"pull_request"}
     assert trigger["pull_request"]["paths"] == ["installer/proxy-stable.txt"]
     assert document["permissions"] == {"contents": "read"}
-    assert set(document["jobs"]) == {"windows", "macos", "linux"}
-    assert document["jobs"]["linux"]["needs"] == ["windows", "macos"]
+    assert set(document["jobs"]) == {"windows", "macos", "linux", "aggregate"}
+    assert "needs" not in document["jobs"]["linux"]
+    assert document["jobs"]["aggregate"]["needs"] == [
+        "windows",
+        "macos",
+        "linux",
+    ]
+    linux_text = str(document["jobs"]["linux"])
+    aggregate_text = str(document["jobs"]["aggregate"])
+    assert "scripts.standalone.release assemble" not in linux_text
+    assert "scripts.standalone.release record-candidate" not in linux_text
+    assert "actions/download-artifact" not in linux_text
+    assert "scripts.standalone.release assemble" in aggregate_text
+    assert "scripts.standalone.release record-candidate" in aggregate_text
+    assert "actions/download-artifact" in aggregate_text
+    assert "proxy-release-candidate" in aggregate_text
     assert all("permissions" not in job for job in document["jobs"].values())
 
     for target in ("windows-x86_64", "linux-x86_64-gnu", "macos-arm64"):
@@ -43,7 +57,7 @@ def test_candidate_has_exactly_three_platform_jobs_and_retains_final_bytes() -> 
         in text
     )
     assert "python -m scripts.standalone.build" not in text
-    assert text.count("python-version: '3.14'") == 3
+    assert text.count("python-version: '3.14'") == 4
     assert text.count("tests/integration/bootstrap_contract") == 3
     assert text.count("scripts.standalone.lifecycle_smoke") >= 6
     assert "ubuntu:22.04" in text
