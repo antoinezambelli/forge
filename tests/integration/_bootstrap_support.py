@@ -120,6 +120,10 @@ def run_powershell(
             "FORGE_BOOTSTRAP_HANDOFF_STATUS": str(status),
         }
     )
+    # A Python process launched by pwsh inherits PowerShell 7's module path.
+    # Windows PowerShell must reconstruct its own path to find standard cmdlets
+    # such as Get-FileHash.
+    env.pop("PSModulePath", None)
     if extra_env:
         env.update(extra_env)
     return subprocess.run(

@@ -7,6 +7,7 @@ import json
 import os
 import shlex
 import subprocess
+import sys
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -497,14 +498,17 @@ def test_windows_path_preexisting_remains_unowned_across_reinstall_and_uninstall
 
 def test_windows_registry_path_write_broadcasts_environment_change() -> None:
     registry_key = MagicMock()
+    winreg = MagicMock()
+    winreg.HKEY_CURRENT_USER = object()
+    winreg.REG_EXPAND_SZ = object()
+    winreg.CreateKey.return_value = registry_key
     with (
-        patch("winreg.CreateKey", return_value=registry_key),
-        patch("winreg.SetValueEx") as set_value,
+        patch.dict(sys.modules, {"winreg": winreg}),
         patch.object(_installer, "_broadcast_windows_environment_change") as broadcast,
     ):
         _installer.WindowsPathAdapter()._write("C:\\Forge")
 
-    set_value.assert_called_once()
+    winreg.SetValueEx.assert_called_once()
     broadcast.assert_called_once_with()
 
 

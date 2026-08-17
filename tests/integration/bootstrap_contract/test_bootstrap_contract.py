@@ -286,7 +286,7 @@ def test_unsupported_hosts_make_zero_requests(
         "ldd (GNU libc) 2.100",
     ],
 )
-@pytest.mark.skipif(os.name == "nt", reason="Linux bootstrap contract")
+@pytest.mark.skipif(platform.system() != "Linux", reason="Linux bootstrap contract")
 def test_linux_glibc_banners_at_and_above_floor_are_accepted(
     tmp_path: Path, banner: str
 ) -> None:

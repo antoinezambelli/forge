@@ -257,11 +257,13 @@ def test_cli_capture_uses_child_windows_locale_under_parent_utf8_mode(
 def test_windows_graceful_stop_uses_ctrl_break_and_requires_listener_close() -> None:
     process = MagicMock()
     process.returncode = 0
+    ctrl_break = getattr(signal, "CTRL_BREAK_EVENT", 1)
     with (
         patch.object(smoke.os, "name", "nt"),
+        patch.object(smoke.signal, "CTRL_BREAK_EVENT", ctrl_break, create=True),
         patch.object(smoke, "port_closed", return_value=True),
     ):
         _, passed = smoke.graceful_stop(process, 8123)
-    process.send_signal.assert_called_once_with(signal.CTRL_BREAK_EVENT)
+    process.send_signal.assert_called_once_with(ctrl_break)
     process.communicate.assert_called_once_with(timeout=20)
     assert passed is True

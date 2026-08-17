@@ -1,6 +1,21 @@
 name: Proxy release candidate
 
 on:
+  pull_request:
+    branches: [main]
+    paths:
+      - .gitattributes
+      - .github/workflows/proxy-release-candidate.yml
+      - install.ps1
+      - install.sh
+      - packaging/standalone/**
+      - pyproject.toml
+      - scripts/standalone/**
+      - src/forge/**
+      - tests/fixtures/proxy_bootstrap/**
+      - tests/integration/**
+      - tests/unit/test_proxy_*.py
+      - tests/unit/test_standalone_build.py
   workflow_dispatch:
     inputs:
       real_backends:
