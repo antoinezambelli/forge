@@ -56,6 +56,19 @@ class TestGetSamplingDefaults:
             "chat_template_kwargs": {"reasoning_effort": "xhigh"},
         }
 
+    def test_ornith_1_5_9b_uses_general_tasks_profile(self) -> None:
+        """Ornith's general profile includes both published penalties."""
+        expected = {
+            "temperature": 1.0,
+            "top_p": 0.95,
+            "top_k": 20,
+            "min_p": 0.0,
+            "presence_penalty": 1.5,
+            "repeat_penalty": 1.0,
+        }
+        assert get_sampling_defaults("ornith-1.5:9b") == expected
+        assert get_sampling_defaults("Ornith-1.5-9B-Q4_K_M") == expected
+
     def test_qwen3_coder_uses_repeat_penalty(self) -> None:
         """Qwen3-Coder card specifies repeat_penalty=1.05, no min_p."""
         result = get_sampling_defaults("qwen3-coder:30b-a3b-instruct-q4_K_M")

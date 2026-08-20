@@ -72,6 +72,10 @@ MODEL_SAMPLING_DEFAULTS: dict[str, dict[str, float | int]] = {
     # presence_penalty (0.0 vs 1.5) for thinking-mode general tasks.
     "qwen3.6:27b-q4_K_M":                 {"temperature": 1.0, "top_p": 0.95, "top_k": 20, "min_p": 0.0, "presence_penalty": 0.0},                         # https://huggingface.co/Qwen/Qwen3.6-27B
     "Qwen3.6-27B-Q4_K_M":                 {"temperature": 1.0, "top_p": 0.95, "top_k": 20, "min_p": 0.0, "presence_penalty": 0.0},                         # https://huggingface.co/Qwen/Qwen3.6-27B
+    # Ornith 1.5 9B — publisher's general-tasks profile. The precise-coding
+    # alternative changes temperature to 0.6 and presence_penalty to 0.0.
+    "ornith-1.5:9b":                      {"temperature": 1.0, "top_p": 0.95, "top_k": 20, "min_p": 0.0, "presence_penalty": 1.5, "repeat_penalty": 1.0},  # https://huggingface.co/ornith-ai/Ornith-1.5-9B-GGUF
+    "Ornith-1.5-9B-Q4_K_M":               {"temperature": 1.0, "top_p": 0.95, "top_k": 20, "min_p": 0.0, "presence_penalty": 1.5, "repeat_penalty": 1.0},  # https://huggingface.co/ornith-ai/Ornith-1.5-9B-GGUF
     # Qwen3.8-27B — Unsloth's thinking-mode profile. xhigh is the model's
     # documented default reasoning effort for complex coding and agentic work.
     "Qwen3.8-27B-UD-Q4_K_XL":             {"temperature": 1.0, "top_p": 0.95, "top_k": 20, "min_p": 0.0, "presence_penalty": 0.0, "repeat_penalty": 1.0, "chat_template_kwargs": {"reasoning_effort": "xhigh"}},  # https://unsloth.ai/docs/models/qwen3.8

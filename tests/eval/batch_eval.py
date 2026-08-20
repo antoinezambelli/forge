@@ -173,6 +173,7 @@ _GGUF_FILES: list[tuple[str, _BatchServerRecipe]] = [
     ("Qwen3.5-35B-A3B-Q4_K_M.gguf", _REASONING_SERVER_RECIPE),
     ("Qwen3.6-27B-Q4_K_M.gguf", _REASONING_SERVER_RECIPE),
     ("Qwen3.6-35B-A3B-UD-Q4_K_M.gguf", _REASONING_SERVER_RECIPE),
+    ("Ornith-1.5-9B-Q4_K_M.gguf", _REASONING_SERVER_RECIPE),
     ("Qwen3.8-27B-UD-Q4_K_XL.gguf", _QWEN38_SERVER_RECIPE),
     ("Nemotron-3-Nano-30B-A3B-Q4_K_M.gguf", _REASONING_SERVER_RECIPE),
     ("Muse-Glimmer-30B-UD-Q4_K_XL.gguf", _GLIMMER_SERVER_RECIPE),
