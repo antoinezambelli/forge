@@ -79,6 +79,8 @@ MODEL_SAMPLING_DEFAULTS: dict[str, dict[str, float | int]] = {
     # Qwen3.8-27B — Unsloth's thinking-mode profile. xhigh is the model's
     # documented default reasoning effort for complex coding and agentic work.
     "Qwen3.8-27B-UD-Q4_K_XL":             {"temperature": 1.0, "top_p": 0.95, "top_k": 20, "min_p": 0.0, "presence_penalty": 0.0, "repeat_penalty": 1.0, "chat_template_kwargs": {"reasoning_effort": "xhigh"}},  # https://unsloth.ai/docs/models/qwen3.8
+    # Ornith 1.5 35B-A3B — model-card general-task profile.
+    "Ornith-1.5-35B-Q4_K_M":               {"temperature": 0.6, "top_p": 0.95, "top_k": 20},                                                                 # https://huggingface.co/ornith-ai/Ornith-1.5-35B-A3B-GGUF
     # Qwen3-Coder — non-thinking instruct; card does not mention min_p or presence_penalty
     "qwen3-coder:30b-a3b-instruct-q4_K_M":  {"temperature": 0.7, "top_p": 0.8, "top_k": 20, "repeat_penalty": 1.05},                                         # https://huggingface.co/Qwen/Qwen3-Coder-30B-A3B-Instruct
     "Qwen3-Coder-30B-A3B-Instruct-Q4_K_M":  {"temperature": 0.7, "top_p": 0.8, "top_k": 20, "repeat_penalty": 1.05},                                         # https://huggingface.co/Qwen/Qwen3-Coder-30B-A3B-Instruct
