@@ -583,6 +583,9 @@ MODEL_FAMILIES: dict[str, dict[str, str]] = {
     "Muse-Glimmer-30B-UD-Q4_K_XL":           {"family": "muse-glimmer-30b", "cross_backend_key": "muse-glimmer-30b-q4_K_XL"},
     # DeepSeek V4 Flash 0731 (managed llama.cpp RPC; UD is a quant variant)
     "DeepSeek-V4-Flash-0731-UD-Q4_K_XL":     {"family": "deepseek-v4-flash", "cross_backend_key": "deepseek-v4-flash-0731-q4_K_XL"},
+    # Ornith 1.5 (llama-server only)
+    "Ornith-1.5-9B-Q4_K_M":                  {"family": "ornith-1.5-9b", "cross_backend_key": "ornith-1.5-9b-q4_K_M"},
+    "Ornith-1.5-35B-Q4_K_M":                 {"family": "ornith-1.5-35b", "cross_backend_key": "ornith-1.5-35b-q4_K_M"},
     # lfm2.5 8b-a1b (llama-server only)
     "LFM2.5-8B-A1B-Q4_K_M":                 {"family": "lfm2.5-8b-a1b", "cross_backend_key": "lfm2.5-8b-a1b-q4_K_M"},
     # mellum2 12b-a2.5b (llama-server only; instruct + thinking share a family)

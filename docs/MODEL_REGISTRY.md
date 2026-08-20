@@ -30,6 +30,8 @@ Sampling values are sourced from the model's HuggingFace card unless noted. Valu
 | Qwen3.5 35B-A3B | Q4_K_M | 1.0 | 0.95 | 20 | 0.0 | — | 1.5 | [HF](https://huggingface.co/Qwen/Qwen3.5-35B-A3B) |
 | Qwen3.6 27B | Q4_K_M | 1.0 | 0.95 | 20 | 0.0 | — | 0.0⁶ | [HF](https://huggingface.co/Qwen/Qwen3.6-27B) |
 | Qwen3.6 35B-A3B UD | Q4_K_M | 1.0 | 0.95 | 20 | 0.0 | — | 1.5 | [HF](https://huggingface.co/Qwen/Qwen3.6-35B-A3B) |
+| Ornith 1.5 9B | Q4_K_M | 1.0 | 0.95 | 20 | 0.0 | 1.0 | 1.5 | [HF](https://huggingface.co/ornith-ai/Ornith-1.5-9B-GGUF) |
+| Ornith 1.5 35B-A3B | Q4_K_M | 0.6 | 0.95 | 20 | — | — | — | [HF](https://huggingface.co/ornith-ai/Ornith-1.5-35B-A3B-GGUF) |
 | Nemotron-3 Nano 30B-A3B | Q4_K_M | 0.6 | 0.95 | — | — | — | —⁷ | [HF](https://huggingface.co/nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16) |
 | Claude Haiku 4.5⁵ | — | — | — | — | — | — | — | (SDK-managed) |
 | Claude Sonnet 4.6⁵ | — | — | — | — | — | — | — | (SDK-managed) |
@@ -68,7 +70,6 @@ Sampling params staged, no eval data published. Forge supports these — perform
 |---|---|---|---|---|---|---|---|
 | Qwen3 4B Instruct 2507 | Q4_K_M | 0.7 | 0.8 | 20 | 0.0 | — | [HF](https://huggingface.co/Qwen/Qwen3-4B-Instruct-2507) |
 | Qwen3 4B Thinking 2507 | Q4_K_M | 0.6 | 0.95 | 20 | 0.0 | — | [HF](https://huggingface.co/Qwen/Qwen3-4B-Thinking-2507) |
-| Ornith 1.5 9B | Q4_K_M | 1.0 | 0.95 | 20 | 0.0 | general-tasks profile; repeat_penalty=1.0, presence_penalty=1.5 | [HF](https://huggingface.co/ornith-ai/Ornith-1.5-9B-GGUF) |
 | Qwen3.5 122B-A10B | Q4_K_M | 0.7 | 0.8 | 20 | — | balanced (instruct) preset; thinking mode is separate⁸ | [HF](https://huggingface.co/Qwen/Qwen3.5-122B-A10B) |
 | DeepSeek-V4-Flash-0731 UD | Q4_K_XL | 1.0 | 0.95 | — | — | agentic profile; registry-selected `reasoning_effort` (`low`/`high`/`max`)¹² | [HF](https://huggingface.co/deepseek-ai/DeepSeek-V4-Flash-0731) |
 | Inkling Small UD | IQ4_XS | 1.0 | 1.0 | — | 0.0 | `reasoning_effort="high"` stress profile¹³ | [Unsloth](https://unsloth.ai/docs/models/inkling) |

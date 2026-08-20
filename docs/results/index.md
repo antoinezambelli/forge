@@ -17,4 +17,4 @@ For model and backend recommendations, see [Model Guide](../MODEL_GUIDE.md).
 - [native-vs-prompt.md](raw/native-vs-prompt.md) — llama-server native FC vs prompt-injected, reforged only
 - [reasoning-replay.md](raw/reasoning-replay.md) — reasoning_replay policy comparison (none / keep-last / full) per config
 
-*Generated 2026-08-17 17:14*
+*Generated 2026-08-20 07:41*
