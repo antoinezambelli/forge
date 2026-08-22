@@ -517,6 +517,109 @@ def _snapshot(path: Path) -> tuple[str, bytes | str | None]:
     return ("missing", None)
 
 
+def _windows_command_content(slot: Path) -> bytes:
+    return f'@echo off\r\n"{slot}" %*\r\n'.encode("utf-8")
+
+
+def _posix_command_target(paths: InstallPaths, slot: Path) -> str:
+    return os.path.relpath(slot, paths.command_dir)
+
+
+def _command_is_owned(paths: InstallPaths, state: Mapping[str, Any]) -> bool:
+    command = paths.command
+    slot = paths.slot(str(state["current_version"]))
+    try:
+        if paths.system == "Windows":
+            return (
+                command.is_file()
+                and not command.is_symlink()
+                and command.read_bytes() == _windows_command_content(slot)
+            )
+        return command.is_symlink() and os.readlink(command) == _posix_command_target(
+            paths, slot
+        )
+    except OSError:
+        return False
+
+
+def _command_key(path: Path, system: str) -> str:
+    value = os.path.abspath(path)
+    return os.path.normcase(value) if system == "Windows" else value
+
+
+def _path_command_names(system: str, environ: Mapping[str, str]) -> tuple[str, ...]:
+    if system != "Windows":
+        return (PRODUCT,)
+    raw_extensions = environ.get("PATHEXT", ".COM;.EXE;.BAT;.CMD")
+    extensions: list[str] = [""]
+    for item in raw_extensions.split(";"):
+        extension = item.strip().lower()
+        if extension and not extension.startswith("."):
+            extension = f".{extension}"
+        if extension not in extensions:
+            extensions.append(extension)
+    return tuple(f"{PRODUCT}{extension}" for extension in extensions)
+
+
+def _command_conflicts(
+    paths: InstallPaths,
+    prior: Mapping[str, Any] | None,
+    *,
+    environ: Mapping[str, str] | None = None,
+) -> list[Path]:
+    environ = os.environ if environ is None else environ
+    candidates: list[Path] = []
+    if paths.command.exists() or paths.command.is_symlink():
+        candidates.append(paths.command)
+
+    separator = ";" if paths.system == "Windows" else ":"
+    for raw_directory in environ.get("PATH", "").split(separator):
+        directory = raw_directory.strip().strip('"')
+        if not directory:
+            continue
+        for name in _path_command_names(paths.system, environ):
+            candidate = Path(directory) / name
+            if not candidate.is_file():
+                continue
+            if paths.system != "Windows" and not os.access(candidate, os.X_OK):
+                continue
+            candidates.append(candidate)
+
+    owned_key = _command_key(paths.command, paths.system)
+    owned = prior is not None and _command_is_owned(paths, prior)
+    conflicts: list[Path] = []
+    seen: set[str] = set()
+    for candidate in candidates:
+        key = _command_key(candidate, paths.system)
+        if key in seen:
+            continue
+        seen.add(key)
+        if key == owned_key and owned:
+            continue
+        conflicts.append(Path(os.path.abspath(candidate)))
+    return conflicts
+
+
+def _refuse_command_conflicts(
+    paths: InstallPaths,
+    prior: Mapping[str, Any] | None,
+    *,
+    environ: Mapping[str, str] | None = None,
+) -> None:
+    conflicts = _command_conflicts(paths, prior, environ=environ)
+    if not conflicts:
+        return
+    locations = ", ".join(f"'{path}'" for path in conflicts)
+    raise InstallerError(
+        f"unowned forge-proxy command already exists at {locations}; the "
+        "standalone installer changed nothing and will not overwrite or compete "
+        "with it. If an older forge-guardrails package created the command, "
+        "upgrade that package in the same Python environment so pip removes its "
+        "launcher, then retry. Otherwise remove the command through the tool "
+        "that owns it, then retry."
+    )
+
+
 def _restore(path: Path, snapshot: tuple[str, bytes | str | None]) -> None:
     if path.exists() or path.is_symlink():
         path.unlink()
@@ -531,12 +634,10 @@ def _restore(path: Path, snapshot: tuple[str, bytes | str | None]) -> None:
 def _publish_command(paths: InstallPaths, slot: Path) -> None:
     paths.command_dir.mkdir(parents=True, exist_ok=True)
     if paths.system == "Windows":
-        content = f'@echo off\r\n"{slot}" %*\r\n'.encode("utf-8")
-        _atomic_write(paths.command, content)
+        _atomic_write(paths.command, _windows_command_content(slot))
         return
-    relative = os.path.relpath(slot, paths.command_dir)
     temporary = paths.command_dir / f".forge-proxy.{uuid.uuid4().hex}"
-    os.symlink(relative, temporary)
+    os.symlink(_posix_command_target(paths, slot), temporary)
     try:
         os.replace(temporary, paths.command)
     finally:
@@ -556,9 +657,13 @@ def _ps_quote(value: str) -> str:
 
 
 def _render_windows_uninstaller(
-    paths: InstallPaths, ownership_id: str, path_record: Mapping[str, Any]
+    paths: InstallPaths,
+    ownership_id: str,
+    path_record: Mapping[str, Any],
+    slot: Path,
 ) -> bytes:
     marker = _marker_content(paths, ownership_id)
+    command_sha256 = hashlib.sha256(_windows_command_content(slot)).hexdigest()
     ps = [
         "$ErrorActionPreference='SilentlyContinue'",
         "$parent=[int]%1",
@@ -566,6 +671,11 @@ def _render_windows_uninstaller(
         "Start-Sleep -Milliseconds 250",
         f"$marker={_ps_quote(str(paths.marker))}",
         f"if((Get-Content -Raw -LiteralPath $marker) -ne {_ps_quote(marker)}){{exit 2}}",
+        "$ownedCommand=$false",
+        f"$command={_ps_quote(str(paths.command))}",
+        "if(Test-Path -LiteralPath $command){"
+        "$ownedCommand=((Get-FileHash -LiteralPath $command -Algorithm SHA256).Hash.ToLowerInvariant()"
+        f" -eq '{command_sha256}')}}",
     ]
     targets = ",".join(
         _ps_quote(str(target)) for target in (paths.versions, paths.staging)
@@ -602,7 +712,8 @@ def _render_windows_uninstaller(
                     "[void][ForgeEnvironment]::SendMessageTimeout([IntPtr]0xffff,0x001A,[UIntPtr]::Zero,'Environment',0x0002,5000,[ref]$broadcast)",
                 ]
             )
-    for target in (paths.command, paths.state, paths.marker):
+    ps.append("if($ownedCommand){Remove-Item -Force -LiteralPath $command}")
+    for target in (paths.state, paths.marker):
         ps.append(f"Remove-Item -Force -LiteralPath {_ps_quote(str(target))}")
     ps.extend(
         [
@@ -621,7 +732,10 @@ def _render_windows_uninstaller(
 
 
 def _render_posix_uninstaller(
-    paths: InstallPaths, ownership_id: str, path_record: Mapping[str, Any]
+    paths: InstallPaths,
+    ownership_id: str,
+    path_record: Mapping[str, Any],
+    slot: Path,
 ) -> bytes:
     q = shlex.quote
     lines = [
@@ -631,6 +745,10 @@ def _render_posix_uninstaller(
         f"marker={q(str(paths.marker))}",
         f"expected={q(_marker_content(paths, ownership_id))}",
         '[ "$(cat "$marker" 2>/dev/null)" = "$expected" ] || exit 2',
+        f"command={q(str(paths.command))}",
+        f"expected_command={q(_posix_command_target(paths, slot))}",
+        "owned_command=0",
+        '[ -L "$command" ] && [ "$(readlink "$command")" = "$expected_command" ] && owned_command=1',
     ]
     if path_record.get("kind") == "posix" and path_record.get("added"):
         startup = q(str(path_record["startup_file"]))
@@ -647,7 +765,8 @@ def _render_posix_uninstaller(
         )
     lines.extend(
         [
-            f"rm -f -- {q(str(paths.command))} {q(str(paths.state))} {q(str(paths.marker))}",
+            '[ "$owned_command" -eq 1 ] && rm -f -- "$command"',
+            f"rm -f -- {q(str(paths.state))} {q(str(paths.marker))}",
             f"rm -rf -- {q(str(paths.versions))} {q(str(paths.staging))}",
             f"rm -f -- {q(str(paths.uninstaller))}",
             f"rmdir -- {q(str(paths.command_dir))} 2>/dev/null || true",
@@ -659,13 +778,16 @@ def _render_posix_uninstaller(
 
 
 def _render_ownership_files(
-    paths: InstallPaths, ownership_id: str, path_record: Mapping[str, Any]
+    paths: InstallPaths,
+    ownership_id: str,
+    path_record: Mapping[str, Any],
+    slot: Path,
 ) -> None:
     _atomic_write(paths.marker, _marker_content(paths, ownership_id).encode("utf-8"))
     content = (
-        _render_windows_uninstaller(paths, ownership_id, path_record)
+        _render_windows_uninstaller(paths, ownership_id, path_record, slot)
         if paths.system == "Windows"
-        else _render_posix_uninstaller(paths, ownership_id, path_record)
+        else _render_posix_uninstaller(paths, ownership_id, path_record, slot)
     )
     _atomic_write(paths.uninstaller, content, executable=paths.system != "Windows")
 
@@ -685,6 +807,7 @@ def install_artifact(
     runner: ProcessRunner | None = None,
     path_adapter: PathAdapter | None = None,
     output: Callable[[str], None] = print,
+    environ: Mapping[str, str] | None = None,
 ) -> dict[str, Any]:
     parse_version(version)
     sha256 = parse_checksum(sha256)
@@ -695,6 +818,7 @@ def install_artifact(
     prior = read_state(paths.state) if paths.state.is_file() else None
     if prior is not None and Path(prior["root"]) != paths.root:
         raise InstallerError("installed state belongs to a different root")
+    _refuse_command_conflicts(paths, prior, environ=environ)
 
     paths.staging.mkdir(parents=True, exist_ok=True)
     suffix = ".exe" if paths.system == "Windows" else ""
@@ -750,7 +874,7 @@ def install_artifact(
                 "verified_slots": [verified_by_version[item] for item in retained],
                 "path_integration": path_record,
             }
-            _render_ownership_files(paths, ownership_id, path_record)
+            _render_ownership_files(paths, ownership_id, path_record, slot)
             _write_state(paths.state, state)
             _publish_command(paths, slot)
         except Exception:
@@ -793,11 +917,13 @@ def update(
     pointer_url: str = STABLE_POINTER_URL,
     manifest_url: str = RELEASE_MANIFEST_URL,
     asset_url: str = RELEASE_ASSET_URL,
+    environ: Mapping[str, str] | None = None,
 ) -> dict[str, Any] | None:
     paths = paths or discover_paths()
     if not paths.state.is_file():
         raise InstallerError("forge-proxy is not installed")
     state = read_state(paths.state)
+    _refuse_command_conflicts(paths, state, environ=environ)
     transport = transport or UrlTransport()
     exact = version is not None
     if version is None:
@@ -855,6 +981,7 @@ def update(
             runner=runner,
             path_adapter=path_adapter,
             output=output,
+            environ=environ,
         )
     finally:
         if artifact.parent == paths.staging and artifact.exists():
@@ -902,9 +1029,10 @@ def uninstall_owned(
 ) -> None:
     """Synchronous ownership-aware equivalent used by local fixture tests."""
     state = validate_owned_install(paths)
+    owned_command = _command_is_owned(paths, state)
     path_adapter = path_adapter or default_path_adapter(paths)
     path_adapter.remove(state["path_integration"])
-    if paths.command.exists() or paths.command.is_symlink():
+    if owned_command:
         paths.command.unlink()
     for path in (paths.state, paths.marker, paths.uninstaller):
         if path.exists():

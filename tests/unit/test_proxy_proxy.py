@@ -643,7 +643,12 @@ class TestLifecycle:
 
         assert order == ["http", "backend", "client"]
 
-    def test_docker_liveness_uses_forge_namespace(self) -> None:
+    def test_docker_uses_module_entrypoint_and_forge_liveness(self) -> None:
         dockerfile = Path("Dockerfile").read_text(encoding="utf-8")
+        assert (
+            'ENTRYPOINT ["python", "-m", "forge.proxy", "--host", "0.0.0.0", '
+            '"--port", "8081"]'
+        ) in dockerfile
+        assert 'ENTRYPOINT ["forge-proxy"' not in dockerfile
         assert "http://127.0.0.1:8081/forge/health" in dockerfile
-        assert "http://127.0.0.1:8081/health\"]" not in dockerfile
+        assert 'http://127.0.0.1:8081/health"]' not in dockerfile

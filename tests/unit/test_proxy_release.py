@@ -12,7 +12,8 @@ from scripts.standalone import release
 from scripts.standalone.inputs import SUPPORTED_TARGETS
 
 
-VERSION = "0.9.2"
+VERSION = release.project_version()
+OTHER_VERSION = "9.9.9"
 SOURCE_TREE = "a" * 40
 
 
@@ -51,7 +52,7 @@ def test_candidate_identity_binds_version_and_source_tree(tmp_path: Path) -> Non
 
 @pytest.mark.parametrize(
     ("version", "source_tree"),
-    [("0.9.3", SOURCE_TREE), (VERSION, "b" * 40)],
+    [(OTHER_VERSION, SOURCE_TREE), (VERSION, "b" * 40)],
 )
 def test_candidate_identity_rejects_a_different_tag_tree(
     tmp_path: Path,
@@ -75,7 +76,7 @@ def test_assembly_rejects_incomplete_or_changed_inputs(tmp_path: Path, failure: 
         record_path = inputs[0] / "selection.json"
         record = json.loads(record_path.read_text())
         if failure == "version":
-            record["version"] = "0.9.3"
+            record["version"] = OTHER_VERSION
         elif failure == "name":
             record["name"] = "wrong"
         elif failure == "size":

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import importlib.metadata
 import subprocess
 import sys
 import tomllib
@@ -15,7 +16,7 @@ from forge.proxy import _installer
 from forge.proxy.__main__ import _build_parser, _proxy_from_args
 
 
-def test_version_exits_zero_without_configuration_and_matches_project(
+def test_python_distribution_keeps_module_cli_without_global_command(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     project = tomllib.loads(
@@ -25,6 +26,11 @@ def test_version_exits_zero_without_configuration_and_matches_project(
         proxy_cli.main(["--version"])
     assert exc.value.code == 0
     assert capsys.readouterr().out.strip() == project["project"]["version"]
+    distribution = importlib.metadata.distribution("forge-guardrails")
+    assert not any(
+        entry.group == "console_scripts" and entry.name == "forge-proxy"
+        for entry in distribution.entry_points
+    )
 
 
 def test_help_lists_installed_lifecycle_without_out_of_scope_modes() -> None:

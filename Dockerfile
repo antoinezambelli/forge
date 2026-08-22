@@ -48,4 +48,4 @@ HEALTHCHECK \
 
 EXPOSE 8081
 
-ENTRYPOINT ["forge-proxy", "--host", "0.0.0.0", "--port", "8081"]
+ENTRYPOINT ["python", "-m", "forge.proxy", "--host", "0.0.0.0", "--port", "8081"]

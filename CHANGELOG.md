@@ -2,6 +2,27 @@
 
 All notable changes to forge are documented here.
 
+## [0.9.3] — 2026-08-21
+
+A command-ownership hotfix for the standalone Forge Proxy distribution. Proxy
+request handling, routing, backend behavior, and guardrail policy are
+unchanged.
+
+### Fixed
+
+- **The standalone installer exclusively owns `forge-proxy`.** The
+  `forge-guardrails` Python package no longer creates a competing global
+  command; Python-managed Proxy execution remains available through
+  `python -m forge.proxy`, including in the Docker image.
+- **Foreign commands are preserved.** Installation and update refuse when an
+  unowned `forge-proxy` is already on PATH or occupies the intended command
+  pathname. Reinstall and uninstall also preserve a command that replaced a
+  previously owned shim, leaving its package manager responsible for removal.
+- **Command ownership is exercised on every native candidate.** The shared
+  lifecycle validates collision refusal, successful name-based resolution,
+  replaced-command refusal, and ownership-aware uninstall on Windows, Linux,
+  and macOS without release-specific migration logic.
+
 ## [0.9.2] — 2026-08-17
 
 A packaging-only maintenance release completing the standalone Forge Proxy

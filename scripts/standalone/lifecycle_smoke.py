@@ -93,6 +93,12 @@ def command(executable: Path, arguments: list[str]) -> list[str]:
     return [str(executable), *arguments]
 
 
+def named_command(arguments: list[str]) -> list[str]:
+    if os.name == "nt":
+        return ["cmd", "/d", "/c", "forge-proxy", *arguments]
+    return ["forge-proxy", *arguments]
+
+
 def run_process(
     arguments: list[str],
     *,
@@ -363,11 +369,61 @@ def shim_path(install_root: Path, target: str) -> Path:
     return install_root / "bin" / name
 
 
+def install_arguments(artifact: ReleaseArtifact, install_root: Path) -> list[str]:
+    return [
+        "install-artifact",
+        "--version",
+        artifact.version,
+        "--sha256",
+        artifact.sha256,
+        "--no-init",
+        "--install-root",
+        str(install_root),
+    ]
+
+
 def slot_path(install_root: Path, artifact: ReleaseArtifact) -> Path:
     executable = (
         "forge-proxy.exe" if artifact.target == "windows-x86_64" else "forge-proxy"
     )
     return install_root / "versions" / artifact.version / executable
+
+
+def command_environment(env: dict[str, str], command_dir: Path) -> dict[str, str]:
+    resolved = dict(env)
+    inherited = resolved.get("PATH", "")
+    resolved["PATH"] = (
+        f"{command_dir}{os.pathsep}{inherited}" if inherited else str(command_dir)
+    )
+    return resolved
+
+
+def foreign_path_command(directory: Path, target: str) -> Path:
+    directory.mkdir(parents=True, exist_ok=True)
+    name = "forge-proxy.exe" if target == "windows-x86_64" else "forge-proxy"
+    path = directory / name
+    path.write_bytes(b"foreign forge-proxy PATH fixture\n")
+    if target != "windows-x86_64":
+        path.chmod(0o755)
+    return path
+
+
+def replace_installed_command(path: Path, target: str) -> bytes:
+    if path.exists() or path.is_symlink():
+        path.unlink()
+    content = b"foreign replacement command\n"
+    path.write_bytes(content)
+    if target != "windows-x86_64":
+        path.chmod(0o755)
+    return content
+
+
+def wait_for_removal(path: Path, *, seconds: float = 20) -> None:
+    deadline = time.monotonic() + seconds
+    while path.exists() and time.monotonic() < deadline:
+        time.sleep(0.05)
+    if path.exists():
+        raise RuntimeError(f"owned installation state remained after uninstall: {path}")
 
 
 def path_snapshot(path: Path) -> tuple[str, bytes | str]:
@@ -445,6 +501,125 @@ def assert_failed_update_preserved(
     assert_active(active, install_root, isolation, env, steps)
 
 
+def candidate_ownership_prelude(
+    candidate: ReleaseArtifact,
+    isolation: Path,
+    steps: list[dict[str, Any]],
+) -> dict[str, bool]:
+    fixture = isolation / "candidate-ownership"
+    user = fixture / "user"
+    user.mkdir(parents=True)
+    install_root = fixture / "install root"
+    path_file = fixture / "user-path.txt"
+    path_file.write_text("existing-path", encoding="utf-8")
+    env = isolated_environment(fixture, path_file)
+    if candidate.target != "windows-x86_64":
+        env["SHELL"] = "/bin/bash"
+
+    foreign_dir = fixture / "foreign-command"
+    foreign = foreign_path_command(foreign_dir, candidate.target)
+    foreign_before = foreign.read_bytes()
+    conflict_env = command_environment(env, foreign_dir)
+    install_args = install_arguments(candidate, install_root)
+    steps.append(
+        run_step(
+            candidate.path,
+            install_args,
+            cwd=fixture,
+            env=conflict_env,
+            expected_error="unowned forge-proxy command",
+        )
+    )
+    if foreign.read_bytes() != foreign_before:
+        raise RuntimeError("collision refusal changed the foreign PATH command")
+    if install_root.exists():
+        raise RuntimeError("collision refusal published standalone installation state")
+    if path_file.read_text(encoding="utf-8") != "existing-path":
+        raise RuntimeError("collision refusal changed isolated PATH state")
+
+    foreign.unlink()
+    foreign_dir.rmdir()
+    steps.append(run_step(candidate.path, install_args, cwd=fixture, env=env))
+    shim = shim_path(install_root, candidate.target)
+    steps.append(
+        run_step(
+            shim,
+            [
+                "init",
+                "--non-interactive",
+                "--force",
+                "--backend-url",
+                "http://127.0.0.1:1",
+            ],
+            cwd=fixture,
+            env=env,
+        )
+    )
+    resolved_env = command_environment(env, shim.parent)
+    steps.append(
+        run_process(
+            named_command(["--version"]),
+            cwd=fixture,
+            env=resolved_env,
+        )
+    )
+    if steps[-1]["stdout"].strip() != candidate.version:
+        raise RuntimeError("bare forge-proxy resolved to the wrong installation")
+    steps.append(run_process(named_command(["check"]), cwd=fixture, env=resolved_env))
+
+    replacement = replace_installed_command(shim, candidate.target)
+    steps.append(
+        run_step(
+            candidate.path,
+            install_args,
+            cwd=fixture,
+            env=resolved_env,
+            expected_error="unowned forge-proxy command",
+        )
+    )
+    if shim.read_bytes() != replacement:
+        raise RuntimeError("reinstall refusal changed the replacement command")
+
+    state = install_root / "state.json"
+    marker = install_root / "ownership.txt"
+    uninstaller_name = (
+        "uninstall.cmd" if candidate.target == "windows-x86_64" else "uninstall.sh"
+    )
+    uninstaller = install_root / uninstaller_name
+    versions = install_root / "versions"
+    staging = install_root / ".staging"
+    profile = profile_snapshot(user)
+    steps.append(
+        run_step(
+            slot_path(install_root, candidate),
+            ["uninstall"],
+            cwd=fixture,
+            env=resolved_env,
+        )
+    )
+    for owned_path in (state, marker, uninstaller, versions, staging):
+        wait_for_removal(owned_path)
+    if not shim.is_file() or shim.read_bytes() != replacement:
+        raise RuntimeError("uninstall removed or changed the replacement command")
+    if path_file.read_text(encoding="utf-8") != "existing-path":
+        raise RuntimeError("ownership uninstall did not restore isolated PATH state")
+    assert_profile(profile)
+
+    shim.unlink()
+    for directory in (shim.parent, install_root):
+        try:
+            directory.rmdir()
+        except OSError:
+            pass
+    return {
+        "collision_rejected": True,
+        "foreign_command_preserved": True,
+        "bare_command_resolved": True,
+        "replacement_reinstall_rejected": True,
+        "replacement_survived_uninstall": True,
+    }
+
+
 def run_lifecycle(
     artifact: Path,
     version: str,
@@ -487,6 +662,7 @@ def run_lifecycle(
                 env=env,
             )
         )
+        ownership = candidate_ownership_prelude(candidate, isolation, steps)
 
         baseline = retrievable_published_baseline(
             target,
@@ -546,16 +722,7 @@ def run_lifecycle(
                 assert_active(candidate, install_root, isolation, env, steps)
                 assert_profile(profile)
 
-            install_args = [
-                "install-artifact",
-                "--version",
-                candidate.version,
-                "--sha256",
-                candidate.sha256,
-                "--no-init",
-                "--install-root",
-                str(install_root),
-            ]
+            install_args = install_arguments(candidate, install_root)
             steps.append(run_step(candidate.path, install_args, cwd=isolation, env=env))
             assert_active(candidate, install_root, isolation, env, steps)
             assert_profile(profile)
@@ -641,11 +808,7 @@ def run_lifecycle(
                     env=env,
                 )
             )
-            deadline = time.monotonic() + 20
-            while install_root.exists() and time.monotonic() < deadline:
-                time.sleep(0.05)
-            if install_root.exists():
-                raise RuntimeError("owned installation remained after uninstall")
+            wait_for_removal(install_root)
             assert_profile(profile)
 
         if path_file.read_text(encoding="utf-8") != "existing-path":
@@ -665,6 +828,7 @@ def run_lifecycle(
             "baseline": baseline.version if baseline is not None else None,
             "baseline_status": baseline_status,
             "steps": steps,
+            "command_ownership": ownership,
             "owned_state_removed": True,
             "path_state_restored": True,
             "profile_preserved": True,

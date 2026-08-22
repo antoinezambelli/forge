@@ -23,6 +23,13 @@ def test_windows_shim_command_uses_cmd(monkeypatch: pytest.MonkeyPatch) -> None:
         "forge-proxy.cmd",
         "check",
     ]
+    assert lifecycle_smoke.named_command(["--version"]) == [
+        "cmd",
+        "/d",
+        "/c",
+        "forge-proxy",
+        "--version",
+    ]
 
 
 def test_expected_failure_is_a_successful_gate_observation(tmp_path: Path) -> None:

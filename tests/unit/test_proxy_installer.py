@@ -80,6 +80,7 @@ def install(
     path_adapter: _installer.PathAdapter,
     **kwargs: object,
 ) -> dict[str, object]:
+    kwargs.setdefault("environ", {"PATH": ""})
     return _installer.install_artifact(
         source,
         version,
@@ -202,6 +203,60 @@ def test_fresh_install_writes_owned_layout_and_windows_argv_shim(
     assert str(paths.command_dir) in (tmp_path / "user-path.txt").read_text()
 
 
+def test_fresh_install_refuses_foreign_path_and_destination_commands(
+    tmp_path: Path,
+) -> None:
+    windows = tmp_path / "windows"
+    windows.mkdir()
+    foreign_dir = windows / "Python" / "Scripts"
+    foreign_dir.mkdir(parents=True)
+    foreign_exe = foreign_dir / "forge-proxy.exe"
+    foreign_exe.write_bytes(b"pip-owned launcher")
+    source, sha = artifact(windows, "1.0.0")
+    paths = windows_paths(windows)
+    path_file = adapter(windows, "C:\\Existing")
+    with pytest.raises(_installer.InstallerError, match="unowned forge-proxy") as exc:
+        install(
+            source,
+            sha,
+            "1.0.0",
+            paths,
+            FakeRunner(),
+            path_file,
+            environ={
+                "PATH": str(foreign_dir),
+                "PATHEXT": ".COM;.EXE;.BAT;.CMD",
+            },
+        )
+    assert str(foreign_exe) in str(exc.value)
+    assert "same Python environment" in str(exc.value)
+    assert foreign_exe.read_bytes() == b"pip-owned launcher"
+    assert not paths.root.exists()
+    assert (windows / "user-path.txt").read_text() == "C:\\Existing"
+
+    posix = tmp_path / "posix"
+    posix.mkdir()
+    source, sha = artifact(posix, "1.0.0")
+    paths = _installer.InstallPaths(posix / "app", posix / "bin", "Linux")
+    paths.command_dir.mkdir()
+    paths.command.write_bytes(b"pip-owned script")
+    paths.command.chmod(0o755)
+    path_file = adapter(posix, "existing-path")
+    with pytest.raises(_installer.InstallerError, match="unowned forge-proxy"):
+        install(
+            source,
+            sha,
+            "1.0.0",
+            paths,
+            FakeRunner(),
+            path_file,
+            environ={"PATH": str(paths.command_dir)},
+        )
+    assert paths.command.read_bytes() == b"pip-owned script"
+    assert not paths.root.exists()
+    assert (posix / "user-path.txt").read_text() == "existing-path"
+
+
 def test_idempotent_install_rechecks_slot_without_rewriting(tmp_path: Path) -> None:
     source, sha = artifact(tmp_path, "1.0.0")
     paths = windows_paths(tmp_path)
@@ -212,6 +267,44 @@ def test_idempotent_install_rechecks_slot_without_rewriting(tmp_path: Path) -> N
     install(source, sha, "1.0.0", paths, runner, path_file)
     assert paths.slot("1.0.0").stat().st_mtime_ns == before
     assert runner.calls[-2][0] == paths.slot("1.0.0")
+
+
+def test_replaced_owned_command_blocks_reinstall_update_and_survives_uninstall(
+    tmp_path: Path,
+) -> None:
+    paths = (
+        windows_paths(tmp_path)
+        if os.name == "nt"
+        else _installer.InstallPaths(tmp_path / "app", tmp_path / "bin", "Linux")
+    )
+    runner = FakeRunner()
+    path_file = adapter(tmp_path, "existing-path")
+    source, sha = artifact(tmp_path, "1.0.0")
+    install(source, sha, "1.0.0", paths, runner, path_file)
+
+    paths.command.unlink()
+    paths.command.write_bytes(b"replacement owned elsewhere")
+    paths.command.chmod(0o755)
+    before = paths.command.read_bytes()
+
+    with pytest.raises(_installer.InstallerError, match="unowned forge-proxy"):
+        install(source, sha, "1.0.0", paths, runner, path_file)
+    with pytest.raises(_installer.InstallerError, match="unowned forge-proxy"):
+        _installer.update(
+            "1.0.0",
+            paths=paths,
+            path_adapter=path_file,
+            environ={"PATH": str(paths.command_dir)},
+        )
+    assert paths.command.read_bytes() == before
+
+    _installer.uninstall_owned(paths, path_adapter=path_file)
+    assert paths.command.read_bytes() == before
+    assert not paths.state.exists()
+    assert not paths.marker.exists()
+    assert not paths.uninstaller.exists()
+    assert not paths.versions.exists()
+    assert (tmp_path / "user-path.txt").read_text() == "existing-path"
 
 
 def test_forward_updates_retain_current_and_one_previous_slot(tmp_path: Path) -> None:
@@ -407,6 +500,7 @@ def test_production_release_urls_use_raw_pointer_and_exact_forge_tag(
         path_adapter=path_file,
         output=lambda _line: None,
         target="windows-x86_64",
+        environ={"PATH": ""},
     )
 
     assert transport.reads == [
@@ -437,11 +531,16 @@ def test_update_forward_same_newer_than_stable_and_lower_exact(tmp_path: Path) -
         pointer_url="pointer",
         manifest_url="manifest/{version}",
         asset_url="asset/{version}/{name}",
+        environ={"PATH": ""},
     )
     assert state is not None and state["current_version"] == "1.1.0"
     assert (
         _installer.update(
-            "1.1.0", paths=paths, transport=transport, output=lambda _line: None
+            "1.1.0",
+            paths=paths,
+            transport=transport,
+            output=lambda _line: None,
+            environ={"PATH": ""},
         )
         is None
     )
@@ -452,11 +551,14 @@ def test_update_forward_same_newer_than_stable_and_lower_exact(tmp_path: Path) -
             transport=old_stable,
             output=lambda _line: None,
             pointer_url="pointer",
+            environ={"PATH": ""},
         )
         is None
     )
     with pytest.raises(_installer.InstallerError, match="cannot downgrade"):
-        _installer.update("1.0.0", paths=paths, transport=transport)
+        _installer.update(
+            "1.0.0", paths=paths, transport=transport, environ={"PATH": ""}
+        )
 
 
 def test_unavailable_update_preserves_current_install(tmp_path: Path) -> None:
@@ -474,7 +576,12 @@ def test_unavailable_update_preserves_current_install(tmp_path: Path) -> None:
         {"pointer": _installer.InstallerError("download unavailable")}
     )
     with pytest.raises(_installer.InstallerError, match="download unavailable"):
-        _installer.update(paths=paths, transport=transport, pointer_url="pointer")
+        _installer.update(
+            paths=paths,
+            transport=transport,
+            pointer_url="pointer",
+            environ={"PATH": ""},
+        )
     assert before == (
         paths.command.read_bytes(),
         paths.state.read_bytes(),
@@ -537,8 +644,10 @@ def test_generated_windows_uninstaller_broadcasts_only_for_real_user_path(
         "representation": None,
     }
     real_script = _installer._render_windows_uninstaller(
-        paths, "owned", real_record
+        paths, "owned", real_record, paths.slot("1.0.0")
     ).decode("utf-8")
+    assert "Get-FileHash" in real_script
+    assert "if($ownedCommand){Remove-Item" in real_script
     assert "SetEnvironmentVariable" in real_script
     assert "SendMessageTimeout" in real_script
     assert "'Environment'" in real_script
@@ -548,7 +657,7 @@ def test_generated_windows_uninstaller_broadcasts_only_for_real_user_path(
         "representation": str(tmp_path / "path.txt"),
     }
     fixture_script = _installer._render_windows_uninstaller(
-        paths, "owned", fixture_record
+        paths, "owned", fixture_record, paths.slot("1.0.0")
     ).decode("utf-8")
     assert "SetEnvironmentVariable" not in fixture_script
     assert "SendMessageTimeout" not in fixture_script
@@ -606,6 +715,11 @@ def test_posix_symlink_and_marked_startup_are_owned_and_removed(tmp_path: Path) 
     assert linked_target == os.path.relpath(slot, paths.command_dir)
     assert not Path(linked_target).is_absolute()
     assert replace.call_args.args[1] == paths.command
+    uninstaller = _installer._render_posix_uninstaller(
+        paths, "owned", record, slot
+    ).decode("utf-8")
+    assert 'readlink "$command"' in uninstaller
+    assert '[ "$owned_command" -eq 1 ] && rm -f -- "$command"' in uninstaller
 
 
 def test_preexisting_posix_path_block_is_not_claimed_or_reported(

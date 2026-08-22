@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "forge-guardrails"
-version = "0.9.2"
+version = "0.9.3"
 description = "A reliability layer for self-hosted LLM tool-calling. Guardrails, context management, and backend adapters for multi-step agentic workflows."
 requires-python = ">=3.12"
 license = "MIT"
@@ -34,9 +34,6 @@ Homepage = "https://github.com/antoinezambelli/forge"
 Repository = "https://github.com/antoinezambelli/forge"
 Documentation = "https://github.com/antoinezambelli/forge/tree/main/docs"
 Changelog = "https://github.com/antoinezambelli/forge/blob/main/CHANGELOG.md"
-
-[project.scripts]
-forge-proxy = "forge.proxy.__main__:main"
 
 [project.optional-dependencies]
 anthropic = ["anthropic>=0.86.0"]

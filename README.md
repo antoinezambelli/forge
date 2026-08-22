@@ -16,7 +16,7 @@ Forge takes an 8B local model from single digits to 84% across forge's 26-scenar
 
 **Three ways to use it:**
 
-- **Proxy server** — Drop-in proxy (`forge-proxy`, or `python -m forge.proxy` from the Python package) speaking both the OpenAI chat-completions and Anthropic Messages (`/v1/messages`) APIs, sitting between any client and a local model server. Point OpenAI-compatible tools (opencode, Continue, aider) **or Claude Code** at it and forge applies guardrails transparently — the client thinks it's talking to a smarter model. Most popular entry point.
+- **Proxy server** — Drop-in proxy (`forge-proxy` from the standalone distribution, or `python -m forge.proxy` from the Python package) speaking both the OpenAI chat-completions and Anthropic Messages (`/v1/messages`) APIs, sitting between any client and a local model server. Point OpenAI-compatible tools (opencode, Continue, aider) **or Claude Code** at it and forge applies guardrails transparently — the client thinks it's talking to a smarter model. Most popular entry point.
 
 - **WorkflowRunner** — Define tools, pick a backend, run structured agent loops. Forge manages the full lifecycle: system prompts, tool execution, context compaction, and guardrails. **SlotWorker** adds priority-queued access to a shared inference slot with auto-preemption — for multi-agent architectures where specialist workflows share a GPU slot. Best when you're building on forge directly.
 
@@ -71,6 +71,11 @@ or a Python-managed Proxy. It requires:
 pip install forge-guardrails                # core only
 pip install "forge-guardrails[anthropic]"   # + Anthropic client
 ```
+
+The Python package intentionally does not install a global `forge-proxy`
+command. Run its Proxy implementation with `python -m forge.proxy`; the
+standalone installer above is the sole owner of the `forge-proxy` command and
+its update/uninstall lifecycle.
 
 For development:
 

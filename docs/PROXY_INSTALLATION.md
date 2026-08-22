@@ -235,6 +235,20 @@ repeat its original absolute `--install-root`/`-InstallRoot` on every recovery
 command; omitting it targets the platform default and does not recover the
 custom-root installation.
 
+### Existing command ownership
+
+The standalone installer is the sole owner of the global `forge-proxy`
+command. The `forge-guardrails` Python package runs Proxy as
+`python -m forge.proxy` and does not create that global command.
+
+If installation reports an existing unowned `forge-proxy`, it stops before
+changing the installation or PATH and leaves that command untouched. This is
+not a request to reorder PATH. If an older `forge-guardrails` installation
+created the launcher, upgrade that package in the same Python environment so
+pip removes its own launcher, then retry. If another tool owns the command,
+remove it through that tool before retrying. The standalone installer and
+uninstaller never delete an unowned command.
+
 To remove the managed installation:
 
 ```console
