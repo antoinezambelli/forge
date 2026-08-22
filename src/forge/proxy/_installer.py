@@ -671,11 +671,21 @@ def _render_windows_uninstaller(
         "Start-Sleep -Milliseconds 250",
         f"$marker={_ps_quote(str(paths.marker))}",
         f"if((Get-Content -Raw -LiteralPath $marker) -ne {_ps_quote(marker)}){{exit 2}}",
-        "$ownedCommand=$false",
+        "$commandStatus='missing'",
+        "$commandHash=''",
+        f"$expectedCommandHash='{command_sha256}'",
         f"$command={_ps_quote(str(paths.command))}",
         "if(Test-Path -LiteralPath $command){"
-        "$ownedCommand=((Get-FileHash -LiteralPath $command -Algorithm SHA256).Hash.ToLowerInvariant()"
-        f" -eq '{command_sha256}')}}",
+        "$commandStatus='unreadable';$attempt=0;"
+        "while($commandStatus -eq 'unreadable' -and $attempt -lt 50){"
+        "try{$bytes=[System.IO.File]::ReadAllBytes($command);"
+        "$sha=[System.Security.Cryptography.SHA256]::Create();"
+        "try{$commandHash=[System.BitConverter]::ToString($sha.ComputeHash($bytes)).Replace('-','').ToLowerInvariant()}"
+        "finally{$sha.Dispose()};"
+        "if($commandHash -eq $expectedCommandHash){$commandStatus='owned'}else{$commandStatus='foreign'}"
+        "}catch{};$attempt++;"
+        "if($commandStatus -eq 'unreadable'){Start-Sleep -Milliseconds 100}};"
+        "if($commandStatus -eq 'unreadable'){Write-Output ('Locked remnant: '+$command);exit 1}}",
     ]
     targets = ",".join(
         _ps_quote(str(target)) for target in (paths.versions, paths.staging)
@@ -687,6 +697,13 @@ def _render_windows_uninstaller(
         "if(Test-Path -LiteralPath $target){Start-Sleep -Milliseconds 100}};"
         "if(Test-Path -LiteralPath $target){$locked=$true;"
         "Write-Output ('Locked remnant: '+$target)}};if($locked){exit 1}"
+    )
+    ps.append(
+        "if($commandStatus -eq 'owned'){$attempt=0;"
+        "while((Test-Path -LiteralPath $command)-and $attempt -lt 50){"
+        "try{Remove-Item -Force -LiteralPath $command -ErrorAction Stop}catch{};"
+        "$attempt++;if(Test-Path -LiteralPath $command){Start-Sleep -Milliseconds 100}};"
+        "if(Test-Path -LiteralPath $command){Write-Output ('Locked remnant: '+$command);exit 1}}"
     )
     if path_record.get("kind") == "windows" and path_record.get("added"):
         command_dir = _ps_quote(str(path_record["command_dir"]))
@@ -712,7 +729,6 @@ def _render_windows_uninstaller(
                     "[void][ForgeEnvironment]::SendMessageTimeout([IntPtr]0xffff,0x001A,[UIntPtr]::Zero,'Environment',0x0002,5000,[ref]$broadcast)",
                 ]
             )
-    ps.append("if($ownedCommand){Remove-Item -Force -LiteralPath $command}")
     for target in (paths.state, paths.marker):
         ps.append(f"Remove-Item -Force -LiteralPath {_ps_quote(str(target))}")
     ps.extend(

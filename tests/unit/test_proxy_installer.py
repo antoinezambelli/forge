@@ -646,8 +646,9 @@ def test_generated_windows_uninstaller_broadcasts_only_for_real_user_path(
     real_script = _installer._render_windows_uninstaller(
         paths, "owned", real_record, paths.slot("1.0.0")
     ).decode("utf-8")
-    assert "Get-FileHash" in real_script
-    assert "if($ownedCommand){Remove-Item" in real_script
+    assert "Get-FileHash" not in real_script
+    assert "[System.Security.Cryptography.SHA256]::Create()" in real_script
+    assert "if($commandStatus -eq 'owned')" in real_script
     assert "SetEnvironmentVariable" in real_script
     assert "SendMessageTimeout" in real_script
     assert "'Environment'" in real_script
