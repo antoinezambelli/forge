@@ -169,7 +169,7 @@ def test_windows_locked_slot_preserves_uninstall_retry_path(tmp_path: Path) -> N
     install(source, sha, "1.0.0", paths, FakeRunner(), path_file)
 
     with paths.slot("1.0.0").open("rb"):
-        subprocess.run(
+        locked = subprocess.run(
             [str(paths.uninstaller), "999999"],
             capture_output=True,
             text=True,
@@ -177,6 +177,8 @@ def test_windows_locked_slot_preserves_uninstall_retry_path(tmp_path: Path) -> N
             shell=True,
             timeout=15,
         )
+        assert locked.returncode == 0, locked.stderr
+        assert "Locked remnant:" in locked.stdout, (locked.stdout, locked.stderr)
         assert paths.command.is_file()
         assert paths.state.is_file()
         assert paths.marker.is_file()
@@ -192,9 +194,20 @@ def test_windows_locked_slot_preserves_uninstall_retry_path(tmp_path: Path) -> N
         timeout=15,
     )
     assert result.returncode == 0, result.stderr
+    owned_paths = (
+        paths.command,
+        paths.state,
+        paths.marker,
+        paths.uninstaller,
+        paths.versions,
+        paths.staging,
+    )
     deadline = time.monotonic() + 10
-    while paths.state.exists() and time.monotonic() < deadline:
+    while any(path.exists() for path in owned_paths) and time.monotonic() < deadline:
         time.sleep(0.05)
-    assert not paths.state.exists()
-    assert not paths.command.exists()
+    remaining = [str(path) for path in owned_paths if path.exists()]
+    assert not remaining, (
+        f"owned paths remained after uninstall retry: {remaining}; "
+        f"stdout={result.stdout!r}; stderr={result.stderr!r}"
+    )
     assert (tmp_path / "user-path.txt").read_text() == "C:\\Existing"
