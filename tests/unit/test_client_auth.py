@@ -363,9 +363,14 @@ def _anthropic_capturing(
     """
     import anthropic
 
-    def handler(request: httpx.Request) -> httpx.Response:
+    if int(anthropic.__version__.split(".", 1)[0]) >= 1:
+        import httpx2 as sdk_http
+    else:
+        sdk_http = httpx
+
+    def handler(request):
         captured["request"] = request
-        return httpx.Response(
+        return sdk_http.Response(
             200,
             json={
                 "id": "msg_1",
@@ -382,7 +387,7 @@ def _anthropic_capturing(
     client._client = anthropic.AsyncAnthropic(
         api_key=api_key,
         base_url="https://b",
-        http_client=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
+        http_client=sdk_http.AsyncClient(transport=sdk_http.MockTransport(handler)),
     )
 
 
