@@ -2,6 +2,21 @@
 
 All notable changes to forge are documented here.
 
+## [0.9.4] — 2026-08-26
+
+An Anthropic interoperability release for Forge Proxy and direct Anthropic
+client usage. Native plaintext thinking returned alongside tool calls now
+participates in Forge's existing reasoning-replay policy.
+
+### Added
+
+- **Anthropic tool-call reasoning is captured consistently.** Streamed and
+  non-streamed native `thinking` content is mapped to `ToolCall.reasoning`,
+  preferred over the existing visible-text fallback, and exposed through
+  Forge Proxy's OpenAI-compatible responses according to the configured
+  replay policy. Text-only responses remain visible text, and native signed
+  thinking-block round-tripping remains outside this release's scope. #152
+
 ## [0.9.3] — 2026-08-21
 
 A command-ownership hotfix for the standalone Forge Proxy distribution. Proxy
