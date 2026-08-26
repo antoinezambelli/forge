@@ -18,6 +18,7 @@ import pytest
 
 from forge._backend_profiles import ClientAdapter
 from forge.clients.anthropic import AnthropicClient
+from forge.context.manager import ContextManager
 from forge.context.strategies import NoCompact
 from forge.proxy.handler import handle_chat_completions
 from forge.proxy.proxy import ProxyServer
@@ -218,6 +219,23 @@ def _stub_tool_response(name="search", **tool_input):
     return msg
 
 
+def _stub_thinking_tool_response(name="search", **tool_input):
+    msg = MagicMock()
+    thinking_block = MagicMock()
+    thinking_block.type = "thinking"
+    thinking_block.thinking = "I should search."
+    tool_block = MagicMock()
+    tool_block.type = "tool_use"
+    tool_block.name = name
+    tool_block.input = tool_input
+    msg.content = [thinking_block, tool_block]
+    msg.usage.input_tokens = 1
+    msg.usage.output_tokens = 1
+    msg.usage.cache_creation_input_tokens = 0
+    msg.usage.cache_read_input_tokens = 0
+    return msg
+
+
 class TestCacheControlSurvivesWire:
     """The headline path-1 capability: a cache_control block on inbound must
     reach the Anthropic SDK call unchanged."""
@@ -321,6 +339,55 @@ class TestCacheControlSurvivesWire:
         # System is a plain string (no blocks, no cache_control)
         assert kwargs["system"] == "large stable system prompt"
         assert not isinstance(kwargs["system"], list)
+
+
+class TestAnthropicReasoningProxyParity:
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("stream", [False, True])
+    async def test_openai_client_receives_keep_last_reasoning(self, stream) -> None:
+        client = AnthropicClient(model="claude-test", api_key="dummy")
+        client._client.messages.create = AsyncMock(
+            return_value=_stub_thinking_tool_response(q="forge"),
+        )
+        body = {
+            "model": "claude-test",
+            "messages": [{"role": "user", "content": "search for forge"}],
+            "tools": [{
+                "type": "function",
+                "function": {
+                    "name": "search",
+                    "description": "Search.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {"q": {"type": "string"}},
+                    },
+                },
+            }],
+            "stream": stream,
+        }
+
+        result = await handle_chat_completions(
+            body,
+            client,
+            ContextManager(strategy=NoCompact(), budget_tokens=None),
+            client_adapter=ClientAdapter.ANTHROPIC,
+            protocol="openai",
+            backend_protocol="anthropic",
+            reasoning_replay="keep-last",
+        )
+
+        if stream:
+            assert any(
+                event.get("choices", [{}])[0]
+                .get("delta", {})
+                .get("reasoning_content") == "I should search."
+                for event in result
+            )
+        else:
+            assert (
+                result["choices"][0]["message"]["reasoning_content"]
+                == "I should search."
+            )
 
 
 class TestRequestLocalModelSurvivesMutation:

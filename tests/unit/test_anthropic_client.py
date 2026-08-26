@@ -94,6 +94,13 @@ def _text_delta(text: str) -> SimpleNamespace:
     )
 
 
+def _thinking_delta(thinking: str) -> SimpleNamespace:
+    return _stream_event(
+        "content_block_delta",
+        delta=SimpleNamespace(type="thinking_delta", thinking=thinking),
+    )
+
+
 def _tool_start(name: str) -> SimpleNamespace:
     return _stream_event(
         "content_block_start",
@@ -486,6 +493,49 @@ class TestParseResponse:
         assert result[0].tool == "get_weather"
         assert result[0].reasoning == "Let me check the weather."
 
+    def test_native_thinking_precedes_text_and_attaches_to_first_tool(self) -> None:
+        response = MagicMock()
+        thinking_block = MagicMock()
+        thinking_block.type = "thinking"
+        thinking_block.thinking = "I should check both tools."
+        text_block = MagicMock()
+        text_block.type = "text"
+        text_block.text = "Visible preamble."
+        first_tool = MagicMock()
+        first_tool.type = "tool_use"
+        first_tool.name = "get_weather"
+        first_tool.input = {"city": "Paris"}
+        second_tool = MagicMock()
+        second_tool.type = "tool_use"
+        second_tool.name = "set_unit"
+        second_tool.input = {"unit": "celsius"}
+        response.content = [thinking_block, text_block, first_tool, second_tool]
+
+        result = AnthropicClient._parse_response(response)
+
+        assert result == [
+            ToolCall(
+                tool="get_weather",
+                args={"city": "Paris"},
+                reasoning="I should check both tools.",
+            ),
+            ToolCall(tool="set_unit", args={"unit": "celsius"}, reasoning=None),
+        ]
+
+    def test_text_response_excludes_native_thinking(self) -> None:
+        response = MagicMock()
+        thinking_block = MagicMock()
+        thinking_block.type = "thinking"
+        thinking_block.thinking = "Hidden reasoning."
+        text_block = MagicMock()
+        text_block.type = "text"
+        text_block.text = "Visible answer."
+        response.content = [thinking_block, text_block]
+
+        result = AnthropicClient._parse_response(response)
+
+        assert result == TextResponse(content="Visible answer.")
+
     def test_empty_text_response(self) -> None:
         response = MagicMock()
         response.content = []
@@ -580,6 +630,41 @@ class TestStreaming:
                 reasoning="Let me check both.",
             ),
             ToolCall(tool="set_unit", args={"unit": "celsius"}, reasoning=None),
+        ]
+
+    @pytest.mark.asyncio
+    async def test_stream_native_thinking_precedes_visible_text(self) -> None:
+        client = AnthropicClient(model="claude-test", api_key="dummy")
+        events = [
+            _thinking_delta("I should "),
+            _thinking_delta("search."),
+            _text_delta("Visible preamble."),
+            _tool_start("search"),
+            _json_delta('{"q":"forge"}'),
+            _stream_event("content_block_stop"),
+            _stream_event("message_stop"),
+        ]
+        client._client = MagicMock()
+        client._client.messages.stream.return_value = _FakeAnthropicStream(events)
+
+        chunks = [
+            chunk
+            async for chunk in client.send_stream(
+                [{"role": "user", "content": "search for forge"}],
+            )
+        ]
+
+        assert [
+            chunk.content
+            for chunk in chunks
+            if chunk.type == ChunkType.TEXT_DELTA
+        ] == ["Visible preamble."]
+        assert chunks[-1].response == [
+            ToolCall(
+                tool="search",
+                args={"q": "forge"},
+                reasoning="I should search.",
+            ),
         ]
 
     @pytest.mark.asyncio

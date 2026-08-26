@@ -380,19 +380,29 @@ class AnthropicClient:
     # ── Response parsing ─────────────────────────────────────────
 
     @staticmethod
+    def _resolve_reasoning(thinking: str, text: str) -> str | None:
+        """Prefer native thinking, preserving the existing text fallback."""
+        return thinking or text or None
+
+    @staticmethod
     def _parse_response(response: Any) -> LLMResponse:
         """Anthropic Message → list[ToolCall] or TextResponse."""
         tool_uses: list[Any] = []
+        thinking_parts: list[str] = []
         text_parts: list[str] = []
 
         for block in response.content:
             if block.type == "tool_use":
                 tool_uses.append(block)
+            elif block.type == "thinking":
+                thinking_parts.append(block.thinking)
             elif block.type == "text":
                 text_parts.append(block.text)
 
         if tool_uses:
-            reasoning = "\n".join(text_parts) if text_parts else None
+            reasoning = AnthropicClient._resolve_reasoning(
+                "\n".join(thinking_parts), "\n".join(text_parts),
+            )
             return [
                 ToolCall(
                     tool=tu.name,
@@ -574,6 +584,7 @@ class AnthropicClient:
         kwargs = self._prepare_sdk_kwargs(kwargs, extra_headers)
 
         accumulated_text = ""
+        accumulated_thinking = ""
         # Track multiple tool_use blocks by index.
         tool_blocks: list[dict[str, str]] = []  # [{name, args}, ...]
         _current_tool_idx: int = -1
@@ -594,6 +605,8 @@ class AnthropicClient:
                                 type=ChunkType.TEXT_DELTA,
                                 content=event.delta.text,
                             )
+                        elif event.delta.type == "thinking_delta":
+                            accumulated_thinking += event.delta.thinking
                         elif event.delta.type == "input_json_delta" and _current_tool_idx >= 0:
                             tool_blocks[_current_tool_idx]["args"] += event.delta.partial_json
                             yield StreamChunk(
@@ -605,7 +618,9 @@ class AnthropicClient:
                         _current_tool_idx = -1
                     elif event.type == "message_stop":
                         if tool_blocks:
-                            reasoning = accumulated_text or None
+                            reasoning = self._resolve_reasoning(
+                                accumulated_thinking, accumulated_text,
+                            )
                             final: LLMResponse = [
                                 ToolCall(
                                     tool=tb["name"],

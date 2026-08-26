@@ -42,7 +42,11 @@ Full per-config tables: [results/raw/reasoning-replay.md](../results/raw/reasoni
 - **Behavioral change for reasoning-capable backends.** Upgraders who want the old behavior pin `--reasoning-replay full` (proxy) or `WorkflowRunner(reasoning_replay="full")`. For non-reasoning/instruct models the knob is inert and nothing changes.
 - **Token savings by default.** Backend-facing history stops accumulating reasoning; `full` remains the cost wildcard (context grows with run length).
 - **Eval surface.** `reasoning_replay` is part of the eval resume key and a first-class report/dashboard dimension; rows predating the knob count as `full` (that is what they ran).
-- **Claude rows are unaffected.** The Anthropic client drops returned thinking blocks rather than capturing them into history, so the knob is request-inert there; carrying thinking across turns natively is deferred pending evidence it moves scores.
+- **Claude tool-call reasoning follows the common policy.** Future Anthropic
+  tool-call responses capture plaintext thinking through
+  `ToolCall.reasoning`, so `none`, `keep-last`, and `full` apply through the
+  existing serializer. Historical published rows are unchanged. Forge still
+  does not preserve or synthesize signed native Anthropic thinking blocks.
 
 ## Alternatives considered
 
