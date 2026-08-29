@@ -98,6 +98,16 @@ class TestGetSamplingDefaults:
             "chat_template_kwargs": {"reasoning_effort": "max"},
         }
 
+    def test_laguna_s_2_1_uses_authoritative_checkpoint_defaults(self) -> None:
+        """Laguna S uses Poolside's eval-certified checkpoint defaults."""
+        assert get_sampling_defaults("Laguna-S-2.1-UD-Q4_K_XL") == {
+            "temperature": 1.0,
+            "top_p": 1.0,
+            "top_k": 20,
+            "min_p": 0.0,
+            "chat_template_kwargs": {"enable_thinking": True},
+        }
+
     def test_get_does_not_log_for_unknown_model(
         self, caplog: pytest.LogCaptureFixture
     ) -> None:

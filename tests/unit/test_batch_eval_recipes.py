@@ -42,6 +42,10 @@ _EXPECTED_GGUFS = [
         "NVIDIA-Nemotron-3-Super-120B-A12B-UD-Q4_K_M",
         "NVIDIA-Nemotron-3-Super-120B-A12B-UD-Q4_K_M-00001-of-00003.gguf",
     ),
+    (
+        "Laguna-S-2.1-UD-Q4_K_XL",
+        "Laguna-S-2.1-UD-Q4_K_XL-00001-of-00003.gguf",
+    ),
     ("LFM2.5-8B-A1B-Q4_K_M", "LFM2.5-8B-A1B-Q4_K_M.gguf"),
     ("Mellum2-12B-A2.5B-Thinking-Q4_K_M", "Mellum2-12B-A2.5B-Thinking-Q4_K_M.gguf"),
     ("Mellum2-12B-A2.5B-Instruct-Q4_K_M", "Mellum2-12B-A2.5B-Instruct-Q4_K_M.gguf"),
@@ -90,6 +94,11 @@ _LARGE_120B_FLAGS = (
     "--cache-type-k", "q8_0", "--cache-type-v", "q8_0", "-fa", "1",
     "--no-prefill-assistant", "--no-mmap",
 )
+_LAGUNA_S_FLAGS = (
+    "--reasoning-format", "auto",
+    "--cache-type-k", "q8_0", "--cache-type-v", "q8_0", "-fa", "1",
+    "--no-prefill-assistant", "--no-mmap",
+)
 
 
 def _glimmer_flags(reasoning_strength: str) -> tuple[str, ...]:
@@ -127,6 +136,7 @@ _EXPECTED_SPECIAL_FLAGS = {
     "gpt-oss-120b-Q4_K_M": _GPT_OSS_120B_FLAGS,
     "Qwen3.5-122B-A10B-Q4_K_M": _LARGE_120B_FLAGS,
     "NVIDIA-Nemotron-3-Super-120B-A12B-UD-Q4_K_M": _LARGE_120B_FLAGS,
+    "Laguna-S-2.1-UD-Q4_K_XL": _LAGUNA_S_FLAGS,
 }
 
 _EXPECTED_REASONING_LEVELS = {

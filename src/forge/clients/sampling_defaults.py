@@ -117,6 +117,11 @@ MODEL_SAMPLING_DEFAULTS: dict[str, dict[str, float | int]] = {
     # smoke clean. enable_thinking left as template default (true server-side
     # but reasoning-budget=0 caps it to 0 tokens).
     "Qwen3.5-122B-A10B-Q4_K_M":             {"temperature": 0.7, "top_p": 0.8, "top_k": 20},                                                                 # https://huggingface.co/Qwen/Qwen3.5-122B-A10B
+    # Laguna S 2.1 — Poolside's quantized model cards declare the checkpoint
+    # generation config authoritative and identify top_k=20 as eval-certified.
+    # Thinking is enabled by default for agentic coding and long-horizon work;
+    # no repeat or presence penalty is recommended.
+    "Laguna-S-2.1-UD-Q4_K_XL":                {"temperature": 1.0, "top_p": 1.0, "top_k": 20, "min_p": 0.0, "chat_template_kwargs": {"enable_thinking": True}},  # https://huggingface.co/poolside/Laguna-S-2.1/blob/main/generation_config.json
     # DeepSeek-V4-Flash-0731 — agentic profile: T=1.0, top_p=0.95. The card
     # supports low/high/max reasoning effort. This one registry value is the
     # deliberate campaign selector; change only it between effort campaigns.

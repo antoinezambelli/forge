@@ -88,6 +88,11 @@ _LARGE_120B_SERVER_RECIPE = _BatchServerRecipe((
     "--cache-type-k", "q8_0", "--cache-type-v", "q8_0", "-fa", "1",
     "--no-prefill-assistant", "--no-mmap",
 ))
+_LAGUNA_S_SERVER_RECIPE = _BatchServerRecipe((
+    "--reasoning-format", "auto",
+    "--cache-type-k", "q8_0", "--cache-type-v", "q8_0", "-fa", "1",
+    "--no-prefill-assistant", "--no-mmap",
+))
 
 
 def _glimmer_server_recipe(reasoning_strength: str) -> _BatchServerRecipe:
@@ -188,6 +193,10 @@ _GGUF_FILES: list[tuple[str, _BatchServerRecipe]] = [
     ("gpt-oss-120b-Q4_K_M-00001-of-00002.gguf", _GPT_OSS_120B_SERVER_RECIPE),
     ("Qwen3.5-122B-A10B-Q4_K_M-00001-of-00003.gguf", _LARGE_120B_SERVER_RECIPE),
     ("NVIDIA-Nemotron-3-Super-120B-A12B-UD-Q4_K_M-00001-of-00003.gguf", _LARGE_120B_SERVER_RECIPE),
+    # Laguna S 2.1 on rig-05 (rig-03-equivalent Strix Halo): the first shard
+    # auto-loads its siblings. Keep the proven large-model UMA/Vulkan baseline,
+    # including --no-prefill-assistant for Forge's trailing-assistant tool flow.
+    ("Laguna-S-2.1-UD-Q4_K_XL-00001-of-00003.gguf", _LAGUNA_S_SERVER_RECIPE),
     # 16GB tier (rig-01) — LFM2.5 MoE + Mellum2 MoE (both variants). All
     # support native FC, so each gets native + prompt configs below.
     ("LFM2.5-8B-A1B-Q4_K_M.gguf", _REASONING_SERVER_RECIPE),
