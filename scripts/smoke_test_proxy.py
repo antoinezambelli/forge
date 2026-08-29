@@ -1099,6 +1099,41 @@ async def credentials_and_conflicts() -> None:
         # OpenAI inbound -> OpenAI backend is same-protocol, so the single
         # credential stays in the caller's chosen slot verbatim.
         assert backend.journal[-1].headers.get("x-api-key") == "FORWARDED"
+
+        matching = await _request(
+            proxy,
+            "POST",
+            "/v1/chat/completions",
+            headers={
+                "Authorization": "Bearer MATCHING",
+                "X-Api-Key": "MATCHING",
+            },
+            body=_chat_body(),
+        )
+        assert matching.status_code == 200
+        same_protocol = backend.journal[-1]
+        assert same_protocol.headers.get("authorization") == "Bearer MATCHING"
+        assert same_protocol.headers.get("x-api-key") == "MATCHING"
+
+        anthropic_inbound = await _request(
+            proxy,
+            "POST",
+            "/v1/messages",
+            headers={
+                "Authorization": "Bearer CROSS",
+                "X-Api-Key": "CROSS",
+            },
+            body={
+                "model": "caller-model",
+                "max_tokens": 128,
+                "messages": [{"role": "user", "content": "hello"}],
+            },
+        )
+        assert anthropic_inbound.status_code == 200
+        cross_protocol = backend.journal[-1]
+        assert cross_protocol.headers.get("authorization") == "Bearer CROSS"
+        assert "x-api-key" not in cross_protocol.headers
+
         before = len(backend.journal)
         conflict = await _request(
             proxy, "POST", "/v1/chat/completions",

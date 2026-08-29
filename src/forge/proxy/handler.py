@@ -307,9 +307,11 @@ async def handle_chat_completions(
             ``/v1/chat/completions``; ``anthropic`` for ``/v1/messages``.
         reasoning_replay: How much captured reasoning to replay to the
             backend and expose to clients.
-        headers: Inbound request headers (lowercased keys). The single auth
-            header among them is relocated to the backend's canonical slot and
-            forwarded; no other inbound header is forwarded.
+        headers: Inbound request headers (lowercased keys). The one credential
+            identity among them is forwarded; an equivalent two-slot auth pair
+            is preserved for same-protocol traffic and rendered once in the
+            backend's canonical slot across protocols. No other inbound header
+            is forwarded.
         backend_protocol: Wire protocol of the backend (relocation target):
             ``openai`` or ``anthropic``.
         client_adapter: Normalized private adapter policy supplied by the
@@ -328,11 +330,11 @@ async def handle_chat_completions(
     is_stream = body.get("stream", False)
     validate_request_model(body, client, client_adapter)
 
-    # Resolve the single credential forge forwards to the backend: relocate an
-    # inbound auth header into the backend's canonical slot, or None when the
-    # caller sent none (a static --backend-api-key, if configured, is already
-    # baked into the client). Raises MultipleCredentialsError on two sources
-    # (two inbound auth headers, or an inbound header + a static backend key).
+    # Resolve the one credential identity forge forwards to the backend. An
+    # equivalent Authorization + X-Api-Key pair is one identity; preserve both
+    # on the same protocol or render one canonical target header across
+    # protocols. A static --backend-api-key, if configured, is already baked
+    # into the client. Distinct or static-plus-inbound identities raise.
     extra_headers = resolve_inbound_credential(
         headers,
         source_protocol=protocol,

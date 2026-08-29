@@ -1,10 +1,11 @@
-"""Auth-credential tests for the client layer (forge v0.8.0).
+"""Auth-credential tests for the client layer.
 
-forge carries exactly ONE credential to the backend, in the backend's native
-auth header. These tests assert the real wire behavior via httpx.MockTransport
-(for the four httpx clients) and the Anthropic SDK's own request pipeline (for
-AnthropicClient), so the credential's final on-the-wire placement — not just
-what forge passes to httpx — is what's verified.
+forge carries at most one credential identity to the backend. That identity
+normally occupies one native auth header; matching Authorization + X-Api-Key
+values may represent it in both slots. These tests assert the real wire
+behavior via httpx.MockTransport (for the four httpx clients) and the Anthropic
+SDK's own request pipeline (for AnthropicClient), so final wire placement — not
+just what forge passes to httpx — is verified.
 
 Covers design §12: construction key → canonical header; per-call extra_headers
 reaches the wire; two credentials on one call → raises; the shared-instance
@@ -23,6 +24,7 @@ import pytest
 from forge.clients.anthropic import AnthropicClient, _prepare_anthropic_headers
 from forge.clients.base import (
     AUTH_HEADER_NAMES,
+    count_auth_credentials,
     has_auth_header,
     redact_auth_headers,
     resolve_request_headers,
@@ -75,12 +77,29 @@ class TestResolveRequestHeaders:
             resolve_request_headers(True, {"x-api-key": "k"})
         with pytest.raises(MultipleCredentialsError):
             resolve_request_headers(True, {"Authorization": "Bearer k"})
+        with pytest.raises(MultipleCredentialsError):
+            resolve_request_headers(
+                True,
+                {"Authorization": "Bearer k", "X-Api-Key": "k"},
+            )
 
-    def test_two_per_call_auth_headers_raises(self) -> None:
-        # One credential per request — two auth headers in one call is refused
-        # (the proxy never hands two, but a direct library caller could).
+    def test_matching_per_call_pair_is_preserved(self) -> None:
+        pair = {"Authorization": "Bearer TOKEN", "X-Api-Key": "TOKEN"}
+        out = resolve_request_headers(False, pair)
+        assert out == pair
+        assert out is not pair
+        assert count_auth_credentials(pair) == 1
+
+    def test_nonmatching_per_call_pair_raises(self) -> None:
         with pytest.raises(MultipleCredentialsError):
             resolve_request_headers(False, {"Authorization": "Bearer A", "x-api-key": "B"})
+
+    def test_case_variant_same_name_pair_raises(self) -> None:
+        with pytest.raises(MultipleCredentialsError):
+            resolve_request_headers(
+                False,
+                {"Authorization": "Bearer A", "authorization": "Bearer A"},
+            )
 
 
 class TestStaticAuthPresent:
@@ -104,6 +123,15 @@ class TestStaticAuthPresent:
     def test_two_construction_headers_raises(self) -> None:
         with pytest.raises(MultipleCredentialsError):
             static_auth_present(None, {"Authorization": "Bearer A", "x-api-key": "B"})
+
+    def test_matching_construction_pair_is_one_static_identity(self) -> None:
+        pair = {"Authorization": "Bearer TOKEN", "x-api-key": "TOKEN"}
+        assert static_auth_present(None, pair) is True
+
+    def test_key_plus_matching_construction_pair_raises(self) -> None:
+        pair = {"Authorization": "Bearer TOKEN", "x-api-key": "TOKEN"}
+        with pytest.raises(MultipleCredentialsError):
+            static_auth_present("TOKEN", pair)
 
 
 class TestHasAuthHeader:
@@ -206,6 +234,21 @@ async def test_per_call_extra_headers_reach_the_wire(factory) -> None:
     client, cap = factory(api_key="")  # no static credential
     await client.send(_USER_MSG, extra_headers={"Authorization": "Bearer INBOUND"})
     assert cap["request"].headers["authorization"] == "Bearer INBOUND"
+
+
+@pytest.mark.asyncio
+async def test_matching_pair_reaches_openai_wire() -> None:
+    client, cap = _openai(api_key="")
+    await client.send(
+        _USER_MSG,
+        extra_headers={
+            "Authorization": "Bearer INBOUND",
+            "X-Api-Key": "INBOUND",
+        },
+    )
+    wire = cap["request"].headers
+    assert wire["authorization"] == "Bearer INBOUND"
+    assert wire["x-api-key"] == "INBOUND"
 
 
 @pytest.mark.asyncio
@@ -447,6 +490,23 @@ async def test_anthropic_inbound_lowercase_xapikey_reaches_wire() -> None:
     # exactly one auth credential on the wire
     assert wire.get_list("x-api-key") == ["REALKEY"]
     assert "authorization" not in wire
+
+
+@pytest.mark.asyncio
+async def test_anthropic_matching_pair_reaches_wire() -> None:
+    client = AnthropicClient(model="claude", api_key="")
+    cap: dict = {}
+    _anthropic_capturing(client, cap)
+    await client.send(
+        _USER_MSG,
+        extra_headers={
+            "authorization": "Bearer INBOUND",
+            "x-api-key": "INBOUND",
+        },
+    )
+    wire = cap["request"].headers
+    assert wire["authorization"] == "Bearer INBOUND"
+    assert wire["x-api-key"] == "INBOUND"
 
 
 @pytest.mark.asyncio

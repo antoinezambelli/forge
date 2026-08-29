@@ -22,12 +22,11 @@ RawOpenAIMessages = list[dict[str, Any]]
 
 # ── Auth credential helpers ──────────────────────────────────────────
 #
-# forge carries at most one credential to the backend, placed in the
-# backend's native auth header. It does not validate the credential, manage
-# its lifecycle, or form any opinion on its value — it only detects presence
-# and relocates the header to the target protocol's canonical slot. Two
-# credentials present anywhere is a hard error (Design Principle #1: fail
-# loud, never silently merge or pick a winner).
+# forge carries at most one credential identity to the backend. Normally that
+# identity occupies one native auth header; an equivalent Authorization +
+# X-Api-Key pair may represent the same identity twice on the wire. forge does
+# not validate the credential or manage its lifecycle. Distinct identities are
+# a hard error (Design Principle #1: fail loud, never pick a winner).
 
 # Header names that carry a backend credential (lowercased for
 # case-insensitive comparison).
@@ -47,12 +46,12 @@ def static_auth_present(
 ) -> bool:
     """Whether a static credential was configured, refusing two static sources.
 
-    A construction ``api_key`` AND a construction auth header — or two auth
-    headers in the construction set — is more than one credential, all of which
-    would ride on every request. Refuse it at construction (fail loud, Design
-    Principle #1) rather than silently sending several. A blank/whitespace
-    ``api_key`` (or scheme-only auth header) is not a credential and is ignored.
-    Returns True when exactly one static credential is present, False when none.
+    A construction ``api_key`` AND a construction auth identity is more than
+    one credential source. Refuse it at construction (fail loud, Design
+    Principle #1) rather than silently sending several. A matching
+    Authorization + X-Api-Key pair is one identity; a blank/whitespace
+    ``api_key`` (or scheme-only auth header) is absent. Returns True when exactly
+    one static identity is present, False when none.
     """
     count = (1 if (api_key and api_key.strip()) else 0) + count_auth_credentials(
         construction_headers,
@@ -69,11 +68,14 @@ def resolve_request_headers(
     static_auth_present: bool,
     extra_headers: Mapping[str, str] | None,
 ) -> dict[str, str] | None:
-    """Validate the one-credential rule and return per-call headers to apply.
+    """Validate the one-identity rule and return per-call headers to apply.
 
     If the client already holds a static auth credential (set at
     construction) AND this call supplies its own auth header, that is two
-    credentials — refuse it (fail loud; never merge, never pick a winner).
+    credential identities — refuse it (fail loud; never pick a winner).
+
+    A matching Authorization + X-Api-Key pair is one identity and is returned
+    intact. Distinct values remain two credentials and are refused.
 
     Returns a plain-dict copy of ``extra_headers`` to pass as the per-call
     ``headers=`` (httpx merges it over the construction headers, request
@@ -125,19 +127,48 @@ def auth_credential_token(name: str, value: str) -> str:
     return value.strip()
 
 
-def count_auth_credentials(headers: Mapping[str, str] | None) -> int:
-    """Number of headers that actually carry an auth credential.
-
-    Counts recognized auth headers whose value resolves to a non-empty token;
-    blank or scheme-only auth headers do not count. forge carries at most one
-    credential, so callers refuse a bag that yields more than one.
-    """
+def _auth_credential_entries(
+    headers: Mapping[str, str] | None,
+) -> list[tuple[str, str, str]]:
+    """Populated auth entries as ``(normalized name, raw value, token)``."""
     if not headers:
-        return 0
-    return sum(
-        1 for name, value in headers.items()
-        if name.lower() in AUTH_HEADER_NAMES and value and auth_credential_token(name, value)
-    )
+        return []
+    entries: list[tuple[str, str, str]] = []
+    for name, value in headers.items():
+        slot = name.lower()
+        if slot not in AUTH_HEADER_NAMES or not value:
+            continue
+        token = auth_credential_token(slot, value)
+        if token:
+            entries.append((slot, value, token))
+    return entries
+
+
+def _equivalent_dual_auth_token(
+    headers: Mapping[str, str] | None,
+) -> str | None:
+    """Common token for one equivalent two-slot auth pair, otherwise None."""
+    entries = _auth_credential_entries(headers)
+    if len(entries) != 2:
+        return None
+    if {slot for slot, _, _ in entries} != AUTH_HEADER_NAMES:
+        return None
+    first_token, second_token = entries[0][2], entries[1][2]
+    return first_token if first_token == second_token else None
+
+
+def count_auth_credentials(headers: Mapping[str, str] | None) -> int:
+    """Number of credential identities carried by recognized auth headers.
+
+    Blank or scheme-only auth headers do not count. One populated Authorization
+    plus one populated X-Api-Key carrying the same effective token count as one
+    identity. Every other populated entry counts independently, including
+    repeated case variants of the same header name.
+    """
+    entries = _auth_credential_entries(headers)
+    if len(entries) == 2 and _equivalent_dual_auth_token(headers) is not None:
+        return 1
+    return len(entries)
 
 
 @dataclass(frozen=True)

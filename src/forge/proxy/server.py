@@ -13,6 +13,7 @@ import logging
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from functools import partial
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
@@ -100,12 +101,15 @@ class _MetadataCourier:
         self,
         absolute_url: str,
         inbound_headers: dict[str, str],
+        *,
+        source_protocol: str,
     ) -> _MetadataResponse:
         """Fetch one trusted internal absolute URL without mount rejoining."""
         headers = _resolve_metadata_credential(
             inbound_headers,
             target_protocol=self._target_protocol,
             backend_api_key=self._backend_api_key,
+            source_protocol=source_protocol,
         )
         return await self._get(absolute_url, headers)
 
@@ -478,7 +482,10 @@ class HTTPServer:
         )
 
     async def _fetch_private_catalog(
-        self, inbound_headers: dict[str, str],
+        self,
+        inbound_headers: dict[str, str],
+        *,
+        source_protocol: str,
     ) -> ModelCatalog:
         """Fetch and parse trusted private catalog facts for vLLM identity."""
         if (
@@ -489,7 +496,9 @@ class HTTPServer:
             raise BackendError(502, "Backend model catalog is not configured")
         try:
             response = await self._metadata_courier.fetch_private(
-                self._private_catalog_url, inbound_headers,
+                self._private_catalog_url,
+                inbound_headers,
+                source_protocol=source_protocol,
             )
         except MultipleCredentialsError:
             raise
@@ -507,6 +516,7 @@ class HTTPServer:
         self,
         url: str,
         inbound_headers: dict[str, str],
+        inbound_protocol: str,
     ) -> Any:
         """Fetch one private reporting document after response delivery."""
 
@@ -514,7 +524,9 @@ class HTTPServer:
             raise BackendError(502, "Backend reporting metadata is not configured")
         try:
             response = await self._metadata_courier.fetch_private(
-                url, inbound_headers,
+                url,
+                inbound_headers,
+                source_protocol=inbound_protocol,
             )
         except MultipleCredentialsError:
             raise
@@ -569,7 +581,7 @@ class HTTPServer:
                 if config.metadata_url is None:
                     return None
                 payload = await self._fetch_reporting_json(
-                    config.metadata_url, inbound_headers,
+                    config.metadata_url, inbound_headers, inbound_protocol,
                 )
                 if self._catalog_parser is None:
                     return None
@@ -579,7 +591,7 @@ class HTTPServer:
             if config.metadata_url is None:
                 return None
             payload = await self._fetch_reporting_json(
-                config.metadata_url, inbound_headers,
+                config.metadata_url, inbound_headers, inbound_protocol,
             )
             settings = (
                 payload.get("default_generation_settings")
@@ -777,7 +789,10 @@ class HTTPServer:
                 self._client,
                 self._lazy_discovery,
                 headers,
-                self._fetch_private_catalog,
+                partial(
+                    self._fetch_private_catalog,
+                    source_protocol=protocol,
+                ),
                 facts,
             )
             facts.effective_model = resolve_effective_model(
@@ -877,7 +892,10 @@ class HTTPServer:
                 backend_api_key_present=self._backend_api_key_present,
                 lazy_discovery=self._lazy_discovery,
                 request_facts=request_facts or RequestFacts(),
-                catalog_fetcher=self._fetch_private_catalog,
+                catalog_fetcher=partial(
+                    self._fetch_private_catalog,
+                    source_protocol=protocol,
+                ),
             )
         except Exception as exc:
             logger.exception("Handler error")

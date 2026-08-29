@@ -92,10 +92,10 @@ claude
 ```
 
 For an ungated local backend, `ANTHROPIC_AUTH_TOKEN` may be any non-empty
-placeholder required by Claude Code. Forge still applies its one-credential
-forwarding rules; it does not authenticate the caller. Response `model` is the
-effective configured, pinned, discovered, or request-routed backend identity,
-not a fabricated Forge alias.
+placeholder required by Claude Code. Forge still applies its zero-or-one
+credential-identity forwarding rule; it does not authenticate the caller.
+Response `model` is the effective configured, pinned, discovered, or
+request-routed backend identity, not a fabricated Forge alias.
 
 **Function-calling capability.** `--backend-capability native` (default) uses the backend's chat-template tool-calling and is the smoother default for Claude Code's heavy multi-turn tool use. `--backend-capability prompt` injects the tool surface into the prompt for llama.cpp/llamafile backends without a tool-calling template; whether a model stays coherent across multi-turn tool results in prompt mode varies by model — and tends to degrade on more complex, multi-step interactions — so prefer native whenever the backend supports it. The capability is declared at startup and frozen.
 
@@ -133,7 +133,7 @@ Forge Proxy is a per-operator sidecar and does not authenticate callers.
 `--backend-api-key` is a convenience for authenticating Forge to its backend,
 not caller authorization. Put an authentication gateway in front for a
 centralized or multi-tenant deployment. See [Backend Setup](BACKEND_SETUP.md)
-for the zero-or-one credential rule.
+for the zero-or-one credential-identity rule.
 
 ### Mode 3: Middleware (composable guardrails)
 

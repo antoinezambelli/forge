@@ -2,6 +2,22 @@
 
 All notable changes to forge are documented here.
 
+## [0.9.5] — 2026-08-29
+
+A credential-interoperability release for Forge's direct clients and
+standalone Proxy. Equivalent representations of one credential can now pass
+through without weakening Forge's rejection of genuinely distinct credentials.
+
+### Changed
+
+- **Equivalent dual-auth headers represent one credential identity.** Direct
+  clients and Forge Proxy now accept `Authorization` plus `X-Api-Key` when both
+  carry the same normalized token. Same-protocol traffic preserves both
+  headers; cross-protocol traffic emits one canonical target header. Unequal
+  pairs, repeated same-name headers, and static-plus-inbound credentials remain
+  rejected. This is client-agnostic compatibility for callers such as Claude
+  Code's `apiKeyHelper`.
+
 ## [0.9.4] — 2026-08-26
 
 An Anthropic interoperability release for Forge Proxy and direct Anthropic

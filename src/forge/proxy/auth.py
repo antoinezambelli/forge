@@ -1,22 +1,26 @@
-"""Inbound credential handling for the proxy (forge v0.8.0).
+"""Inbound credential handling for the proxy.
 
-forge forwards at most one credential to the backend, in the backend's native
-auth header. Zero is valid for an ungated backend. The proxy either relocates a
-single inbound auth header into the target protocol's canonical slot, or (when
-``--backend-api-key`` is configured) uses that static credential — never both.
-Two credentials anywhere is a hard error (Design Principle #1: fail loud, no
-silent merge).
+forge forwards at most one credential identity. A matching Authorization +
+X-Api-Key pair is one identity represented in two slots: same-protocol requests
+preserve the pair, while cross-protocol requests render it once in the target's
+canonical slot. Zero credentials is valid for an ungated backend. Distinct
+credentials anywhere remain a hard error (Design Principle #1: fail loud).
 
-Only a single relocated credential, when present, is forwarded to the backend;
-the rest of the inbound header set is NOT forwarded (httpx recomputes transport
-headers for the re-serialized body, so there is nothing to strip).
+Only resolved auth headers are forwarded to the backend; the rest of the
+inbound header set is NOT forwarded (httpx recomputes transport headers for the
+re-serialized body, so there is nothing to strip).
 """
 
 from __future__ import annotations
 
 from collections.abc import Mapping
 
-from forge.clients.base import AUTH_HEADER_NAMES, BEARER_PREFIX, auth_credential_token
+from forge.clients.base import (
+    BEARER_PREFIX,
+    _auth_credential_entries,
+    _equivalent_dual_auth_token,
+    count_auth_credentials,
+)
 from forge.errors import MultipleCredentialsError
 
 # Marker the proxy's header reader injects when a single auth header NAME
@@ -26,35 +30,26 @@ from forge.errors import MultipleCredentialsError
 DUPLICATE_AUTH_MARKER = "x-forge-duplicate-auth"
 
 
-def extract_inbound_credential(
+def extract_inbound_credentials(
     headers: Mapping[str, str] | None,
-) -> tuple[str | None, str | None]:
-    """Return ``(slot, value)`` for the single inbound auth header.
+) -> dict[str, str]:
+    """Return the zero, one, or equivalent-two inbound auth headers.
 
-    ``slot`` is the lowercased header name (``authorization`` or ``x-api-key``).
-    Returns ``(None, None)`` when no auth header carries a credential — an empty,
-    whitespace-only, or scheme-only value (e.g. ``Bearer `` with no token) is
-    treated as absent, so it fails loud downstream rather than forwarding an
-    empty credential. Raises ``MultipleCredentialsError`` if the request carries
-    two distinct auth headers, or the same auth header name more than once —
-    forge never picks a winner.
+    Names are lowercased. Empty, whitespace-only, and scheme-only values are
+    absent. A populated Authorization + X-Api-Key pair is retained only when
+    both slots carry the same effective token. Distinct credentials and
+    repeated same-name headers raise ``MultipleCredentialsError``.
     """
     headers = headers or {}
     if headers.get(DUPLICATE_AUTH_MARKER):
         raise MultipleCredentialsError(
             "inbound request carries the same auth header more than once"
         )
-    found: list[tuple[str, str]] = []
-    for name, value in headers.items():
-        slot = name.lower()
-        if slot in AUTH_HEADER_NAMES and value and auth_credential_token(slot, value):
-            found.append((slot, value))
-    if len(found) > 1:
-        slots = ", ".join(sorted(s for s, _ in found))
+    entries = _auth_credential_entries(headers)
+    if count_auth_credentials(headers) > 1:
+        slots = ", ".join(sorted(slot for slot, _, _ in entries))
         raise MultipleCredentialsError(f"inbound request carries auth headers: {slots}")
-    if found:
-        return found[0]
-    return None, None
+    return {slot: value for slot, value, _ in entries}
 
 
 def relocate_credential(
@@ -95,6 +90,27 @@ def relocate_credential(
     return {"Authorization": f"Bearer {token}"}
 
 
+def relocate_credentials(
+    auth_headers: Mapping[str, str],
+    source_protocol: str,
+    target_protocol: str,
+) -> dict[str, str]:
+    """Preserve one identity on the same protocol or map it across protocols."""
+    if source_protocol == target_protocol:
+        return dict(auth_headers)
+
+    if len(auth_headers) == 1:
+        slot, value = next(iter(auth_headers.items()))
+        return relocate_credential(slot, value, source_protocol, target_protocol)
+
+    token = _equivalent_dual_auth_token(auth_headers)
+    if token is None:
+        raise MultipleCredentialsError("inbound request carries distinct auth headers")
+    if target_protocol == "anthropic":
+        return {"x-api-key": token}
+    return {"Authorization": f"Bearer {token}"}
+
+
 def resolve_inbound_credential(
     headers: Mapping[str, str] | None,
     source_protocol: str,
@@ -103,46 +119,51 @@ def resolve_inbound_credential(
 ) -> dict[str, str] | None:
     """Resolve the per-call credential header to forward, or None.
 
-    Extracts the single inbound auth header (raising on two), enforces the
-    one-credential rule against a configured static ``--backend-api-key``, and
-    relocates the credential to the backend's canonical slot. Returns None when
-    the request carries no inbound credential (the static key, if any, is
-    already baked into the client at construction).
+    Extracts one inbound identity, enforces the static-source conflict, then
+    preserves an equivalent pair on the same protocol or maps the identity to
+    the target protocol. Returns None when no inbound identity is present.
     """
-    slot, value = extract_inbound_credential(headers)
-    if slot is None:
+    auth_headers = extract_inbound_credentials(headers)
+    if not auth_headers:
         return None
     if backend_api_key_present:
         raise MultipleCredentialsError(
             "inbound auth header + --backend-api-key (static backend credential)"
         )
-    return relocate_credential(slot, value, source_protocol, target_protocol)
+    return relocate_credentials(auth_headers, source_protocol, target_protocol)
 
 
 def _resolve_metadata_credential(
     headers: Mapping[str, str] | None,
     target_protocol: str,
     backend_api_key: str | None,
+    source_protocol: str | None = None,
 ) -> dict[str, str] | None:
     """Resolve the one credential for a protocol-neutral metadata request.
 
-    The inbound header slot identifies its caller-side wire shape. A selected
-    backend profile supplies the target wire shape. Static keys have no source
-    shape and are placed directly in the target's canonical slot. Unknown
-    future target protocols preserve an inbound credential verbatim.
+    A known source protocol uses the inference preserve/map matrix. Raw
+    forwarded metadata GETs are protocol-neutral and preserve an equivalent
+    pair; their existing single-header relocation remains unchanged. Static
+    keys are placed directly in the target's canonical slot.
     """
-    slot, value = extract_inbound_credential(headers)
-    if slot is not None and backend_api_key is not None:
+    auth_headers = extract_inbound_credentials(headers)
+    if auth_headers and backend_api_key is not None:
         raise MultipleCredentialsError(
             "inbound auth header + --backend-api-key (static backend credential)"
         )
-    if slot is None:
+    if not auth_headers:
         if backend_api_key is None:
             return None
         if target_protocol == "anthropic":
             return {"x-api-key": backend_api_key}
         return {"Authorization": f"Bearer {backend_api_key}"}
 
+    if source_protocol is not None:
+        return relocate_credentials(auth_headers, source_protocol, target_protocol)
+    if len(auth_headers) > 1:
+        return dict(auth_headers)
+
+    slot, value = next(iter(auth_headers.items()))
     if target_protocol not in {"openai", "anthropic", "ollama"}:
         return {slot: value}
     source_protocol = "openai" if slot == "authorization" else "anthropic"

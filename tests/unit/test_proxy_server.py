@@ -636,6 +636,9 @@ async def test_llama_props_and_official_anthropic_exact_metadata_adapters():
         completed=True,
         usage=TokenUsage(12, 0, 12),
     ), {}, "openai")
+    llama._fetch_reporting_json.assert_awaited_once_with(
+        "http://backend/props", {}, "openai",
+    )
     assert llama_manager.published_usage.context_window_tokens == 32768
     assert llama_manager.published_usage.context_window_source == (
         "backend_metadata"
@@ -946,18 +949,27 @@ async def _http_request_with_auth(port, body, auth_header):
         await writer.wait_closed()
 
 
-async def _auth_server(serialize, backend_api_key_present=False):
-    """An HTTPServer fronting an Anthropic-wire backend, with a mock client."""
+async def _auth_server(
+    serialize,
+    backend_api_key_present=False,
+    backend_protocol="anthropic",
+):
+    """An HTTPServer fronting the selected backend protocol, with a mock client."""
     client = _mock_client(TextResponse(content="ok"))
     ctx = ContextManager(strategy=NoCompact(), budget_tokens=8192)
+    adapter = (
+        ClientAdapter.ANTHROPIC
+        if backend_protocol == "anthropic"
+        else ClientAdapter.LLAMAFILE
+    )
     srv = HTTPServer(
         client=client,
         context_manager=ctx,
-        client_adapter=ClientAdapter.ANTHROPIC,
+        client_adapter=adapter,
         host="127.0.0.1",
         port=0,
         serialize_requests=serialize,
-        backend_protocol="anthropic",
+        backend_protocol=backend_protocol,
         backend_api_key_present=backend_api_key_present,
     )
     await srv.start()
@@ -965,14 +977,16 @@ async def _auth_server(serialize, backend_api_key_present=False):
     return srv, port, client
 
 
-async def _raw_request(port, header_lines, body):
+async def _raw_request(
+    port, header_lines, body, *, path="/v1/chat/completions",
+):
     """POST with arbitrary extra header lines; return (status, body_str)."""
     reader, writer = await asyncio.open_connection("127.0.0.1", port)
     try:
         body_bytes = json.dumps(body).encode()
         extra = "".join(f"{line}\r\n" for line in header_lines)
         request = (
-            f"POST /v1/chat/completions HTTP/1.1\r\n"
+            f"POST {path} HTTP/1.1\r\n"
             f"Host: 127.0.0.1:{port}\r\n"
             f"Content-Type: application/json\r\n"
             f"{extra}"
@@ -1011,6 +1025,69 @@ class TestInboundCredentialThreading:
             await srv.stop()
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("source_protocol", "target_protocol", "expected_headers"),
+        [
+            (
+                "openai",
+                "openai",
+                {"authorization": "Bearer SAME", "x-api-key": "SAME"},
+            ),
+            (
+                "anthropic",
+                "anthropic",
+                {"authorization": "Bearer SAME", "x-api-key": "SAME"},
+            ),
+            ("openai", "anthropic", {"x-api-key": "SAME"}),
+            ("anthropic", "openai", {"Authorization": "Bearer SAME"}),
+        ],
+    )
+    async def test_identical_dual_auth_resolution_matrix(
+        self, source_protocol, target_protocol, expected_headers,
+    ):
+        srv, port, client = await _auth_server(
+            serialize=False, backend_protocol=target_protocol,
+        )
+        path = (
+            "/v1/messages"
+            if source_protocol == "anthropic"
+            else "/v1/chat/completions"
+        )
+        body = {
+            "model": "caller-model",
+            "max_tokens": 64,
+            "messages": [{"role": "user", "content": "hi"}],
+        }
+        try:
+            status, _ = await _raw_request(
+                port,
+                ["Authorization: Bearer SAME", "X-Api-Key: SAME"],
+                body,
+                path=path,
+            )
+            assert status == 200
+            assert client.send.await_count == 1
+            assert client.send.call_args.kwargs["extra_headers"] == expected_headers
+        finally:
+            await srv.stop()
+
+    @pytest.mark.asyncio
+    async def test_unequal_dual_auth_refused_400_no_secret(self):
+        srv, port, client = await _auth_server(serialize=False)
+        try:
+            status, resp_body = await _raw_request(
+                port,
+                ["Authorization: Bearer SECRET-ONE", "X-Api-Key: SECRET-TWO"],
+                {"messages": [{"role": "user", "content": "hi"}]},
+            )
+            assert status == 400
+            assert "SECRET-ONE" not in resp_body
+            assert "SECRET-TWO" not in resp_body
+            client.send.assert_not_awaited()
+        finally:
+            await srv.stop()
+
+    @pytest.mark.asyncio
     async def test_duplicate_auth_header_refused_400_no_secret(self):
         # Two same-name Authorization headers must be refused (never pick a
         # winner), as a 400 client error, with no secret in the response body.
@@ -1042,6 +1119,23 @@ class TestInboundCredentialThreading:
             )
             assert status == 400
             assert "SECRET-INBOUND" not in resp_body
+            client.send.assert_not_awaited()
+        finally:
+            await srv.stop()
+
+    @pytest.mark.asyncio
+    async def test_matching_pair_plus_static_key_refused_400(self):
+        srv, port, client = await _auth_server(
+            serialize=False, backend_api_key_present=True,
+        )
+        try:
+            status, resp_body = await _raw_request(
+                port,
+                ["Authorization: Bearer SECRET", "X-Api-Key: SECRET"],
+                {"messages": [{"role": "user", "content": "hi"}]},
+            )
+            assert status == 400
+            assert "SECRET" not in resp_body
             client.send.assert_not_awaited()
         finally:
             await srv.stop()
@@ -1286,6 +1380,24 @@ class TestMetadataForwarding:
         assert (conflict_status, duplicate_status) == (400, 400)
 
     @pytest.mark.asyncio
+    async def test_protocol_neutral_metadata_preserves_matching_pair(
+        self, metadata_pair_factory,
+    ):
+        _, port, requests, _, _ = await metadata_pair_factory(
+            {"/models": (200, {}, b"ok")},
+            protocol="anthropic",
+        )
+        status, _, body = await _raw_http_response(
+            port,
+            "GET",
+            "/models",
+            ["Authorization: Bearer SAME", "X-Api-Key: SAME"],
+        )
+        assert (status, body) == (200, b"ok")
+        assert requests[0][1]["authorization"] == "Bearer SAME"
+        assert requests[0][1]["x-api-key"] == "SAME"
+
+    @pytest.mark.asyncio
     @pytest.mark.parametrize(
         ("protocol", "static_key", "inbound", "expected_name", "expected_value"),
         [
@@ -1425,6 +1537,46 @@ class TestMetadataForwarding:
                 assert requests[0][1]["authorization"] == expected, case
                 assert client.model == "served", case
                 assert ctx.budget_tokens == budget, case
+
+    @pytest.mark.asyncio
+    async def test_private_discovery_maps_pair_like_inference_request(
+        self, metadata_pair_factory,
+    ):
+        client = _mock_client(TextResponse(content="ok"))
+        client.model = "default"
+        client._set_model_identity = MagicMock(
+            side_effect=lambda model: setattr(client, "model", model),
+        )
+        _, port, requests, _, _ = await metadata_pair_factory(
+            {
+                "/v1/models": (
+                    200,
+                    {"Content-Type": "application/json"},
+                    b'{"data":[{"id":"served","max_model_len":64000}]}',
+                ),
+            },
+            protocol="openai",
+            client=client,
+            lazy_discovery=LazyDiscovery(),
+            client_adapter=ClientAdapter.VLLM,
+        )
+        status, _ = await _raw_request(
+            port,
+            ["Authorization: Bearer SAME", "X-Api-Key: SAME"],
+            {
+                "model": "caller-alias",
+                "max_tokens": 64,
+                "messages": [{"role": "user", "content": "hi"}],
+            },
+            path="/v1/messages",
+        )
+        assert status == 200
+        assert [target for target, _ in requests] == ["/v1/models"]
+        assert requests[0][1]["authorization"] == "Bearer SAME"
+        assert "x-api-key" not in requests[0][1]
+        assert client.send.call_args.kwargs["extra_headers"] == {
+            "Authorization": "Bearer SAME",
+        }
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("serialize", [False, True])
@@ -1589,6 +1741,9 @@ class TestDeferredDiscoveryStatusMapping:
             discovery_headers = srv._fetch_private_catalog.await_args.args[0]
             assert "authorization" not in discovery_headers
             assert "x-api-key" not in discovery_headers
+            assert srv._fetch_private_catalog.await_args.kwargs == {
+                "source_protocol": "openai",
+            }
         finally:
             await srv.stop()
 
@@ -1669,12 +1824,26 @@ class TestStreamingErrorStatus:
     credential + first-request discovery checks pass)."""
 
     @pytest.mark.asyncio
-    async def test_streaming_duplicate_auth_returns_400_not_200(self):
+    @pytest.mark.parametrize(
+        "header_lines",
+        [
+            [
+                "Authorization: Bearer SECRET-ONE",
+                "Authorization: Bearer SECRET-TWO",
+            ],
+            [
+                "Authorization: Bearer SECRET-ONE",
+                "X-Api-Key: SECRET-TWO",
+            ],
+        ],
+        ids=["repeated-slot", "unequal-pair"],
+    )
+    async def test_streaming_multiple_auth_returns_400_not_200(self, header_lines):
         srv, port, client = await _auth_server(serialize=False)
         try:
             status, body = await _raw_request(
                 port,
-                ["Authorization: Bearer SECRET-ONE", "Authorization: Bearer SECRET-TWO"],
+                header_lines,
                 {"messages": [{"role": "user", "content": "hi"}], "stream": True},
             )
             assert status == 400  # real status, not 200 + an SSE error event

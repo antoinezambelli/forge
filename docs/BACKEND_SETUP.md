@@ -52,20 +52,26 @@ reports only one last-completed process-local snapshot.
 
 ## Authentication
 
-forge carries **at most one credential** to the backend, placed in the backend's
-native auth header. Zero is normal for an ungated local backend. forge does not
-validate a credential, manage its lifecycle (expiry/refresh), or form any
-opinion on its value — it only relocates a supplied credential into the correct
-header slot for the target backend. Backend credential rejections surface as
-the backend's own error (401/403). One pre-dispatch exception is
+forge carries **at most one credential identity** to the backend. It normally
+occupies one native auth header; an `Authorization` plus `X-Api-Key` pair may
+represent that same identity in both slots when their normalized tokens match.
+Zero is normal for an ungated local backend. forge does not authenticate a
+credential, manage its lifecycle (expiry/refresh), or form an opinion on its
+value — it only validates identity count and places the supplied credential in
+the correct header slot or slots for the target backend. Backend credential
+rejections surface as the backend's own error (401/403). One pre-dispatch
+exception is
 `AnthropicClient`: when its auth-required path has no credential, Forge raises
 `MissingCredentialError` and Proxy returns 401 without calling the backend.
 
-**The rule:** zero or one credential may reach the backend. If two are present
-anywhere, forge **refuses the request** — it never merges, never picks a winner,
-never silently drops one. An auth-required backend still rejects a request with
-none; the Anthropic path performs that check inside Forge before dispatch.
-(Design Principle #1: fail fast, fail loud.)
+**The rule:** zero or one credential identity may reach the backend. One
+populated `Authorization` and one populated `X-Api-Key` count as one identity
+only when Forge's existing normalization finds the same token in both (outer
+whitespace is trimmed and a leading `Bearer ` is ignored for comparison). Any
+non-matching pair or repeated variant of the same auth-header name is refused —
+Forge never picks a winner or drops a distinct credential. An auth-required
+backend still rejects a request with none; the Anthropic path performs that
+check inside Forge before dispatch. (Design Principle #1: fail fast, fail loud.)
 
 ### WorkflowRunner (library use)
 
@@ -85,6 +91,11 @@ credentials → raises `MultipleCredentialsError`. Pass auth through one channel
 For a non-Bearer scheme, pass `extra_headers` alone (omit `api_key`); supplying
 both `api_key` and an auth header at construction is also refused.
 
+A matching `Authorization` plus `X-Api-Key` pair supplied together through
+construction headers or per-call `extra_headers` is one identity and is
+preserved intact. It is still a second source when combined with `api_key` or a
+separate static credential, so that combination is refused.
+
 ### Proxy
 
 Forge Proxy is a per-operator sidecar. It does **not** authenticate callers,
@@ -96,20 +107,21 @@ an authenticating gateway in front of Forge.
 When backend authentication is needed, the proxy gets its credential from one
 of two sources — never both:
 
-1. **Inbound passthrough.** The caller's request already carries a credential;
-   forge forwards it, relocating the header to the backend's protocol when they
-   differ (see the table below). This is the SSO/forwarded-token case.
+1. **Inbound passthrough.** The caller's request already carries one credential
+   identity in one auth header or an equivalent two-header pair; forge forwards
+   it, rendering it for the backend's protocol when they differ (see below).
+   This is the SSO/forwarded-token case.
 2. **Static `--backend-api-key`** (or the `FORGE_BACKEND_API_KEY` env var) for
    backends where the caller sends nothing — LM Studio, hosted providers,
    service accounts. Baked into the backend client at startup.
 
-If an inbound auth header **and** `--backend-api-key` are both present, or a
-single request carries **two** auth headers, the proxy refuses it with **HTTP
-400** (a client error — the message names the conflicting slots, never a secret).
-This holds for **streaming** requests too: the credential and any required
-unpinned vLLM identity are resolved before the `200 OK` / SSE headers are
-flushed. Context-window metadata is reporting-only and is never a pre-dispatch
-gate.
+If an inbound identity **and** `--backend-api-key` are both present, or a request
+carries non-matching auth values or repeats the same auth-header name, the proxy
+refuses it with **HTTP 400** (a client error — the message names conflicting
+slots, never a secret). This holds for **streaming** requests too: the
+credential and any required unpinned vLLM identity are resolved before the
+`200 OK` / SSE headers are flushed. Context-window metadata is reporting-only
+and is never a pre-dispatch gate.
 
 One streaming case is unavoidable today: an error that surfaces only when the
 backend is actually called — the backend **rejecting the credential** (401), or
@@ -133,14 +145,21 @@ normalized (a leading `Bearer ` is stripped/added as needed) and written to the
 target slot. The common case — Claude Code (Anthropic-wire) in front of an
 OpenAI backend — relocates `x-api-key` → `Authorization: Bearer` unambiguously.
 
+For a matching two-header pair, same-protocol requests preserve both caller
+headers unchanged. Cross-protocol requests render the shared identity once in
+the target's canonical slot; header order never chooses a winner. This supports
+Claude Code's documented [`apiKeyHelper`](https://code.claude.com/docs/en/llm-gateway-protocol#request-headers)
+behavior, which sends the helper value in both headers, but the rule is
+client-agnostic — Forge recognizes the header shape, not Claude Code itself.
+
 > **One documented limitation:** an Anthropic *OAuth* token (which must ride
 > `Authorization: Bearer`, not `x-api-key`) pushed through forge's *OpenAI*
 > endpoint to an Anthropic backend is relocated to `x-api-key` and rejected by
 > Anthropic. Coherent setups never hit this — OAuth callers use the Anthropic
 > endpoint (`/v1/messages`), which is same-protocol passthrough.
 
-forge forwards **only** the resolved credential header, if present; it does not
-forward the rest of the inbound header set (so client-set `anthropic-beta`,
+forge forwards **only** the resolved credential header or matching pair, if
+present; it does not forward the rest of the inbound header set (so client-set `anthropic-beta`,
 `OpenAI-Organization`, etc. do not reach the backend — a future
 `--backend-header` may add this).
 
