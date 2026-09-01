@@ -180,7 +180,7 @@ class AnthropicClient:
         else:
             self._client = anthropic.AsyncAnthropic(**sdk_kwargs)
         # Populated after each send()/send_stream() call. Slot-keyed
-        # ``{slot_id: TokenUsage}`` to preserve the direct-client compatibility
+        # ``{id_slot: TokenUsage}`` to preserve the direct-client compatibility
         # mirror used by LlamafileClient / OllamaClient. The Anthropic SDK is
         # per-call (no shared inference slot), so we always use slot 0 — same
         # convention as OllamaClient.

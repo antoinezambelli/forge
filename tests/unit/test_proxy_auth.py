@@ -305,7 +305,7 @@ def _mock_client(response):
     client.api_format = "ollama"
     client.send = AsyncMock(return_value=response)
     client.last_usage = {}
-    client._slot_id = 0
+    client._id_slot = 0
     return client
 
 

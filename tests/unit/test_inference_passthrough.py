@@ -24,7 +24,7 @@ def _client(*responses):
     client.api_format = "ollama"
     client.send = AsyncMock(side_effect=list(responses))
     client.last_usage = {}
-    client._slot_id = 0
+    client._id_slot = 0
     return client
 
 

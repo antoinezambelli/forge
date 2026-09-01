@@ -37,7 +37,7 @@ def _mock_client(response):
     client.api_format = "ollama"
     client.model = "backend-model"
     client.last_usage = {}
-    client._slot_id = 0
+    client._id_slot = 0
 
     async def send(*args, **kwargs):
         usage = client.last_usage.get(0)

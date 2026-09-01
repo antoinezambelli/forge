@@ -177,7 +177,7 @@ class TestHappyPath:
                     ToolCall(tool="submit", args={}),
                 ])
                 self.last_usage = {}
-                self._slot_id = 0
+                self._id_slot = 0
 
             async def send(self, *args, **kwargs):
                 response = await super().send(*args, **kwargs)

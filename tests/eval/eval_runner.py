@@ -87,7 +87,7 @@ class CountingClientWrapper:
         """Read last_usage from the wrapped client if available."""
         usage = getattr(self._client, "last_usage", None)
         if usage:
-            # Slot-keyed {slot_id: TokenUsage} across all clients (llamaserver,
+            # Slot-keyed {id_slot: TokenUsage} across all clients (llamaserver,
             # ollama, anthropic). Sum across slots (usually one).
             for tu in usage.values():
                 self.total_input_tokens += tu.prompt_tokens

@@ -1483,20 +1483,20 @@ class TestThinkFlagStream:
         assert final.response[0].reasoning == "Server reasoning"
 
 
-# ── slot_id ────────────────────────────────────────────────────
+# ── id_slot ────────────────────────────────────────────────────
 
 
-class TestSlotId:
-    """slot_id injection into request bodies."""
+class TestIdSlot:
+    """id_slot injection into request bodies."""
 
-    @pytest.mark.parametrize("slot_id", [None, 1])
+    @pytest.mark.parametrize("id_slot", [None, 1])
     @pytest.mark.asyncio
-    async def test_native_send_slot_id_on_wire(self, slot_id: int | None) -> None:
+    async def test_native_send_id_slot_on_wire(self, id_slot: int | None) -> None:
         client = LlamafileClient(
             base_url="http://test:8080/v1",
             gguf_path="test",
             mode="native",
-            slot_id=slot_id,
+            id_slot=id_slot,
         )
         mock_http = AsyncMock()
         client._http = mock_http
@@ -1518,10 +1518,10 @@ class TestSlotId:
 
         call_kwargs = mock_http.post.call_args
         body = call_kwargs.kwargs.get("json") or call_kwargs[1].get("json")
-        if slot_id is None:
-            assert "slot_id" not in body
+        if id_slot is None:
+            assert "id_slot" not in body
         else:
-            assert body["slot_id"] == slot_id
+            assert body["id_slot"] == id_slot
 
 
 class TestRecommendedSampling:

@@ -656,11 +656,11 @@ For multi-slot setups (e.g., with `--kv-unified`), create one `SlotWorker` per s
 
 ```python
 # Slot 0: main conversation (no worker needed — dedicated)
-main_client = LlamafileClient(gguf_path="path/to/model.gguf", slot_id=0)
+main_client = LlamafileClient(gguf_path="path/to/model.gguf", id_slot=0)
 main_runner = WorkflowRunner(client=main_client, context_manager=ctx)
 
 # Slot 1: shared specialist slot (needs a worker)
-service_client = LlamafileClient(gguf_path="path/to/model.gguf", slot_id=1)
+service_client = LlamafileClient(gguf_path="path/to/model.gguf", id_slot=1)
 service_runner = WorkflowRunner(client=service_client, context_manager=ctx)
 service_worker = SlotWorker(service_runner)
 await service_worker.start()

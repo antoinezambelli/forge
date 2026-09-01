@@ -344,7 +344,7 @@ class LlamafileClient:
         timeout: float = 300.0,
         think: bool | None = None,
         cache_prompt: bool = True,
-        slot_id: int | None = None,
+        id_slot: int | None = None,
         recommended_sampling: bool = False,
         api_key: str = "",
         extra_headers: dict[str, str] | None = None,
@@ -409,7 +409,7 @@ class LlamafileClient:
         self._http = httpx.AsyncClient(headers=headers, timeout=timeout)
         self._think: bool = think if think is not None else True  # think=None → capture
         self._cache_prompt = cache_prompt
-        self._slot_id = slot_id
+        self._id_slot = id_slot
 
         self.last_usage: dict[int, TokenUsage] = {}
 
@@ -428,10 +428,10 @@ class LlamafileClient:
         """
         return resolve_request_headers(self._static_auth, extra_headers)
 
-    def _apply_slot_id(self, body: dict[str, Any]) -> None:
-        """Inject slot_id into a request body if configured."""
-        if self._slot_id is not None:
-            body["slot_id"] = self._slot_id
+    def _apply_id_slot(self, body: dict[str, Any]) -> None:
+        """Inject id_slot into a request body if configured."""
+        if self._id_slot is not None:
+            body["id_slot"] = self._id_slot
 
     # Sampling fields recognized in per-call overrides. ``seed`` is
     # accepted only as a per-call override (not an instance field).
@@ -469,7 +469,7 @@ class LlamafileClient:
         usage = data.get("usage")
         if not usage:
             return
-        slot = self._slot_id if self._slot_id is not None else 0
+        slot = self._id_slot if self._id_slot is not None else 0
         normalized = TokenUsage(
             prompt_tokens=usage.get("prompt_tokens", 0),
             completion_tokens=usage.get("completion_tokens", 0),
@@ -560,7 +560,7 @@ class LlamafileClient:
             "cache_prompt": self._cache_prompt,
         })
         body.setdefault("model", self.model)
-        self._apply_slot_id(body)
+        self._apply_id_slot(body)
         self._apply_sampling(body, sampling)
 
         if mode == "native":
@@ -740,7 +740,7 @@ class LlamafileClient:
             "cache_prompt": self._cache_prompt,
         })
         body.setdefault("model", self.model)
-        self._apply_slot_id(body)
+        self._apply_id_slot(body)
         self._apply_sampling(body, sampling)
         if raw_openai_tools is not None:
             body["tools"] = raw_openai_tools
@@ -838,7 +838,7 @@ class LlamafileClient:
             "cache_prompt": self._cache_prompt,
         })
         body.setdefault("model", self.model)
-        self._apply_slot_id(body)
+        self._apply_id_slot(body)
         self._apply_sampling(body, sampling)
 
         resp = await self._http.post(

@@ -38,7 +38,7 @@ def _send_client(*responses):
     client.api_format = "ollama"
     client.send = AsyncMock(side_effect=list(responses))
     client.last_usage = {}
-    client._slot_id = 0
+    client._id_slot = 0
     return client
 
 
@@ -89,7 +89,7 @@ async def test_extra_headers_forwarded_or_omitted_from_send_stream():
         client.api_format = "ollama"
         client.send_stream = fake_stream
         client.last_usage = {}
-        client._slot_id = 0
+        client._id_slot = 0
 
         kwargs = {"extra_headers": extra_headers} if extra_headers is not None else {}
         await _run(client, stream=True, **kwargs)
