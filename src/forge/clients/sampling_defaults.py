@@ -79,6 +79,7 @@ MODEL_SAMPLING_DEFAULTS: dict[str, dict[str, float | int]] = {
     # Qwen3.8-27B — Unsloth's thinking-mode profile. xhigh is the model's
     # documented default reasoning effort for complex coding and agentic work.
     "Qwen3.8-27B-UD-Q4_K_XL":             {"temperature": 1.0, "top_p": 0.95, "top_k": 20, "min_p": 0.0, "presence_penalty": 0.0, "repeat_penalty": 1.0, "chat_template_kwargs": {"reasoning_effort": "xhigh"}},  # https://unsloth.ai/docs/models/qwen3.8
+    "Qwen3.8-Flash-Next-UD-Q4_K_XL":      {"temperature": 1.0, "top_p": 0.95, "top_k": 20, "min_p": 0.0, "presence_penalty": 0.0, "repeat_penalty": 1.0, "chat_template_kwargs": {"reasoning_effort": "xhigh"}},  # https://unsloth.ai/docs/models/qwen3.8-next
     # Ornith 1.5 35B-A3B — model-card general-task profile.
     "Ornith-1.5-35B-Q4_K_M":               {"temperature": 0.6, "top_p": 0.95, "top_k": 20},                                                                 # https://huggingface.co/ornith-ai/Ornith-1.5-35B-A3B-GGUF
     # Qwen3-Coder — non-thinking instruct; card does not mention min_p or presence_penalty
@@ -130,6 +131,9 @@ MODEL_SAMPLING_DEFAULTS: dict[str, dict[str, float | int]] = {
     # includes min_p=0.0 in its llama.cpp recipes. This smoke uses max effort
     # (0.99); xhigh and max map to the same template value.
     "Inkling-Small-UD-IQ4_XS":                 {"temperature": 1.0, "top_p": 1.0, "min_p": 0.0, "chat_template_kwargs": {"reasoning_effort": "max"}}, # https://unsloth.ai/docs/models/inkling
+    # GLM-5.3-Flash — general-task profile with the lightest documented
+    # reasoning effort for this stability smoke.
+    "GLM-5.3-Flash-UD-IQ4_XS":                  {"temperature": 1.0, "top_p": 0.95, "chat_template_kwargs": {"reasoning_effort": "low"}}, # https://unsloth.ai/docs/models/glm-5.3
     # gpt-oss-120b — OpenAI open-weight MoE (117B total, 5.1B active). Reasoning model with three
     # discrete levels: "low" / "medium" / "high", controlled via chat_template_kwargs.reasoning_effort
     # (per llama.cpp guide: `--chat-template-kwargs '{"reasoning_effort": "high"}'`). The registry

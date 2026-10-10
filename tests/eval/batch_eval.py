@@ -63,6 +63,10 @@ class _BatchServerRecipe:
     extra_flags: tuple[str, ...] = ()
     rpc: LlamaCppRpcConfig | None = None
     draft_filename: str | None = None
+    cache_type_k: str | None = None
+    cache_type_v: str | None = None
+    n_slots: int | None = None
+    kv_unified: bool = False
 
 
 _DEFAULT_SERVER_RECIPE = _BatchServerRecipe()
@@ -118,16 +122,40 @@ _DEEPSEEK_V4_RPC_SERVER_RECIPE = _BatchServerRecipe((
     "--fit", "off",
     "-b", "2048", "-ub", "128",
     "--cache-type-k", "q8_0", "--cache-type-v", "q8_0",
-    "--no-mmap", "-fa", "on",
+    "--load-mode", "none", "-fa", "on",
     "--reasoning-budget", "32768", "--reasoning-format", "auto",
     "--no-prefill-assistant",
 ))
+_QWEN38_FLASH_NEXT_RPC_SERVER_RECIPE = _BatchServerRecipe(
+    extra_flags=(
+        "--fit", "off",
+        "-b", "512", "-ub", "128",
+        "-fa", "on",
+        "--reasoning-budget", "32768", "--reasoning-format", "auto",
+        "--no-prefill-assistant", "--spec-type", "none",
+    ),
+    cache_type_k="q8_0",
+    cache_type_v="q8_0",
+    n_slots=2,
+    kv_unified=True,
+)
 _INKLING_SMALL_RPC_SERVER_RECIPE = _BatchServerRecipe((
     "--fit", "off",
     "-b", "512", "-ub", "128",
     "--cache-type-k", "f16", "--cache-type-v", "f16",
     "--no-mmap", "-fa", "on",
     "--parallel", "1",
+))
+_GLM53_FLASH_RPC_SERVER_RECIPE = _BatchServerRecipe((
+    "--fit", "off",
+    "-b", "128", "-ub", "128",
+    "--cache-type-k", "q8_0", "--cache-type-v", "q8_0",
+    "-fa", "on", "--load-mode", "none",
+    "--parallel", "1", "--no-kv-unified", "--no-warmup",
+    "--reasoning-format", "auto", "--no-prefill-assistant",
+    "--spec-type", "ngram-simple",
+    "--spec-ngram-simple-size-n", "12",
+    "--spec-ngram-simple-size-m", "48",
 ))
 
 _DEEPSEEK_V4_MODEL = "DeepSeek-V4-Flash-0731-UD-Q4_K_XL"
@@ -136,10 +164,21 @@ _DEEPSEEK_V4_SAMPLING: dict[str, Any] = get_sampling_defaults(_DEEPSEEK_V4_MODEL
 _DEEPSEEK_V4_REASONING_LEVEL: str = _DEEPSEEK_V4_SAMPLING[
     "chat_template_kwargs"
 ]["reasoning_effort"]
+_QWEN38_FLASH_NEXT_MODEL = "Qwen3.8-Flash-Next-UD-Q4_K_XL"
+_QWEN38_FLASH_NEXT_GGUF = f"{_QWEN38_FLASH_NEXT_MODEL}-00001-of-00004.gguf"
 _INKLING_SMALL_MODEL = "Inkling-Small-UD-IQ4_XS"
 _INKLING_SMALL_GGUF = f"{_INKLING_SMALL_MODEL}-00001-of-00004.gguf"
 _INKLING_SMALL_SAMPLING: dict[str, Any] = get_sampling_defaults(_INKLING_SMALL_MODEL)
 _INKLING_SMALL_REASONING_LEVEL: str = _INKLING_SMALL_SAMPLING[
+    "chat_template_kwargs"
+]["reasoning_effort"]
+_GLM53_FLASH_MODEL = "GLM-5.3-Flash-UD-IQ4_XS"
+_GLM53_FLASH_GGUF = (
+    "GLM-5.3-Flash-UD-IQ4_XS-pr27773/"
+    "GLM-5.3-Flash-UD-IQ4_XS-00001-of-00005.gguf"
+)
+_GLM53_FLASH_SAMPLING: dict[str, Any] = get_sampling_defaults(_GLM53_FLASH_MODEL)
+_GLM53_FLASH_REASONING_LEVEL: str = _GLM53_FLASH_SAMPLING[
     "chat_template_kwargs"
 ]["reasoning_effort"]
 
@@ -414,6 +453,30 @@ DEEPSEEK_V4_RPC_CONFIGS: list[BatchConfig] = [
     ),
 ]
 
+DEEPSEEK_V4_MAX_RPC_CONFIGS: list[BatchConfig] = [
+    replace(
+        DEEPSEEK_V4_RPC_CONFIGS[0],
+        reasoning_level="max",
+        sampling_override={
+            **_DEEPSEEK_V4_SAMPLING,
+            "chat_template_kwargs": {"reasoning_effort": "max"},
+        },
+    ),
+]
+
+QWEN38_FLASH_NEXT_XHIGH_RPC_CONFIGS: list[BatchConfig] = [
+    BatchConfig(
+        model=_QWEN38_FLASH_NEXT_MODEL,
+        backend="llamaserver",
+        mode="native",
+        think=None,
+        gguf_filename=_QWEN38_FLASH_NEXT_GGUF,
+        server_recipe=_QWEN38_FLASH_NEXT_RPC_SERVER_RECIPE,
+        reasoning_level="xhigh",
+        requires_rpc=True,
+    ),
+]
+
 INKLING_SMALL_RPC_CONFIGS: list[BatchConfig] = [
     BatchConfig(
         model=_INKLING_SMALL_MODEL,
@@ -423,6 +486,19 @@ INKLING_SMALL_RPC_CONFIGS: list[BatchConfig] = [
         gguf_filename=_INKLING_SMALL_GGUF,
         server_recipe=_INKLING_SMALL_RPC_SERVER_RECIPE,
         reasoning_level=_INKLING_SMALL_REASONING_LEVEL,
+        requires_rpc=True,
+    ),
+]
+
+GLM53_FLASH_RPC_CONFIGS: list[BatchConfig] = [
+    BatchConfig(
+        model=_GLM53_FLASH_MODEL,
+        backend="llamaserver",
+        mode="native",
+        think=None,
+        gguf_filename=_GLM53_FLASH_GGUF,
+        server_recipe=_GLM53_FLASH_RPC_SERVER_RECIPE,
+        reasoning_level=_GLM53_FLASH_REASONING_LEVEL,
         requires_rpc=True,
     ),
 ]
@@ -440,10 +516,13 @@ CONFIG_SETS: dict[str, list[BatchConfig]] = {
     "glimmer-medium": _GLIMMER_EFFORT_CONFIGS["medium"],
     "glimmer-low": _GLIMMER_EFFORT_CONFIGS["low"],
     "deepseek-v4-rpc": DEEPSEEK_V4_RPC_CONFIGS,
+    "deepseek-v4-max-rpc": DEEPSEEK_V4_MAX_RPC_CONFIGS,
+    "qwen38-flash-next-xhigh-rpc": QWEN38_FLASH_NEXT_XHIGH_RPC_CONFIGS,
     "qwen38": QWEN38_CONFIGS,
     "qwen38-medium": _QWEN38_EFFORT_CONFIGS["medium"],
     "qwen38-low": _QWEN38_EFFORT_CONFIGS["low"],
     "inkling-small-rpc": INKLING_SMALL_RPC_CONFIGS,
+    "glm53-flash-rpc": GLM53_FLASH_RPC_CONFIGS,
     "new-models": NEW_MODEL_CONFIGS,
     "new-models-native": [c for c in NEW_MODEL_CONFIGS if c.mode == "native"],
     "new-models-prompt": [c for c in NEW_MODEL_CONFIGS if c.mode == "prompt"],
@@ -513,7 +592,7 @@ def _print_rpc_recipe(
     assert config.gguf_filename is not None
     artifact = str(models_dir / config.gguf_filename)
 
-    sampling = get_sampling_defaults(config.model)
+    sampling = config.sampling_override or get_sampling_defaults(config.model)
     template_kwargs = sampling.get("chat_template_kwargs", {})
     effort = (
         template_kwargs.get("reasoning_effort")
@@ -534,10 +613,18 @@ def _print_rpc_recipe(
     coordinator_command.extend(_resolve_server_recipe_flags(config, models_dir))
     if budget_mode == BudgetMode.MANUAL and manual_tokens is not None:
         coordinator_command.extend(["-c", str(manual_tokens)])
+    if config.server_recipe.cache_type_k is not None:
+        coordinator_command.extend(["--cache-type-k", config.server_recipe.cache_type_k])
+    if config.server_recipe.cache_type_v is not None:
+        coordinator_command.extend(["--cache-type-v", config.server_recipe.cache_type_v])
+    if config.server_recipe.n_slots is not None:
+        coordinator_command.extend(["--parallel", str(config.server_recipe.n_slots)])
+    if config.server_recipe.kv_unified:
+        coordinator_command.append("--kv-unified")
 
     print("  Managed RPC recipe:")
     print(f"    model: {config.model}")
-    print(f"    reasoning effort (sampling registry): {effort}")
+    print(f"    reasoning effort: {effort}")
     print(f"    worker command: {shlex.join(render_rpc_worker_command(rpc.worker))}")
     print(f"    coordinator command: {shlex.join(coordinator_command)}")
     print(f"    startup timeout: {rpc.startup_timeout:g}s")
@@ -1243,6 +1330,10 @@ async def run_batch(
                 budget_mode=budget_mode,
                 manual_tokens=manual_tokens,
                 extra_flags=server_flags or None,
+                cache_type_k=config.server_recipe.cache_type_k,
+                cache_type_v=config.server_recipe.cache_type_v,
+                n_slots=config.server_recipe.n_slots,
+                kv_unified=config.server_recipe.kv_unified,
                 rpc=config.server_recipe.rpc,
             )
         except RuntimeError:
@@ -1491,7 +1582,10 @@ async def main() -> None:
         configs = [c for c in configs if args.model in c.model]
         if not configs:
             parser.error(f"No configs match --model '{args.model}' in set '{args.config}'")
-    rpc_config_sets = {"deepseek-v4-rpc", "inkling-small-rpc"}
+    rpc_config_sets = {
+        "deepseek-v4-rpc", "deepseek-v4-max-rpc",
+        "qwen38-flash-next-xhigh-rpc", "inkling-small-rpc", "glm53-flash-rpc",
+    }
     if args.config in rpc_config_sets:
         if args.rpc_topology is None:
             parser.error(f"--config {args.config} requires --rpc-topology")
