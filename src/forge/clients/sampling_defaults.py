@@ -208,6 +208,9 @@ MODEL_SAMPLING_DEFAULTS: dict[str, dict[str, float | int]] = {
     # specified). Thinking = <think> CoT (qwen3 reasoning parser); Instruct = direct (hermes tool parser).
     "Mellum2-12B-A2.5B-Thinking-Q4_K_M":    {"temperature": 0.6, "top_p": 0.95, "top_k": 20},  # https://huggingface.co/JetBrains/Mellum2-12B-A2.5B-Thinking
     "Mellum2-12B-A2.5B-Instruct-Q4_K_M":    {"temperature": 0.6, "top_p": 0.95, "top_k": 20},  # https://huggingface.co/JetBrains/Mellum2-12B-A2.5B-Instruct
+    # Mellum2.1 Thinking — publisher's GGUF/quickstart sampling. The base card separately
+    # reports temperature=1.0 for agentic benchmarks; generation_config.json has no sampling values.
+    "Mellum2.1-12B-A2.5B-Thinking-Q4_K_M": {"temperature": 0.6, "top_p": 0.95, "top_k": 20},  # https://huggingface.co/JetBrains/Mellum2.1-12B-A2.5B-Thinking-GGUF#run-with-llamacpp
     # Granite 4.0 — IBM-pointed reference cites greedy decoding (T=0); top_p/top_k effectively no-op at T=0
     # but kept explicit to match the source recommendation. IBM HF cards / GitHub repo / prompt-engineering
     # guide v2 themselves do not document sampling; Unsloth's tutorial cites IBM directly.
