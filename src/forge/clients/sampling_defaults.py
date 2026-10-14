@@ -123,6 +123,9 @@ MODEL_SAMPLING_DEFAULTS: dict[str, dict[str, float | int]] = {
     # Thinking is enabled by default for agentic coding and long-horizon work;
     # no repeat or presence penalty is recommended.
     "Laguna-S-2.1-UD-Q4_K_XL":                {"temperature": 1.0, "top_p": 1.0, "top_k": 20, "min_p": 0.0, "chat_template_kwargs": {"enable_thinking": True}},  # https://huggingface.co/poolside/Laguna-S-2.1/blob/main/generation_config.json
+    # Laguna XS 2.1 — Poolside's generation config; preserve thinking across
+    # tool calls with the separately selected full reasoning-replay policy.
+    "Laguna-XS-2.1-Q4_K_M":                   {"temperature": 1.0, "top_p": 1.0, "top_k": 20, "min_p": 0.0, "chat_template_kwargs": {"enable_thinking": True}},  # https://huggingface.co/poolside/Laguna-XS-2.1/blob/main/generation_config.json
     # DeepSeek-V4-Flash-0731 — agentic profile: T=1.0, top_p=0.95. The card
     # supports low/high/max reasoning effort. This one registry value is the
     # deliberate campaign selector; change only it between effort campaigns.

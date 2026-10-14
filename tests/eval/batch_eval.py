@@ -97,6 +97,24 @@ _LAGUNA_S_SERVER_RECIPE = _BatchServerRecipe((
     "--cache-type-k", "q8_0", "--cache-type-v", "q8_0", "-fa", "1",
     "--no-prefill-assistant", "--no-mmap",
 ))
+_LAGUNA_XS_SERVER_RECIPE = _BatchServerRecipe(
+    extra_flags=(
+        "--reasoning-format", "auto", "-fa", "on",
+        "--no-prefill-assistant", "--no-mmap",
+    ),
+    cache_type_k="q8_0",
+    cache_type_v="q8_0",
+    n_slots=1,
+)
+_MELLUM21_SERVER_RECIPE = _BatchServerRecipe(
+    extra_flags=(
+        "--reasoning", "on", "--reasoning-format", "auto",
+        "-fa", "on", "--no-prefill-assistant", "--no-mmap",
+    ),
+    cache_type_k="q8_0",
+    cache_type_v="q8_0",
+    n_slots=1,
+)
 
 
 def _glimmer_server_recipe(reasoning_strength: str) -> _BatchServerRecipe:
@@ -236,11 +254,13 @@ _GGUF_FILES: list[tuple[str, _BatchServerRecipe]] = [
     # auto-loads its siblings. Keep the proven large-model UMA/Vulkan baseline,
     # including --no-prefill-assistant for Forge's trailing-assistant tool flow.
     ("Laguna-S-2.1-UD-Q4_K_XL-00001-of-00003.gguf", _LAGUNA_S_SERVER_RECIPE),
+    ("Laguna-XS-2.1-Q4_K_M.gguf", _LAGUNA_XS_SERVER_RECIPE),
     # 16GB tier (rig-01) — LFM2.5 MoE + Mellum2 MoE (both variants). All
     # support native FC, so each gets native + prompt configs below.
     ("LFM2.5-8B-A1B-Q4_K_M.gguf", _REASONING_SERVER_RECIPE),
     ("Mellum2-12B-A2.5B-Thinking-Q4_K_M.gguf", _REASONING_SERVER_RECIPE),
     ("Mellum2-12B-A2.5B-Instruct-Q4_K_M.gguf", _DEFAULT_SERVER_RECIPE),
+    ("Mellum2.1-12B-A2.5B-Thinking-Q4_K_M.gguf", _MELLUM21_SERVER_RECIPE),
 ]
 
 # Models that lack native function-calling support — only run prompt mode.
