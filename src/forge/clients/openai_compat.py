@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from typing import Any
 
 import httpx
@@ -138,6 +139,16 @@ class OpenAICompatClient:
         shared client's construction headers.
         """
         return resolve_request_headers(self._static_auth, extra_headers)
+
+    @asynccontextmanager
+    async def _stream_with_timeout(
+        self, *args: Any, **kwargs: Any,
+    ) -> AsyncIterator[httpx.Response]:
+        try:
+            async with self._http.stream(*args, **kwargs) as response:
+                yield response
+        except httpx.ReadTimeout as exc:
+            raise BackendError(408, "Read timeout during streaming") from exc
 
     # ── request building ─────────────────────────────────────────────
 
@@ -349,7 +360,7 @@ class OpenAICompatClient:
         tool_calls: dict[int, dict[str, Any]] = {}
         usage: dict[str, Any] | None = None
 
-        async with self._http.stream(
+        async with self._stream_with_timeout(
             "POST",
             self._chat_url,
             json=body,
