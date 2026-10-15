@@ -173,6 +173,7 @@ python -m tests.eval.report \
   eval_results_v0.6.0.jsonl eval_results_v0.7.0.jsonl \
   eval_results_v0.7.4.jsonl eval_results_v0.7.5.jsonl \
   eval_results_v0.8.2.jsonl eval_results_v0.9.0.jsonl \
+  eval_results_v0.9.5.jsonl \
   --html docs/results/dashboard.html --markdown docs/results/
 ```
 
@@ -230,7 +231,7 @@ shown by `python -m tests.eval.dataset_builder build --help`: `apache-2.0`,
 LICENSE file outside the fixed layout. `--citation-url` must be the canonical
 Forge paper DOI, `https://doi.org/10.1145/3786335.3813193`;
 `--reproduction-url` must be an absolute HTTP(S) URL. The builder verifies the
-six pinned source hashes and exact view counts before
+pinned source hashes and exact view counts before
 creating a sibling `.NAME.incomplete-*` staging directory. It hashes every
 finished non-manifest file, reads every shard back against the publication
 plan, and only then renames the complete directory into place. Any failure

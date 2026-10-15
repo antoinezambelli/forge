@@ -79,6 +79,7 @@ MODEL_SAMPLING_DEFAULTS: dict[str, dict[str, float | int]] = {
     # Qwen3.8-27B — Unsloth's thinking-mode profile. xhigh is the model's
     # documented default reasoning effort for complex coding and agentic work.
     "Qwen3.8-27B-UD-Q4_K_XL":             {"temperature": 1.0, "top_p": 0.95, "top_k": 20, "min_p": 0.0, "presence_penalty": 0.0, "repeat_penalty": 1.0, "chat_template_kwargs": {"reasoning_effort": "xhigh"}},  # https://unsloth.ai/docs/models/qwen3.8
+    "Qwen3.8-Flash-Next-UD-Q4_K_XL":      {"temperature": 1.0, "top_p": 0.95, "top_k": 20, "min_p": 0.0, "presence_penalty": 0.0, "repeat_penalty": 1.0, "chat_template_kwargs": {"reasoning_effort": "xhigh"}},  # https://unsloth.ai/docs/models/qwen3.8-next
     # Ornith 1.5 35B-A3B — model-card general-task profile.
     "Ornith-1.5-35B-Q4_K_M":               {"temperature": 0.6, "top_p": 0.95, "top_k": 20},                                                                 # https://huggingface.co/ornith-ai/Ornith-1.5-35B-A3B-GGUF
     # Qwen3-Coder — non-thinking instruct; card does not mention min_p or presence_penalty
@@ -117,6 +118,14 @@ MODEL_SAMPLING_DEFAULTS: dict[str, dict[str, float | int]] = {
     # smoke clean. enable_thinking left as template default (true server-side
     # but reasoning-budget=0 caps it to 0 tokens).
     "Qwen3.5-122B-A10B-Q4_K_M":             {"temperature": 0.7, "top_p": 0.8, "top_k": 20},                                                                 # https://huggingface.co/Qwen/Qwen3.5-122B-A10B
+    # Laguna S 2.1 — Poolside's quantized model cards declare the checkpoint
+    # generation config authoritative and identify top_k=20 as eval-certified.
+    # Thinking is enabled by default for agentic coding and long-horizon work;
+    # no repeat or presence penalty is recommended.
+    "Laguna-S-2.1-UD-Q4_K_XL":                {"temperature": 1.0, "top_p": 1.0, "top_k": 20, "min_p": 0.0, "chat_template_kwargs": {"enable_thinking": True}},  # https://huggingface.co/poolside/Laguna-S-2.1/blob/main/generation_config.json
+    # Laguna XS 2.1 — Poolside's generation config; preserve thinking across
+    # tool calls with the separately selected full reasoning-replay policy.
+    "Laguna-XS-2.1-Q4_K_M":                   {"temperature": 1.0, "top_p": 1.0, "top_k": 20, "min_p": 0.0, "chat_template_kwargs": {"enable_thinking": True}},  # https://huggingface.co/poolside/Laguna-XS-2.1/blob/main/generation_config.json
     # DeepSeek-V4-Flash-0731 — agentic profile: T=1.0, top_p=0.95. The card
     # supports low/high/max reasoning effort. This one registry value is the
     # deliberate campaign selector; change only it between effort campaigns.
@@ -125,6 +134,9 @@ MODEL_SAMPLING_DEFAULTS: dict[str, dict[str, float | int]] = {
     # includes min_p=0.0 in its llama.cpp recipes. This smoke uses max effort
     # (0.99); xhigh and max map to the same template value.
     "Inkling-Small-UD-IQ4_XS":                 {"temperature": 1.0, "top_p": 1.0, "min_p": 0.0, "chat_template_kwargs": {"reasoning_effort": "max"}}, # https://unsloth.ai/docs/models/inkling
+    # GLM-5.3-Flash — general-task profile with the lightest documented
+    # reasoning effort for this stability smoke.
+    "GLM-5.3-Flash-UD-IQ4_XS":                  {"temperature": 1.0, "top_p": 0.95, "chat_template_kwargs": {"reasoning_effort": "low"}}, # https://unsloth.ai/docs/models/glm-5.3
     # gpt-oss-120b — OpenAI open-weight MoE (117B total, 5.1B active). Reasoning model with three
     # discrete levels: "low" / "medium" / "high", controlled via chat_template_kwargs.reasoning_effort
     # (per llama.cpp guide: `--chat-template-kwargs '{"reasoning_effort": "high"}'`). The registry
@@ -199,6 +211,9 @@ MODEL_SAMPLING_DEFAULTS: dict[str, dict[str, float | int]] = {
     # specified). Thinking = <think> CoT (qwen3 reasoning parser); Instruct = direct (hermes tool parser).
     "Mellum2-12B-A2.5B-Thinking-Q4_K_M":    {"temperature": 0.6, "top_p": 0.95, "top_k": 20},  # https://huggingface.co/JetBrains/Mellum2-12B-A2.5B-Thinking
     "Mellum2-12B-A2.5B-Instruct-Q4_K_M":    {"temperature": 0.6, "top_p": 0.95, "top_k": 20},  # https://huggingface.co/JetBrains/Mellum2-12B-A2.5B-Instruct
+    # Mellum2.1 Thinking — publisher's GGUF/quickstart sampling. The base card separately
+    # reports temperature=1.0 for agentic benchmarks; generation_config.json has no sampling values.
+    "Mellum2.1-12B-A2.5B-Thinking-Q4_K_M": {"temperature": 0.6, "top_p": 0.95, "top_k": 20},  # https://huggingface.co/JetBrains/Mellum2.1-12B-A2.5B-Thinking-GGUF#run-with-llamacpp
     # Granite 4.0 — IBM-pointed reference cites greedy decoding (T=0); top_p/top_k effectively no-op at T=0
     # but kept explicit to match the source recommendation. IBM HF cards / GitHub repo / prompt-engineering
     # guide v2 themselves do not document sampling; Unsloth's tutorial cites IBM directly.

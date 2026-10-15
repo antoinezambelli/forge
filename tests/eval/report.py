@@ -583,6 +583,10 @@ MODEL_FAMILIES: dict[str, dict[str, str]] = {
     "Muse-Glimmer-30B-UD-Q4_K_XL":           {"family": "muse-glimmer-30b", "cross_backend_key": "muse-glimmer-30b-q4_K_XL"},
     # DeepSeek V4 Flash 0731 (managed llama.cpp RPC; UD is a quant variant)
     "DeepSeek-V4-Flash-0731-UD-Q4_K_XL":     {"family": "deepseek-v4-flash", "cross_backend_key": "deepseek-v4-flash-0731-q4_K_XL"},
+    "Inkling-Small-UD-IQ4_XS":             {"family": "inkling-small", "cross_backend_key": "inkling-small-iq4_XS"},
+    # Laguna 2.1 (llama-server only)
+    "Laguna-S-2.1-UD-Q4_K_XL":             {"family": "laguna-s-2.1", "cross_backend_key": "laguna-s-2.1-q4_K_XL"},
+    "Laguna-XS-2.1-Q4_K_M":                {"family": "laguna-xs-2.1", "cross_backend_key": "laguna-xs-2.1-q4_K_M"},
     # Ornith 1.5 (llama-server only)
     "Ornith-1.5-9B-Q4_K_M":                  {"family": "ornith-1.5-9b", "cross_backend_key": "ornith-1.5-9b-q4_K_M"},
     "Ornith-1.5-35B-Q4_K_M":                 {"family": "ornith-1.5-35b", "cross_backend_key": "ornith-1.5-35b-q4_K_M"},
@@ -591,6 +595,7 @@ MODEL_FAMILIES: dict[str, dict[str, str]] = {
     # mellum2 12b-a2.5b (llama-server only; instruct + thinking share a family)
     "Mellum2-12B-A2.5B-Instruct-Q4_K_M":    {"family": "mellum2-12b-a2.5b", "cross_backend_key": "mellum2-12b-a2.5b-instruct-q4_K_M"},
     "Mellum2-12B-A2.5B-Thinking-Q4_K_M":    {"family": "mellum2-12b-a2.5b", "cross_backend_key": "mellum2-12b-a2.5b-thinking-q4_K_M"},
+    "Mellum2.1-12B-A2.5B-Thinking-Q4_K_M": {"family": "mellum2.1-12b-a2.5b", "cross_backend_key": "mellum2.1-12b-a2.5b-thinking-q4_K_M"},
     # gpt-oss 120b (llama-server only)
     "gpt-oss-120b-Q4_K_M":                  {"family": "gpt-oss-120b", "cross_backend_key": "gpt-oss-120b-q4_K_M"},
     # nemotron 3 nano (30b a3b, llama-server only)
@@ -667,6 +672,8 @@ def extract_quant(model: str) -> str:
         return "q4_K_M"
     if "q4_k_xl" in low:
         return "q4_K_XL"
+    if "iq4_xs" in low:
+        return "iq4_XS"
     if "q8_0" in low:
         return "q8_0"
     return "n/a"

@@ -222,44 +222,6 @@ async def test_empty_output_accepts_requested_generation(
 
 
 @pytest.mark.asyncio
-async def test_public_setup_receives_the_configuration_recipe(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    recipe_flags = ("--reasoning-format", "auto", "--no-mmap")
-    setups: list[dict[str, Any]] = []
-
-    _install_inert_backend(monkeypatch)
-
-    class Server:
-        client_base_url = "http://localhost:8080/v1"
-
-        async def stop(self):
-            pass
-
-    async def setup(**kwargs):
-        setups.append(kwargs)
-        return Server(), SimpleNamespace(budget_tokens=4096)
-
-    monkeypatch.setattr(batch_eval, "setup_backend", setup)
-    config = BatchConfig(
-        model="M",
-        backend="llamaserver",
-        mode="native",
-        think=None,
-        gguf_filename="M.gguf",
-        server_recipe=batch_eval._BatchServerRecipe(recipe_flags),
-    )
-
-    await run_batch(
-        configs=[config],
-        runs_per_scenario=1,
-        output_path=tmp_path / "results.jsonl",
-    )
-
-    assert setups[0]["extra_flags"] == list(recipe_flags)
-
-
-@pytest.mark.asyncio
 async def test_same_generation_resume_uses_exact_next_run_number(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import shlex
 import sys
 from types import SimpleNamespace
 from typing import Any
@@ -11,7 +12,7 @@ from typing import Any
 import pytest
 
 import tests.eval.batch_eval as batch_eval
-from forge.clients.sampling_defaults import get_sampling_defaults
+from forge.clients.sampling_defaults import MODEL_SAMPLING_DEFAULTS
 from forge.server import BudgetMode
 from tests.eval.batch_eval import BatchConfig, _BatchServerRecipe, run_batch
 from tests.eval.eval_runner import RunResult
@@ -61,15 +62,27 @@ async def test_each_config_uses_one_public_setup_and_its_own_boundary(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _prepare_batch(monkeypatch)
+    monkeypatch.setenv("FORGE_EVAL_PORT", "18081")
     rpc_marker = object()
-    recipe = _BatchServerRecipe(("--no-mmap",), rpc_marker)  # type: ignore[arg-type]
+    recipes = [
+        _BatchServerRecipe(
+            extra_flags=("--no-mmap",),
+            rpc=rpc_marker,  # type: ignore[arg-type]
+            draft_filename="draft.gguf",
+            cache_type_k="q8_0",
+            cache_type_v="q4_0",
+            n_slots=2,
+            kv_unified=True,
+        ),
+        _BatchServerRecipe(),
+    ]
     configs = [
         BatchConfig(
             model="M", backend="llamaserver", mode="native", think=None,
             gguf_filename="M.gguf", server_recipe=recipe,
             reasoning_level=reasoning_level,
         )
-        for reasoning_level in ("default", "high")
+        for reasoning_level, recipe in zip(("default", "high"), recipes)
     ]
     servers = [
         _Server("http://coordinator-1:8080/v1", 4096),
@@ -87,7 +100,7 @@ async def test_each_config_uses_one_public_setup_and_its_own_boundary(
 
     class Client:
         async def aclose(self) -> None:
-            pytest.fail("batch_eval must preserve its current no-aclose behavior")
+            pass
 
     def build_client(
         config: BatchConfig, models_dir: Path, base_url: str, timeout: float,
@@ -126,18 +139,21 @@ async def test_each_config_uses_one_public_setup_and_its_own_boundary(
 
     assert len(setup_calls) == 2
     assert [server.stop_count for server in servers] == [1, 1]
-    assert setup_calls[0] == setup_calls[1]
-    assert setup_calls[0] == {
-        "backend": "llamaserver",
-        "model": None,
-        "gguf_path": str(tmp_path / "M.gguf"),
-        "mode": "native",
-        "port": batch_eval._eval_port(),
-        "budget_mode": BudgetMode.MANUAL,
-        "manual_tokens": 262_144,
-        "extra_flags": ["--no-mmap"],
-        "rpc": rpc_marker,
-    }
+    for call, recipe in zip(setup_calls, recipes):
+        assert call["backend"] == "llamaserver"
+        assert call["model"] is None
+        assert call["gguf_path"] == str(tmp_path / "M.gguf")
+        assert call["mode"] == "native"
+        assert call["port"] == 18081
+        assert call["budget_mode"] == BudgetMode.MANUAL
+        assert call["manual_tokens"] == 262_144
+        assert call["rpc"] is recipe.rpc
+        for field in ("cache_type_k", "cache_type_v", "n_slots", "kv_unified"):
+            assert call[field] == getattr(recipe, field)
+    assert setup_calls[0]["extra_flags"] == [
+        "--model-draft", str(tmp_path / "draft.gguf"), "--no-mmap",
+    ]
+    assert setup_calls[1]["extra_flags"] is None
     assert build_calls == [
         ("http://coordinator-1:8080/v1", 7200),
         ("http://coordinator-2:8080/v1", 7200),
@@ -241,95 +257,67 @@ def test_client_factory_uses_manager_url_and_request_timeout(
     assert constructed[1][1]["timeout"] == 7200
 
 
+@pytest.mark.parametrize("use_override", [False, True], ids=["registry", "override"])
 @pytest.mark.asyncio
-async def test_rpc_campaign_topology_client_and_dry_run_are_one_integrated_path(
+async def test_rpc_topology_sampling_and_dry_run_follow_selected_config(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
+    use_override: bool,
 ) -> None:
-    topology_path = tmp_path / "deepseek-rpc.json"
+    monkeypatch.setattr(batch_eval, "ALL_SCENARIOS", [basic_2step])
+    registry_sampling = {
+        "temperature": 0.2, "top_p": 0.7,
+        "chat_template_kwargs": {"reasoning_effort": "low"},
+    }
+    override_sampling = {
+        "temperature": 0.8, "top_p": 0.9,
+        "chat_template_kwargs": {"reasoning_effort": "high"},
+    }
+    monkeypatch.setitem(MODEL_SAMPLING_DEFAULTS, "test-model", registry_sampling)
+    recipe = _BatchServerRecipe(
+        extra_flags=("--no-mmap",),
+        cache_type_k="q8_0", cache_type_v="q4_0", n_slots=2, kv_unified=True,
+    )
+    base_config = BatchConfig(
+        model="test-model", backend="llamaserver", mode="native", think=None,
+        gguf_filename="test-model.gguf", server_recipe=recipe, requires_rpc=True,
+        sampling_override=override_sampling if use_override else None,
+    )
+    model_path = tmp_path / base_config.gguf_filename
+    model_path.touch()
+    topology_path = tmp_path / "rpc.json"
     topology_path.write_text(
         json.dumps({
             "worker": {
-                "ssh_target": "operator@10.35.0.5",
-                "rpc_host": "10.35.0.5",
-                "rpc_port": 50052,
-                "executable": "/opt/llama/build/bin/ggml-rpc-server",
+                "ssh_target": "operator@10.0.0.9",
+                "rpc_host": "10.0.0.9",
+                "executable": "/opt/rpc-server",
                 "device": "Vulkan0",
-                "tensor_cache": True,
-                "environment": [
-                    ["AMD_VULKAN_ICD", "RADV"],
-                    ["RADV_PERFTEST", "nogttspill"],
-                ],
             },
-            "coordinator_executable": "/opt/llama/build/bin/llama-server",
-            "coordinator_environment": [
-                ["AMD_VULKAN_ICD", "RADV"],
-                ["RADV_PERFTEST", "nogttspill"],
-            ],
+            "coordinator_executable": "/opt/llama-server",
             "devices": ["Vulkan0", "RPC0"],
-            "tensor_split": [1, 1],
-            "split_mode": "layer",
-            "startup_timeout": 1800,
-            "log_directory": str(tmp_path / "logs"),
+            "tensor_split": [1, 2],
         }),
         encoding="utf-8",
     )
-    model_path = (
-        tmp_path
-        / "DeepSeek-V4-Flash-0731-UD-Q4_K_XL-00001-of-00005.gguf"
-    )
-    model_path.touch()
+    output_path = tmp_path / "must-not-exist.jsonl"
+    with pytest.raises(ValueError, match="requires an attached RPC topology"):
+        await run_batch([base_config], 1, output_path, dry_run=True)
 
     rpc = batch_eval._load_rpc_topology(topology_path)
-    assert rpc.worker.tensor_cache is True
-    assert rpc.worker.environment == (
-        ("AMD_VULKAN_ICD", "RADV"),
-        ("RADV_PERFTEST", "nogttspill"),
-    )
-    assert rpc.devices == ("Vulkan0", "RPC0")
-    assert rpc.tensor_split == (1, 1)
-    assert rpc.startup_timeout == 1800
-
-    base_config = batch_eval.DEEPSEEK_V4_RPC_CONFIGS[0]
-    with pytest.raises(ValueError, match="requires an attached RPC topology"):
-        await run_batch(
-            [base_config], 1, tmp_path / "unconfigured.jsonl", dry_run=True,
-        )
-    attached = batch_eval._attach_rpc_topology([base_config], rpc)
-    assert base_config.server_recipe.rpc is None
-    assert attached[0] is not base_config
-    assert attached[0].server_recipe.rpc is rpc
-
+    attached = batch_eval._attach_rpc_topology([base_config], rpc)[0]
+    assert attached.server_recipe.rpc is rpc
+    expected_sampling = override_sampling if use_override else registry_sampling
     client = batch_eval._build_client(
-        attached[0], tmp_path, "http://localhost:8080/v1", 7200,
+        attached, tmp_path, "http://localhost:8080/v1", 7200,
     )
-    selected_effort = get_sampling_defaults(base_config.model)[
-        "chat_template_kwargs"
-    ]["reasoning_effort"]
-    assert selected_effort in {"low", "high", "max"}
-    assert client.temperature == 1.0
-    assert client.top_p == 0.95
-    assert client.chat_template_kwargs == {"reasoning_effort": selected_effort}
-    await client.aclose()
-
-    inkling_path = tmp_path / "Inkling-Small-UD-IQ4_XS-00001-of-00004.gguf"
-    inkling_path.touch()
-    inkling_config = batch_eval.INKLING_SMALL_RPC_CONFIGS[0]
-    with pytest.raises(ValueError, match="requires an attached RPC topology"):
-        await run_batch(
-            [inkling_config], 1, tmp_path / "inkling-unconfigured.jsonl",
-            dry_run=True,
-        )
-    inkling_attached = batch_eval._attach_rpc_topology([inkling_config], rpc)
-    inkling_client = batch_eval._build_client(
-        inkling_attached[0], tmp_path, "http://localhost:8080/v1", 7200,
-    )
-    assert inkling_client.temperature == 1.0
-    assert inkling_client.top_p == 1.0
-    assert inkling_client.min_p == 0.0
-    assert inkling_client.chat_template_kwargs == {"reasoning_effort": "max"}
-    await inkling_client.aclose()
+    try:
+        assert client.temperature == expected_sampling["temperature"]
+        assert client.top_p == expected_sampling["top_p"]
+        assert client.chat_template_kwargs == expected_sampling["chat_template_kwargs"]
+    finally:
+        await client.aclose()
 
     def fail(*args: Any, **kwargs: Any) -> Any:
         pytest.fail("dry-run reached backend, client, subprocess, or output activity")
@@ -338,95 +326,42 @@ async def test_rpc_campaign_topology_client_and_dry_run_are_one_integrated_path(
     monkeypatch.setattr(batch_eval, "_build_client", fail)
     monkeypatch.setattr(batch_eval, "_append_jsonl_row", fail)
     monkeypatch.setattr(batch_eval.subprocess, "run", fail)
-    output_path = tmp_path / "must-not-exist.jsonl"
+    monkeypatch.setitem(batch_eval.CONFIG_SETS, "deepseek-v4-rpc", [base_config])
     monkeypatch.setattr(sys, "argv", [
-        "batch_eval",
-        "--config", "deepseek-v4-rpc",
+        "batch_eval", "--config", "deepseek-v4-rpc",
         "--rpc-topology", str(topology_path),
-        "--tags", "plumbing", "model_quality", "advanced_reasoning",
-        "--runs", "50",
-        "--budget-mode", "manual",
-        "--num-ctx", "262144",
-        "--request-timeout", "7200",
-        "--run-timeout", "7200",
-        "--ablation", "reforged",
-        "--reasoning-replay", "none",
-        "--generation", "3",
-        "--models-dir", str(tmp_path),
-        "--output", str(output_path),
-        "--dry-run",
+        "--runs", "2", "--budget-mode", "manual", "--num-ctx", "8192",
+        "--models-dir", str(tmp_path), "--output", str(output_path), "--dry-run",
     ])
 
     await batch_eval.main()
 
     output = capsys.readouterr().out
-    assert "Config set:    deepseek-v4-rpc (1 configs)" in output
-    assert "Scenarios:     26" in output
-    assert "Total max runs: 1300" in output
-    assert (
-        f"reasoning effort (sampling registry): {selected_effort}" in output
+    effort_line = next(line for line in output.splitlines() if "reasoning effort" in line)
+    assert effort_line.rsplit(":", 1)[1].strip() == (
+        expected_sampling["chat_template_kwargs"]["reasoning_effort"]
     )
-    assert "startup timeout: 1800s" in output
-    worker_line = next(
-        line for line in output.splitlines() if "worker command:" in line
-    )
+    worker_line = next(line for line in output.splitlines() if "worker command:" in line)
+    worker_command = shlex.split(worker_line.split("command:", 1)[1])
+    assert rpc.worker.ssh_target in worker_command
     coordinator_line = next(
         line for line in output.splitlines() if "coordinator command:" in line
     )
-    assert worker_line.endswith("-H 10.35.0.5 -p 50052 -d Vulkan0 -c'")
-    for owned_arg in (
-        "-ngl 999", "--jinja", "--fit off", "-b 2048", "-ub 128",
-        "--cache-type-k q8_0", "--cache-type-v q8_0", "--no-mmap",
-        "-fa on", "--reasoning-budget 32768", "--reasoning-format auto",
-        "--no-prefill-assistant", "--rpc 10.35.0.5:50052",
-        "--device Vulkan0,RPC0", "--split-mode layer",
-        "--tensor-split 1,1", "-c 262144",
+    coordinator_command = shlex.split(coordinator_line.split("command:", 1)[1])
+    for flag, value in (
+        ("-m", str(model_path)),
+        ("--rpc", f"{rpc.worker.rpc_host}:{rpc.worker.rpc_port}"),
+        ("-c", "8192"),
+        ("--cache-type-k", recipe.cache_type_k),
+        ("--cache-type-v", recipe.cache_type_v),
+        ("--parallel", str(recipe.n_slots)),
     ):
-        assert coordinator_line.count(owned_arg) == 1, owned_arg
+        assert coordinator_command.count(flag) == 1
+        assert coordinator_command[coordinator_command.index(flag) + 1] == value
+    assert "--no-mmap" in coordinator_command
+    assert "--kv-unified" in coordinator_command
+    assert base_config.server_recipe.rpc is None
     assert not output_path.exists()
-
-    inkling_output_path = tmp_path / "inkling-must-not-exist.jsonl"
-    monkeypatch.setattr(sys, "argv", [
-        "batch_eval",
-        "--config", "inkling-small-rpc",
-        "--rpc-topology", str(topology_path),
-        "--tags", "plumbing", "model_quality", "advanced_reasoning",
-        "--runs", "50",
-        "--budget-mode", "manual",
-        "--num-ctx", "262144",
-        "--request-timeout", "7200",
-        "--run-timeout", "7200",
-        "--ablation", "reforged",
-        "--reasoning-replay", "none",
-        "--generation", "3",
-        "--models-dir", str(tmp_path),
-        "--output", str(inkling_output_path),
-        "--dry-run",
-    ])
-    await batch_eval.main()
-
-    inkling_output = capsys.readouterr().out
-    assert "Config set:    inkling-small-rpc (1 configs)" in inkling_output
-    assert "Scenarios:     26" in inkling_output
-    assert "Total max runs: 1300" in inkling_output
-    assert "reasoning effort (sampling registry): max" in inkling_output
-    inkling_coordinator = next(
-        line for line in inkling_output.splitlines()
-        if "coordinator command:" in line
-    )
-    for owned_arg in (
-        "-ngl 999", "--jinja", "--fit off", "-b 512", "-ub 128",
-        "--cache-type-k f16", "--cache-type-v f16", "--no-mmap",
-        "-fa on", "--parallel 1", "--rpc 10.35.0.5:50052",
-        "--device Vulkan0,RPC0", "--split-mode layer",
-        "--tensor-split 1,1", "-c 262144",
-    ):
-        assert inkling_coordinator.count(owned_arg) == 1, owned_arg
-    for deepseek_only in (
-        "q8_0", "--reasoning-budget", "--no-prefill-assistant",
-    ):
-        assert deepseek_only not in inkling_coordinator
-    assert not inkling_output_path.exists()
 
 
 @pytest.mark.asyncio

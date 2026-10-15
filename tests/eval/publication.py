@@ -57,20 +57,20 @@ SUPERSESSION_SCOPES = ("explicit_policy", "base_configuration")
 VIEW_NAMES = ("history", "snapshot", "latest")
 
 PINNED_VIEW_COUNTS = {
-    "history": 552_500,
-    "snapshot": 412_100,
-    "latest": 293_800,
+    "history": 570_700,
+    "snapshot": 430_300,
+    "latest": 312_000,
 }
 PINNED_VIEW_METRIC_COUNTS = {
-    "history": (345_280, 460_591, 460_591),
-    "snapshot": (256_333, 344_048, 344_048),
-    "latest": (205_180, 259_363, 259_363),
+    "history": (359_271, 476_783, 476_783),
+    "snapshot": (270_324, 360_240, 360_240),
+    "latest": (219_171, 275_555, 275_555),
 }
 PINNED_SNAPSHOT_SOURCE_IDENTITY_SHA256 = (
-    "405a6d71e092d2af847f0bbd049a0b60e21ee307649b960e48fd99ff22fbacee"
+    "ca33767f1ccbf309836186863e97c7b9e61f9e3a7d9ff761373ba096eda7dba6"
 )
 PINNED_SNAPSHOT_SOURCE_PAYLOAD_SHA256 = (
-    "8508da22521cdb821f4245e9538c36019cae905e006745a46300ee17a572ddc8"
+    "d1b2cbac66882e2926c07de9462a2383fb9bc59d60dc2962fac24f9dbdde5021"
 )
 
 
@@ -339,6 +339,14 @@ PINNED_SOURCES: tuple[SourceSpec, ...] = (
         CANONICAL_DIALECT,
         33_800,
         "e36079168689159362b1aac23901ac121615f38380ccbed5f9a1e90f324a9c8e",
+    ),
+    SourceSpec(
+        "eval_results_v0.9.5.jsonl",
+        "v0.9.5",
+        3,
+        CANONICAL_DIALECT,
+        18_200,
+        "66ff616d445ca0c7a7f3dcddd00305d953069353df420aff2d5bed08c2e15abe",
     ),
 )
 
@@ -1022,7 +1030,7 @@ def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
         "--source-root",
         required=True,
         type=Path,
-        help="Directory containing the six pinned eval JSONL files.",
+        help="Directory containing the pinned eval JSONL files.",
     )
     return parser.parse_args(argv)
 
