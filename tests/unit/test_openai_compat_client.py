@@ -2,6 +2,7 @@
 
 import json
 
+import httpx
 import pytest
 from pydantic import BaseModel, Field
 from unittest.mock import AsyncMock, MagicMock
@@ -470,6 +471,26 @@ class TestAuth:
 
 
 class TestSendStream:
+    @pytest.mark.asyncio
+    async def test_read_timeout_during_stream_raises_backend_error(self) -> None:
+        class _TimeoutStreamResponse(_MockStreamResponse):
+            async def aiter_lines(self):
+                yield 'data: ' + json.dumps({
+                    "choices": [{"delta": {"content": "partial"}}],
+                })
+                raise httpx.ReadTimeout("timed out")
+
+        client = _make_client()
+        client._http.stream.return_value = _TimeoutStreamResponse([])
+        chunks = []
+        with pytest.raises(BackendError) as exc_info:
+            async for chunk in client.send_stream([{"role": "user", "content": "test"}]):
+                chunks.append(chunk)
+
+        assert [chunk.content for chunk in chunks] == ["partial"]
+        assert exc_info.value.status_code == 408
+        assert "timeout" in str(exc_info.value).lower()
+
     @pytest.mark.asyncio
     async def test_yields_text_deltas_and_final(self) -> None:
         client = _make_client()
