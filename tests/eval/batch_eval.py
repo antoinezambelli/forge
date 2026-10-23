@@ -92,6 +92,17 @@ _LARGE_120B_SERVER_RECIPE = _BatchServerRecipe((
     "--cache-type-k", "q8_0", "--cache-type-v", "q8_0", "-fa", "1",
     "--no-prefill-assistant", "--no-mmap",
 ))
+_ORNITH15_122B_SERVER_RECIPE = _BatchServerRecipe(
+    extra_flags=(
+        "--fit", "off", "--load-mode", "none",
+        "-b", "2048", "-ub", "512", "-fa", "on",
+        "--reasoning", "on", "--reasoning-format", "auto",
+        "--no-prefill-assistant", "--spec-type", "none",
+    ),
+    cache_type_k="q8_0",
+    cache_type_v="q8_0",
+    n_slots=1,
+)
 _LAGUNA_S_SERVER_RECIPE = _BatchServerRecipe((
     "--reasoning-format", "auto",
     "--cache-type-k", "q8_0", "--cache-type-v", "q8_0", "-fa", "1",
@@ -111,6 +122,19 @@ _MELLUM21_SERVER_RECIPE = _BatchServerRecipe(
         "--reasoning", "on", "--reasoning-format", "auto",
         "-fa", "on", "--no-prefill-assistant", "--no-mmap",
     ),
+    cache_type_k="q8_0",
+    cache_type_v="q8_0",
+    n_slots=1,
+)
+_NEMOTRON35_BOLT_SERVER_RECIPE = _BatchServerRecipe(
+    extra_flags=(
+        "--reasoning", "on", "--reasoning-format", "auto",
+        "-fa", "on", "--no-prefill-assistant", "--load-mode", "none",
+        "-b", "2048", "-ub", "512",
+        "--spec-type", "draft-dflash", "--spec-draft-n-max", "7",
+        "--spec-draft-ngl", "999",
+    ),
+    draft_filename="NVIDIA-Nemotron-3.5-Bolt-74B-A9B-24GB-LiLiCorr.gguf",
     cache_type_k="q8_0",
     cache_type_v="q8_0",
     n_slots=1,
@@ -144,6 +168,17 @@ _DEEPSEEK_V4_RPC_SERVER_RECIPE = _BatchServerRecipe((
     "--reasoning-budget", "32768", "--reasoning-format", "auto",
     "--no-prefill-assistant",
 ))
+_NEMOTRON35_SUPER_VL_RPC_SERVER_RECIPE = _BatchServerRecipe(
+    extra_flags=(
+        "--fit", "off", "--load-mode", "none",
+        "-b", "2048", "-ub", "512", "-fa", "on",
+        "--reasoning", "on", "--reasoning-format", "auto",
+        "--no-prefill-assistant", "--spec-type", "none",
+    ),
+    cache_type_k="q8_0",
+    cache_type_v="q8_0",
+    n_slots=1,
+)
 _QWEN38_FLASH_NEXT_RPC_SERVER_RECIPE = _BatchServerRecipe(
     extra_flags=(
         "--fit", "off",
@@ -182,6 +217,8 @@ _DEEPSEEK_V4_SAMPLING: dict[str, Any] = get_sampling_defaults(_DEEPSEEK_V4_MODEL
 _DEEPSEEK_V4_REASONING_LEVEL: str = _DEEPSEEK_V4_SAMPLING[
     "chat_template_kwargs"
 ]["reasoning_effort"]
+_NEMOTRON35_SUPER_VL_MODEL = "NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-UD-Q4_K_XL"
+_NEMOTRON35_SUPER_VL_GGUF = f"{_NEMOTRON35_SUPER_VL_MODEL}-00001-of-00003.gguf"
 _QWEN38_FLASH_NEXT_MODEL = "Qwen3.8-Flash-Next-UD-Q4_K_XL"
 _QWEN38_FLASH_NEXT_GGUF = f"{_QWEN38_FLASH_NEXT_MODEL}-00001-of-00004.gguf"
 _INKLING_SMALL_MODEL = "Inkling-Small-UD-IQ4_XS"
@@ -239,6 +276,7 @@ _GGUF_FILES: list[tuple[str, _BatchServerRecipe]] = [
     ("Qwen3.8-27B-UD-Q4_K_XL.gguf", _QWEN38_SERVER_RECIPE),
     ("Ornith-1.5-35B-Q4_K_M.gguf", _REASONING_SERVER_RECIPE),
     ("Nemotron-3-Nano-30B-A3B-Q4_K_M.gguf", _REASONING_SERVER_RECIPE),
+    ("NVIDIA-Nemotron-3.5-Bolt-74B-A9B-24GB.gguf", _NEMOTRON35_BOLT_SERVER_RECIPE),
     ("Muse-Glimmer-30B-UD-Q4_K_XL.gguf", _GLIMMER_SERVER_RECIPE),
     # Gemma-4 large (rig-04, az/eval-large): 26B-A4B MoE + 31B dense. Native FC;
     # literal serving recipe includes the SWA + q8-KV serving fixes.
@@ -249,6 +287,7 @@ _GGUF_FILES: list[tuple[str, _BatchServerRecipe]] = [
     # -NNNNN-of-NNNNN suffix for clean model identity and sampling lookups.
     ("gpt-oss-120b-Q4_K_M-00001-of-00002.gguf", _GPT_OSS_120B_SERVER_RECIPE),
     ("Qwen3.5-122B-A10B-Q4_K_M-00001-of-00003.gguf", _LARGE_120B_SERVER_RECIPE),
+    ("Ornith-1.5-122B-UD-Q4_K_XL-00001-of-00003.gguf", _ORNITH15_122B_SERVER_RECIPE),
     ("NVIDIA-Nemotron-3-Super-120B-A12B-UD-Q4_K_M-00001-of-00003.gguf", _LARGE_120B_SERVER_RECIPE),
     # Laguna S 2.1 on rig-05 (rig-03-equivalent Strix Halo): the first shard
     # auto-loads its siblings. Keep the proven large-model UMA/Vulkan baseline,
@@ -497,6 +536,18 @@ QWEN38_FLASH_NEXT_XHIGH_RPC_CONFIGS: list[BatchConfig] = [
     ),
 ]
 
+NEMOTRON35_SUPER_VL_RPC_CONFIGS: list[BatchConfig] = [
+    BatchConfig(
+        model=_NEMOTRON35_SUPER_VL_MODEL,
+        backend="llamaserver",
+        mode="native",
+        think=None,
+        gguf_filename=_NEMOTRON35_SUPER_VL_GGUF,
+        server_recipe=_NEMOTRON35_SUPER_VL_RPC_SERVER_RECIPE,
+        requires_rpc=True,
+    ),
+]
+
 INKLING_SMALL_RPC_CONFIGS: list[BatchConfig] = [
     BatchConfig(
         model=_INKLING_SMALL_MODEL,
@@ -538,6 +589,7 @@ CONFIG_SETS: dict[str, list[BatchConfig]] = {
     "deepseek-v4-rpc": DEEPSEEK_V4_RPC_CONFIGS,
     "deepseek-v4-max-rpc": DEEPSEEK_V4_MAX_RPC_CONFIGS,
     "qwen38-flash-next-xhigh-rpc": QWEN38_FLASH_NEXT_XHIGH_RPC_CONFIGS,
+    "nemotron35-super-vl-rpc": NEMOTRON35_SUPER_VL_RPC_CONFIGS,
     "qwen38": QWEN38_CONFIGS,
     "qwen38-medium": _QWEN38_EFFORT_CONFIGS["medium"],
     "qwen38-low": _QWEN38_EFFORT_CONFIGS["low"],
@@ -1605,6 +1657,7 @@ async def main() -> None:
     rpc_config_sets = {
         "deepseek-v4-rpc", "deepseek-v4-max-rpc",
         "qwen38-flash-next-xhigh-rpc", "inkling-small-rpc", "glm53-flash-rpc",
+        "nemotron35-super-vl-rpc",
     }
     if args.config in rpc_config_sets:
         if args.rpc_topology is None:

@@ -57,20 +57,20 @@ SUPERSESSION_SCOPES = ("explicit_policy", "base_configuration")
 VIEW_NAMES = ("history", "snapshot", "latest")
 
 PINNED_VIEW_COUNTS = {
-    "history": 570_700,
-    "snapshot": 430_300,
-    "latest": 312_000,
+    "history": 583_700,
+    "snapshot": 443_300,
+    "latest": 325_000,
 }
 PINNED_VIEW_METRIC_COUNTS = {
-    "history": (359_271, 476_783, 476_783),
-    "snapshot": (270_324, 360_240, 360_240),
-    "latest": (219_171, 275_555, 275_555),
+    "history": (369_934, 488_452, 488_452),
+    "snapshot": (280_987, 371_909, 371_909),
+    "latest": (229_834, 287_224, 287_224),
 }
 PINNED_SNAPSHOT_SOURCE_IDENTITY_SHA256 = (
-    "ca33767f1ccbf309836186863e97c7b9e61f9e3a7d9ff761373ba096eda7dba6"
+    "9a40643c6f3162a9e24bf5803469d5ca400e8e5075c9052fd26470f86c7a72b8"
 )
 PINNED_SNAPSHOT_SOURCE_PAYLOAD_SHA256 = (
-    "d1b2cbac66882e2926c07de9462a2383fb9bc59d60dc2962fac24f9dbdde5021"
+    "e7dea5527226aa74449da03a76df392eb4f65c1fe8f6793f6698393b770285bd"
 )
 
 
@@ -345,8 +345,8 @@ PINNED_SOURCES: tuple[SourceSpec, ...] = (
         "v0.9.5",
         3,
         CANONICAL_DIALECT,
-        18_200,
-        "66ff616d445ca0c7a7f3dcddd00305d953069353df420aff2d5bed08c2e15abe",
+        31_200,
+        "89a4d587897f9d202e574e843bf6324e1013e41effd53ef65bbe349c777d428c",
     ),
 )
 

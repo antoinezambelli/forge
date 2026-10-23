@@ -590,6 +590,7 @@ MODEL_FAMILIES: dict[str, dict[str, str]] = {
     # Ornith 1.5 (llama-server only)
     "Ornith-1.5-9B-Q4_K_M":                  {"family": "ornith-1.5-9b", "cross_backend_key": "ornith-1.5-9b-q4_K_M"},
     "Ornith-1.5-35B-Q4_K_M":                 {"family": "ornith-1.5-35b", "cross_backend_key": "ornith-1.5-35b-q4_K_M"},
+    "Ornith-1.5-122B-UD-Q4_K_XL":             {"family": "ornith-1.5-122b", "cross_backend_key": "ornith-1.5-122b-q4_K_XL"},
     # lfm2.5 8b-a1b (llama-server only)
     "LFM2.5-8B-A1B-Q4_K_M":                 {"family": "lfm2.5-8b-a1b", "cross_backend_key": "lfm2.5-8b-a1b-q4_K_M"},
     # mellum2 12b-a2.5b (llama-server only; instruct + thinking share a family)
@@ -602,6 +603,8 @@ MODEL_FAMILIES: dict[str, dict[str, str]] = {
     "Nemotron-3-Nano-30B-A3B-Q4_K_M":       {"family": "nemotron-3-nano", "cross_backend_key": "nemotron-3-nano-30b-a3b-q4_K_M"},
     # nemotron 3 super (120b a12b, llama-server only; UD is a quant variant)
     "NVIDIA-Nemotron-3-Super-120B-A12B-UD-Q4_K_M": {"family": "nemotron-3-super", "cross_backend_key": "nemotron-3-super-120b-a12b-q4_K_M"},
+    "NVIDIA-Nemotron-3.5-Bolt-74B-A9B-24GB": {"family": "nemotron-3.5-bolt", "cross_backend_key": "nemotron-3.5-bolt-74b-a9b-24gb"},
+    "NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-UD-Q4_K_XL": {"family": "nemotron-3.5-super-vl", "cross_backend_key": "nemotron-3.5-super-vl-120b-a12b-q4_K_XL"},
     # granite 4.0 (h-micro / h-tiny)
     "granite-4.0:h-micro-q4_K_M":           {"family": "granite-4.0-h-micro", "cross_backend_key": "granite-4.0-h-micro-q4_K_M"},
     "granite-4.0-h-micro-Q4_K_M":           {"family": "granite-4.0-h-micro", "cross_backend_key": "granite-4.0-h-micro-q4_K_M"},
@@ -667,6 +670,8 @@ def cross_backend_key(model: str) -> str:
 
 def extract_quant(model: str) -> str:
     """Extract quantization from model name."""
+    if model == "NVIDIA-Nemotron-3.5-Bolt-74B-A9B-24GB":
+        return "iq2_XXS"
     low = model.lower()
     if "q4_k_m" in low:
         return "q4_K_M"
