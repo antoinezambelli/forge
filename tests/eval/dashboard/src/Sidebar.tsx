@@ -16,6 +16,7 @@ interface SidebarProps {
   rows: ConfigRow[];
   filters: Filters;
   onFilterChange: (dim: FilterDimension, val: string, on: boolean) => void;
+  onFamilyOnly: (family: string) => void;
   activeScreen: ScreenId;
   onScreenChange: (id: ScreenId) => void;
   activeView: ViewId;
@@ -37,6 +38,7 @@ export function Sidebar({
   rows,
   filters,
   onFilterChange,
+  onFamilyOnly,
   activeScreen,
   onScreenChange,
   activeView,
@@ -126,18 +128,27 @@ export function Sidebar({
               {DIMENSION_LABELS[dim]}
             </legend>
             {vals.map((v) => (
-              <label
-                key={v}
-                className="flex items-center gap-1.5 text-xs py-0.5 cursor-pointer hover:text-zinc-200"
-              >
-                <input
-                  type="checkbox"
-                  checked={filters[dim]?.has(v) ?? true}
-                  onChange={(e) => onFilterChange(dim, v, e.target.checked)}
-                  className="w-3.5 h-3.5 rounded border-zinc-600 bg-zinc-800 accent-emerald-500"
-                />
-                <span>{v}</span>
-              </label>
+              <div key={v} className="flex items-center gap-2">
+                <label className="flex min-w-0 flex-1 items-center gap-1.5 text-xs py-0.5 cursor-pointer hover:text-zinc-200">
+                  <input
+                    type="checkbox"
+                    checked={filters[dim]?.has(v) ?? true}
+                    onChange={(e) => onFilterChange(dim, v, e.target.checked)}
+                    className="w-3.5 h-3.5 shrink-0 rounded border-zinc-600 bg-zinc-800 accent-emerald-500"
+                  />
+                  <span className="min-w-0 break-words">{v}</span>
+                </label>
+                {dim === "family" && (
+                  <button
+                    type="button"
+                    onClick={() => onFamilyOnly(v)}
+                    aria-label={`Only ${v}`}
+                    className="ml-auto shrink-0 text-[0.65rem] text-zinc-500 hover:text-emerald-400 cursor-pointer"
+                  >
+                    only
+                  </button>
+                )}
+              </div>
             ))}
           </fieldset>
         );

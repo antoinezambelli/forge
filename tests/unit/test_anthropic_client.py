@@ -29,8 +29,8 @@ def test_anthropic_dependency_floor_exposes_exact_context_metadata() -> None:
     )
     extras = config["project"]["optional-dependencies"]
 
-    assert extras["anthropic"] == ["anthropic>=0.86.0"]
-    assert "anthropic>=0.86.0" in extras["dev"]
+    assert extras["anthropic"] == ["anthropic>=0.86.0,<2"]
+    assert "anthropic>=0.86.0,<2" in extras["dev"]
 
 
 class CityParams(BaseModel):

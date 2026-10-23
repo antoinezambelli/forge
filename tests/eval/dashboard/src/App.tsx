@@ -126,6 +126,20 @@ function App() {
     [],
   );
 
+  const handleFamilyOnly = useCallback((family: string) => {
+    setFilters((prev) => {
+      if (!prev || !data) return prev;
+      const isOnly = prev.family.size === 1 && prev.family.has(family);
+      return {
+        ...prev,
+        family: isOnly
+          ? new Set(data.rows.map((row) => row.family))
+          : new Set([family]),
+      };
+    });
+    setChecked([]);
+  }, [data]);
+
   const handleScreenChange = useCallback((id: ScreenId) => {
     setActiveScreen(id);
     setChecked([]);
@@ -194,6 +208,7 @@ function App() {
         rows={visibleRows}
         filters={filters}
         onFilterChange={handleFilterChange}
+        onFamilyOnly={handleFamilyOnly}
         activeScreen={activeScreen}
         onScreenChange={handleScreenChange}
         activeView={activeView}

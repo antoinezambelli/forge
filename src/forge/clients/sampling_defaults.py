@@ -82,6 +82,8 @@ MODEL_SAMPLING_DEFAULTS: dict[str, dict[str, float | int]] = {
     "Qwen3.8-Flash-Next-UD-Q4_K_XL":      {"temperature": 1.0, "top_p": 0.95, "top_k": 20, "min_p": 0.0, "presence_penalty": 0.0, "repeat_penalty": 1.0, "chat_template_kwargs": {"reasoning_effort": "xhigh"}},  # https://unsloth.ai/docs/models/qwen3.8-next
     # Ornith 1.5 35B-A3B — model-card general-task profile.
     "Ornith-1.5-35B-Q4_K_M":               {"temperature": 0.6, "top_p": 0.95, "top_k": 20},                                                                 # https://huggingface.co/ornith-ai/Ornith-1.5-35B-A3B-GGUF
+    # Ornith 1.5 122B — publisher's general-task profile.
+    "Ornith-1.5-122B-UD-Q4_K_XL":          {"temperature": 1.0, "top_p": 0.95, "top_k": 20, "min_p": 0.0, "presence_penalty": 1.5, "repeat_penalty": 1.0},  # https://huggingface.co/ornith-ai/Ornith-1.5-122B
     # Qwen3-Coder — non-thinking instruct; card does not mention min_p or presence_penalty
     "qwen3-coder:30b-a3b-instruct-q4_K_M":  {"temperature": 0.7, "top_p": 0.8, "top_k": 20, "repeat_penalty": 1.05},                                         # https://huggingface.co/Qwen/Qwen3-Coder-30B-A3B-Instruct
     "Qwen3-Coder-30B-A3B-Instruct-Q4_K_M":  {"temperature": 0.7, "top_p": 0.8, "top_k": 20, "repeat_penalty": 1.05},                                         # https://huggingface.co/Qwen/Qwen3-Coder-30B-A3B-Instruct
@@ -155,6 +157,10 @@ MODEL_SAMPLING_DEFAULTS: dict[str, dict[str, float | int]] = {
     # existing prompt-mode rescue parsers, no new parser needed.
     "nemotron-3-super:120b-a12b-q4_K_M":            {"temperature": 1.0, "top_p": 0.95, "chat_template_kwargs": {"enable_thinking": True, "low_effort": True, "force_nonempty_content": True}},  # https://huggingface.co/nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-BF16
     "NVIDIA-Nemotron-3-Super-120B-A12B-UD-Q4_K_M":  {"temperature": 1.0, "top_p": 0.95, "chat_template_kwargs": {"enable_thinking": True, "low_effort": True, "force_nonempty_content": True}},  # https://huggingface.co/nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-BF16
+    # Nemotron 3.5 Bolt / Super VL — publisher sampling, default thinking.
+    # Bolt keeps history for its replay ablation; Super VL uses template truncation.
+    "NVIDIA-Nemotron-3.5-Bolt-74B-A9B-24GB": {"temperature": 1.0, "top_p": 0.95, "chat_template_kwargs": {"enable_thinking": True, "truncate_history_thinking": False}},  # https://huggingface.co/nvidia/NVIDIA-Nemotron-3.5-Bolt-74B-A9B-24GB-GGUF
+    "NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-UD-Q4_K_XL": {"temperature": 1.0, "top_p": 0.95, "chat_template_kwargs": {"enable_thinking": True, "truncate_history_thinking": True}},  # https://huggingface.co/nvidia/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-BF16
     # NVIDIA Nemotron-3-Nano-30B-A3B — same hybrid Mamba-2 + Transformer + MoE family as Super, 30B
     # total / ~3.5B active. Card splits sampling into two presets:
     #   - "Reasoning":    T=1.0, top_p=1.0   — wider nucleus than Super's 0.95
