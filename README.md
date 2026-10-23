@@ -262,6 +262,10 @@ docker run -p 8081:8081 forge-proxy --backend-url http://host.docker.internal:80
 
 Note: If your backend is running on `localhost` of the host machine, use `http://host.docker.internal:PORT` (on macOS/Windows) or the host's IP address to allow the container to reach it.
 
+## One-Click Deploy
+
+[![Deploy on RepoCloud](https://d16t0pc4846x52.cloudfront.net/deploylobe.svg)](https://repocloud.io/details/Forge/)
+
 ## Backends
 
 | Backend | Best for | Native FC? |
