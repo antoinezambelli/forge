@@ -6,15 +6,19 @@ produces) and Anthropic's native Messages API format internally.
 
 from __future__ import annotations
 
-import contextlib
+import asyncio
+from contextlib import asynccontextmanager
+from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
 import json
 import logging
 import os
-from collections.abc import AsyncIterator, Iterator
+import random
+from collections.abc import AsyncIterator
 from typing import Any
-from urllib.parse import urlsplit
+from urllib.parse import quote, urlsplit
 
-import anthropic
+import httpx
 
 from forge.clients.base import (
     ChunkType,
@@ -31,74 +35,32 @@ from forge.errors import BackendError, MissingCredentialError, MissingModelError
 
 log = logging.getLogger(__name__)
 
-# The Anthropic SDK pins these headers itself — ``anthropic-version`` is part
-# of its wire contract. A forwarded inbound value must not clobber them, so we
-# drop them from any forge-forwarded header set.
-_ANTHROPIC_PINNED_HEADERS = frozenset({"anthropic-version", "anthropic-beta"})
+DEFAULT_ANTHROPIC_VERSION = "2023-06-01"
 
-# The SDK's auth preflight (``_validate_headers``) reads these keys
-# case-SENSITIVELY from a plain dict before the request goes out. The proxy
-# lowercases all inbound header keys, so a relocated ``x-api-key`` would fail
-# the preflight ("Could not resolve authentication method") unless re-cased to
-# exactly what the SDK expects. forge never inspects the credential value.
-_SDK_AUTH_CASING = {"authorization": "Authorization", "x-api-key": "X-Api-Key"}
-
-# SDK request-control kwargs that must never be sourced from an inbound body or
-# passthrough — they are client-side controls (headers/query/timeout), not
-# Anthropic Messages API fields. In particular a body-supplied ``extra_headers``
-# would smuggle an auth header into ``messages.create`` past the one-credential
-# gate, so these are stripped before forge sets its own per-call credential.
+# Preserve the existing exclusion of SDK control fields from caller bodies.
+# They are never HTTP transport controls, even on the verbatim path.
 _SDK_CONTROL_KWARGS = ("extra_headers", "extra_body", "extra_query", "timeout")
-
-# Env vars the Anthropic SDK reads for auth when api_key/auth_token are unset.
-# Suppressed while forge constructs a client it owns the credential for, so an
-# ambient value can't inject a hidden second credential the per-request gate
-# never sees.
-_AMBIENT_ANTHROPIC_ENV = ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN")
-_MISSING = object()
-
-
-@contextlib.contextmanager
-def _suppressed_ambient_credentials() -> Iterator[None]:
-    """Temporarily clear Anthropic credential env vars, then restore them.
-
-    Used only around SDK construction for forge-owned-credential clients (the
-    proxy). forge may itself run evals that rely on these env vars in another
-    client/process, so they are restored immediately after construction.
-    """
-    saved = {k: os.environ.pop(k, None) for k in _AMBIENT_ANTHROPIC_ENV}
-    try:
-        yield
-    finally:
-        for key, value in saved.items():
-            if value is not None:
-                os.environ[key] = value
 
 
 def _prepare_anthropic_headers(
     headers: dict[str, str] | None,
 ) -> dict[str, str] | None:
-    """Canonicalize auth-header casing for the SDK and drop SDK-pinned headers.
-
-    Returns a new dict (or None). Auth headers are re-cased to the SDK's
-    case-sensitive expectation; ``anthropic-version``/``anthropic-beta`` are
-    dropped so the SDK's own pinned version wins.
-    """
+    """Copy headers case-insensitively, retaining the existing beta exclusion."""
     if not headers:
         return None
     prepared: dict[str, str] = {}
     for k, v in headers.items():
         kl = k.lower()
-        if kl in _ANTHROPIC_PINNED_HEADERS:
+        if kl == "anthropic-beta":
             continue
-        prepared[_SDK_AUTH_CASING.get(kl, k)] = v
+        prepared[kl] = v
     return prepared or None
 
 
 class AnthropicClient:
     """Anthropic Messages API client for Claude models.
 
-    Uses the official anthropic SDK.  The runner serializes messages in
+    Uses HTTP directly. The runner serializes messages in
     OpenAI format (``api_format = "openai"``); this client converts them
     to Anthropic format before each API call.
     """
@@ -136,7 +98,7 @@ class AnthropicClient:
         self._thinking = thinking
         # Accepted for API symmetry across clients but currently a no-op:
         # AnthropicClient does not expose sampling kwargs through forge today.
-        # The Anthropic SDK manages sampling internally.
+        # Sampling passthrough remains governed by the existing body paths.
         if recommended_sampling:
             log.debug(
                 "AnthropicClient ignores recommended_sampling=True — no sampling kwargs are exposed."
@@ -146,100 +108,151 @@ class AnthropicClient:
         # header in ``default_headers``); a per-call auth header is then refused
         # as a second source.
         self._static_auth = static_auth_present(api_key, default_headers)
-        # Credential ownership has three modes, keyed on ``api_key``:
-        #   None  — WorkflowRunner direct use: defer to the SDK's own env-based
-        #           auth (ANTHROPIC_API_KEY / ANTHROPIC_AUTH_TOKEN), the dev's
-        #           deliberate single credential. forge stays out of it.
-        #   ""    — proxy pure passthrough: forge holds NO static credential and
-        #           the per-call forwarded header is the sole auth. Map to None
-        #           so the SDK emits no auth header at all (api_key="" would emit
-        #           a spurious empty X-Api-Key that collides with a per-call
-        #           Authorization on the OAuth path).
-        #   "key" — explicit static credential (proxy --backend-api-key, or an
-        #           explicit WR key).
-        # Whenever forge owns the credential (api_key is not None, including
-        # ""), suppress ambient ANTHROPIC_* env during construction so a stray
-        # ANTHROPIC_API_KEY / ANTHROPIC_AUTH_TOKEN can't become a silent second
-        # credential the per-request gate never sees.
-        forge_owns_credential = api_key is not None
-        sdk_kwargs: dict[str, Any] = {
-            "api_key": api_key or None,
-            "timeout": timeout,
-            "max_retries": max_retries,
-        }
+        # None retains direct-client environment auth; "" is the proxy's
+        # credential-free passthrough mode. Explicit keys never read ambient
+        # auth. Resolve locally rather than temporarily mutating os.environ.
+        self._api_key = os.environ.get("ANTHROPIC_API_KEY") if api_key is None else api_key or None
+        self._auth_token = os.environ.get("ANTHROPIC_AUTH_TOKEN") if api_key is None else None
+        headers = httpx.Headers({
+            "content-type": "application/json",
+            "anthropic-version": DEFAULT_ANTHROPIC_VERSION,
+        })
+        if self._api_key is not None:
+            headers["x-api-key"] = self._api_key
+        if self._auth_token is not None:
+            headers["authorization"] = f"Bearer {self._auth_token}"
         prepared_default_headers = _prepare_anthropic_headers(default_headers)
         if prepared_default_headers:
-            sdk_kwargs["default_headers"] = prepared_default_headers
-        # base_url retargets the SDK at an Anthropic-shape downstream
-        # (LiteLLM, a self-hosted proxy, etc.) — proxy path 1.
-        if base_url is not None:
-            sdk_kwargs["base_url"] = base_url
-        if forge_owns_credential:
-            with _suppressed_ambient_credentials():
-                self._client = anthropic.AsyncAnthropic(**sdk_kwargs)
-        else:
-            self._client = anthropic.AsyncAnthropic(**sdk_kwargs)
+            headers.update(prepared_default_headers)
+        root = base_url if base_url is not None else os.environ.get(
+            "ANTHROPIC_BASE_URL", "https://api.anthropic.com",
+        )
+        self._http = httpx.AsyncClient(
+            base_url=root.rstrip("/") + "/", headers=headers,
+            timeout=timeout, follow_redirects=True,
+        )
+        self._max_retries = max_retries
         # Populated after each send()/send_stream() call. Slot-keyed
         # ``{id_slot: TokenUsage}`` to preserve the direct-client compatibility
-        # mirror used by LlamafileClient / OllamaClient. The Anthropic SDK is
-        # per-call (no shared inference slot), so we always use slot 0 — same
+        # mirror used by LlamafileClient / OllamaClient. There is no shared
+        # inference slot, so we always use slot 0 — same
         # convention as OllamaClient.
         self.last_usage: dict[int, TokenUsage] = {}
 
     async def aclose(self) -> None:
-        """Close the underlying Anthropic SDK client (and its httpx pool)."""
-        await self._client.close()
+        """Close the underlying HTTP connection pool."""
+        await self._http.aclose()
 
-    def _sdk_extra_headers(
+    def _request_headers(
         self, extra_headers: dict[str, str] | None,
     ) -> dict[str, str] | None:
-        """Per-call SDK headers, enforcing the one-credential rule.
-
-        Validates against a static construction credential (raises on a second
-        source), then re-cases auth headers to the SDK's case-sensitive
-        expectation and drops SDK-pinned version headers. Passed via the SDK's
-        per-call ``extra_headers=`` — never set as ``default_headers`` (the
-        proxy shares one client instance, so a per-request credential must not
-        leak into later requests).
-        """
-        return _prepare_anthropic_headers(
+        """Resolve request-local auth/version without mutating client defaults."""
+        headers = _prepare_anthropic_headers(
             resolve_request_headers(self._static_auth, extra_headers)
         )
+        self._ensure_credential(headers)
+        return headers
 
-    def _ensure_credential(self, sdk_headers: dict[str, str] | None) -> None:
+    def _ensure_credential(self, headers: dict[str, str] | None) -> None:
         """Fail loud if this request would reach the backend with no credential.
 
-        A credential is present iff the SDK client resolved a construction key
-        (``api_key`` or ``auth_token``, incl. ambient env at build time) or this
-        call carries a per-call auth header. With none, the Anthropic SDK refuses
-        the request with an opaque error surfaced as HTTP 502; forge raises a
-        clear MissingCredentialError (mapped to 401) instead. Never inspects the
-        secret value.
+        Retains the existing resolved-key/token or per-call-header check.
         """
         if (
-            self._client.api_key is None
-            and self._client.auth_token is None
-            and not has_auth_header(sdk_headers)
+            self._api_key is None
+            and self._auth_token is None
+            and not has_auth_header(headers)
         ):
             raise MissingCredentialError("Anthropic backend")
 
-    def _prepare_sdk_kwargs(
-        self,
-        kwargs: dict[str, Any],
-        extra_headers: dict[str, str] | None,
-    ) -> dict[str, Any]:
-        """Strip caller SDK controls and install Forge-owned request fields."""
-
-        litellm_session_id = kwargs.pop("litellm_session_id", _MISSING)
+    @staticmethod
+    def _prepare_body(kwargs: dict[str, Any]) -> dict[str, Any]:
+        """Keep the existing body exclusions; gateway extras remain JSON."""
         for control_kwarg in _SDK_CONTROL_KWARGS:
             kwargs.pop(control_kwarg, None)
-        if litellm_session_id is not _MISSING:
-            kwargs["extra_body"] = {"litellm_session_id": litellm_session_id}
-        sdk_headers = self._sdk_extra_headers(extra_headers)
-        self._ensure_credential(sdk_headers)
-        if sdk_headers:
-            kwargs["extra_headers"] = sdk_headers
         return kwargs
+
+    @staticmethod
+    def _should_retry(response: httpx.Response) -> bool:
+        directive = response.headers.get("x-should-retry")
+        if directive in ("true", "false"):
+            return directive == "true"
+        return response.status_code in (408, 409, 429) or response.status_code >= 500
+
+    @staticmethod
+    def _retry_delay(attempt: int, headers: httpx.Headers | None) -> float:
+        # Preserve the SDK's bounded Retry-After handling and backoff.
+        if headers:
+            try:
+                if "retry-after-ms" in headers:
+                    delay = float(headers["retry-after-ms"]) / 1000
+                else:
+                    delay = float(headers["retry-after"])
+                if 0 < delay <= 60:
+                    return delay
+            except (KeyError, ValueError):
+                try:
+                    when = parsedate_to_datetime(headers.get("retry-after", ""))
+                    delay = (when - datetime.now(timezone.utc)).total_seconds()
+                    if 0 < delay <= 60:
+                        return delay
+                except (TypeError, ValueError, OverflowError):
+                    pass
+        return min(0.5 * (2 ** min(attempt, 1000)), 8.0) * (1 - 0.25 * random.random())
+
+    @asynccontextmanager
+    async def _request(
+        self, method: str, path: str, *, body: dict[str, Any] | None = None,
+        extra_headers: dict[str, str] | None = None,
+        stream: bool = False,
+    ) -> AsyncIterator[httpx.Response]:
+        headers = self._request_headers(extra_headers)
+        attempt = 0
+        while True:
+            started = False
+            response_headers = None
+            try:
+                async with self._http.stream(method, path, json=body, headers=headers) as response:
+                    if response.is_success:
+                        if not stream:
+                            await response.aread()
+                        started = True
+                        yield response
+                        return
+                    await response.aread()
+                    if attempt >= self._max_retries or not self._should_retry(response):
+                        raise BackendError(response.status_code, raw_body=response.text)
+                    response_headers = response.headers
+            except httpx.TransportError as exc:
+                # Never replay a stream after any response has been exposed.
+                if started or attempt >= self._max_retries:
+                    raise BackendError(0, "Anthropic backend request failed", raw_body=str(exc)) from exc
+            await asyncio.sleep(self._retry_delay(attempt, response_headers))
+            attempt += 1
+
+    @staticmethod
+    async def _events(response: httpx.Response) -> AsyncIterator[dict[str, Any]]:
+        data: list[str] = []
+        async for line in response.aiter_lines():
+            if not line:
+                if data:
+                    yield json.loads("\n".join(data))
+                    data = []
+            elif line.startswith("data:"):
+                data.append(line[5:].lstrip(" "))
+        if data:
+            yield json.loads("\n".join(data))
+
+    def _record_usage(self, usage: dict[str, Any]) -> None:
+        normalized = TokenUsage(
+            prompt_tokens=usage.get("input_tokens", 0),
+            completion_tokens=usage.get("output_tokens", 0),
+            total_tokens=usage.get("input_tokens", 0) + usage.get("output_tokens", 0),
+            cache_creation_input_tokens=usage.get("cache_creation_input_tokens", 0) or 0,
+            cache_read_input_tokens=usage.get("cache_read_input_tokens", 0) or 0,
+        )
+        self.last_usage = {0: normalized}
+        _record_captured_usage(normalized)
 
     # ── Tool schema conversion ───────────────────────────────────
 
@@ -385,19 +398,19 @@ class AnthropicClient:
         return thinking or text or None
 
     @staticmethod
-    def _parse_response(response: Any) -> LLMResponse:
+    def _parse_response(response: dict[str, Any]) -> LLMResponse:
         """Anthropic Message → list[ToolCall] or TextResponse."""
         tool_uses: list[Any] = []
         thinking_parts: list[str] = []
         text_parts: list[str] = []
 
-        for block in response.content:
-            if block.type == "tool_use":
+        for block in response["content"]:
+            if block["type"] == "tool_use":
                 tool_uses.append(block)
-            elif block.type == "thinking":
-                thinking_parts.append(block.thinking)
-            elif block.type == "text":
-                text_parts.append(block.text)
+            elif block["type"] == "thinking":
+                thinking_parts.append(block["thinking"])
+            elif block["type"] == "text":
+                text_parts.append(block["text"])
 
         if tool_uses:
             reasoning = AnthropicClient._resolve_reasoning(
@@ -405,8 +418,8 @@ class AnthropicClient:
             )
             return [
                 ToolCall(
-                    tool=tu.name,
-                    args=dict(tu.input),
+                    tool=tu["name"],
+                    args=dict(tu["input"]),
                     reasoning=reasoning if i == 0 else None,
                 )
                 for i, tu in enumerate(tool_uses)
@@ -422,7 +435,7 @@ class AnthropicClient:
         passthrough: dict[str, Any] | None = None,
         inbound_anthropic_body: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        """Build kwargs dict for messages.create / messages.stream.
+        """Build the Messages request body for send / send_stream.
 
         ``passthrough`` (proxy use) supplies inbound-body fields the proxy
         didn't deconstruct (``max_tokens``, ``stop_sequences``, ``tool_choice``,
@@ -430,15 +443,15 @@ class AnthropicClient:
         ``messages``, ``system``, ``tools``) overlay it.
 
         ``inbound_anthropic_body`` (proxy path 1) bypasses the deconstruct/
-        rebuild path: the SDK is called with the original inbound body
+        rebuild path: the backend receives the original inbound body
         verbatim, preserving block-level fields like ``cache_control`` that
         forge.Message doesn't represent. The runner only passes this on the
         clean first-attempt call (no compaction, no retries) — see ADR-015.
         """
         if inbound_anthropic_body is not None:
             # Verbatim emit. Drop the proxy-internal ``stream`` field; the
-            # SDK call shape (messages.create vs messages.stream) selects
-            # streaming. A fixed client model is authoritative; a dynamic
+            # caller (send vs send_stream) selects streaming. A fixed client
+            # model is authoritative; a dynamic
             # proxy client keeps the already-resolved request-local model.
             kwargs = dict(inbound_anthropic_body)
             kwargs.pop("stream", None)
@@ -513,18 +526,7 @@ class AnthropicClient:
         raw_openai_tools: list[dict[str, Any]] | None = None,
         extra_headers: dict[str, str] | None = None,
     ) -> LLMResponse:
-        """Send messages via the Anthropic Messages API.
-
-        ``sampling`` is accepted for protocol symmetry but ignored —
-        AnthropicClient does not currently expose sampling kwargs through
-        forge. ``passthrough`` merges inbound-body extras into the SDK call.
-        ``inbound_anthropic_body`` (path 1) triggers verbatim emit — see
-        ADR-015 for the cache_control preservation rationale.
-        ``raw_openai_tools`` accepted for protocol symmetry, ignored
-        (Anthropic uses its own tool conversion). ``extra_headers`` carries the
-        per-call credential, re-cased for the SDK and forwarded via the SDK's
-        per-call ``extra_headers=``.
-        """
+        """Send JSON with the existing body conversion and sampling policy."""
         if sampling:
             log.debug(
                 "AnthropicClient ignores per-call sampling overrides: %s",
@@ -533,27 +535,13 @@ class AnthropicClient:
         kwargs = self._build_kwargs(
             messages, tools, passthrough, inbound_anthropic_body,
         )
-        kwargs = self._prepare_sdk_kwargs(kwargs, extra_headers)
-        try:
-            response = await self._client.messages.create(**kwargs)
-        except anthropic.APIError as exc:
-            raise BackendError(
-                getattr(exc, "status_code", 0), str(exc)
-            ) from exc
-        normalized = TokenUsage(
-            prompt_tokens=response.usage.input_tokens,
-            completion_tokens=response.usage.output_tokens,
-            total_tokens=response.usage.input_tokens + response.usage.output_tokens,
-            cache_creation_input_tokens=getattr(
-                response.usage, "cache_creation_input_tokens", 0
-            ) or 0,
-            cache_read_input_tokens=getattr(
-                response.usage, "cache_read_input_tokens", 0
-            ) or 0,
-        )
-        self.last_usage = {0: normalized}
-        _record_captured_usage(normalized)
-        return self._parse_response(response)
+        async with self._request(
+            "POST", "v1/messages", body=self._prepare_body(kwargs),
+            extra_headers=extra_headers,
+        ) as response:
+            payload = response.json()
+        self._record_usage(payload["usage"])
+        return self._parse_response(payload)
 
     async def send_stream(
         self,
@@ -565,14 +553,7 @@ class AnthropicClient:
         raw_openai_tools: list[dict[str, Any]] | None = None,
         extra_headers: dict[str, str] | None = None,
     ) -> AsyncIterator[StreamChunk]:
-        """Stream via the Anthropic Messages API.
-
-        ``sampling`` is accepted for protocol symmetry but ignored.
-        ``passthrough`` merges inbound-body extras into the SDK call.
-        ``inbound_anthropic_body`` (path 1) triggers verbatim emit; see ADR-015.
-        ``raw_openai_tools`` accepted for protocol symmetry, ignored.
-        ``extra_headers`` carries the per-call credential (see :meth:`send`).
-        """
+        """Consume native Messages SSE without replaying an interrupted stream."""
         if sampling:
             log.debug(
                 "AnthropicClient ignores per-call sampling overrides: %s",
@@ -581,82 +562,60 @@ class AnthropicClient:
         kwargs = self._build_kwargs(
             messages, tools, passthrough, inbound_anthropic_body,
         )
-        kwargs = self._prepare_sdk_kwargs(kwargs, extra_headers)
-
         accumulated_text = ""
         accumulated_thinking = ""
-        # Track multiple tool_use blocks by index.
-        tool_blocks: list[dict[str, str]] = []  # [{name, args}, ...]
-        _current_tool_idx: int = -1
-        try:
-            async with self._client.messages.stream(**kwargs) as stream:
-                async for event in stream:
-                    if event.type == "content_block_start":
-                        if event.content_block.type == "tool_use":
-                            tool_blocks.append({
-                                "name": event.content_block.name,
-                                "args": "",
-                            })
-                            _current_tool_idx = len(tool_blocks) - 1
-                    elif event.type == "content_block_delta":
-                        if event.delta.type == "text_delta":
-                            accumulated_text += event.delta.text
-                            yield StreamChunk(
-                                type=ChunkType.TEXT_DELTA,
-                                content=event.delta.text,
+        tool_blocks: dict[int, dict[str, str]] = {}
+        usage: dict[str, Any] = {}
+        kwargs = self._prepare_body(kwargs)
+        kwargs["stream"] = True
+        async with self._request(
+            "POST", "v1/messages", body=kwargs, extra_headers=extra_headers,
+            stream=True,
+        ) as response:
+            async for event in self._events(response):
+                kind = event["type"]
+                if kind == "error":
+                    raise BackendError(502, "Anthropic stream failed", raw_body=json.dumps(event))
+                if kind == "message_start":
+                    usage.update(event["message"].get("usage", {}))
+                elif kind == "message_delta":
+                    usage.update({
+                        key: value for key, value in event.get("usage", {}).items()
+                        if value is not None
+                    })
+                elif kind == "content_block_start":
+                    block = event["content_block"]
+                    if block["type"] == "tool_use":
+                        tool_blocks[event["index"]] = {"name": block["name"], "args": ""}
+                elif kind == "content_block_delta":
+                    delta = event["delta"]
+                    if delta["type"] == "text_delta":
+                        accumulated_text += delta["text"]
+                        yield StreamChunk(type=ChunkType.TEXT_DELTA, content=delta["text"])
+                    elif delta["type"] == "thinking_delta":
+                        accumulated_thinking += delta["thinking"]
+                    elif delta["type"] == "input_json_delta" and event["index"] in tool_blocks:
+                        tool_blocks[event["index"]]["args"] += delta["partial_json"]
+                        yield StreamChunk(type=ChunkType.TOOL_CALL_DELTA, content=delta["partial_json"])
+                elif kind == "message_stop":
+                    self._record_usage(usage)
+                    if tool_blocks:
+                        reasoning = self._resolve_reasoning(accumulated_thinking, accumulated_text)
+                        final: LLMResponse = [
+                            ToolCall(
+                                tool=tb["name"], args=decode_tool_args(tb["args"]),
+                                reasoning=reasoning if i == 0 else None,
                             )
-                        elif event.delta.type == "thinking_delta":
-                            accumulated_thinking += event.delta.thinking
-                        elif event.delta.type == "input_json_delta" and _current_tool_idx >= 0:
-                            tool_blocks[_current_tool_idx]["args"] += event.delta.partial_json
-                            yield StreamChunk(
-                                type=ChunkType.TOOL_CALL_DELTA,
-                                content=event.delta.partial_json,
-                            )
-                    elif event.type == "content_block_stop":
-                        # Reset current tool index when a block finishes
-                        _current_tool_idx = -1
-                    elif event.type == "message_stop":
-                        if tool_blocks:
-                            reasoning = self._resolve_reasoning(
-                                accumulated_thinking, accumulated_text,
-                            )
-                            final: LLMResponse = [
-                                ToolCall(
-                                    tool=tb["name"],
-                                    args=decode_tool_args(tb["args"]),
-                                    reasoning=reasoning if i == 0 else None,
-                                )
-                                for i, tb in enumerate(tool_blocks)
-                            ]
-                        else:
-                            final = TextResponse(content=accumulated_text)
-                        yield StreamChunk(
-                            type=ChunkType.FINAL, response=final
-                        )
-                # Grab usage from the final accumulated message.
-                final_message = await stream.get_final_message()
-                normalized = TokenUsage(
-                    prompt_tokens=final_message.usage.input_tokens,
-                    completion_tokens=final_message.usage.output_tokens,
-                    total_tokens=final_message.usage.input_tokens
-                    + final_message.usage.output_tokens,
-                    cache_creation_input_tokens=getattr(
-                        final_message.usage, "cache_creation_input_tokens", 0
-                    ) or 0,
-                    cache_read_input_tokens=getattr(
-                        final_message.usage, "cache_read_input_tokens", 0
-                    ) or 0,
-                )
-                self.last_usage = {0: normalized}
-                _record_captured_usage(normalized)
-        except anthropic.APIError as exc:
-            raise BackendError(
-                getattr(exc, "status_code", 0), str(exc)
-            ) from exc
+                            for i, tb in enumerate(tool_blocks.values())
+                        ]
+                    else:
+                        final = TextResponse(content=accumulated_text)
+                    yield StreamChunk(type=ChunkType.FINAL, response=final)
+                    return
+        raise BackendError(502, "Anthropic stream ended before message_stop")
 
     async def get_context_length(self) -> int | None:
-        """Return exact official model metadata when the SDK exposes it."""
+        """Return exact official model metadata."""
         if not self.model:
             return None
         return await self._get_context_length_for_model(self.model, None)
@@ -670,22 +629,17 @@ class AnthropicClient:
 
         if not self._uses_official_metadata_root():
             return None
-        models = getattr(self._client, "models", None)
-        retrieve = getattr(models, "retrieve", None)
-        if not callable(retrieve):
-            return None
-        sdk_headers = self._sdk_extra_headers(extra_headers)
-        if extra_headers is not None:
-            self._ensure_credential(sdk_headers)
-        kwargs = {"extra_headers": sdk_headers} if sdk_headers else {}
         try:
-            metadata = await retrieve(model, **kwargs)
-        except anthropic.APIError as exc:
+            async with self._request(
+                "GET", f"v1/models/{quote(model, safe='')}", extra_headers=extra_headers,
+            ) as response:
+                metadata = response.json()
+        except BackendError as exc:
             raise BackendError(
-                getattr(exc, "status_code", 0) or 502,
+                exc.status_code or 502,
                 "Anthropic model metadata request failed",
             ) from exc
-        window = getattr(metadata, "max_input_tokens", None)
+        window = metadata.get("max_input_tokens")
         if (
             not isinstance(window, int)
             or isinstance(window, bool)
@@ -695,8 +649,8 @@ class AnthropicClient:
         return window
 
     def _uses_official_metadata_root(self) -> bool:
-        """Whether the constructed SDK client targets canonical Anthropic."""
-        target = urlsplit(str(self._client.base_url))
+        """Whether the HTTP client targets canonical Anthropic."""
+        target = urlsplit(str(self._http.base_url))
         return (
             target.scheme.lower() == "https"
             and target.hostname == "api.anthropic.com"

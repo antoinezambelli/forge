@@ -1,19 +1,11 @@
-"""Tests for forge.clients.anthropic — format conversion helpers.
-
-All tests exercise the static conversion methods directly.
-No API calls or mocks needed.
-"""
+"""Anthropic conversion and HTTP client behavior, without external API calls."""
 
 import asyncio
 from collections.abc import AsyncIterator
-from pathlib import Path
-import tomllib
-from types import SimpleNamespace
+import json
 from typing import Literal
-from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-import anthropic
 import httpx
 from pydantic import BaseModel, Field
 
@@ -21,16 +13,6 @@ from forge.clients.anthropic import AnthropicClient
 from forge.clients.base import ChunkType, TokenUsage
 from forge.core.workflow import TextResponse, ToolCall, ToolSpec
 from forge.errors import BackendError, MissingModelError
-
-
-def test_anthropic_dependency_floor_exposes_exact_context_metadata() -> None:
-    config = tomllib.loads(
-        (Path(__file__).parents[2] / "pyproject.toml").read_text(encoding="utf-8"),
-    )
-    extras = config["project"]["optional-dependencies"]
-
-    assert extras["anthropic"] == ["anthropic>=0.86.0,<2"]
-    assert "anthropic>=0.86.0,<2" in extras["dev"]
 
 
 class CityParams(BaseModel):
@@ -45,74 +27,103 @@ def _make_spec(name: str = "get_weather") -> ToolSpec:
     )
 
 
-class _FakeAnthropicStream:
-    """Minimal SDK stream surface for deterministic event-parser tests."""
+class _EventStream(httpx.AsyncByteStream):
+    """Emit actual SSE bytes, optionally failing after the supplied events."""
 
     def __init__(
         self,
-        events: list[SimpleNamespace],
+        events: list[dict],
         *,
-        usage: SimpleNamespace | None = None,
         error: Exception | None = None,
     ) -> None:
         self._events = events
-        self._usage = usage or SimpleNamespace(
-            input_tokens=1,
-            output_tokens=1,
-            cache_creation_input_tokens=0,
-            cache_read_input_tokens=0,
-        )
         self._error = error
 
-    async def __aenter__(self) -> "_FakeAnthropicStream":
-        return self
-
-    async def __aexit__(self, *args: object) -> bool:
-        return False
-
-    def __aiter__(self) -> AsyncIterator[SimpleNamespace]:
-        async def iterate() -> AsyncIterator[SimpleNamespace]:
-            for event in self._events:
-                yield event
-            if self._error is not None:
-                raise self._error
-
-        return iterate()
-
-    async def get_final_message(self) -> SimpleNamespace:
-        return SimpleNamespace(usage=self._usage)
+    async def __aiter__(self) -> AsyncIterator[bytes]:
+        for event in self._events:
+            yield f"event: {event['type']}\ndata: {json.dumps(event)}\n\n".encode()
+        if self._error is not None:
+            raise self._error
 
 
-def _stream_event(event_type: str, **fields: object) -> SimpleNamespace:
-    return SimpleNamespace(type=event_type, **fields)
+def _stream_event(event_type: str, **fields: object) -> dict:
+    return {"type": event_type, **fields}
 
 
-def _text_delta(text: str) -> SimpleNamespace:
+def _text_delta(text: str, index: int = 0) -> dict:
     return _stream_event(
         "content_block_delta",
-        delta=SimpleNamespace(type="text_delta", text=text),
+        index=index,
+        delta={"type": "text_delta", "text": text},
     )
 
 
-def _thinking_delta(thinking: str) -> SimpleNamespace:
+def _thinking_delta(thinking: str) -> dict:
     return _stream_event(
         "content_block_delta",
-        delta=SimpleNamespace(type="thinking_delta", thinking=thinking),
+        index=0,
+        delta={"type": "thinking_delta", "thinking": thinking},
     )
 
 
-def _tool_start(name: str) -> SimpleNamespace:
+def _tool_start(name: str, index: int = 1) -> dict:
     return _stream_event(
         "content_block_start",
-        content_block=SimpleNamespace(type="tool_use", name=name),
+        index=index,
+        content_block={
+            "type": "tool_use", "id": f"toolu_{index}", "name": name, "input": {},
+        },
     )
 
 
-def _json_delta(partial_json: str) -> SimpleNamespace:
+def _json_delta(partial_json: str, index: int = 1) -> dict:
     return _stream_event(
         "content_block_delta",
-        delta=SimpleNamespace(type="input_json_delta", partial_json=partial_json),
+        index=index,
+        delta={"type": "input_json_delta", "partial_json": partial_json},
     )
+
+
+def _mock_http(client: AnthropicClient, handler) -> None:
+    client._http = httpx.AsyncClient(
+        transport=httpx.MockTransport(handler),
+        headers=client._http.headers,
+        base_url=client._http.base_url,
+    )
+
+
+def _mock_stream(
+    client: AnthropicClient,
+    events: list[dict],
+    *,
+    usage: dict | None = None,
+    error: Exception | None = None,
+) -> None:
+    usage = usage or {"input_tokens": 1, "output_tokens": 1}
+    if events and events[-1]["type"] == "message_stop":
+        events = [
+            *events[:-1],
+            _stream_event("message_delta", usage={"output_tokens": usage["output_tokens"]}),
+            events[-1],
+        ]
+    events = [
+        _stream_event(
+            "message_start",
+            message={"content": [], "usage": {**usage, "output_tokens": 0}},
+        ),
+        *events,
+    ]
+    _mock_http(client, lambda _: httpx.Response(
+        200, headers={"content-type": "text/event-stream"},
+        stream=_EventStream(events, error=error),
+    ))
+
+
+def _text_response(text: str = "ok", **usage: int) -> dict:
+    return {
+        "content": [{"type": "text", "text": text}],
+        "usage": {"input_tokens": 1, "output_tokens": 1, **usage},
+    }
 
 
 class SetUnitParams(BaseModel):
@@ -127,11 +138,21 @@ def _make_spec_with_enum() -> ToolSpec:
     )
 
 
-def test_direct_base_url_is_passed_to_sdk_unchanged() -> None:
+@pytest.mark.asyncio
+async def test_direct_base_url_preserves_deployment_prefix() -> None:
     service_root = "https://anthropic.example/deployment/"
-    with patch("forge.clients.anthropic.anthropic.AsyncAnthropic") as sdk:
-        AnthropicClient(model="claude-test", api_key="dummy", base_url=service_root)
-    assert sdk.call_args.kwargs["base_url"] == service_root
+    client = AnthropicClient(
+        model="claude-test", api_key="dummy", base_url=service_root,
+    )
+    requests = []
+
+    def respond(request):
+        requests.append(request)
+        return httpx.Response(200, json=_text_response())
+
+    _mock_http(client, respond)
+    await client.send([{"role": "user", "content": "hi"}])
+    assert str(requests[0].url) == service_root + "v1/messages"
 
 
 # ── _convert_tools ───────────────────────────────────────────────
@@ -452,23 +473,16 @@ class TestConvertMessages:
 
 class TestParseResponse:
     def test_text_response(self) -> None:
-        response = MagicMock()
-        text_block = MagicMock()
-        text_block.type = "text"
-        text_block.text = "Hello!"
-        response.content = [text_block]
+        response = {"content": [{"type": "text", "text": "Hello!"}]}
 
         result = AnthropicClient._parse_response(response)
         assert isinstance(result, TextResponse)
         assert result.content == "Hello!"
 
     def test_tool_use_response(self) -> None:
-        response = MagicMock()
-        tool_block = MagicMock()
-        tool_block.type = "tool_use"
-        tool_block.name = "get_weather"
-        tool_block.input = {"city": "Paris"}
-        response.content = [tool_block]
+        response = {"content": [{
+            "type": "tool_use", "name": "get_weather", "input": {"city": "Paris"},
+        }]}
 
         result = AnthropicClient._parse_response(response)
         assert isinstance(result, list)
@@ -478,15 +492,10 @@ class TestParseResponse:
         assert result[0].reasoning is None
 
     def test_tool_use_with_text_reasoning(self) -> None:
-        response = MagicMock()
-        text_block = MagicMock()
-        text_block.type = "text"
-        text_block.text = "Let me check the weather."
-        tool_block = MagicMock()
-        tool_block.type = "tool_use"
-        tool_block.name = "get_weather"
-        tool_block.input = {"city": "Paris"}
-        response.content = [text_block, tool_block]
+        response = {"content": [
+            {"type": "text", "text": "Let me check the weather."},
+            {"type": "tool_use", "name": "get_weather", "input": {"city": "Paris"}},
+        ]}
 
         result = AnthropicClient._parse_response(response)
         assert isinstance(result, list)
@@ -494,22 +503,12 @@ class TestParseResponse:
         assert result[0].reasoning == "Let me check the weather."
 
     def test_native_thinking_precedes_text_and_attaches_to_first_tool(self) -> None:
-        response = MagicMock()
-        thinking_block = MagicMock()
-        thinking_block.type = "thinking"
-        thinking_block.thinking = "I should check both tools."
-        text_block = MagicMock()
-        text_block.type = "text"
-        text_block.text = "Visible preamble."
-        first_tool = MagicMock()
-        first_tool.type = "tool_use"
-        first_tool.name = "get_weather"
-        first_tool.input = {"city": "Paris"}
-        second_tool = MagicMock()
-        second_tool.type = "tool_use"
-        second_tool.name = "set_unit"
-        second_tool.input = {"unit": "celsius"}
-        response.content = [thinking_block, text_block, first_tool, second_tool]
+        response = {"content": [
+            {"type": "thinking", "thinking": "I should check both tools."},
+            {"type": "text", "text": "Visible preamble."},
+            {"type": "tool_use", "name": "get_weather", "input": {"city": "Paris"}},
+            {"type": "tool_use", "name": "set_unit", "input": {"unit": "celsius"}},
+        ]}
 
         result = AnthropicClient._parse_response(response)
 
@@ -523,22 +522,17 @@ class TestParseResponse:
         ]
 
     def test_text_response_excludes_native_thinking(self) -> None:
-        response = MagicMock()
-        thinking_block = MagicMock()
-        thinking_block.type = "thinking"
-        thinking_block.thinking = "Hidden reasoning."
-        text_block = MagicMock()
-        text_block.type = "text"
-        text_block.text = "Visible answer."
-        response.content = [thinking_block, text_block]
+        response = {"content": [
+            {"type": "thinking", "thinking": "Hidden reasoning."},
+            {"type": "text", "text": "Visible answer."},
+        ]}
 
         result = AnthropicClient._parse_response(response)
 
         assert result == TextResponse(content="Visible answer.")
 
     def test_empty_text_response(self) -> None:
-        response = MagicMock()
-        response.content = []
+        response = {"content": []}
 
         result = AnthropicClient._parse_response(response)
         assert isinstance(result, TextResponse)
@@ -553,20 +547,27 @@ class TestStreaming:
     async def test_text_stream_emits_deltas_final_response_and_usage(self) -> None:
         client = AnthropicClient(model="claude-test", api_key="dummy")
         events = [
+            _stream_event(
+                "content_block_start", index=0,
+                content_block={"type": "text", "text": ""},
+            ),
             _text_delta("Hello, "),
             _text_delta("world!"),
+            _stream_event("content_block_stop", index=0),
+            _stream_event("message_delta", usage={
+                "input_tokens": None, "output_tokens": 3,
+                "cache_creation_input_tokens": None,
+                "cache_read_input_tokens": None,
+            }),
             _stream_event("message_stop"),
         ]
-        usage = SimpleNamespace(
-            input_tokens=12,
-            output_tokens=4,
-            cache_creation_input_tokens=3,
-            cache_read_input_tokens=5,
-        )
-        client._client = MagicMock()
-        client._client.messages.stream.return_value = _FakeAnthropicStream(
-            events, usage=usage,
-        )
+        usage = {
+            "input_tokens": 12,
+            "output_tokens": 4,
+            "cache_creation_input_tokens": 3,
+            "cache_read_input_tokens": 5,
+        }
+        _mock_stream(client, events, usage=usage)
 
         chunks = [
             chunk
@@ -596,19 +597,23 @@ class TestStreaming:
     async def test_multi_tool_stream_keeps_fragment_and_block_boundaries(self) -> None:
         client = AnthropicClient(model="claude-test", api_key="dummy")
         events = [
+            _stream_event(
+                "content_block_start", index=0,
+                content_block={"type": "text", "text": ""},
+            ),
             _text_delta("Let me check both."),
+            _stream_event("content_block_stop", index=0),
             _tool_start("get_weather"),
             _json_delta('{"city":'),
             _json_delta('"Paris"}'),
-            _stream_event("content_block_stop"),
-            _tool_start("set_unit"),
-            _json_delta('{"unit":"cel'),
-            _json_delta('sius"}'),
-            _stream_event("content_block_stop"),
+            _stream_event("content_block_stop", index=1),
+            _tool_start("set_unit", index=2),
+            _json_delta('{"unit":"cel', index=2),
+            _json_delta('sius"}', index=2),
+            _stream_event("content_block_stop", index=2),
             _stream_event("message_stop"),
         ]
-        client._client = MagicMock()
-        client._client.messages.stream.return_value = _FakeAnthropicStream(events)
+        _mock_stream(client, events)
 
         chunks = [
             chunk
@@ -636,16 +641,25 @@ class TestStreaming:
     async def test_stream_native_thinking_precedes_visible_text(self) -> None:
         client = AnthropicClient(model="claude-test", api_key="dummy")
         events = [
+            _stream_event(
+                "content_block_start", index=0,
+                content_block={"type": "thinking", "thinking": "", "signature": ""},
+            ),
             _thinking_delta("I should "),
             _thinking_delta("search."),
-            _text_delta("Visible preamble."),
-            _tool_start("search"),
-            _json_delta('{"q":"forge"}'),
-            _stream_event("content_block_stop"),
+            _stream_event("content_block_stop", index=0),
+            _stream_event(
+                "content_block_start", index=1,
+                content_block={"type": "text", "text": ""},
+            ),
+            _text_delta("Visible preamble.", index=1),
+            _stream_event("content_block_stop", index=1),
+            _tool_start("search", index=2),
+            _json_delta('{"q":"forge"}', index=2),
+            _stream_event("content_block_stop", index=2),
             _stream_event("message_stop"),
         ]
-        client._client = MagicMock()
-        client._client.messages.stream.return_value = _FakeAnthropicStream(events)
+        _mock_stream(client, events)
 
         chunks = [
             chunk
@@ -668,19 +682,17 @@ class TestStreaming:
         ]
 
     @pytest.mark.asyncio
-    async def test_sdk_stream_failure_becomes_backend_error(self) -> None:
-        client = AnthropicClient(model="claude-test", api_key="dummy")
-        sdk_error = anthropic.APIError(
+    async def test_http_stream_failure_becomes_backend_error(self) -> None:
+        client = AnthropicClient(model="claude-test", api_key="dummy", max_retries=0)
+        http_error = httpx.ReadError(
             "stream failed",
-            httpx.Request("POST", "https://api.anthropic.com/v1/messages"),
-            body=None,
+            request=httpx.Request("POST", "https://api.anthropic.com/v1/messages"),
         )
-        client._client = MagicMock()
-        client._client.messages.stream.return_value = _FakeAnthropicStream(
-            [], error=sdk_error,
-        )
+        _mock_stream(client, [], error=http_error)
 
-        with pytest.raises(BackendError, match="Backend returned 0: stream failed") as exc:
+        with pytest.raises(
+            BackendError, match="Backend returned 0: Anthropic backend request failed",
+        ) as exc:
             _ = [
                 chunk
                 async for chunk in client.send_stream(
@@ -688,7 +700,8 @@ class TestStreaming:
                 )
             ]
 
-        assert exc.value.__cause__ is sdk_error
+        assert exc.value.__cause__ is http_error
+        assert exc.value.body == "stream failed"
 
 
 # -- Usage reporting (slot-keyed last_usage) -------------------------------
@@ -700,22 +713,9 @@ class TestUsageReporting:
         """send() preserves the slot-keyed direct-client usage mirror."""
         client = AnthropicClient(model="claude-test", api_key="dummy")
 
-        text_block = MagicMock()
-        text_block.type = "text"
-        text_block.text = "hello"
-        response = MagicMock()
-        response.content = [text_block]
-        response.usage.input_tokens = 12
-        response.usage.output_tokens = 7
-        # Real Anthropic Usage reports these as ints (0 without caching); set
-        # them so the MagicMock doesn't auto-create truthy attrs.
-        response.usage.cache_creation_input_tokens = 0
-        response.usage.cache_read_input_tokens = 0
-
-        async def fake_create(**kwargs):
-            return response
-
-        client._client.messages.create = fake_create
+        _mock_http(client, lambda _: httpx.Response(
+            200, json=_text_response("hello", input_tokens=12, output_tokens=7),
+        ))
 
         result = await client.send([{"role": "user", "content": "hi"}])
 
@@ -780,16 +780,12 @@ class TestPromptCaching:
         client = AnthropicClient(
             model="claude-test", api_key="dummy", prompt_caching=True
         )
-        text_block = MagicMock()
-        text_block.type = "text"
-        text_block.text = "ok"
-        response = MagicMock()
-        response.content = [text_block]
-        response.usage.input_tokens = 5
-        response.usage.output_tokens = 3
-        response.usage.cache_creation_input_tokens = 100
-        response.usage.cache_read_input_tokens = 200
-        client._client.messages.create = AsyncMock(return_value=response)
+        _mock_http(client, lambda _: httpx.Response(
+            200, json=_text_response(
+                input_tokens=5, output_tokens=3,
+                cache_creation_input_tokens=100, cache_read_input_tokens=200,
+            ),
+        ))
 
         await client.send([{"role": "user", "content": "hi"}])
 
@@ -839,20 +835,14 @@ class TestRequestRoutedModel:
         release = asyncio.Event()
         recorded = []
 
-        async def gated_create(**kwargs):
-            recorded.append(kwargs)
+        async def gated_create(request):
+            recorded.append(json.loads(request.content))
             if len(recorded) == 2:
                 both_arrived.set()
             await release.wait()
-            response = MagicMock()
-            response.content = [MagicMock(type="text", text="ok")]
-            response.usage.input_tokens = 1
-            response.usage.output_tokens = 1
-            response.usage.cache_creation_input_tokens = 0
-            response.usage.cache_read_input_tokens = 0
-            return response
+            return httpx.Response(200, json=_text_response())
 
-        client._client.messages.create = AsyncMock(side_effect=gated_create)
+        _mock_http(client, gated_create)
         clean = asyncio.create_task(client.send(
             [], inbound_anthropic_body={
                 "model": "route-opus",
@@ -914,26 +904,28 @@ class TestThinking:
 
 class TestGetContextLength:
     @pytest.mark.asyncio
-    async def test_official_pinned_model_uses_exact_sdk_metadata(self) -> None:
+    async def test_official_pinned_model_uses_exact_http_metadata(self) -> None:
         client = AnthropicClient(model="claude-test", api_key="dummy")
-        retrieve = AsyncMock(return_value=SimpleNamespace(max_input_tokens=123456))
-        client._client = SimpleNamespace(
-            base_url="https://api.anthropic.com/",
-            models=SimpleNamespace(retrieve=retrieve),
-        )
+        requests = []
+
+        def respond(request):
+            requests.append(request)
+            return httpx.Response(200, json={"max_input_tokens": 123456})
+
+        _mock_http(client, respond)
         assert await client.get_context_length() == 123456
-        retrieve.assert_awaited_once_with("claude-test")
+        assert len(requests) == 1
+        assert requests[0].method == "GET"
+        assert str(requests[0].url) == "https://api.anthropic.com/v1/models/claude-test"
 
     @pytest.mark.asyncio
     async def test_unpinned_official_client_returns_none(self) -> None:
         client = AnthropicClient(model=None, api_key="dummy")
-        retrieve = AsyncMock()
-        client._client = SimpleNamespace(
-            base_url="https://api.anthropic.com",
-            models=SimpleNamespace(retrieve=retrieve),
-        )
+        def unexpected_request(request):
+            pytest.fail("unpinned clients must not request model metadata")
+
+        _mock_http(client, unexpected_request)
         assert await client.get_context_length() is None
-        retrieve.assert_not_awaited()
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
@@ -946,67 +938,69 @@ class TestGetContextLength:
         ],
     )
     async def test_untrusted_metadata_target_returns_none(self, base_url: str) -> None:
-        client = AnthropicClient(model="claude-test", api_key="dummy")
-        retrieve = AsyncMock()
-        client._client = SimpleNamespace(
-            base_url=base_url,
-            models=SimpleNamespace(retrieve=retrieve),
+        client = AnthropicClient(
+            model="claude-test", api_key="dummy", base_url=base_url,
         )
-        assert await client.get_context_length() is None
-        retrieve.assert_not_awaited()
 
-    @pytest.mark.asyncio
-    async def test_older_sdk_without_models_resource_returns_none(self) -> None:
-        client = AnthropicClient(model="claude-test", api_key="dummy")
-        client._client = SimpleNamespace(base_url="https://api.anthropic.com")
+        def unexpected_request(request):
+            pytest.fail("untrusted targets must not receive metadata requests")
+
+        _mock_http(client, unexpected_request)
         assert await client.get_context_length() is None
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("window", [None, 0, -1, True, "200000"])
     async def test_unusable_metadata_window_returns_none(self, window: object) -> None:
-        client = AnthropicClient(model="claude-test", api_key="dummy")
-        client._client = SimpleNamespace(
-            base_url="https://api.anthropic.com:443/",
-            models=SimpleNamespace(
-                retrieve=AsyncMock(
-                    return_value=SimpleNamespace(max_input_tokens=window),
-                ),
-            ),
+        client = AnthropicClient(
+            model="claude-test", api_key="dummy", base_url="https://api.anthropic.com:443/",
         )
+        _mock_http(client, lambda _: httpx.Response(
+            200, json={"max_input_tokens": window},
+        ))
         assert await client.get_context_length() is None
 
     @pytest.mark.asyncio
-    async def test_sdk_failure_maps_to_safe_backend_error(self) -> None:
-        client = AnthropicClient(model="claude-test", api_key="dummy")
-        request = httpx.Request("GET", "https://api.anthropic.com/v1/models/x")
-        client._client = SimpleNamespace(
-            base_url="https://api.anthropic.com",
-            models=SimpleNamespace(
-                retrieve=AsyncMock(
-                    side_effect=__import__("anthropic").APIConnectionError(
-                        request=request,
-                    ),
-                ),
-            ),
+    async def test_http_failure_maps_to_safe_backend_error(self) -> None:
+        client = AnthropicClient(
+            model="claude-test", api_key="dummy", max_retries=0,
         )
+
+        def fail(request):
+            raise httpx.ConnectError("metadata unavailable", request=request)
+
+        _mock_http(client, fail)
         with pytest.raises(BackendError, match="metadata request failed"):
             await client.get_context_length()
 
 
-def test_sdk_kwargs_owns_only_litellm_extra_body_and_strips_caller_controls():
-    client = AnthropicClient.__new__(AnthropicClient)
-    client._static_auth = False
-    client._client = SimpleNamespace(api_key=None, auth_token=None)
-    kwargs = {
+@pytest.mark.asyncio
+async def test_body_strips_caller_transport_controls_but_keeps_litellm_session():
+    client = AnthropicClient(model="claude-test", api_key="")
+    requests = []
+
+    def respond(request):
+        requests.append(request)
+        return httpx.Response(200, json=_text_response())
+
+    _mock_http(client, respond)
+    inbound = {
+        "messages": [{"role": "user", "content": "hi"}],
         "litellm_session_id": None,
+        "extra_headers": {"Authorization": "Bearer attacker"},
         "extra_body": {"caller": "must-not-survive"},
         "extra_query": {"x": "y"},
         "timeout": 1,
     }
 
-    prepared = client._prepare_sdk_kwargs(kwargs, {"x-api-key": "secret"})
+    await client.send(
+        [], inbound_anthropic_body=inbound,
+        extra_headers={"x-api-key": "secret"},
+    )
 
-    assert prepared["extra_body"] == {"litellm_session_id": None}
-    assert prepared["extra_headers"] == {"X-Api-Key": "secret"}
-    assert "extra_query" not in prepared
-    assert "timeout" not in prepared
+    assert len(requests) == 1
+    body = json.loads(requests[0].content)
+    assert body["litellm_session_id"] is None
+    assert not {"extra_headers", "extra_body", "extra_query", "timeout"} & body.keys()
+    assert requests[0].headers["x-api-key"] == "secret"
+    assert "authorization" not in requests[0].headers
+    assert not requests[0].url.query

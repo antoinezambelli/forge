@@ -891,13 +891,6 @@ async def anthropic_inbound_conversion() -> None:
 
 
 async def anthropic_downstream() -> None:
-    try:
-        import anthropic  # noqa: F401
-    except ImportError as exc:
-        raise AssertionError(
-            "Anthropic downstream characterization requires the installed anthropic SDK"
-        ) from exc
-
     def behavior(req: BackendRequest, _index: int) -> MockResponse:
         assert req.path == "/v1/messages"
         return MockResponse(body=_anthropic_response())
@@ -970,13 +963,6 @@ async def anthropic_downstream() -> None:
 
 
 async def anthropic_unpinned_concurrency_retry() -> None:
-    try:
-        import anthropic  # noqa: F401
-    except ImportError as exc:
-        raise AssertionError(
-            "Anthropic downstream characterization requires the installed anthropic SDK"
-        ) from exc
-
     concurrent_barrier = asyncio.Barrier(2)
     retry_attempts = 0
 

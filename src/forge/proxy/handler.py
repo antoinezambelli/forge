@@ -310,8 +310,8 @@ async def handle_chat_completions(
         headers: Inbound request headers (lowercased keys). The one credential
             identity among them is forwarded; an equivalent two-slot auth pair
             is preserved for same-protocol traffic and rendered once in the
-            backend's canonical slot across protocols. No other inbound header
-            is forwarded.
+            backend's canonical slot across protocols. Native Anthropic traffic
+            also retains its API version; other inbound headers are not forwarded.
         backend_protocol: Wire protocol of the backend (relocation target):
             ``openai`` or ``anthropic``.
         client_adapter: Normalized private adapter policy supplied by the
@@ -348,6 +348,13 @@ async def handle_chat_completions(
             "forwarding inbound credential to backend: %s",
             redact_auth_headers(extra_headers),
         )
+    if protocol == "anthropic" and backend_protocol == "anthropic":
+        # Keep the native API contract request-local, including guardrail
+        # retries. Missing versions use the Anthropic client's old default.
+        for name, value in (headers or {}).items():
+            if name.lower() == "anthropic-version":
+                extra_headers = {**(extra_headers or {}), "anthropic-version": value}
+                break
 
     # Deferred external-mode backend discovery runs once on the
     # first request, before BOTH dispatch paths. The proxy may also run this

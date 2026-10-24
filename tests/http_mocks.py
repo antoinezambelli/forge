@@ -21,6 +21,7 @@ def _mock_async_client(*args: object, **kwargs: object) -> AsyncMock:
     client.stream = MagicMock()
     headers = kwargs.get("headers")
     client.headers = httpx.Headers(headers) if headers is not None else httpx.Headers()
+    client.base_url = httpx.URL(kwargs.get("base_url", ""))
     timeout = kwargs.get("timeout")
     client.timeout = (
         timeout if isinstance(timeout, httpx.Timeout) else httpx.Timeout(timeout)

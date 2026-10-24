@@ -104,7 +104,7 @@ request-routed backend identity, not a fabricated Forge alias.
 **Downstream profile.**
 
 - **Local/OpenAI-shaped downstream (external omission or `--backend openai`)** — forge translates Claude Code's Anthropic requests to OpenAI and converts the reply back to Anthropic SSE. Anthropic-only fields with no OpenAI analog (`cache_control`, `thinking`, `document` blocks) are dropped at that boundary; see [ADR-015](decisions/015-cache-control-preservation-path1.md).
-- **Anthropic-shaped downstream (`--backend anthropic`, external mode)** — forge forwards to an Anthropic Messages endpoint (for example LiteLLM or the Anthropic API), preserving applicable unknown fields and `litellm_session_id`. This path uses the Anthropic SDK: `pip install forge-guardrails[anthropic]`.
+- **Anthropic-shaped downstream (`--backend anthropic`, external mode)** — forge forwards to an Anthropic Messages endpoint (for example LiteLLM or the Anthropic API), preserving applicable unknown fields and `litellm_session_id`. This path uses HTTP directly, with no Anthropic SDK dependency. Native inbound requests retain their `anthropic-version` through retries; missing versions and cross-protocol requests default to `2023-06-01`. The `2023-06-01` and `2026-10-21` contracts share the same body/response machinery; Forge does not silently rewrite invalid fields to fit a different API version.
 
 #### Proxy design boundaries
 

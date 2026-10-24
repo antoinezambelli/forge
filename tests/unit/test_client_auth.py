@@ -3,20 +3,17 @@
 forge carries at most one credential identity to the backend. That identity
 normally occupies one native auth header; matching Authorization + X-Api-Key
 values may represent it in both slots. These tests assert the real wire
-behavior via httpx.MockTransport (for the four httpx clients) and the Anthropic
-SDK's own request pipeline (for AnthropicClient), so final wire placement — not
-just what forge passes to httpx — is verified.
+behavior via httpx.MockTransport for all clients, so final wire placement — not
+just the resolved header dictionary — is verified.
 
 Covers design §12: construction key → canonical header; per-call extra_headers
 reaches the wire; two credentials on one call → raises; the shared-instance
-no-leak property; cross-protocol re-casing for the case-sensitive Anthropic SDK
-preflight; and the anthropic-version/beta filter.
+no-leak property; and the Anthropic version/beta policy.
 """
 
 from __future__ import annotations
 
 import os
-from unittest.mock import MagicMock
 
 import httpx
 import pytest
@@ -372,48 +369,38 @@ async def test_construction_api_key_plus_auth_header_raises(factory) -> None:
 class TestPrepareAnthropicHeaders:
     def test_normalizes_every_supported_header_shape(self) -> None:
         cases = [
-            ("api key", {"x-api-key": "k"}, {"X-Api-Key": "k"}),
+            ("api key", {"x-api-key": "k"}, {"x-api-key": "k"}),
             (
                 "authorization",
                 {"authorization": "Bearer k"},
-                {"Authorization": "Bearer k"},
+                {"authorization": "Bearer k"},
             ),
             (
-                "pinned SDK headers",
+                "version retained and beta excluded",
                 {
                     "x-api-key": "k",
                     "anthropic-version": "2023-06-01",
                     "anthropic-beta": "x",
                 },
-                {"X-Api-Key": "k"},
+                {"x-api-key": "k", "anthropic-version": "2023-06-01"},
             ),
-            ("unknown", {"X-Trace": "1"}, {"X-Trace": "1"}),
+            ("unknown", {"X-Trace": "1"}, {"x-trace": "1"}),
             ("none", None, None),
             ("empty", {}, None),
-            ("all dropped", {"anthropic-version": "x"}, None),
+            ("all dropped", {"anthropic-beta": "x"}, None),
         ]
         for case, headers, expected in cases:
             assert _prepare_anthropic_headers(headers) == expected, case
 
 
 def _anthropic_capturing(
-    client: AnthropicClient, captured: dict, api_key: str = "",
+    client: AnthropicClient, captured: dict,
 ) -> None:
-    """Swap the client's SDK for one whose transport captures the request.
-
-    ``api_key`` mirrors the construction credential so the SDK's own auth
-    (e.g. a static ``x-api-key``) is exercised on the captured request.
-    """
-    import anthropic
-
-    if int(anthropic.__version__.split(".", 1)[0]) >= 1:
-        import httpx2 as sdk_http
-    else:
-        sdk_http = httpx
+    """Capture HTTP requests without replacing production credential setup."""
 
     def handler(request):
         captured["request"] = request
-        return sdk_http.Response(
+        return httpx.Response(
             200,
             json={
                 "id": "msg_1",
@@ -427,21 +414,20 @@ def _anthropic_capturing(
             },
         )
 
-    client._client = anthropic.AsyncAnthropic(
-        api_key=api_key,
+    client._http = httpx.AsyncClient(
+        headers=client._http.headers,
         base_url="https://b",
-        http_client=sdk_http.AsyncClient(transport=sdk_http.MockTransport(handler)),
+        transport=httpx.MockTransport(handler),
     )
 
 
 def test_anthropic_empty_key_is_pure_passthrough_no_static_auth() -> None:
     # The proxy constructs with api_key="" for pure inbound passthrough: no
-    # static credential, and api_key is mapped to None so the SDK emits no auth
+    # static credential, and api_key is mapped to None so HTTP emits no auth
     # header at all (no spurious empty X-Api-Key).
     client = AnthropicClient(model="claude", api_key="")
     assert client._static_auth is False
-    assert client._client.api_key is None
-    assert client._client.auth_token is None
+    assert not has_auth_header(client._http.headers)
 
 
 def test_anthropic_passthrough_suppresses_ambient_env(monkeypatch) -> None:
@@ -450,8 +436,7 @@ def test_anthropic_passthrough_suppresses_ambient_env(monkeypatch) -> None:
     monkeypatch.setenv("ANTHROPIC_API_KEY", "env-api-key")
     monkeypatch.setenv("ANTHROPIC_AUTH_TOKEN", "env-auth-token")
     client = AnthropicClient(model="claude", api_key="")
-    assert client._client.api_key is None
-    assert client._client.auth_token is None
+    assert not has_auth_header(client._http.headers)
     # restored for forge's own (eval) clients / other processes
     assert os.environ["ANTHROPIC_API_KEY"] == "env-api-key"
     assert os.environ["ANTHROPIC_AUTH_TOKEN"] == "env-auth-token"
@@ -462,8 +447,8 @@ def test_anthropic_static_key_suppresses_ambient_auth_token(monkeypatch) -> None
     # ANTHROPIC_AUTH_TOKEN must not add a second (Authorization: Bearer).
     monkeypatch.setenv("ANTHROPIC_AUTH_TOKEN", "env-auth-token")
     client = AnthropicClient(model="claude", api_key="STATIC")
-    assert client._client.api_key == "STATIC"
-    assert client._client.auth_token is None
+    assert client._http.headers["x-api-key"] == "STATIC"
+    assert "authorization" not in client._http.headers
     assert os.environ["ANTHROPIC_AUTH_TOKEN"] == "env-auth-token"
 
 
@@ -472,14 +457,12 @@ def test_anthropic_none_key_defers_to_env(monkeypatch) -> None:
     # single credential); forge does not suppress it.
     monkeypatch.setenv("ANTHROPIC_API_KEY", "env-api-key")
     client = AnthropicClient(model="claude")  # api_key=None default
-    assert client._client.api_key == "env-api-key"
+    assert client._http.headers["x-api-key"] == "env-api-key"
 
 
 @pytest.mark.asyncio
 async def test_anthropic_inbound_lowercase_xapikey_reaches_wire() -> None:
-    # The proxy lowercases inbound keys; forge must re-case to X-Api-Key so the
-    # SDK's case-sensitive preflight passes AND the wire carries the credential
-    # exactly once. (Regression guard for blocker B1.)
+    # The proxy lowercases inbound keys; HTTP must carry the credential once.
     client = AnthropicClient(model="claude", api_key="")
     cap: dict = {}
     _anthropic_capturing(client, cap)
@@ -525,14 +508,12 @@ def test_anthropic_construction_api_key_plus_default_header_raises() -> None:
         )
 
 
-def test_anthropic_construction_default_headers_recased_for_sdk() -> None:
-    # Construction default_headers must reach the SDK re-cased to X-Api-Key
-    # (the SDK's case-sensitive preflight slot).
+def test_anthropic_construction_default_headers_reach_http() -> None:
     client = AnthropicClient(
         model="claude", api_key="", default_headers={"x-api-key": "STATICKEY"},
     )
     assert client._static_auth is True
-    stored = {k.lower(): v for k, v in dict(client._client.default_headers).items()}
+    stored = dict(client._http.headers)
     assert stored.get("x-api-key") == "STATICKEY"
 
 
@@ -543,7 +524,7 @@ async def test_anthropic_verbatim_body_cannot_smuggle_extra_headers() -> None:
     # assert that only the static credential reaches the wire.
     client = AnthropicClient(model="claude", api_key="STATIC")
     cap: dict = {}
-    _anthropic_capturing(client, cap, api_key="STATIC")
+    _anthropic_capturing(client, cap)
     malicious_body = {
         "model": "claude",
         "messages": [{"role": "user", "content": "hi"}],
@@ -562,7 +543,7 @@ async def test_anthropic_passthrough_cannot_smuggle_extra_headers() -> None:
     # ``extra_headers`` must not inject auth either.
     client = AnthropicClient(model="claude", api_key="STATIC")
     cap: dict = {}
-    _anthropic_capturing(client, cap, api_key="STATIC")
+    _anthropic_capturing(client, cap)
     await client.send(
         _USER_MSG,
         passthrough={"extra_headers": {"x-api-key": "SMUGGLED"}, "max_tokens": 16},
@@ -573,45 +554,27 @@ async def test_anthropic_passthrough_cannot_smuggle_extra_headers() -> None:
 
 
 @pytest.mark.asyncio
-async def test_anthropic_stream_installs_recased_credential() -> None:
-    # send_stream shares the credential install + re-casing with send; verify
-    # the re-cased header lands in the SDK stream call.
+async def test_anthropic_stream_installs_credential() -> None:
     client = AnthropicClient(model="claude", api_key="")
     captured: dict = {}
 
-    class _FakeStream:
-        async def __aenter__(self_):
-            return self_
+    def handler(request):
+        captured["request"] = request
+        return httpx.Response(
+            200, headers={"content-type": "text/event-stream"},
+            content=b'data: {"type":"message_stop"}\n\n',
+        )
 
-        async def __aexit__(self_, *args):
-            return False
-
-        def __aiter__(self_):
-            async def _gen():
-                if False:
-                    yield  # pragma: no cover - empty event stream
-            return _gen()
-
-        async def get_final_message(self_):
-            msg = MagicMock()
-            msg.usage.input_tokens = 1
-            msg.usage.output_tokens = 1
-            msg.usage.cache_creation_input_tokens = 0
-            msg.usage.cache_read_input_tokens = 0
-            return msg
-
-    def fake_stream(**kwargs):
-        captured["kwargs"] = kwargs
-        return _FakeStream()
-
-    client._client = MagicMock()
-    client._client.messages.stream = fake_stream
+    client._http = httpx.AsyncClient(
+        base_url="https://b", transport=httpx.MockTransport(handler),
+        headers=client._http.headers,
+    )
     _ = [
         c async for c in client.send_stream(
             _USER_MSG, extra_headers={"x-api-key": "REALKEY"}
         )
     ]
-    assert captured["kwargs"]["extra_headers"] == {"X-Api-Key": "REALKEY"}
+    assert captured["request"].headers.get_list("x-api-key") == ["REALKEY"]
 
 
 # ── zero-credential fail-loud (no credential at all) ─────────────────
@@ -626,7 +589,7 @@ async def test_anthropic_zero_credential_send_raises_missing(monkeypatch) -> Non
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     monkeypatch.delenv("ANTHROPIC_AUTH_TOKEN", raising=False)
     client = AnthropicClient(model="claude", api_key="")
-    assert client._client.api_key is None and client._client.auth_token is None
+    assert not has_auth_header(client._http.headers)
     with pytest.raises(MissingCredentialError):
         await client.send(_USER_MSG)
 
@@ -645,5 +608,5 @@ def test_anthropic_ambient_env_satisfies_credential_requirement(monkeypatch) -> 
     # zero-credential guard must NOT trip even with no per-call header.
     monkeypatch.setenv("ANTHROPIC_API_KEY", "env-key")
     client = AnthropicClient(model="claude")  # api_key=None default
-    assert client._client.api_key == "env-key"
+    assert client._http.headers["x-api-key"] == "env-key"
     client._ensure_credential(None)  # no raise

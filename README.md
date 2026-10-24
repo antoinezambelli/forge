@@ -30,7 +30,7 @@ Llamafile, vLLM, and Anthropic as backends.
 Forge Proxy is a self-contained developer sidecar: point an OpenAI- or
 Anthropic-compatible client at it to add Forge guardrails without rewriting the
 client or integrating the Python library. The command bundles Forge, its private
-Python runtime, and the Anthropic SDK, so the host does not need Python or pip.
+Python runtime, and HTTP clients, so the host does not need Python or pip.
 It does not install a backend executable, model, GPU stack, service,
 credentials, or client configuration.
 
@@ -69,7 +69,7 @@ or a Python-managed Proxy. It requires:
 
 ```bash
 pip install forge-guardrails                # core only
-pip install "forge-guardrails[anthropic]"   # + Anthropic client
+pip install "forge-guardrails[anthropic]"   # supported alias; client uses core HTTP dependencies
 ```
 
 The Python package intentionally does not install a global `forge-proxy`

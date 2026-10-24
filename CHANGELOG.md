@@ -2,6 +2,26 @@
 
 All notable changes to forge are documented here.
 
+## [0.10.0] — 2026-10-24
+
+An Anthropic transport-compatibility release for the Python library and
+standalone Forge Proxy. Messages requests no longer depend on the installed
+Anthropic Python SDK's method signatures, auth defaults, or API-version default.
+
+### Changed
+
+- **Anthropic transport no longer depends on the Python SDK.** Proxy and direct
+  clients send Messages requests over HTTP. Native Anthropic requests retain
+  the caller's `anthropic-version` through guardrail retries; requests without
+  an Anthropic version default to `2023-06-01`. Both that contract and
+  `2026-10-21` use the existing body conversion, without silently removing
+  caller fields or upgrading requests. Other caller-header filtering,
+  credential rules, guardrails, and reasoning behavior remain unchanged.
+- Anthropic transport errors now use Forge-authored summaries, keeping raw
+  backend diagnostics on `BackendError.body` rather than in error messages.
+- Standalone Proxy bundles use the SDK-free HTTP client. The published
+  `anthropic` install extra remains available as an empty compatibility alias.
+
 ## [0.9.5] — 2026-08-29
 
 A credential-interoperability release for Forge's direct clients and

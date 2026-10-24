@@ -1,8 +1,9 @@
 # Install Forge Proxy
 
 Forge Proxy is available as a standalone, self-contained command. The bundle
-contains Forge, a private Python runtime, Forge's core dependencies, and the
-Anthropic SDK. It does **not** install a backend executable, model, GPU or driver
+contains Forge, a private Python runtime, and Forge's core dependencies. The
+Anthropic client uses HTTP directly, without the Anthropic SDK. The bundle
+does **not** install a backend executable, model, GPU or driver
 stack, service, credentials, or client configuration.
 
 Install and operate a downstream backend separately. See [Backend
