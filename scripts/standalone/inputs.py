@@ -12,7 +12,6 @@ COLLECT_PACKAGES = (
     "forge",
     "pydantic",
     "httpx",
-    "anthropic",
     "tomli_w",
 )
 
@@ -21,7 +20,6 @@ REQUIRED_CONTENT = (
     "forge_guardrails",
     "pydantic",
     "httpx",
-    "anthropic",
     "tomli_w",
 )
 

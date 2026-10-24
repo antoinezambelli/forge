@@ -6,9 +6,9 @@ preserve the pair, while cross-protocol requests render it once in the target's
 canonical slot. Zero credentials is valid for an ungated backend. Distinct
 credentials anywhere remain a hard error (Design Principle #1: fail loud).
 
-Only resolved auth headers are forwarded to the backend; the rest of the
-inbound header set is NOT forwarded (httpx recomputes transport headers for the
-re-serialized body, so there is nothing to strip).
+This module resolves credentials only. The handler separately carries the
+native Anthropic API version to an Anthropic downstream; other inbound headers
+are not forwarded (httpx recomputes transport headers for the serialized body).
 """
 
 from __future__ import annotations

@@ -36,14 +36,14 @@ Documentation = "https://github.com/antoinezambelli/forge/tree/main/docs"
 Changelog = "https://github.com/antoinezambelli/forge/blob/main/CHANGELOG.md"
 
 [project.optional-dependencies]
-anthropic = ["anthropic>=0.86.0,<2"]
+# Retain the published install extra; the HTTP client needs only core deps.
+anthropic = []
 dataset-builder = ["pyarrow>=18.0.0"]
 dev = [
     "pytest",
     "pytest-cov",
     "pytest-asyncio",
     "pyyaml",
-    "anthropic>=0.86.0,<2",
     "mpmath",
     "pyarrow>=18.0.0",
 ]

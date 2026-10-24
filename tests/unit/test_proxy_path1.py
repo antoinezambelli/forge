@@ -4,16 +4,18 @@ Covers:
 - ProxyServer init-time validation of the Anthropic selector + mode.
 - AnthropicClient verbatim path when inbound_anthropic_body is set.
 - AnthropicClient falling back to _convert_messages rebuild when None.
-- End-to-end: cache_control on inbound blocks reaches the underlying
-  Anthropic SDK call unchanged (the headline path-1 capability).
+- End-to-end: cache_control on inbound blocks reaches the downstream
+  HTTP request unchanged (the headline path-1 capability).
 
 See ADR-015 for the cache_control preservation rationale.
 """
 
 from __future__ import annotations
 
+import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import httpx
 import pytest
 
 from forge._backend_profiles import ClientAdapter
@@ -120,7 +122,7 @@ class TestAnthropicClientVerbatim:
                 }
             ],
             "metadata": {"user_id": "test"},
-            "stream": True,  # Should be stripped — SDK call selects streaming
+            "stream": True,  # Should be stripped — send/send_stream selects streaming
         }
         kwargs = client._build_kwargs(
             messages=[],
@@ -183,70 +185,80 @@ class TestAnthropicClientVerbatim:
 
 
 class TestAnthropicClientBaseURL:
-    def test_base_url_passed_to_sdk(self):
-        """base_url retargets the SDK at an Anthropic-shape downstream."""
+    @pytest.mark.asyncio
+    async def test_base_url_routes_to_anthropic_shape_downstream(self):
         client = AnthropicClient(
             model="claude",
             base_url="http://litellm.local:4000",
             api_key="dummy",
         )
-        # The SDK stores the base URL; verifying via the SDK's internal state
-        # is fragile but the construction path is what matters here.
-        assert client._client is not None
+        urls = []
+
+        def respond(request):
+            urls.append(str(request.url))
+            return httpx.Response(200, json=_stub_anthropic_response())
+
+        client._http = httpx.AsyncClient(
+            transport=httpx.MockTransport(respond),
+            base_url=client._http.base_url,
+            headers=client._http.headers,
+        )
+        await client.send([{"role": "user", "content": "hi"}])
+        assert urls == ["http://litellm.local:4000/v1/messages"]
 
 
 # ── End-to-end: cache_control wire preservation ──────────────
 
 
 def _stub_anthropic_response():
-    """Build a minimal Anthropic-shape response object for AsyncMock."""
-    msg = MagicMock()
-    msg.content = [MagicMock(type="text", text="ok")]
-    msg.usage.input_tokens = 1
-    msg.usage.output_tokens = 1
-    msg.usage.cache_creation_input_tokens = 0
-    msg.usage.cache_read_input_tokens = 0
-    return msg
+    return {
+        "content": [{"type": "text", "text": "ok"}],
+        "usage": {"input_tokens": 1, "output_tokens": 1},
+    }
 
 
 def _stub_tool_response(name="search", **tool_input):
-    msg = MagicMock()
-    msg.content = [MagicMock(type="tool_use", name=name, input=tool_input)]
-    msg.usage.input_tokens = 1
-    msg.usage.output_tokens = 1
-    msg.usage.cache_creation_input_tokens = 0
-    msg.usage.cache_read_input_tokens = 0
-    return msg
+    return {
+        "content": [{"type": "tool_use", "name": name, "input": tool_input}],
+        "usage": {"input_tokens": 1, "output_tokens": 1},
+    }
 
 
 def _stub_thinking_tool_response(name="search", **tool_input):
-    msg = MagicMock()
-    thinking_block = MagicMock()
-    thinking_block.type = "thinking"
-    thinking_block.thinking = "I should search."
-    tool_block = MagicMock()
-    tool_block.type = "tool_use"
-    tool_block.name = name
-    tool_block.input = tool_input
-    msg.content = [thinking_block, tool_block]
-    msg.usage.input_tokens = 1
-    msg.usage.output_tokens = 1
-    msg.usage.cache_creation_input_tokens = 0
-    msg.usage.cache_read_input_tokens = 0
-    return msg
+    return {
+        "content": [
+            {"type": "thinking", "thinking": "I should search."},
+            {"type": "tool_use", "name": name, "input": tool_input},
+        ],
+        "usage": {"input_tokens": 1, "output_tokens": 1},
+    }
+
+
+def _mock_anthropic_http(client, responses=None):
+    """Capture real request JSON while serving a deterministic response sequence."""
+    responses = iter(responses or [_stub_anthropic_response()])
+    calls = []
+
+    def respond(request):
+        calls.append(json.loads(request.content))
+        return httpx.Response(200, json=next(responses))
+
+    client._http = httpx.AsyncClient(
+        transport=httpx.MockTransport(respond),
+        headers=client._http.headers,
+        base_url=client._http.base_url,
+    )
+    return calls
 
 
 class TestCacheControlSurvivesWire:
     """The headline path-1 capability: a cache_control block on inbound must
-    reach the Anthropic SDK call unchanged."""
+    reach the downstream HTTP request unchanged."""
 
     @pytest.mark.asyncio
-    async def test_cache_control_on_system_block_reaches_sdk(self):
+    async def test_cache_control_on_system_block_reaches_http(self):
         client = AnthropicClient(model="claude-3-5-sonnet", api_key="dummy")
-        # Patch the SDK at the boundary; capture call_args.
-        client._client.messages.create = AsyncMock(
-            return_value=_stub_anthropic_response(),
-        )
+        calls = _mock_anthropic_http(client)
 
         inbound = {
             "model": "claude-3-5-sonnet",
@@ -269,19 +281,16 @@ class TestCacheControlSurvivesWire:
             inbound_anthropic_body=inbound,
         )
 
-        # SDK was called once with verbatim system blocks
-        client._client.messages.create.assert_called_once()
-        kwargs = client._client.messages.create.call_args.kwargs
+        assert len(calls) == 1
+        kwargs = calls[0]
         assert kwargs["system"][0]["cache_control"] == {"type": "ephemeral"}
         # The block text survives unchanged
         assert kwargs["system"][0]["text"] == "large stable system prompt"
 
     @pytest.mark.asyncio
-    async def test_cache_control_on_message_block_reaches_sdk(self):
+    async def test_cache_control_on_message_block_reaches_http(self):
         client = AnthropicClient(model="claude-3-5-sonnet", api_key="dummy")
-        client._client.messages.create = AsyncMock(
-            return_value=_stub_anthropic_response(),
-        )
+        calls = _mock_anthropic_http(client)
 
         inbound = {
             "model": "claude-3-5-sonnet",
@@ -307,7 +316,7 @@ class TestCacheControlSurvivesWire:
             inbound_anthropic_body=inbound,
         )
 
-        kwargs = client._client.messages.create.call_args.kwargs
+        kwargs = calls[0]
         msg_blocks = kwargs["messages"][0]["content"]
         assert msg_blocks[0]["cache_control"] == {"type": "ephemeral"}
 
@@ -317,9 +326,7 @@ class TestCacheControlSurvivesWire:
         rebuilds blocks without cache_control. Documents the limit ADR-015
         addresses."""
         client = AnthropicClient(model="claude-3-5-sonnet", api_key="dummy")
-        client._client.messages.create = AsyncMock(
-            return_value=_stub_anthropic_response(),
-        )
+        calls = _mock_anthropic_http(client)
 
         # OpenAI-shape messages (what the runner would serialize to).
         # cache_control has nowhere to live in this shape — it was already
@@ -335,7 +342,7 @@ class TestCacheControlSurvivesWire:
             inbound_anthropic_body=None,  # rebuild path
         )
 
-        kwargs = client._client.messages.create.call_args.kwargs
+        kwargs = calls[0]
         # System is a plain string (no blocks, no cache_control)
         assert kwargs["system"] == "large stable system prompt"
         assert not isinstance(kwargs["system"], list)
@@ -346,9 +353,7 @@ class TestAnthropicReasoningProxyParity:
     @pytest.mark.parametrize("stream", [False, True])
     async def test_openai_client_receives_keep_last_reasoning(self, stream) -> None:
         client = AnthropicClient(model="claude-test", api_key="dummy")
-        client._client.messages.create = AsyncMock(
-            return_value=_stub_thinking_tool_response(q="forge"),
-        )
+        _mock_anthropic_http(client, [_stub_thinking_tool_response(q="forge")])
         body = {
             "model": "claude-test",
             "messages": [{"role": "user", "content": "search for forge"}],
@@ -416,7 +421,7 @@ class TestRequestLocalModelSurvivesMutation:
         self, client_model, inbound_model, effective_model,
     ):
         client = AnthropicClient(model=client_model, api_key="dummy")
-        client._client.messages.create = AsyncMock(side_effect=[
+        calls = _mock_anthropic_http(client, [
             _stub_anthropic_response(),
             _stub_anthropic_response(),
             _stub_tool_response(q="done"),
@@ -431,11 +436,10 @@ class TestRequestLocalModelSurvivesMutation:
             protocol="anthropic", backend_protocol="anthropic", max_retries=2,
         )
 
-        calls = client._client.messages.create.call_args_list
-        assert [call.kwargs["model"] for call in calls] == [
+        assert [call["model"] for call in calls] == [
             effective_model, effective_model, effective_model,
         ]
-        assert calls[0].kwargs["messages"] == self._body(inbound_model)["messages"]
+        assert calls[0]["messages"] == self._body(inbound_model)["messages"]
         assert result["model"] == effective_model
         assert client.model == client_model
 
@@ -448,9 +452,7 @@ class TestRequestLocalModelSurvivesMutation:
         self, client_model, inbound_model, effective_model,
     ):
         client = AnthropicClient(model=client_model, api_key="dummy")
-        client._client.messages.create = AsyncMock(
-            return_value=_stub_tool_response(q="done"),
-        )
+        calls = _mock_anthropic_http(client, [_stub_tool_response(q="done")])
         context_manager = MagicMock()
         context_manager.maybe_compact.side_effect = (
             lambda messages, **_: list(messages)
@@ -463,7 +465,7 @@ class TestRequestLocalModelSurvivesMutation:
             protocol="anthropic", backend_protocol="anthropic",
         )
 
-        kwargs = client._client.messages.create.call_args.kwargs
+        kwargs = calls[0]
         assert kwargs["model"] == effective_model
         assert result["model"] == effective_model
         assert client.model == client_model

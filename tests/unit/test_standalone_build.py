@@ -44,7 +44,6 @@ def passing_evidence(form: str = "onedir") -> dict[str, object]:
                 "forge_guardrails": True,
                 "pydantic": True,
                 "httpx": True,
-                "anthropic": True,
                 "tomli_w": True,
             },
             "excluded_present": [],
@@ -125,8 +124,8 @@ def test_passing_two_form_build_selects_onefile(tmp_path: Path) -> None:
 def test_evidence_policy_reports_missing_and_excluded_content() -> None:
     record = passing_evidence()
     required = record["dependency_evidence"]["required"]  # type: ignore[index]
-    required["anthropic"] = False  # type: ignore[index]
-    with pytest.raises(ValueError, match="anthropic"):
+    required["forge.clients.anthropic"] = False  # type: ignore[index]
+    with pytest.raises(ValueError, match="forge.clients.anthropic"):
         evidence.validate_evidence(record)  # type: ignore[arg-type]
 
     record = passing_evidence()
@@ -158,7 +157,6 @@ def test_toc_dependency_inventory(tmp_path: Path) -> None:
                     ("forge.clients.vllm", "forge/clients/vllm.py", "PYMODULE"),
                     ("pydantic", "pydantic/__init__.py", "PYMODULE"),
                     ("httpx", "httpx/__init__.py", "PYMODULE"),
-                    ("anthropic", "anthropic/__init__.py", "PYMODULE"),
                     ("tomli_w", "tomli_w/__init__.py", "PYMODULE"),
                     ("forge_guardrails-0.9.0.dist-info/METADATA", "metadata", "DATA"),
                 ],

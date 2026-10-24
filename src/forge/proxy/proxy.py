@@ -342,19 +342,9 @@ class ProxyServer:
         if adapter == ClientAdapter.ANTHROPIC:
             # Path 1 — downstream speaks the Anthropic Messages API
             # (LiteLLM /v1/messages, real Anthropic, self-hosted proxy).
-            # AnthropicClient handles base_url and SDK retries; forge
+            # AnthropicClient handles base_url and transport retries; forge
             # guardrails wrap its inference loop like any other client.
-            # Lazy import: the anthropic SDK is an optional dependency
-            # (forge-guardrails[anthropic]). Only Path 1 needs it, so
-            # Path 2 / local-backend users must not be forced to install
-            # it just to start the proxy.
-            try:
-                from forge.clients.anthropic import AnthropicClient
-            except ImportError as exc:
-                raise RuntimeError(
-                    "backend='anthropic' requires the anthropic SDK. "
-                    "Install it with: pip install 'forge-guardrails[anthropic]'"
-                ) from exc
+            from forge.clients.anthropic import AnthropicClient
             client: LLMClient = AnthropicClient(
                 model=self._model,
                 base_url=self._resolved_backend.adapter_base_url,

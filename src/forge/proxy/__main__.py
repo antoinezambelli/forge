@@ -297,7 +297,6 @@ def _runtime_check() -> None:
         "forge.clients.anthropic",
         "pydantic",
         "httpx",
-        "anthropic",
         "tomli_w",
     ):
         importlib.import_module(module)

@@ -158,16 +158,18 @@ client-agnostic — Forge recognizes the header shape, not Claude Code itself.
 > Anthropic. Coherent setups never hit this — OAuth callers use the Anthropic
 > endpoint (`/v1/messages`), which is same-protocol passthrough.
 
-forge forwards **only** the resolved credential header or matching pair, if
-present; it does not forward the rest of the inbound header set (so client-set `anthropic-beta`,
-`OpenAI-Organization`, etc. do not reach the backend — a future
-`--backend-header` may add this).
+forge forwards the resolved credential header or matching pair, if present.
+For Anthropic inbound **and** outbound, it also forwards `anthropic-version`
+unchanged, including on guardrail retries. Missing versions and non-Anthropic
+inbound requests use `2023-06-01`. The version header is not sent to
+OpenAI-shaped backends. Other caller headers, including `anthropic-beta` and
+`OpenAI-Organization`, remain excluded.
 
 ### Notes
 
 - **Ambient `ANTHROPIC_API_KEY` / `ANTHROPIC_AUTH_TOKEN`** are read by the
-  Anthropic SDK only for *direct* `AnthropicClient()` use (the eval path) — your
-  deliberate single credential. The **proxy** neutralizes these env vars at
+  Anthropic HTTP client only for *direct* `AnthropicClient()` use — your
+  configured credential. The **proxy** ignores these env vars at
   construction so an ambient value can't become a hidden second credential.
 - **Keyless passthrough to an auth-required backend:** unmanaged startup makes
   no metadata request. Supply one credential on inference. An unpinned
@@ -344,7 +346,8 @@ client = VLLMClient(model_path="/path/to/awq-dir")  # or a HuggingFace repo id
 
 ## Anthropic
 
-Anthropic is a published optional extra:
+The Anthropic client uses Forge's core HTTP dependencies, without the Anthropic
+SDK. The published extra remains a supported install alias:
 
 ```bash
 pip install "forge-guardrails[anthropic]"
@@ -359,13 +362,13 @@ export ANTHROPIC_API_KEY=sk-...
 Forge client:
 
 ```python
-from forge.clients import AnthropicClient
+from forge.clients.anthropic import AnthropicClient
 
 client = AnthropicClient(model="claude-sonnet-4-6")
 ```
 
 No server to smoke-test — first inference call surfaces auth/network issues.
-Direct `get_context_length()` queries exact-model metadata only when the SDK
+Direct `get_context_length()` queries exact-model metadata only when the HTTP
 client targets the canonical official `https://api.anthropic.com` root and has
 a pinned model. Custom gateways, noncanonical Anthropic URLs, and
 unpinned/request-routed clients return `None` without a metadata request. Forge
