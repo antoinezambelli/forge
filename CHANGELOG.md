@@ -2,6 +2,22 @@
 
 All notable changes to forge are documented here.
 
+## [0.10.1] — 2026-11-01
+
+A multipart-text compatibility fix for the Python library and standalone
+Forge Proxy.
+
+### Fixed
+
+- **Same-role message merging accepts multipart text content.** The
+  Llamafile/llama-compatible adapter now extracts text from list content before
+  merging, avoiding a `TypeError` in affected Proxy requests, including those
+  using reasoning replay. Plain-string formatting and existing merge rules are
+  unchanged; nonmerged messages retain their original shape. Merged content is
+  text-only and does not preserve non-text blocks or block-level metadata.
+  Fixes #151 via #163; thanks to @xh123637.
+- Standalone Forge Proxy bundles include the same multipart-text merge fix.
+
 ## [0.10.0] — 2026-10-24
 
 An Anthropic transport-compatibility release for the Python library and
