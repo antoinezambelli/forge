@@ -593,6 +593,7 @@ MODEL_FAMILIES: dict[str, dict[str, str]] = {
     "Ornith-1.5-122B-UD-Q4_K_XL":             {"family": "ornith-1.5-122b", "cross_backend_key": "ornith-1.5-122b-q4_K_XL"},
     # lfm2.5 8b-a1b (llama-server only)
     "LFM2.5-8B-A1B-Q4_K_M":                 {"family": "lfm2.5-8b-a1b", "cross_backend_key": "lfm2.5-8b-a1b-q4_K_M"},
+    "LFM3-1.7B-Q4_K_M":                    {"family": "lfm3-1.7b", "cross_backend_key": "lfm3-1.7b-q4_K_M"},
     # mellum2 12b-a2.5b (llama-server only; instruct + thinking share a family)
     "Mellum2-12B-A2.5B-Instruct-Q4_K_M":    {"family": "mellum2-12b-a2.5b", "cross_backend_key": "mellum2-12b-a2.5b-instruct-q4_K_M"},
     "Mellum2-12B-A2.5B-Thinking-Q4_K_M":    {"family": "mellum2-12b-a2.5b", "cross_backend_key": "mellum2-12b-a2.5b-thinking-q4_K_M"},
