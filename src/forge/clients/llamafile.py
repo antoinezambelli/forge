@@ -25,6 +25,7 @@ from forge.clients.base import (
     TokenUsage,
     _record_captured_usage,
     decode_tool_args,
+    flatten_content_to_text,
     format_tool,
     resolve_request_headers,
     static_auth_present,
@@ -243,11 +244,16 @@ def _merge_consecutive(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
                     break
 
             if last_visible_idx is not None and result[last_visible_idx].get("role") == role:
-                # Same role at consecutive visible positions — merge
+                # Same role at consecutive visible positions — merge.
+                # Content may be a multi-part list (OpenAI parts, e.g. a
+                # reasoning-replay fold), so flatten both sides to text
+                # first: raw ``+`` on a list raises TypeError.
                 target = result[last_visible_idx]
                 result[last_visible_idx] = {
                     **target,
-                    "content": target.get("content", "") + "\n\n" + m.get("content", ""),
+                    "content": flatten_content_to_text(target.get("content", ""))
+                    + "\n\n"
+                    + flatten_content_to_text(m.get("content", "")),
                 }
                 continue
 

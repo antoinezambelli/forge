@@ -1221,6 +1221,41 @@ class TestMergeConsecutive:
         assert "go" in user_msgs[0]["content"]
         assert "step nudge" in user_msgs[0]["content"]
 
+    def test_merges_list_content_into_string_message(self) -> None:
+        # Multi-part content (reasoning replay / OpenAI parts) on the
+        # merge target: raw list + str used to raise TypeError.
+        messages = [
+            {"role": "assistant", "content": [{"type": "text", "text": "kept reasoning"}]},
+            {"role": "assistant", "content": "final answer"},
+        ]
+        result = _merge_consecutive(messages)
+        assert len(result) == 1
+        assert result[0]["content"] == "kept reasoning\n\nfinal answer"
+
+    def test_merges_string_message_into_list_content(self) -> None:
+        messages = [
+            {"role": "user", "content": "question"},
+            {"role": "user", "content": [{"type": "text", "text": "follow-up"}]},
+        ]
+        result = _merge_consecutive(messages)
+        assert len(result) == 1
+        assert result[0]["content"] == "question\n\nfollow-up"
+
+    def test_merges_two_list_contents(self) -> None:
+        messages = [
+            {
+                "role": "assistant",
+                "content": [
+                    {"type": "text", "text": "part one"},
+                    {"type": "text", "text": "part two"},
+                ],
+            },
+            {"role": "assistant", "content": [{"type": "text", "text": "part three"}]},
+        ]
+        result = _merge_consecutive(messages)
+        assert len(result) == 1
+        assert result[0]["content"] == "part one\npart two\n\npart three"
+
 
 class TestThinkFlagSync:
     @pytest.mark.asyncio
