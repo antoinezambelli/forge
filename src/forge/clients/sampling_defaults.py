@@ -212,6 +212,8 @@ MODEL_SAMPLING_DEFAULTS: dict[str, dict[str, float | int]] = {
     # the special-token format itself is not a rescue strategy, so only a Pythonic-token fallback (not
     # observed) would miss.
     "LFM2.5-8B-A1B-Q4_K_M":                 {"temperature": 0.2, "top_k": 80, "repeat_penalty": 1.05},  # https://huggingface.co/LiquidAI/LFM2.5-8B-A1B
+    # LFM3 general/tool-use settings; preserve reasoning history for full replay.
+    "LFM3-1.7B-Q4_K_M": {"temperature": 0.1, "top_k": 50, "repeat_penalty": 1.1, "chat_template_kwargs": {"enable_thinking": True, "preserve_thinking": True}},  # https://huggingface.co/LiquidAI/LFM3-1.7B
     # Mellum2-12B-A2.5B (JetBrains) — MoE, 12B total / 2.5B active, 64 experts. Both variants share the
     # same card sampling (T=0.6, top_p=0.95, top_k=20; min_p / repeat_penalty / presence_penalty not
     # specified). Thinking = <think> CoT (qwen3 reasoning parser); Instruct = direct (hermes tool parser).

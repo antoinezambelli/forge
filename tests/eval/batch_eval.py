@@ -126,6 +126,15 @@ _MELLUM21_SERVER_RECIPE = _BatchServerRecipe(
     cache_type_v="q8_0",
     n_slots=1,
 )
+_LFM3_SERVER_RECIPE = _BatchServerRecipe(
+    extra_flags=(
+        "--load-mode", "none",
+        "-b", "512", "-ub", "128", "-fa", "on",
+        "--reasoning", "on", "--reasoning-format", "auto",
+        "--no-prefill-assistant", "--spec-type", "none",
+    ),
+    n_slots=1,
+)
 _NEMOTRON35_BOLT_SERVER_RECIPE = _BatchServerRecipe(
     extra_flags=(
         "--reasoning", "on", "--reasoning-format", "auto",
@@ -297,6 +306,7 @@ _GGUF_FILES: list[tuple[str, _BatchServerRecipe]] = [
     # 16GB tier (rig-01) — LFM2.5 MoE + Mellum2 MoE (both variants). All
     # support native FC, so each gets native + prompt configs below.
     ("LFM2.5-8B-A1B-Q4_K_M.gguf", _REASONING_SERVER_RECIPE),
+    ("LFM3-1.7B-Q4_K_M.gguf", _LFM3_SERVER_RECIPE),
     ("Mellum2-12B-A2.5B-Thinking-Q4_K_M.gguf", _REASONING_SERVER_RECIPE),
     ("Mellum2-12B-A2.5B-Instruct-Q4_K_M.gguf", _DEFAULT_SERVER_RECIPE),
     ("Mellum2.1-12B-A2.5B-Thinking-Q4_K_M.gguf", _MELLUM21_SERVER_RECIPE),
