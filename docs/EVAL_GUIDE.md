@@ -166,18 +166,18 @@ policy and it skips attempts already recorded for each scenario.
 
 ### Committed datasets
 
-Released datasets are versioned in the repo: `eval_results_vX.Y.Z.jsonl` (LFS-tracked). The current shipped dashboard at `docs/results/dashboard.html` reflects the latest version. The shipped dashboard is built from **all** versioned datasets at once — `report` merges them and `dedup_latest_gen` keeps the newest gen per config, so older-gen models carry forward as superscript-badged peers. Pass every `eval_results_v*.jsonl`, oldest to newest:
+Released datasets are versioned under `data/evals/`: `eval_results_vX.Y.Z.jsonl` (LFS-tracked). The current shipped dashboard at `docs/results/dashboard.html` reflects the latest version. The shipped dashboard is built from **all** versioned datasets at once — `report` merges them and `dedup_latest_gen` keeps the newest gen per config, so older-gen models carry forward as superscript-badged peers. Pass every versioned source, oldest to newest (not lexicographic filename order):
 
 ```bash
 python -m tests.eval.report \
-  eval_results_v0.6.0.jsonl eval_results_v0.7.0.jsonl \
-  eval_results_v0.7.4.jsonl eval_results_v0.7.5.jsonl \
-  eval_results_v0.8.2.jsonl eval_results_v0.9.0.jsonl \
-  eval_results_v0.9.5.jsonl eval_results_v0.10.0.jsonl \
+  data/evals/eval_results_v0.6.0.jsonl data/evals/eval_results_v0.7.0.jsonl \
+  data/evals/eval_results_v0.7.4.jsonl data/evals/eval_results_v0.7.5.jsonl \
+  data/evals/eval_results_v0.8.2.jsonl data/evals/eval_results_v0.9.0.jsonl \
+  data/evals/eval_results_v0.9.5.jsonl data/evals/eval_results_v0.10.0.jsonl \
   --html docs/results/dashboard.html --markdown docs/results/
 ```
 
-Generating from a single file is fine for a quick look at one release in isolation, but it drops every model not present in that file — including the carried-forward older generations — so do not commit a single-file render as the shipped dashboard. `batch_eval` writes to `eval_results.jsonl` by default; rename to a versioned filename before committing to the repo.
+Generating from a single file is fine for a quick look at one release in isolation, but it drops every model not present in that file — including the carried-forward older generations — so do not commit a single-file render as the shipped dashboard. `batch_eval` writes to `eval_results.jsonl` by default; integrate accepted rows into the appropriate versioned file under `data/evals/` before committing to the repo. The filename records the Forge version used for collection, not the current checkout version.
 
 ### Hugging Face Parquet dataset bundle
 
@@ -188,8 +188,8 @@ dedicated writer extra, then build only into a path that does not already exist:
 
 ```bash
 python -m pip install -e ".[dataset-builder]"
-python -m tests.eval.dataset_builder build --source-root . --output build/forge-eval-dataset-v2 --license mit --citation-url https://doi.org/10.1145/3786335.3813193 --reproduction-url https://github.com/antoinezambelli/forge/blob/main/docs/EVAL_GUIDE.md
-python -m tests.eval.dataset_builder verify --source-root . --bundle build/forge-eval-dataset-v2
+python -m tests.eval.dataset_builder build --source-root data/evals --output build/forge-eval-dataset-v2 --license mit --citation-url https://doi.org/10.1145/3786335.3813193 --reproduction-url https://github.com/antoinezambelli/forge/blob/main/docs/EVAL_GUIDE.md
+python -m tests.eval.dataset_builder verify --source-root data/evals --bundle build/forge-eval-dataset-v2
 ```
 
 The fixed v2 layout is:

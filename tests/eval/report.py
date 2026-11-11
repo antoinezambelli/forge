@@ -6,8 +6,8 @@ Usage:
     python -m tests.eval.report eval_tight.jsonl  # single-scenario budget files
     python -m tests.eval.report eval_results.jsonl --html docs/results/dashboard.html
     python -m tests.eval.report eval_results.jsonl --markdown docs/results/
-    # Multiple generations — newest gen wins per config (see dedup_latest_gen):
-    python -m tests.eval.report eval_results_v*.jsonl --html docs/results/dashboard.html
+    # Multiple generations: pass paths from data/evals/ oldest to newest.
+    # See docs/EVAL_GUIDE.md for the complete canonical-source command.
 
 Only shows model/backend/mode combos with full recorded scenario coverage.
 Scenarios are derived from the data — works for both full 8-scenario batch

@@ -9,7 +9,7 @@ hash/count checks to run.
 
 Run the read-only pinned-corpus audit with::
 
-    python -m tests.eval.publication --source-root .
+    python -m tests.eval.publication --source-root data/evals
 """
 
 from __future__ import annotations

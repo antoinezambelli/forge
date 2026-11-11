@@ -147,6 +147,6 @@ The headline finding from the v0.6.0 Anthropic ablation worth carrying forward: 
 
 - **Live dashboard:** [`docs/results/dashboard.html`](results/dashboard.html) — interactive, sortable, filterable
 - **Markdown leaderboards** (regenerate alongside the dashboard): [`docs/results/raw/`](results/raw/) — reforged-only, by-family, by-backend, reforged-vs-bare, native-vs-prompt
-- **Raw JSONL:** `eval_results_v0.7.0.jsonl` at the repo root (LFS). Prior versions kept as `eval_results_vX.Y.Z.jsonl` for reproducibility.
+- **Raw JSONL:** versioned sources under [`data/evals/`](../data/evals/) (LFS). Prior `eval_results_vX.Y.Z.jsonl` files are kept for reproducibility.
 - **Per-model sampling defaults:** [`src/forge/clients/sampling_defaults.py`](../src/forge/clients/sampling_defaults.py) — authoritative source
 - **Model status by eval-suite:** [MODEL_REGISTRY.md](MODEL_REGISTRY.md)
