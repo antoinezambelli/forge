@@ -280,6 +280,8 @@ Addenda to date:
 
 - **2026-11-06–11-07 — v0.10.1 / gen 3 (rig-05):** `Qwen3.8-Flash-Next-UD-IQ3_XXS`, llama.cpp native, xhigh reasoning, full reasoning replay, reforged + bare, 26 scenarios × n=50, in `data/evals/eval_results_v0.10.1.jsonl`. Collected on Forge `ee1898e` with llama.cpp `6c01da6278` (build 12177), Vulkan, 262,144-token context, Q8 K/V caches, mmap/lazy PLE loading, and no speculative decoding. Sampling: temperature 1.0, top-p 0.95, top-k 20, min-p 0, presence penalty 0, repetition penalty 1.0; `preserve_thinking` enabled. Scores (correct / all attempts): reforged 1,299/1,300 (99.92%); bare 1,027/1,300 (79.00%).
 
+- **2026-11-10 — v0.10.1 / gen 3 (rig-03), completed:** `Ripple-65B-Preview-Q4_K_M`, llama.cpp native, full reasoning replay, reforged + bare, 26 scenarios × n=50, in `data/evals/eval_results_v0.10.1.jsonl`. Collected on Forge `ee1898e` with llama.cpp `6414d5b0c9` (Ripple PR #31692), Vulkan, 262,144-token context, F16 K/V caches, `--load-mode none`, flash attention, batch 512 / ubatch 128, and no speculative decoding. No published sampling recommendation was available; the run used temperature 1.0 with other sampler settings left at llama.cpp defaults. Scores (correct / all attempts): reforged 1,297/1,300 (99.77%); bare 990/1,300 (76.15%).
+
 ### Forge eval report
 
 ```bash
