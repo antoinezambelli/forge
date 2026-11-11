@@ -174,6 +174,7 @@ python -m tests.eval.report \
   data/evals/eval_results_v0.7.4.jsonl data/evals/eval_results_v0.7.5.jsonl \
   data/evals/eval_results_v0.8.2.jsonl data/evals/eval_results_v0.9.0.jsonl \
   data/evals/eval_results_v0.9.5.jsonl data/evals/eval_results_v0.10.0.jsonl \
+  data/evals/eval_results_v0.10.1.jsonl \
   --html docs/results/dashboard.html --markdown docs/results/
 ```
 
@@ -276,6 +277,8 @@ Addenda to date:
 
 - **2026-06-17 — v0.7.5 / gen 3, 16GB tier (rig-01):** added `LFM2.5-8B-A1B-Q4_K_M` and `Mellum2-12B-A2.5B-Q4_K_M` (Thinking + Instruct), each native + prompt, reforged + bare, n=50, into `eval_results_v0.7.5.jsonl`. Run post-release on llama.cpp `b9647`. No version bump — stamped `gen: 3`. Headline: Mellum2-12B Instruct (native, reforged) 81.0%. Caveat: replay coverage for these three is `none` only, not the full none/keep-last/full grid the other gen-3 8–14B models carry.
 - **2026-10-31–11-01 — v0.10.0 / gen 3 (rig-03):** `LFM3-1.7B-Q4_K_M`, llama.cpp native, full reasoning replay, reforged + bare, 26 scenarios × n=50, in `eval_results_v0.10.0.jsonl`. Collected on Forge `3e5a38a` with llama.cpp `ddf48f85c9` (`b12024`), Vulkan, `forge-full` budget mode, and default KV precision. Sampling: temperature 0.1, top-k 50, repetition penalty 1.1; thinking and `preserve_thinking` enabled. Scores (correct / all attempts): reforged 1,109/1,300 (85.31%); bare 503/1,300 (38.69%). The source filename records the collection version; importing it from a newer checkout does not change its generation or release provenance.
+
+- **2026-11-06–11-07 — v0.10.1 / gen 3 (rig-05):** `Qwen3.8-Flash-Next-UD-IQ3_XXS`, llama.cpp native, xhigh reasoning, full reasoning replay, reforged + bare, 26 scenarios × n=50, in `data/evals/eval_results_v0.10.1.jsonl`. Collected on Forge `ee1898e` with llama.cpp `6c01da6278` (build 12177), Vulkan, 262,144-token context, Q8 K/V caches, mmap/lazy PLE loading, and no speculative decoding. Sampling: temperature 1.0, top-p 0.95, top-k 20, min-p 0, presence penalty 0, repetition penalty 1.0; `preserve_thinking` enabled. Scores (correct / all attempts): reforged 1,299/1,300 (99.92%); bare 1,027/1,300 (79.00%).
 
 ### Forge eval report
 

@@ -80,6 +80,7 @@ MODEL_SAMPLING_DEFAULTS: dict[str, dict[str, float | int]] = {
     # documented default reasoning effort for complex coding and agentic work.
     "Qwen3.8-27B-UD-Q4_K_XL":             {"temperature": 1.0, "top_p": 0.95, "top_k": 20, "min_p": 0.0, "presence_penalty": 0.0, "repeat_penalty": 1.0, "chat_template_kwargs": {"reasoning_effort": "xhigh"}},  # https://unsloth.ai/docs/models/qwen3.8
     "Qwen3.8-Flash-Next-UD-Q4_K_XL":      {"temperature": 1.0, "top_p": 0.95, "top_k": 20, "min_p": 0.0, "presence_penalty": 0.0, "repeat_penalty": 1.0, "chat_template_kwargs": {"reasoning_effort": "xhigh"}},  # https://unsloth.ai/docs/models/qwen3.8-next
+    "Qwen3.8-Flash-Next-UD-IQ3_XXS":      {"temperature": 1.0, "top_p": 0.95, "top_k": 20, "min_p": 0.0, "presence_penalty": 0.0, "repeat_penalty": 1.0, "chat_template_kwargs": {"reasoning_effort": "xhigh", "preserve_thinking": True}},  # https://unsloth.ai/docs/models/qwen3.8-next
     # Ornith 1.5 35B-A3B — model-card general-task profile.
     "Ornith-1.5-35B-Q4_K_M":               {"temperature": 0.6, "top_p": 0.95, "top_k": 20},                                                                 # https://huggingface.co/ornith-ai/Ornith-1.5-35B-A3B-GGUF
     # Ornith 1.5 122B — publisher's general-task profile.
