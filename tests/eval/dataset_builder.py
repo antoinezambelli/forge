@@ -6,8 +6,8 @@ Hugging Face Hub, or require credentials.
 
 Build and verify the pinned corpus with::
 
-    python -m tests.eval.dataset_builder build --source-root . --output build/forge-eval-dataset-v2 --license mit --citation-url https://doi.org/10.1145/3786335.3813193 --reproduction-url https://example.test/reproduce
-    python -m tests.eval.dataset_builder verify --source-root . --bundle build/forge-eval-dataset-v2
+    python -m tests.eval.dataset_builder build --source-root data/evals --output build/forge-eval-dataset-v2 --license mit --citation-url https://doi.org/10.1145/3786335.3813193 --reproduction-url https://example.test/reproduce
+    python -m tests.eval.dataset_builder verify --source-root data/evals --bundle build/forge-eval-dataset-v2
 """
 
 from __future__ import annotations
@@ -353,7 +353,7 @@ logical digest, shard row count, file hash, builder-source hash, Git revision,
 Python version, and Parquet writer version. Verify a downloaded bundle with:
 
 ```bash
-python -m tests.eval.dataset_builder verify --source-root . --bundle <bundle>
+python -m tests.eval.dataset_builder verify --source-root data/evals --bundle <bundle>
 ```
 
 Project and methodology: {metadata.reproduction_url}

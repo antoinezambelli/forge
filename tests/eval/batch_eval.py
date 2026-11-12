@@ -75,6 +75,17 @@ _QWEN38_SERVER_RECIPE = _BatchServerRecipe((
     "--reasoning-format", "auto",
     "--cache-type-k", "q8_0", "--cache-type-v", "q8_0", "-fa", "1",
 ))
+_QWEN38_FLASH_NEXT_IQ3_SERVER_RECIPE = _BatchServerRecipe(
+    extra_flags=(
+        "--load-mode", "mmap", "--lazy-mode", "on", "--fit", "off",
+        "-b", "512", "-ub", "128", "-fa", "on",
+        "--reasoning-format", "auto", "--no-prefill-assistant",
+        "--spec-type", "none",
+    ),
+    cache_type_k="q8_0",
+    cache_type_v="q8_0",
+    n_slots=1,
+)
 _GEMMA4_LARGE_SERVER_RECIPE = _BatchServerRecipe((
     "--reasoning-format", "auto",
     "--ctx-checkpoints", "1", "--cache-type-k", "q8_0",
@@ -133,6 +144,17 @@ _LFM3_SERVER_RECIPE = _BatchServerRecipe(
         "--reasoning", "on", "--reasoning-format", "auto",
         "--no-prefill-assistant", "--spec-type", "none",
     ),
+    n_slots=1,
+)
+_RIPPLE_SERVER_RECIPE = _BatchServerRecipe(
+    extra_flags=(
+        "--load-mode", "none", "--fit", "off",
+        "-b", "512", "-ub", "128", "-fa", "on",
+        "--reasoning", "on", "--reasoning-format", "auto",
+        "--no-prefill-assistant", "--spec-type", "none",
+    ),
+    cache_type_k="f16",
+    cache_type_v="f16",
     n_slots=1,
 )
 _NEMOTRON35_BOLT_SERVER_RECIPE = _BatchServerRecipe(
@@ -255,6 +277,9 @@ _EFFECTIVE_REASONING_LEVELS: dict[str, str] = {
     "NVIDIA-Nemotron-3-Super-120B-A12B-UD-Q4_K_M": "low",
     "Muse-Glimmer-30B-UD-Q4_K_XL": "xhigh",
     "Qwen3.8-27B-UD-Q4_K_XL": "xhigh",
+    "Qwen3.8-Flash-Next-UD-IQ3_XXS": get_sampling_defaults(
+        "Qwen3.8-Flash-Next-UD-IQ3_XXS"
+    )["chat_template_kwargs"]["reasoning_effort"],
 }
 
 
@@ -283,6 +308,7 @@ _GGUF_FILES: list[tuple[str, _BatchServerRecipe]] = [
     ("Qwen3.6-35B-A3B-UD-Q4_K_M.gguf", _REASONING_SERVER_RECIPE),
     ("Ornith-1.5-9B-Q4_K_M.gguf", _REASONING_SERVER_RECIPE),
     ("Qwen3.8-27B-UD-Q4_K_XL.gguf", _QWEN38_SERVER_RECIPE),
+    ("Qwen3.8-Flash-Next-UD-IQ3_XXS-00001-of-00004.gguf", _QWEN38_FLASH_NEXT_IQ3_SERVER_RECIPE),
     ("Ornith-1.5-35B-Q4_K_M.gguf", _REASONING_SERVER_RECIPE),
     ("Nemotron-3-Nano-30B-A3B-Q4_K_M.gguf", _REASONING_SERVER_RECIPE),
     ("NVIDIA-Nemotron-3.5-Bolt-74B-A9B-24GB.gguf", _NEMOTRON35_BOLT_SERVER_RECIPE),
@@ -506,6 +532,19 @@ _GLIMMER_EFFORT_CONFIGS: dict[str, list[BatchConfig]] = {
     for effort in ("high", "medium", "low")
 }
 
+# No published sampling defaults; use T=1 for the Ripple evals.
+RIPPLE_CONFIGS: list[BatchConfig] = [
+    BatchConfig(
+        model="Ripple-65B-Preview-Q4_K_M",
+        backend="llamaserver",
+        mode="native",
+        think=None,
+        gguf_filename="Ripple-65B-Preview-Q4_K_M.gguf",
+        server_recipe=_RIPPLE_SERVER_RECIPE,
+        sampling_override={"temperature": 1.0},
+    ),
+]
+
 # Explicit large-model campaign. Machine-local RPC values are attached from
 # --rpc-topology at invocation time; reasoning effort comes only from the
 # sampling-registry row for this model.
@@ -596,6 +635,7 @@ CONFIG_SETS: dict[str, list[BatchConfig]] = {
     "glimmer-high": _GLIMMER_EFFORT_CONFIGS["high"],
     "glimmer-medium": _GLIMMER_EFFORT_CONFIGS["medium"],
     "glimmer-low": _GLIMMER_EFFORT_CONFIGS["low"],
+    "ripple-native": RIPPLE_CONFIGS,
     "deepseek-v4-rpc": DEEPSEEK_V4_RPC_CONFIGS,
     "deepseek-v4-max-rpc": DEEPSEEK_V4_MAX_RPC_CONFIGS,
     "qwen38-flash-next-xhigh-rpc": QWEN38_FLASH_NEXT_XHIGH_RPC_CONFIGS,

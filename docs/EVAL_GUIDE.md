@@ -166,18 +166,19 @@ policy and it skips attempts already recorded for each scenario.
 
 ### Committed datasets
 
-Released datasets are versioned in the repo: `eval_results_vX.Y.Z.jsonl` (LFS-tracked). The current shipped dashboard at `docs/results/dashboard.html` reflects the latest version. The shipped dashboard is built from **all** versioned datasets at once — `report` merges them and `dedup_latest_gen` keeps the newest gen per config, so older-gen models carry forward as superscript-badged peers. Pass every `eval_results_v*.jsonl`, oldest to newest:
+Released datasets are versioned under `data/evals/`: `eval_results_vX.Y.Z.jsonl` (LFS-tracked). The current shipped dashboard at `docs/results/dashboard.html` reflects the latest version. The shipped dashboard is built from **all** versioned datasets at once — `report` merges them and `dedup_latest_gen` keeps the newest gen per config, so older-gen models carry forward as superscript-badged peers. Pass every versioned source, oldest to newest (not lexicographic filename order):
 
 ```bash
 python -m tests.eval.report \
-  eval_results_v0.6.0.jsonl eval_results_v0.7.0.jsonl \
-  eval_results_v0.7.4.jsonl eval_results_v0.7.5.jsonl \
-  eval_results_v0.8.2.jsonl eval_results_v0.9.0.jsonl \
-  eval_results_v0.9.5.jsonl eval_results_v0.10.0.jsonl \
+  data/evals/eval_results_v0.6.0.jsonl data/evals/eval_results_v0.7.0.jsonl \
+  data/evals/eval_results_v0.7.4.jsonl data/evals/eval_results_v0.7.5.jsonl \
+  data/evals/eval_results_v0.8.2.jsonl data/evals/eval_results_v0.9.0.jsonl \
+  data/evals/eval_results_v0.9.5.jsonl data/evals/eval_results_v0.10.0.jsonl \
+  data/evals/eval_results_v0.10.1.jsonl \
   --html docs/results/dashboard.html --markdown docs/results/
 ```
 
-Generating from a single file is fine for a quick look at one release in isolation, but it drops every model not present in that file — including the carried-forward older generations — so do not commit a single-file render as the shipped dashboard. `batch_eval` writes to `eval_results.jsonl` by default; rename to a versioned filename before committing to the repo.
+Generating from a single file is fine for a quick look at one release in isolation, but it drops every model not present in that file — including the carried-forward older generations — so do not commit a single-file render as the shipped dashboard. `batch_eval` writes to `eval_results.jsonl` by default; integrate accepted rows into the appropriate versioned file under `data/evals/` before committing to the repo. The filename records the Forge version used for collection, not the current checkout version.
 
 ### Hugging Face Parquet dataset bundle
 
@@ -188,8 +189,8 @@ dedicated writer extra, then build only into a path that does not already exist:
 
 ```bash
 python -m pip install -e ".[dataset-builder]"
-python -m tests.eval.dataset_builder build --source-root . --output build/forge-eval-dataset-v2 --license mit --citation-url https://doi.org/10.1145/3786335.3813193 --reproduction-url https://github.com/antoinezambelli/forge/blob/main/docs/EVAL_GUIDE.md
-python -m tests.eval.dataset_builder verify --source-root . --bundle build/forge-eval-dataset-v2
+python -m tests.eval.dataset_builder build --source-root data/evals --output build/forge-eval-dataset-v2 --license mit --citation-url https://doi.org/10.1145/3786335.3813193 --reproduction-url https://github.com/antoinezambelli/forge/blob/main/docs/EVAL_GUIDE.md
+python -m tests.eval.dataset_builder verify --source-root data/evals --bundle build/forge-eval-dataset-v2
 ```
 
 The fixed v2 layout is:
@@ -276,6 +277,10 @@ Addenda to date:
 
 - **2026-06-17 — v0.7.5 / gen 3, 16GB tier (rig-01):** added `LFM2.5-8B-A1B-Q4_K_M` and `Mellum2-12B-A2.5B-Q4_K_M` (Thinking + Instruct), each native + prompt, reforged + bare, n=50, into `eval_results_v0.7.5.jsonl`. Run post-release on llama.cpp `b9647`. No version bump — stamped `gen: 3`. Headline: Mellum2-12B Instruct (native, reforged) 81.0%. Caveat: replay coverage for these three is `none` only, not the full none/keep-last/full grid the other gen-3 8–14B models carry.
 - **2026-10-31–11-01 — v0.10.0 / gen 3 (rig-03):** `LFM3-1.7B-Q4_K_M`, llama.cpp native, full reasoning replay, reforged + bare, 26 scenarios × n=50, in `eval_results_v0.10.0.jsonl`. Collected on Forge `3e5a38a` with llama.cpp `ddf48f85c9` (`b12024`), Vulkan, `forge-full` budget mode, and default KV precision. Sampling: temperature 0.1, top-k 50, repetition penalty 1.1; thinking and `preserve_thinking` enabled. Scores (correct / all attempts): reforged 1,109/1,300 (85.31%); bare 503/1,300 (38.69%). The source filename records the collection version; importing it from a newer checkout does not change its generation or release provenance.
+
+- **2026-11-06–11-07 — v0.10.1 / gen 3 (rig-05):** `Qwen3.8-Flash-Next-UD-IQ3_XXS`, llama.cpp native, xhigh reasoning, full reasoning replay, reforged + bare, 26 scenarios × n=50, in `data/evals/eval_results_v0.10.1.jsonl`. Collected on Forge `ee1898e` with llama.cpp `6c01da6278` (build 12177), Vulkan, 262,144-token context, Q8 K/V caches, mmap/lazy PLE loading, and no speculative decoding. Sampling: temperature 1.0, top-p 0.95, top-k 20, min-p 0, presence penalty 0, repetition penalty 1.0; `preserve_thinking` enabled. Scores (correct / all attempts): reforged 1,299/1,300 (99.92%); bare 1,027/1,300 (79.00%).
+
+- **2026-11-10 — v0.10.1 / gen 3 (rig-03), completed:** `Ripple-65B-Preview-Q4_K_M`, llama.cpp native, full reasoning replay, reforged + bare, 26 scenarios × n=50, in `data/evals/eval_results_v0.10.1.jsonl`. Collected on Forge `ee1898e` with llama.cpp `6414d5b0c9` (Ripple PR #31692), Vulkan, 262,144-token context, F16 K/V caches, `--load-mode none`, flash attention, batch 512 / ubatch 128, and no speculative decoding. No published sampling recommendation was available; the run used temperature 1.0 with other sampler settings left at llama.cpp defaults. Scores (correct / all attempts): reforged 1,297/1,300 (99.77%); bare 990/1,300 (76.15%).
 
 ### Forge eval report
 

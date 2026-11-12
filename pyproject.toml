@@ -57,6 +57,7 @@ packages = ["src/forge"]
 # incl. platform .exe/.node binaries). Ship only what builds + tests from source.
 exclude = [
     "eval_results*.jsonl",
+    "data/evals",
     "tests/eval/dashboard/node_modules",
     "tests/eval/dashboard/dist",
 ]

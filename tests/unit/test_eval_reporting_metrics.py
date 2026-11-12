@@ -96,6 +96,7 @@ def test_report_labels_only_explicit_reasoning_levels() -> None:
 def test_report_extracts_known_quantizations() -> None:
     assert report.extract_quant("model-Q4_K_M") == "q4_K_M"
     assert report.extract_quant("model-Q4_K_XL") == "q4_K_XL"
+    assert report.extract_quant("model-IQ3_XXS") == "iq3_XXS"
     assert report.extract_quant("model-Q8_0") == "q8_0"
     assert report.extract_quant("unquantized-model") == "n/a"
 

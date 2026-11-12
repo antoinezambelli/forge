@@ -9,7 +9,7 @@ hash/count checks to run.
 
 Run the read-only pinned-corpus audit with::
 
-    python -m tests.eval.publication --source-root .
+    python -m tests.eval.publication --source-root data/evals
 """
 
 from __future__ import annotations
@@ -57,20 +57,20 @@ SUPERSESSION_SCOPES = ("explicit_policy", "base_configuration")
 VIEW_NAMES = ("history", "snapshot", "latest")
 
 PINNED_VIEW_COUNTS = {
-    "history": 586_300,
-    "snapshot": 445_900,
-    "latest": 327_600,
+    "history": 591_500,
+    "snapshot": 451_100,
+    "latest": 332_800,
 }
 PINNED_VIEW_METRIC_COUNTS = {
-    "history": (371_546, 490_412, 490_412),
-    "snapshot": (282_599, 373_869, 373_869),
-    "latest": (231_446, 289_184, 289_184),
+    "history": (376_159, 495_111, 495_111),
+    "snapshot": (287_212, 378_568, 378_568),
+    "latest": (236_059, 293_883, 293_883),
 }
 PINNED_SNAPSHOT_SOURCE_IDENTITY_SHA256 = (
-    "f1e31fd97fa4ad2415aa74315a41c21038378e8d337ce5ef265e9e96053f4c8d"
+    "24fe90ea1f9594dffa7154aca263e6338da00ddfed963e1ed9ba4f3dcbf1fb03"
 )
 PINNED_SNAPSHOT_SOURCE_PAYLOAD_SHA256 = (
-    "6acf9ce0f2cd66161eb57523c2fdf43e08039525b1848ddf77a9163424759268"
+    "6568cff1b4d2445555fe56861cae2b2762d38e86996ba9654304dc6bcf817937"
 )
 
 
@@ -355,6 +355,14 @@ PINNED_SOURCES: tuple[SourceSpec, ...] = (
         CANONICAL_DIALECT,
         2_600,
         "1b1bde780767915f209fd109a055f5b1e6e21bd147e5f2ba301f46dace873468",
+    ),
+    SourceSpec(
+        "eval_results_v0.10.1.jsonl",
+        "v0.10.1",
+        3,
+        CANONICAL_DIALECT,
+        5_200,
+        "59070b9fbe987c6b7a8bf79244f3927107a8157ac5a8abe2f588c6a3d81afbc4",
     ),
 )
 

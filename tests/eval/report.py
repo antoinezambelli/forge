@@ -6,8 +6,8 @@ Usage:
     python -m tests.eval.report eval_tight.jsonl  # single-scenario budget files
     python -m tests.eval.report eval_results.jsonl --html docs/results/dashboard.html
     python -m tests.eval.report eval_results.jsonl --markdown docs/results/
-    # Multiple generations — newest gen wins per config (see dedup_latest_gen):
-    python -m tests.eval.report eval_results_v*.jsonl --html docs/results/dashboard.html
+    # Multiple generations: pass paths from data/evals/ oldest to newest.
+    # See docs/EVAL_GUIDE.md for the complete canonical-source command.
 
 Only shows model/backend/mode combos with full recorded scenario coverage.
 Scenarios are derived from the data — works for both full 8-scenario batch
@@ -579,6 +579,8 @@ MODEL_FAMILIES: dict[str, dict[str, str]] = {
     "qwen3.6:35b-a3b-q4_K_M":               {"family": "qwen3.6-35b-a3b", "cross_backend_key": "qwen3.6-35b-a3b-q4_K_M"},
     # qwen3.8 (llama-server only; UD is a quant variant)
     "Qwen3.8-27B-UD-Q4_K_XL":                {"family": "qwen3.8-27b", "cross_backend_key": "qwen3.8-27b-q4_K_XL"},
+    "Qwen3.8-Flash-Next-UD-IQ3_XXS":        {"family": "qwen3.8-flash-next", "cross_backend_key": "qwen3.8-flash-next-iq3_XXS"},
+    "Ripple-65B-Preview-Q4_K_M":           {"family": "ripple-65b-preview", "cross_backend_key": "ripple-65b-preview-q4_K_M"},
     # Muse Glimmer 30B (llama-server only; UD is a quant variant)
     "Muse-Glimmer-30B-UD-Q4_K_XL":           {"family": "muse-glimmer-30b", "cross_backend_key": "muse-glimmer-30b-q4_K_XL"},
     # DeepSeek V4 Flash 0731 (managed llama.cpp RPC; UD is a quant variant)
@@ -680,6 +682,8 @@ def extract_quant(model: str) -> str:
         return "q4_K_XL"
     if "iq4_xs" in low:
         return "iq4_XS"
+    if "iq3_xxs" in low:
+        return "iq3_XXS"
     if "q8_0" in low:
         return "q8_0"
     return "n/a"
