@@ -844,6 +844,23 @@ class _MockSSE500Response:
         pass
 
 
+class _MockSSEErrorResponse:
+    """Mock httpx streaming response for an arbitrary non-200 status."""
+
+    def __init__(self, status_code: int, body: str) -> None:
+        self.status_code = status_code
+        self._body = body
+
+    async def aiter_lines(self):
+        yield self._body
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *args):
+        pass
+
+
 class TestLlamafileSendStream:
     @pytest.mark.asyncio
     async def test_yields_text_deltas_and_final(self) -> None:
@@ -1045,6 +1062,83 @@ class TestLlamafileSendStream:
                 pass
         assert "CUDA out of memory" not in str(excinfo.value)
         assert "CUDA out of memory" in excinfo.value.body
+
+
+class TestLlamafileNon200:
+    """Every non-200 from the backend is a BackendError on every path.
+
+    A non-200 stream body carries no ``data:`` lines, so without an explicit
+    classification the SSE loop falls through and yields an empty FINAL as if
+    the turn had succeeded — the proxy then reports success for a dead backend.
+    """
+
+    @pytest.mark.asyncio
+    async def test_send_stream_503_raises_backend_error(self) -> None:
+        client = _make_client("native")
+        client._http.stream.return_value = _MockSSEErrorResponse(
+            503, "<html>backend restarting</html>"
+        )
+        chunks = []
+        with pytest.raises(BackendError) as excinfo:
+            async for chunk in client.send_stream(
+                [{"role": "user", "content": "test"}]
+            ):
+                chunks.append(chunk)
+        assert excinfo.value.status_code == 503
+        assert excinfo.value.body == "<html>backend restarting</html>"
+        assert [c for c in chunks if c.type == ChunkType.FINAL] == []
+
+    @pytest.mark.asyncio
+    async def test_send_stream_429_raises_backend_error(self) -> None:
+        # Not one hard-coded status: the classification covers any non-200.
+        client = _make_client("native")
+        client._http.stream.return_value = _MockSSEErrorResponse(
+            429, '{"error":{"message":"rate limited"}}'
+        )
+        chunks = []
+        with pytest.raises(BackendError) as excinfo:
+            async for chunk in client.send_stream(
+                [{"role": "user", "content": "test"}]
+            ):
+                chunks.append(chunk)
+        assert excinfo.value.status_code == 429
+        assert excinfo.value.body == '{"error":{"message":"rate limited"}}'
+        assert [c for c in chunks if c.type == ChunkType.FINAL] == []
+
+    @pytest.mark.asyncio
+    async def test_send_stream_non_malformed_500_still_cascades(self) -> None:
+        # Regression guard: the new non-200 check must not capture or reorder
+        # the malformed-tool-call 500 rescue branch above it.
+        client = _make_client("native")
+        client._http.stream.return_value = _MockSSEErrorResponse(
+            500, '{"error":{"message":"slot unavailable","type":"server_error"}}'
+        )
+        with pytest.raises(BackendError) as excinfo:
+            async for _ in client.send_stream(
+                [{"role": "user", "content": "test"}], tools=[_make_spec()]
+            ):
+                pass
+        assert excinfo.value.status_code == 500
+        assert "slot unavailable" in excinfo.value.body
+
+    @pytest.mark.asyncio
+    async def test_prompt_mode_send_503_raises_backend_error_not_httpx(self) -> None:
+        client = _make_client("prompt")
+        resp = _mock_response({}, status_code=503)
+        resp.text = "<html>backend restarting</html>"
+        client._http.post.return_value = resp
+        with pytest.raises(BackendError) as excinfo:
+            await client.send(
+                [
+                    {"role": "system", "content": "sys"},
+                    {"role": "user", "content": "test"},
+                ],
+                tools=[_make_spec()],
+            )
+        assert not isinstance(excinfo.value, httpx.HTTPStatusError)
+        assert excinfo.value.status_code == 503
+        assert excinfo.value.body == "<html>backend restarting</html>"
+
 
 # ── mode ─────────────────────────────────────────────────────────
 

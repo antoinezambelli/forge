@@ -635,6 +635,15 @@ class LlamafileClient:
                     return
                 # Arbitrary backend 500 — cascade. Raw body off the message.
                 raise BackendError(500, raw_body=error_body)
+            if response.status_code != 200:
+                # Any other non-200 (502/503/429/...) is a genuine backend
+                # failure too: drain the body and cascade like the native path.
+                # Nothing below would parse it — the SSE loop finds no ``data:``
+                # lines and would yield an empty FINAL as if the turn succeeded.
+                error_body = ""
+                async for line in response.aiter_lines():
+                    error_body += line
+                raise BackendError(response.status_code, raw_body=error_body)
             async for line in response.aiter_lines():
                 line = line.strip()
                 if not line or not line.startswith("data: "):
@@ -852,7 +861,8 @@ class LlamafileClient:
             json=body,
             headers=self._request_headers(extra_headers),
         )
-        resp.raise_for_status()
+        if resp.status_code != 200:
+            raise BackendError(resp.status_code, raw_body=resp.text)
         data = resp.json()
         self._record_usage(data)
 
