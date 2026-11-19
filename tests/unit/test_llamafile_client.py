@@ -1069,7 +1069,9 @@ class TestLlamafileNon200:
 
     A non-200 stream body carries no ``data:`` lines, so without an explicit
     classification the SSE loop falls through and yields an empty FINAL as if
-    the turn had succeeded — the proxy then reports success for a dead backend.
+    the turn had succeeded. That hits ``WorkflowRunner(stream=True)`` and any
+    direct ``send_stream()`` caller: an empty assistant turn instead of a
+    visible dead backend.
     """
 
     @pytest.mark.asyncio
@@ -1107,8 +1109,10 @@ class TestLlamafileNon200:
 
     @pytest.mark.asyncio
     async def test_send_stream_non_malformed_500_still_cascades(self) -> None:
-        # Regression guard: the new non-200 check must not capture or reorder
-        # the malformed-tool-call 500 rescue branch above it.
+        # A 500 that is not a malformed-tool-call must still cascade as
+        # BackendError(500), not be swallowed by the new non-200 branch.
+        # (The malformed-500 rescue ordering is pinned by the rescue tests
+        # above; this one pins the fall-through status.)
         client = _make_client("native")
         client._http.stream.return_value = _MockSSEErrorResponse(
             500, '{"error":{"message":"slot unavailable","type":"server_error"}}'
