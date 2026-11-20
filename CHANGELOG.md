@@ -2,6 +2,26 @@
 
 All notable changes to forge are documented here.
 
+## [0.10.2] — 2026-11-20
+
+Consistent backend HTTP error handling for the Python library and standalone
+Forge Proxy.
+
+### Fixed
+
+- **Streaming backend failures raise `BackendError`.** The Llamafile/llama.cpp
+  adapter now classifies non-200 responses such as 429, 502, and 503 as backend
+  errors instead of yielding an empty model response and consuming guardrail
+  retries. This applies to native and prompt-mode streaming; the existing
+  malformed-tool-call 500 rescue is unchanged.
+- **Prompt-mode HTTP errors use Forge's exception type.** Non-streaming prompt
+  requests now raise `BackendError` rather than `httpx.HTTPStatusError`, matching
+  the native path. Raw backend diagnostics remain on `.body`, outside the
+  logged/user-facing exception message. Via #168; thanks to @SuperMarioYL.
+- Standalone Forge Proxy bundles include the prompt-mode error-classification
+  fix. Successful responses, ordinary native-mode Proxy requests, and guardrail
+  policies are unchanged.
+
 ## [0.10.1] — 2026-11-01
 
 A multipart-text compatibility fix for the Python library and standalone
