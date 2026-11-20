@@ -812,16 +812,17 @@ class _MockSSEStreamResponse:
 
 
 class _MockSSE500Response:
-    """Mock httpx streaming response that returns a 500 error body.
+    """Mock httpx streaming response that returns an error status body.
 
-    Yields the body as a SINGLE line — llama.cpp's 500 is compact single-line
-    JSON (embedded newlines are JSON-escaped), matching how send_stream
-    reassembles error_body by concatenation.
+    Defaults to 500. Yields the body as a SINGLE line — llama.cpp's 500 is
+    compact single-line JSON (embedded newlines are JSON-escaped), matching how
+    send_stream reassembles error_body by concatenation.
     """
 
-    status_code = 500
-
-    def __init__(self, body: str, split: bool = False) -> None:
+    def __init__(
+        self, body: str, split: bool = False, status_code: int = 500
+    ) -> None:
+        self.status_code = status_code
         self._body = body
         self._split = split
 
@@ -1045,6 +1046,87 @@ class TestLlamafileSendStream:
                 pass
         assert "CUDA out of memory" not in str(excinfo.value)
         assert "CUDA out of memory" in excinfo.value.body
+
+
+class TestLlamafileNon200:
+    """Both chat-completion paths classify every non-200 as ``BackendError``.
+
+    A non-200 stream body carries no ``data:`` lines, so without an explicit
+    classification the SSE loop falls through and yields an empty FINAL as if
+    the turn had succeeded. That hits ``WorkflowRunner(stream=True)`` and any
+    direct ``send_stream()`` caller: an empty assistant turn instead of a
+    visible dead backend.
+    """
+
+    @pytest.mark.asyncio
+    async def test_send_stream_503_raises_backend_error(self) -> None:
+        client = _make_client("native")
+        client._http.stream.return_value = _MockSSE500Response(
+            "<html>backend restarting</html>", status_code=503
+        )
+        chunks = []
+        with pytest.raises(BackendError) as excinfo:
+            async for chunk in client.send_stream(
+                [{"role": "user", "content": "test"}]
+            ):
+                chunks.append(chunk)
+        assert excinfo.value.status_code == 503
+        assert excinfo.value.body == "<html>backend restarting</html>"
+        assert [c for c in chunks if c.type == ChunkType.FINAL] == []
+
+    @pytest.mark.asyncio
+    async def test_send_stream_429_raises_backend_error(self) -> None:
+        # Not one hard-coded status: the classification covers any non-200.
+        client = _make_client("native")
+        client._http.stream.return_value = _MockSSE500Response(
+            '{"error":{"message":"rate limited"}}', status_code=429
+        )
+        chunks = []
+        with pytest.raises(BackendError) as excinfo:
+            async for chunk in client.send_stream(
+                [{"role": "user", "content": "test"}]
+            ):
+                chunks.append(chunk)
+        assert excinfo.value.status_code == 429
+        assert excinfo.value.body == '{"error":{"message":"rate limited"}}'
+        assert [c for c in chunks if c.type == ChunkType.FINAL] == []
+
+    @pytest.mark.asyncio
+    async def test_send_stream_non_malformed_500_still_cascades(self) -> None:
+        # A 500 that is not a malformed-tool-call must still cascade as
+        # BackendError(500), not be swallowed by the new non-200 branch.
+        # (The malformed-500 rescue ordering is pinned by the rescue tests
+        # above; this one pins the fall-through status.)
+        client = _make_client("native")
+        client._http.stream.return_value = _MockSSE500Response(
+            '{"error":{"message":"slot unavailable","type":"server_error"}}'
+        )
+        with pytest.raises(BackendError) as excinfo:
+            async for _ in client.send_stream(
+                [{"role": "user", "content": "test"}], tools=[_make_spec()]
+            ):
+                pass
+        assert excinfo.value.status_code == 500
+        assert "slot unavailable" in excinfo.value.body
+
+    @pytest.mark.asyncio
+    async def test_prompt_mode_send_503_raises_backend_error_not_httpx(self) -> None:
+        client = _make_client("prompt")
+        resp = _mock_response({}, status_code=503)
+        resp.text = "<html>backend restarting</html>"
+        client._http.post.return_value = resp
+        with pytest.raises(BackendError) as excinfo:
+            await client.send(
+                [
+                    {"role": "system", "content": "sys"},
+                    {"role": "user", "content": "test"},
+                ],
+                tools=[_make_spec()],
+            )
+        assert not isinstance(excinfo.value, httpx.HTTPStatusError)
+        assert excinfo.value.status_code == 503
+        assert excinfo.value.body == "<html>backend restarting</html>"
+
 
 # ── mode ─────────────────────────────────────────────────────────
 
