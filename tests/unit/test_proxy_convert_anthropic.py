@@ -5,15 +5,19 @@ import json
 from forge.core.messages import MessageRole, MessageType
 from forge.core.workflow import ToolCall
 from forge.proxy.convert_anthropic import (
+    _NATIVE_OWNED,
+    anthropic_backend_passthrough,
     anthropic_to_messages,
     anthropic_tools_to_specs,
     anthropic_tool_choice_to_openai,
     anthropic_to_openai_passthrough,
+    openai_tool_choice_to_anthropic,
     tool_calls_to_anthropic,
     text_response_to_anthropic,
     tool_calls_to_anthropic_sse,
     text_to_anthropic_sse,
 )
+from forge.proxy.handler import _FORGE_OWNED
 
 
 # ── Inbound: Anthropic → forge ─────────────────────────────
@@ -232,6 +236,259 @@ class TestAnthropicToOpenAIPassthrough:
         }
         out = anthropic_to_openai_passthrough(body)
         assert out == {}
+
+
+class TestOpenAIToolChoiceToAnthropic:
+    def test_auto(self):
+        assert openai_tool_choice_to_anthropic("auto") == {"type": "auto"}
+
+    def test_required_becomes_any(self):
+        assert openai_tool_choice_to_anthropic("required") == {"type": "any"}
+
+    def test_none_disables_tools(self):
+        assert openai_tool_choice_to_anthropic("none") == {"type": "none"}
+
+    def test_named_function_becomes_tool(self):
+        result = openai_tool_choice_to_anthropic({
+            "type": "function",
+            "function": {"name": "search"},
+        })
+        assert result == {"type": "tool", "name": "search"}
+
+    def test_passes_through_valid_anthropic_shape(self):
+        assert openai_tool_choice_to_anthropic({"type": "auto"}) == {"type": "auto"}
+
+    def test_unknown_shape_is_forwarded_unchanged(self):
+        assert openai_tool_choice_to_anthropic({"type": "bogus"}) == {"type": "bogus"}
+        assert openai_tool_choice_to_anthropic("bogus") == "bogus"
+
+
+class TestAnthropicBackendPassthrough:
+    def test_from_anthropic_keeps_native_extras(self):
+        body = {
+            "model": "claude-3-5-sonnet",
+            "messages": [{"role": "user", "content": "hi"}],
+            "system": "be helpful",
+            "tools": [{"name": "search", "input_schema": {}}],
+            "stream": False,
+            "max_tokens": 256,
+            "stop_sequences": ["</done>"],
+            "tool_choice": {"type": "any"},
+            "metadata": {"user_id": "u-123"},
+            "thinking": {"type": "enabled", "budget_tokens": 2000},
+            "litellm_session_id": "session",
+        }
+        out = anthropic_backend_passthrough(body, from_anthropic=True)
+        assert out == {
+            "max_tokens": 256,
+            "stop_sequences": ["</done>"],
+            "tool_choice": {"type": "any"},
+            "metadata": {"user_id": "u-123"},
+            "litellm_session_id": "session",
+        }
+        # Native extras survive the rebuild; thinking does not, because the
+        # rebuilt transcript cannot carry the signed blocks it requires.
+        assert out["metadata"] == {"user_id": "u-123"}
+        assert "thinking" not in out
+
+    def test_from_openai_translates_known_spellings_and_keeps_the_rest(self):
+        # Input is the handler's passthrough, which has already filtered
+        # forge-owned and sampling fields.
+        body = {
+            "model": "gateway-alias",
+            "max_tokens": 256,
+            "stop": ["</done>"],
+            "tool_choice": "required",
+            "metadata": {"user_id": "u-123", "trace_id": "abc"},
+            "frequency_penalty": 0.1,
+            "service_tier": "default",
+            "mcp_servers": [{"type": "url", "url": "https://mcp.test/sse"}],
+            "gateway_route": "us-east",
+        }
+        out = anthropic_backend_passthrough(
+            body, from_anthropic=False,
+        )
+        assert out == {
+            "model": "gateway-alias",
+            "max_tokens": 256,
+            "stop_sequences": ["</done>"],
+            "tool_choice": {"type": "any"},
+            "metadata": {"user_id": "u-123"},
+            "frequency_penalty": 0.1,
+            "service_tier": "default",
+            "mcp_servers": [{"type": "url", "url": "https://mcp.test/sse"}],
+            "gateway_route": "us-east",
+        }
+        # The replaced OpenAI spelling is removed; everything else rides
+        # through exactly as the caller sent it.
+        assert "stop" not in out
+
+    def test_from_openai_preserves_litellm_session_id_by_key_presence(self):
+        # Same rule as anthropic_to_openai_passthrough: the key's presence
+        # forwards the value unchanged, including an explicit null.
+        assert anthropic_backend_passthrough(
+            {"litellm_session_id": "session"}, from_anthropic=False,
+        )["litellm_session_id"] == "session"
+        assert anthropic_backend_passthrough(
+            {"litellm_session_id": None}, from_anthropic=False,
+        )["litellm_session_id"] is None
+
+    def test_from_openai_bare_string_stop_becomes_list(self):
+        out = anthropic_backend_passthrough(
+            {"stop": "\n\n"}, from_anthropic=False,
+        )
+        assert out["stop_sequences"] == ["\n\n"]
+
+    def test_from_openai_carries_service_tier(self):
+        out = anthropic_backend_passthrough(
+            {"service_tier": "standard_only"}, from_anthropic=False,
+        )
+        assert out["service_tier"] == "standard_only"
+
+    def test_from_openai_carries_stop_sequences(self):
+        out = anthropic_backend_passthrough(
+            {"stop_sequences": ["</done>"]}, from_anthropic=False,
+        )
+        assert out["stop_sequences"] == ["</done>"]
+
+    def test_from_openai_explicit_stop_sequences_wins_over_stop(self):
+        out = anthropic_backend_passthrough(
+            {"stop": ["</openai>"], "stop_sequences": ["</done>"]},
+            from_anthropic=False,
+        )
+        assert out["stop_sequences"] == ["</done>"]
+        assert "stop" not in out
+
+    def test_from_openai_thinking_does_not_suppress_forced_tool_choice(self):
+        out = anthropic_backend_passthrough(
+            {
+                "tool_choice": "required",
+                "thinking": {"type": "enabled", "budget_tokens": 2000},
+            },
+            from_anthropic=False,
+        )
+        # A forced choice is translated as given; thinking is simply absent
+        # from the rebuilt request.
+        assert out["tool_choice"] == {"type": "any"}
+        assert "thinking" not in out
+
+    def test_from_openai_named_tool_choice(self):
+        out = anthropic_backend_passthrough(
+            {"tool_choice": {"type": "function", "function": {"name": "search"}}},
+            from_anthropic=False,
+        )
+        assert out["tool_choice"] == {"type": "tool", "name": "search"}
+
+    def test_from_openai_none_tool_choice_disables_tools(self):
+        out = anthropic_backend_passthrough(
+            {"tool_choice": "none"}, from_anthropic=False,
+        )
+        assert out["tool_choice"] == {"type": "none"}
+
+    def test_from_openai_metadata_keeps_only_user_id(self):
+        out = anthropic_backend_passthrough(
+            {"metadata": {"user_id": "u-123", "trace_id": "abc"}},
+            from_anthropic=False,
+        )
+        assert out["metadata"] == {"user_id": "u-123"}
+
+    def test_from_openai_metadata_without_user_id_dropped(self):
+        out = anthropic_backend_passthrough(
+            {"metadata": {"trace_id": "abc"}}, from_anthropic=False,
+        )
+        assert "metadata" not in out
+
+    def test_from_openai_max_completion_tokens_becomes_max_tokens(self):
+        out = anthropic_backend_passthrough(
+            {"max_completion_tokens": 512}, from_anthropic=False,
+        )
+        assert out["max_tokens"] == 512
+
+    def test_from_openai_explicit_max_tokens_wins_over_max_completion_tokens(self):
+        out = anthropic_backend_passthrough(
+            {"max_tokens": 256, "max_completion_tokens": 512},
+            from_anthropic=False,
+        )
+        assert out["max_tokens"] == 256
+
+    def test_from_openai_user_becomes_metadata_user_id(self):
+        out = anthropic_backend_passthrough(
+            {"user": "u-1"}, from_anthropic=False,
+        )
+        assert out["metadata"] == {"user_id": "u-1"}
+
+    def test_from_openai_explicit_metadata_user_id_wins_over_user(self):
+        out = anthropic_backend_passthrough(
+            {"user": "u-1", "metadata": {"user_id": "u-2"}},
+            from_anthropic=False,
+        )
+        assert out["metadata"] == {"user_id": "u-2"}
+
+    def test_from_openai_parallel_tool_calls_false_flags_required_choice(self):
+        out = anthropic_backend_passthrough(
+            {"tool_choice": "required", "parallel_tool_calls": False},
+            from_anthropic=False,
+        )
+        assert out["tool_choice"] == {
+            "type": "any", "disable_parallel_tool_use": True,
+        }
+
+    def test_from_openai_parallel_tool_calls_false_flags_auto_choice(self):
+        out = anthropic_backend_passthrough(
+            {"tool_choice": "auto", "parallel_tool_calls": False},
+            from_anthropic=False,
+        )
+        assert out["tool_choice"] == {
+            "type": "auto", "disable_parallel_tool_use": True,
+        }
+
+    def test_from_openai_parallel_tool_calls_false_flags_named_choice(self):
+        out = anthropic_backend_passthrough(
+            {
+                "tool_choice": {"type": "function", "function": {"name": "search"}},
+                "parallel_tool_calls": False,
+            },
+            from_anthropic=False,
+        )
+        assert out["tool_choice"] == {
+            "type": "tool", "name": "search", "disable_parallel_tool_use": True,
+        }
+
+    def test_from_openai_parallel_tool_calls_false_leaves_none_choice_alone(self):
+        out = anthropic_backend_passthrough(
+            {"tool_choice": "none", "parallel_tool_calls": False},
+            from_anthropic=False,
+        )
+        assert out["tool_choice"] == {"type": "none"}
+
+    def test_from_openai_parallel_tool_calls_false_flags_default_auto_choice(self):
+        out = anthropic_backend_passthrough(
+            {"parallel_tool_calls": False}, from_anthropic=False,
+        )
+        assert out["tool_choice"] == {
+            "type": "auto", "disable_parallel_tool_use": True,
+        }
+
+    def test_from_openai_parallel_tool_calls_false_flags_null_choice(self):
+        out = anthropic_backend_passthrough(
+            {"tool_choice": None, "parallel_tool_calls": False},
+            from_anthropic=False,
+        )
+        assert out["tool_choice"] == {
+            "type": "auto", "disable_parallel_tool_use": True,
+        }
+
+    def test_from_openai_parallel_tool_calls_true_adds_no_flag(self):
+        out = anthropic_backend_passthrough(
+            {"tool_choice": "auto", "parallel_tool_calls": True},
+            from_anthropic=False,
+        )
+        assert out["tool_choice"] == {"type": "auto"}
+
+
+def test_native_owned_mirrors_handler_forge_owned():
+    """The converter's literal copy cannot drift from handler._FORGE_OWNED."""
+    assert _NATIVE_OWNED == _FORGE_OWNED | {"model"}
 
 
 # ── Outbound: forge → Anthropic ────────────────────────────

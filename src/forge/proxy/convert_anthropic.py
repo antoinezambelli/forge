@@ -170,6 +170,27 @@ def anthropic_tool_choice_to_openai(tc: Any) -> Any:
     return tc
 
 
+def openai_tool_choice_to_anthropic(tc: Any) -> Any:
+    """Translate OpenAI tool_choice to Anthropic tool_choice shape.
+
+    OpenAI: ``"auto"|"required"|"none"|{type:"function", function:{name:"X"}}``.
+    Anthropic: ``{type:"auto"|"any"|"none"|"tool", name?:"X"}``. A dict already
+    in one of those shapes passes through unchanged; an unrecognized value is
+    forwarded unchanged so the backend rejects it loudly.
+    """
+    if isinstance(tc, str):
+        if tc == "auto":
+            return {"type": "auto"}
+        if tc == "required":
+            return {"type": "any"}
+        if tc == "none":
+            return {"type": "none"}
+        return tc
+    if isinstance(tc, dict) and tc.get("type") == "function":
+        return {"type": "tool", "name": tc.get("function", {}).get("name", "")}
+    return tc
+
+
 def anthropic_to_openai_passthrough(body: dict[str, Any]) -> dict[str, Any]:
     """Build the OpenAI-shape passthrough body from an Anthropic inbound body.
 
@@ -203,6 +224,109 @@ def anthropic_to_openai_passthrough(body: dict[str, Any]) -> dict[str, Any]:
 
     if "tool_choice" in body:
         out["tool_choice"] = anthropic_tool_choice_to_openai(body["tool_choice"])
+
+    return out
+
+
+# Mirrors handler._FORGE_OWNED plus "model"; keeping the literal
+# avoids importing the handler (which imports this module).
+_NATIVE_OWNED = frozenset({
+    "messages", "tools", "stream", "stream_options", "system", "model",
+})
+
+
+def anthropic_backend_passthrough(
+    body: dict[str, Any],
+    *,
+    from_anthropic: bool,
+) -> dict[str, Any]:
+    """Build the extras for an Anthropic backend from either inbound protocol.
+
+    ``from_anthropic=True`` keeps every inbound field the verbatim first
+    attempt already forwards — only forge-owned fields (``messages``,
+    ``system``, ``tools``, ``stream``, ``stream_options``) and ``model``
+    are removed — so a rebuilt retry sends the same request shape instead
+    of OpenAI spellings. ``thinking`` is the exception: a rebuilt transcript
+    cannot carry thinking blocks, so the config is excluded (see the
+    comment in that branch).
+
+    ``from_anthropic=False`` starts from the handler's ``passthrough``
+    extras (already forge-owned and sampling filtered) and translates only
+    the OpenAI spellings the proxy knows Anthropic spells differently:
+    ``stop`` → ``stop_sequences`` (a bare string is wrapped in a list),
+    ``max_completion_tokens`` → ``max_tokens``, ``user`` →
+    ``metadata.user_id``, and ``parallel_tool_calls: false`` →
+    ``disable_parallel_tool_use: true`` on an auto/any/tool
+    ``tool_choice`` (``none`` needs no flag). An explicit value wins in
+    each case and the replaced OpenAI spelling is removed. An explicit
+    ``stop_sequences`` wins over ``stop``; when ``tool_choice`` is absent
+    or null — the OpenAI ``auto`` default — the flag rides an explicit
+    ``{"type": "auto"}`` so the choice is not silently left to Anthropic's
+    parallel-enabled default. ``metadata`` narrows to the one key Anthropic
+    defines (``user_id``); any other value is removed. Every other key rides
+    through unchanged, including keys with no Anthropic analog, matching
+    ``main``'s pass-through. ``litellm_session_id`` is forwarded by key
+    presence, matching ``anthropic_to_openai_passthrough``. ``thinking`` is
+    not forwarded because a rebuilt transcript cannot carry signed thinking
+    blocks; ``tool_choice`` is therefore translated as given. Sampling
+    fields ride the per-call ``sampling`` channel untouched;
+    AnthropicClient ignores them by design.
+    """
+    if from_anthropic:
+        extras = {k: v for k, v in body.items() if k not in _NATIVE_OWNED}
+        # A rebuilt transcript carries no signed thinking blocks: the inbound
+        # parser drops them and _convert_messages rebuilds assistant turns
+        # without them (ADR-017 keeps thinking replay out of scope). The
+        # Messages API requires thinking blocks to be returned complete and
+        # unmodified within a tool-use turn, so forwarding the config would
+        # send a body the backend rejects. A rebuilt attempt runs with
+        # thinking off, as it did on main.
+        extras.pop("thinking", None)
+        return extras
+
+    # The caller's extras already exclude forge-owned and sampling fields.
+    # Copy before rewriting so the handler's passthrough dict is untouched.
+    out = dict(body)
+    # ``thinking`` is omitted like the native branch: a rebuilt transcript
+    # cannot carry signed thinking blocks, so forwarding it would be rejected.
+    out.pop("thinking", None)
+
+    if "stop" in out:
+        stop = out.pop("stop")
+        if "stop_sequences" not in out:
+            out["stop_sequences"] = [stop] if isinstance(stop, str) else stop
+
+    if "max_completion_tokens" in out:
+        max_completion_tokens = out.pop("max_completion_tokens")
+        out.setdefault("max_tokens", max_completion_tokens)
+
+    if "tool_choice" in out:
+        tool_choice = openai_tool_choice_to_anthropic(out["tool_choice"])
+        if tool_choice is None:
+            del out["tool_choice"]
+        else:
+            out["tool_choice"] = tool_choice
+
+    parallel_tool_calls = out.pop("parallel_tool_calls", None)
+    if parallel_tool_calls is False:
+        choice = out.get("tool_choice")
+        if choice is None:
+            # OpenAI's absent/null tool_choice means "auto"; Anthropic's
+            # default is also auto, but only an explicit choice can carry
+            # the flag.
+            out["tool_choice"] = {"type": "auto", "disable_parallel_tool_use": True}
+        elif isinstance(choice, dict) and choice.get("type") in ("auto", "any", "tool"):
+            out["tool_choice"] = {**choice, "disable_parallel_tool_use": True}
+
+    metadata = out.get("metadata")
+    user_id = metadata.get("user_id") if isinstance(metadata, dict) else None
+    if not isinstance(user_id, str) and isinstance(out.get("user"), str):
+        user_id = out["user"]
+    out.pop("user", None)
+    if isinstance(user_id, str):
+        out["metadata"] = {"user_id": user_id}
+    else:
+        out.pop("metadata", None)
 
     return out
 
