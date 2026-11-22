@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from dataclasses import replace
 
 from forge.core.messages import Message, MessageType
 
@@ -263,10 +264,9 @@ class TieredCompact(CompactStrategy):
                         kept = msg.content[:self.TRUNCATE_CHARS]
                         removed = len(msg.content) - self.TRUNCATE_CHARS
                         result.append(
-                            Message(
-                                role=msg.role,
+                            replace(
+                                msg,
                                 content=f"{kept}\n[Truncated — {removed} chars removed]",
-                                metadata=msg.metadata,
                             )
                         )
                         continue

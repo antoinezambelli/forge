@@ -251,6 +251,52 @@ class TestTieredPhase1:
                 assert "[Truncated —" not in msg.content
 
 
+# ── TieredCompact — Phase 1 tool-result pairing ─────────────────
+
+
+class TestTieredCompactionPairing:
+    def test_phase1_truncation_preserves_tool_pairing(self) -> None:
+        long_result = "Search match: part X\n" * 40
+        paired_result = Message(
+            role=MessageRole.TOOL,
+            content=long_result,
+            metadata=MessageMeta(type=MessageType.TOOL_RESULT, step_index=0),
+            tool_name="search_parts",
+            tool_call_id="call_abc123",
+        )
+        msgs = [
+            _sys(),
+            _user_input(),
+            _tool_call(step=0),
+            paired_result,
+            _tool_call(step=1),
+            _tool_result("Recent result 1", step=1),
+            _tool_call(step=2),
+            _tool_result("Recent result 2", step=2),
+        ]
+        assert len(long_result) > TieredCompact.TRUNCATE_CHARS
+
+        result, phase = _p1_only().compact(msgs, budget_tokens=BIG)
+
+        truncated = [
+            m
+            for m in result
+            if m.metadata.type == MessageType.TOOL_RESULT
+            and "[Truncated —" in m.content
+        ]
+        assert phase == 1
+        assert len(truncated) == 1
+        rebuilt = truncated[0]
+        assert rebuilt.tool_name == "search_parts"
+        assert rebuilt.tool_call_id == "call_abc123"
+        api = rebuilt.to_api_dict("openai")
+        assert api["name"] == "search_parts"
+        assert api["tool_call_id"] == "call_abc123"
+        ollama_api = rebuilt.to_api_dict("ollama")
+        assert ollama_api["tool_name"] == "search_parts"
+        assert "tool_call_id" not in ollama_api
+
+
 # ── TieredCompact — Phase 2 ─────────────────────────────────────
 
 
