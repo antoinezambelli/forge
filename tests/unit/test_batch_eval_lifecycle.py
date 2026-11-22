@@ -19,6 +19,53 @@ from tests.eval.eval_runner import RunResult
 from tests.eval.scenarios import basic_2step
 
 
+def test_inkling_mini_recipe_matches_the_256k_smoke(tmp_path: Path) -> None:
+    config, = batch_eval.CONFIG_SETS["inkling2-mini"]
+    assert config.mode == "native"
+    assert config.reasoning_level == "high"
+    assert config.gguf_filename == "Inkling-2-Mini-UD-Q4_K_XL.gguf"
+    recipe = config.server_recipe
+    assert recipe.cache_type_k == recipe.cache_type_v == "q8_0"
+    assert recipe.n_slots == 1
+    assert not recipe.kv_unified
+    flags = batch_eval._resolve_server_recipe_flags(config, tmp_path)
+    assert flags == [
+        "--model-draft", str(tmp_path / "dspark-Inkling-2-Mini-Q8_0.gguf"),
+        "--reasoning-format", "auto", "--fit", "off", "-fa", "on",
+        "-ub", "128", "--spec-type", "draft-dspark",
+        "--spec-draft-n-max", "3", "-ngld", "99",
+    ]
+
+
+@pytest.mark.parametrize("effort", ["medium", "low", "xhigh"])
+def test_inkling_mini_effort_variants_preserve_the_high_recipe(effort: str) -> None:
+    baseline, = batch_eval.CONFIG_SETS["inkling2-mini"]
+    config, = batch_eval.CONFIG_SETS[f"inkling2-mini-{effort}"]
+    assert config.server_recipe is baseline.server_recipe
+    assert config.gguf_filename == baseline.gguf_filename
+    assert config.mode == baseline.mode == "native"
+    assert config.reasoning_level == effort
+    expected = batch_eval.get_sampling_defaults(baseline.model)
+    expected["chat_template_kwargs"] = {"reasoning_effort": effort}
+    assert config.sampling_override == expected
+    assert batch_eval.get_sampling_defaults(baseline.model)[
+        "chat_template_kwargs"
+    ] == {"reasoning_effort": "high"}
+
+
+def test_qwen_low_single_slot_keeps_effort_and_has_no_drafter() -> None:
+    baseline, = batch_eval.CONFIG_SETS["qwen38-low"]
+    config, = batch_eval.CONFIG_SETS["qwen38-low-single-slot"]
+    assert config.model == baseline.model
+    assert config.gguf_filename == baseline.gguf_filename
+    assert config.reasoning_level == "low"
+    assert config.sampling_override == baseline.sampling_override
+    assert config.server_recipe.n_slots == 1
+    assert config.server_recipe.draft_filename is None
+    assert config.server_recipe.cache_type_k == "q8_0"
+    assert config.server_recipe.cache_type_v == "q8_0"
+
+
 def _result(
     *,
     completed: bool = True,

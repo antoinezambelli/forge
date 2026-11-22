@@ -174,7 +174,7 @@ python -m tests.eval.report \
   data/evals/eval_results_v0.7.4.jsonl data/evals/eval_results_v0.7.5.jsonl \
   data/evals/eval_results_v0.8.2.jsonl data/evals/eval_results_v0.9.0.jsonl \
   data/evals/eval_results_v0.9.5.jsonl data/evals/eval_results_v0.10.0.jsonl \
-  data/evals/eval_results_v0.10.1.jsonl \
+  data/evals/eval_results_v0.10.1.jsonl data/evals/eval_results_v0.10.2.jsonl \
   --html docs/results/dashboard.html --markdown docs/results/
 ```
 
@@ -281,6 +281,38 @@ Addenda to date:
 - **2026-11-06–11-07 — v0.10.1 / gen 3 (rig-05):** `Qwen3.8-Flash-Next-UD-IQ3_XXS`, llama.cpp native, xhigh reasoning, full reasoning replay, reforged + bare, 26 scenarios × n=50, in `data/evals/eval_results_v0.10.1.jsonl`. Collected on Forge `ee1898e` with llama.cpp `6c01da6278` (build 12177), Vulkan, 262,144-token context, Q8 K/V caches, mmap/lazy PLE loading, and no speculative decoding. Sampling: temperature 1.0, top-p 0.95, top-k 20, min-p 0, presence penalty 0, repetition penalty 1.0; `preserve_thinking` enabled. Scores (correct / all attempts): reforged 1,299/1,300 (99.92%); bare 1,027/1,300 (79.00%).
 
 - **2026-11-10 — v0.10.1 / gen 3 (rig-03), completed:** `Ripple-65B-Preview-Q4_K_M`, llama.cpp native, full reasoning replay, reforged + bare, 26 scenarios × n=50, in `data/evals/eval_results_v0.10.1.jsonl`. Collected on Forge `ee1898e` with llama.cpp `6414d5b0c9` (Ripple PR #31692), Vulkan, 262,144-token context, F16 K/V caches, `--load-mode none`, flash attention, batch 512 / ubatch 128, and no speculative decoding. No published sampling recommendation was available; the run used temperature 1.0 with other sampler settings left at llama.cpp defaults. Scores (correct / all attempts): reforged 1,297/1,300 (99.77%); bare 990/1,300 (76.15%).
+
+- **2026-11-20–11-22 — v0.10.2 / recorded gen 0 (rig-04), completed:**
+  `Inkling-2-Mini-UD-Q4_K_XL` and the Qwen3.8-27B low/full replay ablation,
+  in `data/evals/eval_results_v0.10.2.jsonl`. Collected on Forge
+  `29b1370db67e2f7ceab3b25e978913e7841009e5` with local Mini sampling and
+  named eval configurations on `az/inkling2-mini-smoke`. RTX 5090, isolated
+  Unsloth `b12572-mix-8eebad4` CUDA13 newer runtime (source
+  `a5ba2dd76d1bb2173f6882bac30682f8ae55045e`), native tool calling,
+  262,144-token context, Q8 K/V, one slot, full GPU offload and flash attention.
+  Mini uses its Q8 DSpark drafter (maximum three draft tokens), microbatch 128,
+  temperature 1.0, top-p 1.0, top-k 0 and min-p 0. Qwen has no drafter,
+  microbatch 512, temperature 1.0, top-p 0.95, top-k 20, min-p 0, presence
+  penalty 0 and repetition penalty 1. Automatic memory fitting is disabled.
+  All 12 arms cover the same 26 non-compaction scenarios × n=50; all four
+  `compaction_chain_*` cases are excluded. The 15,600 rows are consolidated
+  byte-for-byte from the completed outputs: the originally recorded generation
+  0 is preserved, not relabeled as generation 3. Earlier released datasets are
+  unchanged. Scores below are correct / all attempts; times sum per-attempt
+  `elapsed_s`, excluding server startup and inter-arm overhead.
+
+  | Model | Effort | Replay | Reforged correct | Bare correct | Combined time |
+  |---|---|---|---:|---:|---:|
+  | Inkling 2 Mini Q4 + DSpark | xhigh | full | 1298/1300 (99.85%) | 1140/1300 (87.69%) | 7h30m |
+  | Inkling 2 Mini Q4 + DSpark | high | full | 1298/1300 (99.85%) | 1144/1300 (88.00%) | 6h07m |
+  | Inkling 2 Mini Q4 + DSpark | medium | full | 1293/1300 (99.46%) | 1098/1300 (84.46%) | 4h01m |
+  | Inkling 2 Mini Q4 + DSpark | low | full | 1287/1300 (99.00%) | 1045/1300 (80.38%) | 2h57m |
+  | Inkling 2 Mini Q4 + DSpark | low | none | 1285/1300 (98.85%) | 1025/1300 (78.85%) | 3h00m |
+  | Qwen3.8-27B Q4 | low | full | 1292/1300 (99.38%) | 1056/1300 (81.23%) | 8h57m |
+
+  This extends the local JSONL/report inputs, not the separately pinned
+  Hugging Face publication snapshot. That snapshot's source allowlist and
+  hashes have not been changed.
 
 ### Forge eval report
 
