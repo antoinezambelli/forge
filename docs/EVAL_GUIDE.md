@@ -282,7 +282,7 @@ Addenda to date:
 
 - **2026-11-10 — v0.10.1 / gen 3 (rig-03), completed:** `Ripple-65B-Preview-Q4_K_M`, llama.cpp native, full reasoning replay, reforged + bare, 26 scenarios × n=50, in `data/evals/eval_results_v0.10.1.jsonl`. Collected on Forge `ee1898e` with llama.cpp `6414d5b0c9` (Ripple PR #31692), Vulkan, 262,144-token context, F16 K/V caches, `--load-mode none`, flash attention, batch 512 / ubatch 128, and no speculative decoding. No published sampling recommendation was available; the run used temperature 1.0 with other sampler settings left at llama.cpp defaults. Scores (correct / all attempts): reforged 1,297/1,300 (99.77%); bare 990/1,300 (76.15%).
 
-- **2026-11-20–11-22 — v0.10.2 / recorded gen 0 (rig-04), completed:**
+- **2026-11-20–11-22 — v0.10.2 / gen 3 (rig-04), completed:**
   `Inkling-2-Mini-UD-Q4_K_XL` and the Qwen3.8-27B low/full replay ablation,
   in `data/evals/eval_results_v0.10.2.jsonl`. Collected on Forge
   `29b1370db67e2f7ceab3b25e978913e7841009e5` with local Mini sampling and
@@ -296,10 +296,11 @@ Addenda to date:
   penalty 0 and repetition penalty 1. Automatic memory fitting is disabled.
   All 12 arms cover the same 26 non-compaction scenarios × n=50; all four
   `compaction_chain_*` cases are excluded. The 15,600 rows are consolidated
-  byte-for-byte from the completed outputs: the originally recorded generation
-  0 is preserved, not relabeled as generation 3. Earlier released datasets are
-  unchanged. Scores below are correct / all attempts; times sum per-attempt
-  `elapsed_s`, excluding server startup and inter-arm overhead.
+  from the completed outputs, with an erroneous generation 0 label corrected
+  to generation 3, the current comparability epoch. All other row content and
+  earlier released datasets are unchanged. Scores below are correct / all
+  attempts; times sum per-attempt `elapsed_s`, excluding server startup and
+  inter-arm overhead.
 
   | Model | Effort | Replay | Reforged correct | Bare correct | Combined time |
   |---|---|---|---:|---:|---:|
@@ -309,10 +310,6 @@ Addenda to date:
   | Inkling 2 Mini Q4 + DSpark | low | full | 1287/1300 (99.00%) | 1045/1300 (80.38%) | 2h57m |
   | Inkling 2 Mini Q4 + DSpark | low | none | 1285/1300 (98.85%) | 1025/1300 (78.85%) | 3h00m |
   | Qwen3.8-27B Q4 | low | full | 1292/1300 (99.38%) | 1056/1300 (81.23%) | 8h57m |
-
-  This extends the local JSONL/report inputs, not the separately pinned
-  Hugging Face publication snapshot. That snapshot's source allowlist and
-  hashes have not been changed.
 
 ### Forge eval report
 
