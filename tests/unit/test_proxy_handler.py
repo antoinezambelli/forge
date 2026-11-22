@@ -8,12 +8,13 @@ import pytest
 from unittest.mock import AsyncMock, MagicMock
 
 from forge._backend_profiles import ClientAdapter, ModelCatalog, ModelCatalogEntry
+from forge.clients.anthropic import AnthropicClient
 from forge.clients.llamafile import LlamafileClient
 from forge.clients.ollama import OllamaClient
 from forge.clients.vllm import VLLMClient
 from forge.context.manager import ContextManager
 from forge.context.strategies import NoCompact
-from forge.core.workflow import TextResponse, ToolCall
+from forge.core.workflow import TextResponse, ToolCall, ToolSpec
 from forge.clients.base import TokenUsage
 from forge.errors import BackendDiscoveryError, BackendError, MissingModelError
 from forge.proxy.handler import (
@@ -1118,6 +1119,118 @@ class TestAnthropicBackendModelRouting:
                 backend_protocol="anthropic",
             )
         client.send.assert_not_awaited()
+
+
+class TestAnthropicBackendPassthrough:
+    """Passthrough handed to an Anthropic backend uses its native field names."""
+
+    @pytest.mark.asyncio
+    async def test_retry_to_anthropic_backend_uses_anthropic_field_names(self):
+        client = _mock_client(None)
+        client.model = None
+        client.send = AsyncMock(side_effect=[
+            TextResponse(content="not a tool call"),
+            [ToolCall(tool="get_weather", args={"city": "Paris"})],
+        ])
+        input_schema = {
+            "type": "object",
+            "properties": {"city": {"type": "string"}},
+        }
+        body = {
+            "model": "claude-3-5-sonnet",
+            "messages": [{"role": "user", "content": "Weather?"}],
+            "max_tokens": 1024,
+            "tools": [{
+                "name": "get_weather",
+                "description": "Get weather.",
+                "input_schema": input_schema,
+            }],
+            "stop_sequences": ["</done>"],
+            # ``auto`` still lets the backend answer with text — the outcome
+            # that triggers forge's retry — unlike a forced choice.
+            "tool_choice": {"type": "auto"},
+            # Native extras attempt 1 forwards verbatim; a rebuilt attempt
+            # must not lose them.
+            "metadata": {"user_id": "u-1"},
+        }
+        await handle_chat_completions(
+            body, client, _context_manager(),
+            client_adapter=ClientAdapter.ANTHROPIC,
+            protocol="anthropic", backend_protocol="anthropic",
+            max_retries=1,
+        )
+        assert client.send.await_count == 2
+        retry_passthrough = client.send.call_args_list[1].kwargs["passthrough"]
+        assert retry_passthrough["stop_sequences"] == ["</done>"]
+        assert retry_passthrough["tool_choice"] == {"type": "auto"}
+        assert retry_passthrough["metadata"] == {"user_id": "u-1"}
+        assert "stop" not in retry_passthrough
+
+        # Prove the captured passthrough reaches a real Anthropic request
+        # body, not just the intermediate dict. Pass the ToolSpec the handler
+        # derives from the body's tools array, so the built body carries the
+        # same ``tools`` as the retry.
+        outbound = AnthropicClient(
+            model="claude-3-5-sonnet", api_key="dummy",
+        )._build_kwargs(
+            [{"role": "user", "content": "Weather?"}],
+            [ToolSpec.from_json_schema(
+                "get_weather", "Get weather.", input_schema,
+            )],
+            retry_passthrough,
+        )
+        assert [t["name"] for t in outbound["tools"]] == ["get_weather"]
+        assert "city" in outbound["tools"][0]["input_schema"]["properties"]
+        assert outbound["stop_sequences"] == ["</done>"]
+        assert isinstance(outbound["tool_choice"], dict)
+        assert outbound["tool_choice"] == {"type": "auto"}
+        assert "stop" not in outbound
+
+    @pytest.mark.asyncio
+    async def test_openai_inbound_translates_to_anthropic_backend_fields(self):
+        client = _mock_client([ToolCall(tool="search", args={"q": "x"})])
+        client.model = None
+        body = {
+            "model": "gateway-alias",
+            "messages": [{"role": "user", "content": "hi"}],
+            "tools": [_tool_def("search")],
+            "max_tokens": 300,
+            "stop": ["</done>"],
+            "tool_choice": "required",
+            "temperature": 0.4,
+            "top_p": 0.9,
+            "top_k": 40,
+            "frequency_penalty": 0.1,
+            "presence_penalty": 0.2,
+            "metadata": {"user_id": "u-1", "trace_id": "t-1"},
+            "service_tier": "default",
+            "mcp_servers": [{"type": "url", "url": "https://mcp.test/sse"}],
+        }
+        await handle_chat_completions(
+            body, client, _context_manager(),
+            client_adapter=ClientAdapter.ANTHROPIC,
+            backend_protocol="anthropic",
+        )
+        passthrough = client.send.call_args.kwargs["passthrough"]
+        assert passthrough["model"] == "gateway-alias"
+        assert passthrough["max_tokens"] == 300
+        assert passthrough["stop_sequences"] == ["</done>"]
+        assert passthrough["tool_choice"] == {"type": "any"}
+        assert passthrough["metadata"] == {"user_id": "u-1"}
+        # Keys the proxy has no reason to touch ride through unchanged,
+        # matching main's passthrough.
+        assert passthrough["frequency_penalty"] == 0.1
+        assert passthrough["service_tier"] == "default"
+        assert passthrough["mcp_servers"] == [
+            {"type": "url", "url": "https://mcp.test/sse"},
+        ]
+        # Sampling stays on the per-call channel; the translated passthrough
+        # must not lift it into the backend body.
+        assert "temperature" not in passthrough
+        assert "top_p" not in passthrough
+        assert "top_k" not in passthrough
+        assert "stop" not in passthrough
+        assert "presence_penalty" not in passthrough
 
 
 # ── Native transparent passthrough ──────────────────────────

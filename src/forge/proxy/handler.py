@@ -45,6 +45,7 @@ from forge.proxy.convert import (
     text_to_sse_events,
 )
 from forge.proxy.convert_anthropic import (
+    anthropic_backend_passthrough,
     anthropic_to_messages,
     anthropic_to_openai_passthrough,
     anthropic_tools_to_specs,
@@ -427,6 +428,13 @@ async def handle_chat_completions(
         raw_messages_for_backend = None
 
     if backend_protocol == "anthropic":
+        # The client consumes passthrough in the backend's own wire shape.
+        # Rebuild from the inbound body for the native path; translate the
+        # OpenAI-shape extras in place for the translated path.
+        passthrough = anthropic_backend_passthrough(
+            body if protocol == "anthropic" else (passthrough or {}),
+            from_anthropic=protocol == "anthropic",
+        ) or None
         if passthrough is None:
             passthrough = {}
         passthrough["model"] = model_name
