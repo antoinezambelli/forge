@@ -75,6 +75,17 @@ _QWEN38_SERVER_RECIPE = _BatchServerRecipe((
     "--reasoning-format", "auto",
     "--cache-type-k", "q8_0", "--cache-type-v", "q8_0", "-fa", "1",
 ))
+_INKLING2_MINI_SERVER_RECIPE = _BatchServerRecipe(
+    extra_flags=(
+        "--reasoning-format", "auto", "--fit", "off", "-fa", "on",
+        "-ub", "128", "--spec-type", "draft-dspark",
+        "--spec-draft-n-max", "3", "-ngld", "99",
+    ),
+    draft_filename="dspark-Inkling-2-Mini-Q8_0.gguf",
+    cache_type_k="q8_0",
+    cache_type_v="q8_0",
+    n_slots=1,
+)
 _QWEN38_FLASH_NEXT_IQ3_SERVER_RECIPE = _BatchServerRecipe(
     extra_flags=(
         "--load-mode", "mmap", "--lazy-mode", "on", "--fit", "off",
@@ -468,6 +479,32 @@ QWEN38_CONFIGS: list[BatchConfig] = [
     if c.model == "Qwen3.8-27B-UD-Q4_K_XL" and c.mode == "native"
 ]
 
+INKLING2_MINI_CONFIGS: list[BatchConfig] = [
+    BatchConfig(
+        model="Inkling-2-Mini-UD-Q4_K_XL",
+        backend="llamaserver",
+        mode="native",
+        think=None,
+        gguf_filename="Inkling-2-Mini-UD-Q4_K_XL.gguf",
+        server_recipe=_INKLING2_MINI_SERVER_RECIPE,
+        reasoning_level="high",
+    ),
+]
+
+_INKLING2_MINI_EFFORT_CONFIGS: dict[str, list[BatchConfig]] = {
+    effort: [
+        replace(
+            INKLING2_MINI_CONFIGS[0],
+            reasoning_level=effort,
+            sampling_override={
+                **get_sampling_defaults("Inkling-2-Mini-UD-Q4_K_XL"),
+                "chat_template_kwargs": {"reasoning_effort": effort},
+            },
+        )
+    ]
+    for effort in ("medium", "low", "xhigh")
+}
+
 _QWEN38_EFFORT_CONFIGS: dict[str, list[BatchConfig]] = {
     effort: [
         replace(
@@ -481,6 +518,17 @@ _QWEN38_EFFORT_CONFIGS: dict[str, list[BatchConfig]] = {
     ]
     for effort in ("medium", "low")
 }
+
+_QWEN38_LOW_SINGLE_SLOT_CONFIGS = [
+    replace(
+        _QWEN38_EFFORT_CONFIGS["low"][0],
+        server_recipe=replace(
+            _QWEN38_SERVER_RECIPE,
+            extra_flags=(*_QWEN38_SERVER_RECIPE.extra_flags, "--fit", "off"),
+            cache_type_k="q8_0", cache_type_v="q8_0", n_slots=1,
+        ),
+    ),
+]
 
 # Reasoning-effort axis (rig-03): gpt-oss@high + nemotron@high as PARALLEL
 # configs to the medium/low-effort baselines. Same GGUF + native FC, but
@@ -641,8 +689,13 @@ CONFIG_SETS: dict[str, list[BatchConfig]] = {
     "qwen38-flash-next-xhigh-rpc": QWEN38_FLASH_NEXT_XHIGH_RPC_CONFIGS,
     "nemotron35-super-vl-rpc": NEMOTRON35_SUPER_VL_RPC_CONFIGS,
     "qwen38": QWEN38_CONFIGS,
+    "inkling2-mini": INKLING2_MINI_CONFIGS,
+    "inkling2-mini-medium": _INKLING2_MINI_EFFORT_CONFIGS["medium"],
+    "inkling2-mini-low": _INKLING2_MINI_EFFORT_CONFIGS["low"],
+    "inkling2-mini-xhigh": _INKLING2_MINI_EFFORT_CONFIGS["xhigh"],
     "qwen38-medium": _QWEN38_EFFORT_CONFIGS["medium"],
     "qwen38-low": _QWEN38_EFFORT_CONFIGS["low"],
+    "qwen38-low-single-slot": _QWEN38_LOW_SINGLE_SLOT_CONFIGS,
     "inkling-small-rpc": INKLING_SMALL_RPC_CONFIGS,
     "glm53-flash-rpc": GLM53_FLASH_RPC_CONFIGS,
     "new-models": NEW_MODEL_CONFIGS,

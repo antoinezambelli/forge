@@ -137,6 +137,8 @@ MODEL_SAMPLING_DEFAULTS: dict[str, dict[str, float | int]] = {
     # includes min_p=0.0 in its llama.cpp recipes. This smoke uses max effort
     # (0.99); xhigh and max map to the same template value.
     "Inkling-Small-UD-IQ4_XS":                 {"temperature": 1.0, "top_p": 1.0, "min_p": 0.0, "chat_template_kwargs": {"reasoning_effort": "max"}}, # https://unsloth.ai/docs/models/inkling
+    # Inkling 2 Mini — recommended sampling with its default high effort.
+    "Inkling-2-Mini-UD-Q4_K_XL":               {"temperature": 1.0, "top_p": 1.0, "top_k": 0, "min_p": 0.0, "chat_template_kwargs": {"reasoning_effort": "high"}}, # https://unsloth.ai/docs/models/inkling-2-mini
     # GLM-5.3-Flash — general-task profile with the lightest documented
     # reasoning effort for this stability smoke.
     "GLM-5.3-Flash-UD-IQ4_XS":                  {"temperature": 1.0, "top_p": 0.95, "chat_template_kwargs": {"reasoning_effort": "low"}}, # https://unsloth.ai/docs/models/glm-5.3

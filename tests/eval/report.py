@@ -586,6 +586,7 @@ MODEL_FAMILIES: dict[str, dict[str, str]] = {
     # DeepSeek V4 Flash 0731 (managed llama.cpp RPC; UD is a quant variant)
     "DeepSeek-V4-Flash-0731-UD-Q4_K_XL":     {"family": "deepseek-v4-flash", "cross_backend_key": "deepseek-v4-flash-0731-q4_K_XL"},
     "Inkling-Small-UD-IQ4_XS":             {"family": "inkling-small", "cross_backend_key": "inkling-small-iq4_XS"},
+    "Inkling-2-Mini-UD-Q4_K_XL":           {"family": "inkling-2-mini", "cross_backend_key": "inkling-2-mini-q4_K_XL"},
     # Laguna 2.1 (llama-server only)
     "Laguna-S-2.1-UD-Q4_K_XL":             {"family": "laguna-s-2.1", "cross_backend_key": "laguna-s-2.1-q4_K_XL"},
     "Laguna-XS-2.1-Q4_K_M":                {"family": "laguna-xs-2.1", "cross_backend_key": "laguna-xs-2.1-q4_K_M"},

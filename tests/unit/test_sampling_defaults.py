@@ -16,6 +16,15 @@ from forge.errors import UnsupportedModelError
 class TestGetSamplingDefaults:
     """Tests for the pure-lookup ``get_sampling_defaults`` helper."""
 
+    def test_inkling_mini_uses_recommended_sampling_and_default_effort(self) -> None:
+        assert get_sampling_defaults("Inkling-2-Mini-UD-Q4_K_XL") == {
+            "temperature": 1.0,
+            "top_p": 1.0,
+            "top_k": 0,
+            "min_p": 0.0,
+            "chat_template_kwargs": {"reasoning_effort": "high"},
+        }
+
     def test_known_model_returns_copy(self) -> None:
         """Known model returns its params; mutating the result doesn't affect the map."""
         model = "qwen3:8b-q4_K_M"
