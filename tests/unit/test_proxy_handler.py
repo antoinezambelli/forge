@@ -14,14 +14,14 @@ from forge.clients.vllm import VLLMClient
 from forge.context.manager import ContextManager
 from forge.context.strategies import NoCompact
 from forge.core.workflow import TextResponse, ToolCall
-from forge.clients.base import TokenUsage
+from forge.clients.base import format_tool, TokenUsage
 from forge.errors import BackendDiscoveryError, BackendError, MissingModelError
 from forge.proxy.handler import (
     LazyDiscovery,
     RequestFacts,
     handle_chat_completions,
     observe_request_context,
-    _extract_tool_specs,
+    _extract_tool_definitions,
 )
 
 
@@ -119,25 +119,24 @@ def test_nonempty_claude_agent_headers_are_ineligible(header_name):
     assert facts.reporting_eligible is True
 
 
-# ── _extract_tool_specs ──────────────────────────────────────
+# ── _extract_tool_definitions ──────────────────────────────────────
 
 
-class TestExtractToolSpecs:
+class TestExtractToolDefinitions:
     def test_absent_tools_return_empty(self):
         for tools in (None, []):
-            assert _extract_tool_specs(tools) == [], tools
+            assert _extract_tool_definitions(tools) == [], tools
 
     def test_extracts_function_tools(self):
-        specs = _extract_tool_specs([_tool_def("search"), _tool_def("fetch")])
+        specs = _extract_tool_definitions([_tool_def("search"), _tool_def("fetch")])
         assert len(specs) == 2
         assert specs[0].name == "search"
         assert specs[1].name == "fetch"
 
-    def test_skips_non_function_types(self):
+    def test_rejects_non_function_types(self):
         tools = [{"type": "retrieval"}, _tool_def("search")]
-        specs = _extract_tool_specs(tools)
-        assert len(specs) == 1
-        assert specs[0].name == "search"
+        with pytest.raises(ValueError, match="function"):
+            _extract_tool_definitions(tools)
 
 
 # ── No tools → passthrough ──────────────────────────────────
@@ -307,7 +306,7 @@ class TestEffectiveModelContracts:
         assert "tool_choice" not in downstream
 
     @pytest.mark.asyncio
-    async def test_vllm_retry_keeps_passthrough_but_rebuilds_raw_artifacts(self):
+    async def test_vllm_retry_keeps_passthrough_and_canonical_tools(self):
         client = VLLMClient(
             model_path="wire-pin",
             base_url="http://test:8000/v1",
@@ -344,8 +343,8 @@ class TestEffectiveModelContracts:
         first, retry = [call.kwargs["json"] for call in client._http.post.call_args_list]
         assert first["tools"] == raw_tools
         assert first["messages"][0]["vendor"] == "raw"
-        assert retry["tools"] != raw_tools
-        assert "x-provider" not in retry["tools"][0]["function"]["parameters"][
+        assert retry["tools"] == first["tools"]
+        assert "x-provider" in retry["tools"][0]["function"]["parameters"][
             "properties"
         ]["q"]
         assert retry["messages"][0]["content"] == "hi"
@@ -699,7 +698,7 @@ class TestWithTools:
         """If client already provides respond tool, don't inject again."""
         client = _mock_client([ToolCall(tool="respond", args={"message": "Hi!"})])
         client.last_usage = {0: TokenUsage(prompt_tokens=10, completion_tokens=5, total_tokens=15)}
-        
+
         tools = [_tool_def("search"), _tool_def("respond")]
         result = await handle_chat_completions(
             _body(tools=tools), client, _context_manager(),
@@ -1179,7 +1178,7 @@ class TestNativePassthrough:
         assert sent_messages[1]["reasoning_content"] == "latest"
 
     @pytest.mark.asyncio
-    async def test_raw_tools_forwarded_verbatim(self):
+    async def test_complete_tools_render_from_canonical_definitions(self):
         client = _mock_client([ToolCall(tool="search", args={"q": "x"})])
         params = {
             "type": "object",
@@ -1192,13 +1191,12 @@ class TestNativePassthrough:
             _body(tools=tools), client, _context_manager(),
             client_adapter=ClientAdapter.LLAMAFILE,
         )
-        # The backend sees the client's exact tools array (full schema, no
-        # name/schema drift), not forge's reconstructed format_tool output.
-        sent = client.send.call_args.kwargs["raw_openai_tools"]
+        # Formatting the canonical definitions preserves the complete input schema.
+        sent = [format_tool(t) for t in client.send.call_args.kwargs["tools"]]
         assert sent == tools
         # Respond is NOT appended by default.
         assert [t["function"]["name"] for t in sent] == ["search"]
-        # tool_specs (validation sidecar) still passed separately.
+        # This is the same collection used for validation and rendering.
         assert client.send.call_args.kwargs["tools"][0].name == "search"
 
     @pytest.mark.asyncio
@@ -1227,7 +1225,7 @@ class TestNativePassthrough:
         # Mutate the caller's body after the call — detached copy is unaffected.
         body["tools"][0]["function"]["name"] = "MUTATED"
         body["messages"][0]["content"] = "MUTATED"
-        sent_tools = client.send.call_args.kwargs["raw_openai_tools"]
+        sent_tools = [format_tool(t) for t in client.send.call_args.kwargs["tools"]]
         sent_messages = client.send.call_args.args[0]
         assert sent_tools[0]["function"]["name"] == "search"
         assert sent_messages[0]["content"] == "hi"
@@ -1239,21 +1237,21 @@ class TestNativePassthrough:
             _body(tools=[_tool_def("search")]), client, _context_manager(),
             client_adapter=ClientAdapter.LLAMAFILE,
         )
-        sent = client.send.call_args.kwargs["raw_openai_tools"]
+        sent = [format_tool(t) for t in client.send.call_args.kwargs["tools"]]
         names = [t["function"]["name"] for t in sent]
         assert "respond" not in names
         spec_names = [s.name for s in client.send.call_args.kwargs["tools"]]
         assert "respond" not in spec_names
 
     @pytest.mark.asyncio
-    async def test_respond_injected_into_raw_tools_when_opted_in(self):
+    async def test_respond_appended_to_canonical_tools_when_opted_in(self):
         client = _mock_client([ToolCall(tool="search", args={"q": "x"})])
         await handle_chat_completions(
             _body(tools=[_tool_def("search")]), client, _context_manager(),
             client_adapter=ClientAdapter.LLAMAFILE,
             inject_respond_tool=True,
         )
-        sent = client.send.call_args.kwargs["raw_openai_tools"]
+        sent = [format_tool(t) for t in client.send.call_args.kwargs["tools"]]
         names = [t["function"]["name"] for t in sent]
         assert names == ["search", "respond"]
 
@@ -1354,7 +1352,7 @@ class TestPromptCapabilityHandoff:
     LlamafileClient prompt-mode tests.)"""
 
     @pytest.mark.asyncio
-    async def test_prompt_mode_suppresses_raw_tools(self):
+    async def test_prompt_mode_receives_canonical_tools(self):
         client = _mock_client([ToolCall(tool="search", args={"q": "x"})])
         await handle_chat_completions(
             _body(tools=[_tool_def("search")]), client, _context_manager(),
@@ -1363,7 +1361,7 @@ class TestPromptCapabilityHandoff:
         )
         # No verbatim tools forwarded — the client's prompt path injects them.
         assert "raw_openai_tools" not in client.send.call_args.kwargs
-        # tool_specs (the source for build_tool_prompt) are still passed.
+        # tool_definitions (the source for build_tool_prompt) are still passed.
         assert client.send.call_args.kwargs["tools"][0].name == "search"
 
     @pytest.mark.asyncio
@@ -1391,4 +1389,68 @@ class TestPromptCapabilityHandoff:
             _body(tools=tools), client, _context_manager(),
             client_adapter=ClientAdapter.LLAMAFILE,
         )
-        assert client.send.call_args.kwargs["raw_openai_tools"] == tools
+        assert [format_tool(t) for t in client.send.call_args.kwargs["tools"]] == tools
+
+
+@pytest.mark.parametrize(
+    "tools, message",
+    [
+        ({}, "list"),
+        ([None], "function"),
+        ([{}], "function"),
+        ([{"type": "custom"}], "function"),
+        ([{"type": "function"}], "dictionary"),
+        ([{"type": "function", "function": None}], "dictionary"),
+        ([{"type": "function", "function": []}], "dictionary"),
+        ([{"type": "function", "function": {}}], "name"),
+        ([{"type": "function", "function": {"name": ""}}], "name"),
+        ([{"type": "function", "function": {"name": 3}}], "name"),
+        (
+            [{"type": "function", "function": {"name": "x", "description": None}}],
+            "description",
+        ),
+        (
+            [{"type": "function", "function": {"name": "x", "description": 2}}],
+            "description",
+        ),
+        (
+            [{"type": "function", "function": {"name": "x", "parameters": []}}],
+            "dictionary",
+        ),
+        (
+            [{"type": "function", "function": {"name": "x", "parameters": None}}],
+            "dictionary",
+        ),
+        ([_tool_def("x"), _tool_def("x")], "Duplicate"),
+    ],
+)
+def test_openai_definition_failures(tools, message):
+    with pytest.raises(ValueError, match=message):
+        _extract_tool_definitions(tools)
+
+
+def test_openai_defaults_and_nested_extras():
+    tools = [
+        {
+            "type": "function",
+            "outer-extension": "ignored",
+            "function": {
+                "name": "name with spaces",
+                "strict": True,
+            },
+        }
+    ]
+    definitions = _extract_tool_definitions(tools)
+    assert definitions[0].name == "name with spaces"
+    assert definitions[0].description == ""
+    assert definitions[0].input_schema == {}
+    assert definitions[0].extra_fields == {"strict": True}
+    assert format_tool(definitions[0]) == {
+        "type": "function",
+        "function": {
+            "name": "name with spaces",
+            "description": "",
+            "parameters": {},
+            "strict": True,
+        },
+    }

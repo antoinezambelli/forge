@@ -12,7 +12,7 @@ from typing import Any
 
 from forge.core.messages import Message, MessageMeta, MessageRole, MessageType, ToolCallInfo
 from forge.core.reasoning import DEFAULT_REASONING_REPLAY, ReasoningReplay, validate_reasoning_replay
-from forge.core.workflow import ToolCall, ToolSpec
+from forge.core.workflow import ToolCall, ToolDefinition
 
 
 # ── Inbound: Anthropic request → forge Messages ──────────────────
@@ -130,24 +130,31 @@ def anthropic_to_messages(
     return messages
 
 
-def anthropic_tools_to_specs(tools: list[dict[str, Any]] | None) -> list[ToolSpec]:
-    """Anthropic tools array → forge ToolSpec list.
-
-    Anthropic shape: ``{"name", "description", "input_schema"}``.
-    """
-    if not tools:
+def anthropic_tools_to_definitions(tools: list[dict[str, Any]] | None) -> list[ToolDefinition]:
+    """Parse flat Anthropic function tools into canonical definitions."""
+    if tools is None:
         return []
-    specs = []
+    if not isinstance(tools, list):
+        raise ValueError("Anthropic tools must be a list")
+    definitions = []
+    names = set()
     for tool in tools:
-        name = tool.get("name", "")
-        if not name:
-            continue
-        specs.append(ToolSpec.from_json_schema(
-            name=name,
+        if not isinstance(tool, dict) or tool.get("type", "custom") != "custom":
+            raise ValueError("Expected an Anthropic function tool")
+        if "input_schema" not in tool:
+            raise ValueError("Anthropic tool requires input_schema")
+        definition = ToolDefinition(
+            name=tool.get("name"),
             description=tool.get("description", ""),
-            schema=tool.get("input_schema", {}),
-        ))
-    return specs
+            input_schema=tool["input_schema"],
+            extra_fields={key: value for key, value in tool.items()
+                          if key not in {"name", "description", "input_schema"}},
+        )
+        if definition.name in names:
+            raise ValueError(f"Duplicate tool name '{definition.name}'")
+        names.add(definition.name)
+        definitions.append(definition)
+    return definitions
 
 
 def anthropic_tool_choice_to_openai(tc: Any) -> Any:

@@ -15,7 +15,7 @@ from forge.context.manager import ContextManager
 from forge.context.strategies import NoCompact
 from forge.core.inference import run_inference
 from forge.core.messages import Message, MessageMeta, MessageRole, MessageType
-from forge.core.workflow import ToolCall, ToolSpec
+from forge.core.workflow import ToolCall, ToolDefinition
 from forge.guardrails import ErrorTracker, ResponseValidator
 
 
@@ -24,8 +24,8 @@ def _ctx():
 
 
 def _search_spec():
-    return ToolSpec.from_json_schema(
-        name="search", description="", schema={"type": "object", "properties": {}},
+    return ToolDefinition(
+        name="search", description="", input_schema={"type": "object", "properties": {}},
     )
 
 
@@ -49,7 +49,7 @@ async def _run(client, **kw):
         context_manager=_ctx(),
         validator=ResponseValidator(["search"], rescue_enabled=True),
         error_tracker=ErrorTracker(max_retries=1),
-        tool_specs=[_search_spec()],
+        tool_definitions=[_search_spec()],
         **kw,
     )
 

@@ -5,76 +5,253 @@ from __future__ import annotations
 
 from typing import Any
 
-from pydantic import BaseModel, Field
 
-from forge.core.workflow import ToolDef, ToolSpec, Workflow
+from forge.core.workflow import ToolDefinition, Workflow
 
 from ._base import EvalScenario, _check, _placeholder_workflow
 
 
-# ── Pydantic parameter models ──────────────────────────────────
+# ── Explicit input schemas ──────────────────────────────────
 
 
-# Shared single-field models
-class QueryParams(BaseModel):
-    query: str = Field(description="The search query")
+# Shared single-field schemas
+QUERY_SCHEMA = {
+    "properties": {
+        "query": {"description": "The search query", "title": "Query", "type": "string"}
+    },
+    "required": ["query"],
+    "title": "QueryParams",
+    "type": "object",
+}
 
-class PathParams(BaseModel):
-    path: str = Field(description="Path to the file")
+PATH_SCHEMA = {
+    "properties": {
+        "path": {"description": "Path to the file", "title": "Path", "type": "string"}
+    },
+    "required": ["path"],
+    "title": "PathParams",
+    "type": "object",
+}
 
-class CmdParams(BaseModel):
-    cmd: str = Field(description="The command to run")
+CMD_SCHEMA = {
+    "properties": {
+        "cmd": {"description": "The command to run", "title": "Cmd", "type": "string"}
+    },
+    "required": ["cmd"],
+    "title": "CmdParams",
+    "type": "object",
+}
 
-class ToParams(BaseModel):
-    to: str = Field(description="Recipient email address")
+TO_SCHEMA = {
+    "properties": {
+        "to": {
+            "description": "Recipient email address",
+            "title": "To",
+            "type": "string",
+        }
+    },
+    "required": ["to"],
+    "title": "ToParams",
+    "type": "object",
+}
 
-class NameParams(BaseModel):
-    name: str = Field(description="The user's name")
+NAME_SCHEMA = {
+    "properties": {
+        "name": {"description": "The user's name", "title": "Name", "type": "string"}
+    },
+    "required": ["name"],
+    "title": "NameParams",
+    "type": "object",
+}
 
-class UserIdParams(BaseModel):
-    user_id: str = Field(description="The user's ID")
+USER_ID_SCHEMA = {
+    "properties": {
+        "user_id": {
+            "description": "The user's ID",
+            "title": "User Id",
+            "type": "string",
+        }
+    },
+    "required": ["user_id"],
+    "title": "UserIdParams",
+    "type": "object",
+}
 
-class AnswerParams(BaseModel):
-    answer: str = Field(description="The final answer")
+ANSWER_SCHEMA = {
+    "properties": {
+        "answer": {
+            "description": "The final answer",
+            "title": "Answer",
+            "type": "string",
+        }
+    },
+    "required": ["answer"],
+    "title": "AnswerParams",
+    "type": "object",
+}
 
-class EntityParams(BaseModel):
-    entity: str = Field(description="Entity name")
+ENTITY_SCHEMA = {
+    "properties": {
+        "entity": {"description": "Entity name", "title": "Entity", "type": "string"}
+    },
+    "required": ["entity"],
+    "title": "EntityParams",
+    "type": "object",
+}
 
-class EntityIdParams(BaseModel):
-    entity_id: str = Field(description="The entity's ID")
+ENTITY_ID_SCHEMA = {
+    "properties": {
+        "entity_id": {
+            "description": "The entity's ID",
+            "title": "Entity Id",
+            "type": "string",
+        }
+    },
+    "required": ["entity_id"],
+    "title": "EntityIdParams",
+    "type": "object",
+}
 
-class SummaryParams(BaseModel):
-    summary: str = Field(description="The summary to present")
+SUMMARY_SCHEMA = {
+    "properties": {
+        "summary": {
+            "description": "The summary to present",
+            "title": "Summary",
+            "type": "string",
+        }
+    },
+    "required": ["summary"],
+    "title": "SummaryParams",
+    "type": "object",
+}
 
-class PatientNameParams(BaseModel):
-    name: str = Field(description="Patient's full name")
+PATIENT_NAME_SCHEMA = {
+    "properties": {
+        "name": {
+            "description": "Patient's full name",
+            "title": "Name",
+            "type": "string",
+        }
+    },
+    "required": ["name"],
+    "title": "PatientNameParams",
+    "type": "object",
+}
 
-class PatientIdParams(BaseModel):
-    patient_id: str = Field(description="The patient's ID")
+PATIENT_ID_SCHEMA = {
+    "properties": {
+        "patient_id": {
+            "description": "The patient's ID",
+            "title": "Patient Id",
+            "type": "string",
+        }
+    },
+    "required": ["patient_id"],
+    "title": "PatientIdParams",
+    "type": "object",
+}
 
-class MedicationParams(BaseModel):
-    medication: str = Field(description="Medication name")
+MEDICATION_SCHEMA = {
+    "properties": {
+        "medication": {
+            "description": "Medication name",
+            "title": "Medication",
+            "type": "string",
+        }
+    },
+    "required": ["medication"],
+    "title": "MedicationParams",
+    "type": "object",
+}
 
-class PatientRecommendParams(BaseModel):
-    patient_id: str = Field(description="The patient's ID")
-    findings: str = Field(description="The findings to base the recommendation on")
+PATIENT_RECOMMEND_SCHEMA = {
+    "properties": {
+        "patient_id": {
+            "description": "The patient's ID",
+            "title": "Patient Id",
+            "type": "string",
+        },
+        "findings": {
+            "description": "The findings to base the recommendation on",
+            "title": "Findings",
+            "type": "string",
+        },
+    },
+    "required": ["patient_id", "findings"],
+    "title": "PatientRecommendParams",
+    "type": "object",
+}
 
-class ServiceParams(BaseModel):
-    service: str = Field(description="Service name")
+SERVICE_SCHEMA = {
+    "properties": {
+        "service": {"description": "Service name", "title": "Service", "type": "string"}
+    },
+    "required": ["service"],
+    "title": "ServiceParams",
+    "type": "object",
+}
 
-class DiagnoseParams(BaseModel):
-    diagnosis: str = Field(description="The root cause diagnosis")
-    action: str = Field(description="The recommended action")
+DIAGNOSE_SCHEMA = {
+    "properties": {
+        "diagnosis": {
+            "description": "The root cause diagnosis",
+            "title": "Diagnosis",
+            "type": "string",
+        },
+        "action": {
+            "description": "The recommended action",
+            "title": "Action",
+            "type": "string",
+        },
+    },
+    "required": ["diagnosis", "action"],
+    "title": "DiagnoseParams",
+    "type": "object",
+}
 
-class EmployeeNameParams(BaseModel):
-    name: str = Field(description="Employee's full name")
+EMPLOYEE_NAME_SCHEMA = {
+    "properties": {
+        "name": {
+            "description": "Employee's full name",
+            "title": "Name",
+            "type": "string",
+        }
+    },
+    "required": ["name"],
+    "title": "EmployeeNameParams",
+    "type": "object",
+}
 
-class EmployeeIdParams(BaseModel):
-    employee_id: str = Field(description="Employee's ID")
+EMPLOYEE_ID_SCHEMA = {
+    "properties": {
+        "employee_id": {
+            "description": "Employee's ID",
+            "title": "Employee Id",
+            "type": "string",
+        }
+    },
+    "required": ["employee_id"],
+    "title": "EmployeeIdParams",
+    "type": "object",
+}
 
-class SubmitReportParams(BaseModel):
-    employee_name: str = Field(description="Employee's full name")
-    report: str = Field(description="The complete profile report")
+SUBMIT_REPORT_SCHEMA = {
+    "properties": {
+        "employee_name": {
+            "description": "Employee's full name",
+            "title": "Employee Name",
+            "type": "string",
+        },
+        "report": {
+            "description": "The complete profile report",
+            "title": "Report",
+            "type": "string",
+        },
+    },
+    "required": ["employee_name", "report"],
+    "title": "SubmitReportParams",
+    "type": "object",
+}
 
 
 # ── Backend 4: UserPermissionsDB ────────────────────────────────
@@ -120,66 +297,56 @@ def _build_tool_selection_stateful() -> tuple[Workflow, callable]:
     db = UserPermissionsDB()
 
     # 6 distractors — same as lambda version
-    distractors: dict[str, ToolDef] = {
-        "search_web": ToolDef(
-            spec=ToolSpec(name="search_web", description="Search the web for information.",
-                          parameters=QueryParams),
-            callable=lambda **kw: "No results found.",
-        ),
-        "read_file": ToolDef(
-            spec=ToolSpec(name="read_file", description="Read a file from disk.",
-                          parameters=PathParams),
-            callable=lambda **kw: "Error: file not found.",
-        ),
-        "list_directory": ToolDef(
-            spec=ToolSpec(name="list_directory", description="List contents of a directory.",
-                          parameters=PathParams),
-            callable=lambda **kw: "Empty directory.",
-        ),
-        "run_command": ToolDef(
-            spec=ToolSpec(name="run_command", description="Run a shell command.",
-                          parameters=CmdParams),
-            callable=lambda **kw: "Permission denied.",
-        ),
-        "send_email": ToolDef(
-            spec=ToolSpec(name="send_email", description="Send an email.",
-                          parameters=ToParams),
-            callable=lambda **kw: "Email sent.",
-        ),
+    distractors: dict[str, ToolDefinition] = {
+        "search_web": ToolDefinition(name="search_web", description="Search the web for information.",
+                          input_schema=QUERY_SCHEMA),
+        "read_file": ToolDefinition(name="read_file", description="Read a file from disk.",
+                          input_schema=PATH_SCHEMA),
+        "list_directory": ToolDefinition(name="list_directory", description="List contents of a directory.",
+                          input_schema=PATH_SCHEMA),
+        "run_command": ToolDefinition(name="run_command", description="Run a shell command.",
+                          input_schema=CMD_SCHEMA),
+        "send_email": ToolDefinition(name="send_email", description="Send an email.",
+                          input_schema=TO_SCHEMA),
+    }
+    distractors_handlers = {
+        "search_web": lambda **kw: "No results found.",
+        "read_file": lambda **kw: "Error: file not found.",
+        "list_directory": lambda **kw: "Empty directory.",
+        "run_command": lambda **kw: "Permission denied.",
+        "send_email": lambda **kw: "Email sent.",
     }
 
-    real_tools: dict[str, ToolDef] = {
-        "lookup_user": ToolDef(
-            spec=ToolSpec(
+    real_tools: dict[str, ToolDefinition] = {
+        "lookup_user": ToolDefinition(
                 name="lookup_user",
                 description="Look up a user by name.",
-                parameters=NameParams,
+                input_schema=NAME_SCHEMA,
             ),
-            callable=lambda **kw: db.lookup_user(kw["name"]),
-        ),
-        "get_permissions": ToolDef(
-            spec=ToolSpec(
+        "get_permissions": ToolDefinition(
                 name="get_permissions",
                 description="Get permissions for a user by their user ID.",
-                parameters=UserIdParams,
+                input_schema=USER_ID_SCHEMA,
             ),
-            callable=lambda **kw: db.get_permissions(kw["user_id"]),
-        ),
-        "respond": ToolDef(
-            spec=ToolSpec(
+        "respond": ToolDefinition(
                 name="respond",
                 description="Provide the final answer to the user.",
-                parameters=AnswerParams,
+                input_schema=ANSWER_SCHEMA,
             ),
-            callable=lambda **kw: db.respond(kw.get("answer", "")),
-        ),
+    }
+    real_tools_handlers = {
+        "lookup_user": lambda **kw: db.lookup_user(kw["name"]),
+        "get_permissions": lambda **kw: db.get_permissions(kw["user_id"]),
+        "respond": lambda **kw: db.respond(kw.get("answer", "")),
     }
 
     tools = {**distractors, **real_tools}
+    tools_handlers = {**distractors_handlers, **real_tools_handlers}
     workflow = Workflow(
         name="tool_selection_stateful",
         description="Look up a user and check permissions (stateful, with distractors)",
         tools=tools,
+        handlers=tools_handlers,
         required_steps=["lookup_user", "get_permissions"],
         terminal_tool="respond",
         system_prompt_template=(
@@ -263,36 +430,33 @@ class EntityRegistry:
 
 def _build_argument_fidelity_stateful() -> tuple[Workflow, callable]:
     db = EntityRegistry()
-    tools: dict[str, ToolDef] = {
-        "lookup_entity": ToolDef(
-            spec=ToolSpec(
-                name="lookup_entity",
-                description="Look up an entity by name.",
-                parameters=EntityParams,
-            ),
-            callable=lambda **kw: db.lookup_entity(kw["entity"]),
+    tools: dict[str, ToolDefinition] = {
+        "lookup_entity": ToolDefinition(
+            name="lookup_entity",
+            description="Look up an entity by name.",
+            input_schema=ENTITY_SCHEMA,
         ),
-        "fetch_details": ToolDef(
-            spec=ToolSpec(
-                name="fetch_details",
-                description="Fetch details for an entity by its ID.",
-                parameters=EntityIdParams,
-            ),
-            callable=lambda **kw: db.fetch_details(kw["entity_id"]),
+        "fetch_details": ToolDefinition(
+            name="fetch_details",
+            description="Fetch details for an entity by its ID.",
+            input_schema=ENTITY_ID_SCHEMA,
         ),
-        "present": ToolDef(
-            spec=ToolSpec(
-                name="present",
-                description="Present the final summary to the user.",
-                parameters=SummaryParams,
-            ),
-            callable=lambda **kw: db.present(kw.get("summary", "")),
+        "present": ToolDefinition(
+            name="present",
+            description="Present the final summary to the user.",
+            input_schema=SUMMARY_SCHEMA,
         ),
+    }
+    tools_handlers = {
+        "lookup_entity": lambda **kw: db.lookup_entity(kw["entity"]),
+        "fetch_details": lambda **kw: db.fetch_details(kw["entity_id"]),
+        "present": lambda **kw: db.present(kw.get("summary", "")),
     }
     workflow = Workflow(
         name="argument_fidelity_stateful",
         description="Lookup entity, fetch details by ID, present summary",
         tools=tools,
+        handlers=tools_handlers,
         required_steps=["lookup_entity", "fetch_details"],
         terminal_tool="present",
         system_prompt_template=(
@@ -396,44 +560,41 @@ def _validate_sequential_reasoning_stateful(args: dict[str, Any]) -> bool:
 
 def _build_sequential_reasoning_stateful() -> tuple[Workflow, callable]:
     db = MedicalRecordsDB()
-    tools: dict[str, ToolDef] = {
-        "identify_patient": ToolDef(
-            spec=ToolSpec(
-                name="identify_patient",
-                description="Identify a patient by name.",
-                parameters=PatientNameParams,
-            ),
-            callable=lambda **kw: db.identify_patient(kw["name"]),
+    tools: dict[str, ToolDefinition] = {
+        "identify_patient": ToolDefinition(
+            name="identify_patient",
+            description="Identify a patient by name.",
+            input_schema=PATIENT_NAME_SCHEMA,
         ),
-        "get_records": ToolDef(
-            spec=ToolSpec(
-                name="get_records",
-                description="Get medical records for a patient.",
-                parameters=PatientIdParams,
-            ),
-            callable=lambda **kw: db.get_records(kw["patient_id"]),
+        "get_records": ToolDefinition(
+            name="get_records",
+            description="Get medical records for a patient.",
+            input_schema=PATIENT_ID_SCHEMA,
         ),
-        "check_interactions": ToolDef(
-            spec=ToolSpec(
-                name="check_interactions",
-                description="Check drug interactions for a medication.",
-                parameters=MedicationParams,
-            ),
-            callable=lambda **kw: db.check_interactions(kw["medication"]),
+        "check_interactions": ToolDefinition(
+            name="check_interactions",
+            description="Check drug interactions for a medication.",
+            input_schema=MEDICATION_SCHEMA,
         ),
-        "recommend": ToolDef(
-            spec=ToolSpec(
-                name="recommend",
-                description="Provide a recommendation based on findings.",
-                parameters=PatientRecommendParams,
-            ),
-            callable=lambda **kw: db.recommend(kw.get("patient_id", ""), kw.get("findings", "")),
+        "recommend": ToolDefinition(
+            name="recommend",
+            description="Provide a recommendation based on findings.",
+            input_schema=PATIENT_RECOMMEND_SCHEMA,
+        ),
+    }
+    tools_handlers = {
+        "identify_patient": lambda **kw: db.identify_patient(kw["name"]),
+        "get_records": lambda **kw: db.get_records(kw["patient_id"]),
+        "check_interactions": lambda **kw: db.check_interactions(kw["medication"]),
+        "recommend": lambda **kw: db.recommend(
+            kw.get("patient_id", ""), kw.get("findings", "")
         ),
     }
     workflow = Workflow(
         name="sequential_reasoning_stateful",
         description="Identify patient, get records, check interactions, recommend",
         tools=tools,
+        handlers=tools_handlers,
         required_steps=["identify_patient", "get_records", "check_interactions"],
         terminal_tool="recommend",
         system_prompt_template=(
@@ -648,52 +809,47 @@ def _validate_conditional_routing_stateful(args: dict[str, Any]) -> bool:
 
 def _build_conditional_routing_stateful() -> tuple[Workflow, callable]:
     db = IncidentTriage()
-    tools: dict[str, ToolDef] = {
-        "get_alert": ToolDef(
-            spec=ToolSpec(
-                name="get_alert",
-                description="Get details for the current P1 alert.",
-                parameters=ServiceParams,
-            ),
-            callable=lambda **kw: db.get_alert(kw["service"]),
+    tools: dict[str, ToolDefinition] = {
+        "get_alert": ToolDefinition(
+            name="get_alert",
+            description="Get details for the current P1 alert.",
+            input_schema=SERVICE_SCHEMA,
         ),
-        "check_metrics": ToolDef(
-            spec=ToolSpec(
-                name="check_metrics",
-                description="Get time-series system metrics for a service.",
-                parameters=ServiceParams,
-            ),
-            callable=lambda **kw: db.check_metrics(kw["service"]),
+        "check_metrics": ToolDefinition(
+            name="check_metrics",
+            description="Get time-series system metrics for a service.",
+            input_schema=SERVICE_SCHEMA,
         ),
-        "check_logs": ToolDef(
-            spec=ToolSpec(
-                name="check_logs",
-                description="Get recent log entries for a service.",
-                parameters=ServiceParams,
-            ),
-            callable=lambda **kw: db.check_logs(kw["service"]),
+        "check_logs": ToolDefinition(
+            name="check_logs",
+            description="Get recent log entries for a service.",
+            input_schema=SERVICE_SCHEMA,
         ),
-        "check_deployment": ToolDef(
-            spec=ToolSpec(
-                name="check_deployment",
-                description="Get details of the last deployment to a service.",
-                parameters=ServiceParams,
-            ),
-            callable=lambda **kw: db.check_deployment(kw["service"]),
+        "check_deployment": ToolDefinition(
+            name="check_deployment",
+            description="Get details of the last deployment to a service.",
+            input_schema=SERVICE_SCHEMA,
         ),
-        "diagnose": ToolDef(
-            spec=ToolSpec(
-                name="diagnose",
-                description="Submit a root cause diagnosis and recommended action.",
-                parameters=DiagnoseParams,
-            ),
-            callable=lambda **kw: db.diagnose(kw.get("diagnosis", ""), kw.get("action", "")),
+        "diagnose": ToolDefinition(
+            name="diagnose",
+            description="Submit a root cause diagnosis and recommended action.",
+            input_schema=DIAGNOSE_SCHEMA,
+        ),
+    }
+    tools_handlers = {
+        "get_alert": lambda **kw: db.get_alert(kw["service"]),
+        "check_metrics": lambda **kw: db.check_metrics(kw["service"]),
+        "check_logs": lambda **kw: db.check_logs(kw["service"]),
+        "check_deployment": lambda **kw: db.check_deployment(kw["service"]),
+        "diagnose": lambda **kw: db.diagnose(
+            kw.get("diagnosis", ""), kw.get("action", "")
         ),
     }
     workflow = Workflow(
         name="conditional_routing_stateful",
         description="Diagnose a P1 incident by correlating alert, metrics, and deployment data",
         tools=tools,
+        handlers=tools_handlers,
         required_steps=["get_alert", "check_metrics"],
         terminal_tool="diagnose",
         system_prompt_template=(
@@ -890,68 +1046,59 @@ def _validate_data_gap_recovery_stateful(args: dict[str, Any]) -> bool:
 
 def _build_data_gap_recovery_stateful() -> tuple[Workflow, callable]:
     db = HRRecordsSystem()
-    tools: dict[str, ToolDef] = {
-        "get_employee": ToolDef(
-            spec=ToolSpec(
-                name="get_employee",
-                description="Look up an employee record by name.",
-                parameters=EmployeeNameParams,
-            ),
-            callable=lambda **kw: db.get_employee(kw["name"]),
+    tools: dict[str, ToolDefinition] = {
+        "get_employee": ToolDefinition(
+            name="get_employee",
+            description="Look up an employee record by name.",
+            input_schema=EMPLOYEE_NAME_SCHEMA,
         ),
-        "security_audit": ToolDef(
-            spec=ToolSpec(
-                name="security_audit",
-                description="Query security audit records for an employee.",
-                parameters=EmployeeIdParams,
-            ),
-            callable=lambda **kw: db.security_audit(kw["employee_id"]),
+        "security_audit": ToolDefinition(
+            name="security_audit",
+            description="Query security audit records for an employee.",
+            input_schema=EMPLOYEE_ID_SCHEMA,
         ),
-        "personnel_file": ToolDef(
-            spec=ToolSpec(
-                name="personnel_file",
-                description="Access an employee's personnel file.",
-                parameters=EmployeeIdParams,
-            ),
-            callable=lambda **kw: db.personnel_file(kw["employee_id"]),
+        "personnel_file": ToolDefinition(
+            name="personnel_file",
+            description="Access an employee's personnel file.",
+            input_schema=EMPLOYEE_ID_SCHEMA,
         ),
-        "onboarding_records": ToolDef(
-            spec=ToolSpec(
-                name="onboarding_records",
-                description="Access HR onboarding records for an employee.",
-                parameters=EmployeeIdParams,
-            ),
-            callable=lambda **kw: db.onboarding_records(kw["employee_id"]),
+        "onboarding_records": ToolDefinition(
+            name="onboarding_records",
+            description="Access HR onboarding records for an employee.",
+            input_schema=EMPLOYEE_ID_SCHEMA,
         ),
-        "compliance_check": ToolDef(
-            spec=ToolSpec(
-                name="compliance_check",
-                description="Check compliance status for an employee.",
-                parameters=EmployeeIdParams,
-            ),
-            callable=lambda **kw: db.compliance_check(kw["employee_id"]),
+        "compliance_check": ToolDefinition(
+            name="compliance_check",
+            description="Check compliance status for an employee.",
+            input_schema=EMPLOYEE_ID_SCHEMA,
         ),
-        "hr_directory": ToolDef(
-            spec=ToolSpec(
-                name="hr_directory",
-                description="Look up an employee in the HR directory.",
-                parameters=EmployeeNameParams,
-            ),
-            callable=lambda **kw: db.hr_directory(kw["name"]),
+        "hr_directory": ToolDefinition(
+            name="hr_directory",
+            description="Look up an employee in the HR directory.",
+            input_schema=EMPLOYEE_NAME_SCHEMA,
         ),
-        "submit_report": ToolDef(
-            spec=ToolSpec(
-                name="submit_report",
-                description="Submit a completed employee profile report.",
-                parameters=SubmitReportParams,
-            ),
-            callable=lambda **kw: db.submit_report(kw.get("employee_name", ""), kw.get("report", "")),
+        "submit_report": ToolDefinition(
+            name="submit_report",
+            description="Submit a completed employee profile report.",
+            input_schema=SUBMIT_REPORT_SCHEMA,
+        ),
+    }
+    tools_handlers = {
+        "get_employee": lambda **kw: db.get_employee(kw["name"]),
+        "security_audit": lambda **kw: db.security_audit(kw["employee_id"]),
+        "personnel_file": lambda **kw: db.personnel_file(kw["employee_id"]),
+        "onboarding_records": lambda **kw: db.onboarding_records(kw["employee_id"]),
+        "compliance_check": lambda **kw: db.compliance_check(kw["employee_id"]),
+        "hr_directory": lambda **kw: db.hr_directory(kw["name"]),
+        "submit_report": lambda **kw: db.submit_report(
+            kw.get("employee_name", ""), kw.get("report", "")
         ),
     }
     workflow = Workflow(
         name="data_gap_recovery_stateful",
         description="Build a complete employee profile by resolving missing data across multiple systems",
         tools=tools,
+        handlers=tools_handlers,
         required_steps=["get_employee"],
         terminal_tool="submit_report",
         system_prompt_template=(

@@ -90,7 +90,9 @@ async def test_native_version_survives_guardrail_rebuild_and_concurrent_requests
         }]))
 
     _http(client, handler)
-    tools = [{"name": "search", "description": "Search", "input_schema": {"type": "object"}}]
+    tools = [
+        {"name": "search", "description": "Search", "input_schema": {"type": "object"}}
+    ]
     other = "2026-10-21" if version == "2023-06-01" else "2023-06-01"
     await asyncio.gather(*[
         _proxy(client, _body(model=model, tools=tools),
@@ -231,3 +233,304 @@ async def test_stream_failure_never_replays_or_produces_final(end):
     assert len(requests) == 1
     assert [c.content for c in chunks] == ["partial"]
     await client.aclose()
+
+
+@pytest.mark.parametrize("inbound", ["openai", "anthropic"])
+@pytest.mark.parametrize("backend", ["openai", "anthropic", "prompt"])
+@pytest.mark.parametrize("stream", [False, True])
+@pytest.mark.asyncio
+async def test_complete_canonical_tools_on_initial_and_retry(inbound, backend, stream):
+    from copy import deepcopy
+    from forge.clients.llamafile import LlamafileClient
+    from forge.clients.vllm import VLLMClient
+
+    if backend == "anthropic":
+        client = AnthropicClient(model=None, api_key="test")
+        adapter = ClientAdapter.ANTHROPIC
+    elif backend == "openai":
+        client = VLLMClient(model_path="backend-model", base_url="http://test/v1")
+        adapter = ClientAdapter.VLLM
+    else:
+        client = LlamafileClient(
+            gguf_path="test.gguf", base_url="http://test", mode="prompt"
+        )
+        adapter = ClientAdapter.LLAMAFILE
+    schema = {
+        "type": "object",
+        "$defs": {"Item": {"oneOf": [{"type": "string"}, {"type": "number"}]}},
+        "properties": {"value": {"$ref": "#/$defs/Item"}, "any": True, "never": False},
+        "additionalProperties": False,
+        "x-unknown": {"items": [1, 2]},
+    }
+    extras = {
+        "strict": True,
+        "cache_control": {"type": "ephemeral"},
+        "x-extension": [1, {"a": 2}],
+    }
+    if inbound == "openai":
+        tools = [
+            {
+                "type": "function",
+                "outer-ignored": "not-a-function-extra",
+                "function": {
+                    "name": name,
+                    "description": "Complete",
+                    "parameters": deepcopy(schema),
+                    **extras,
+                },
+            }
+            for name in ("lookup", "search")
+        ]
+    else:
+        tools = [
+            {
+                "name": name,
+                "description": "Complete",
+                "input_schema": deepcopy(schema),
+                **extras,
+            }
+            for name in ("lookup", "search")
+        ]
+    body = _body(tools=tools, stream=stream)
+    before = deepcopy(body)
+    sent = []
+
+    def handler(request):
+        sent.append(json.loads(request.content))
+        first = len(sent) == 1
+        if backend == "anthropic":
+            content = (
+                [{"type": "text", "text": "try again"}]
+                if first
+                else [
+                    {
+                        "type": "tool_use",
+                        "id": "r",
+                        "name": "respond",
+                        "input": {"message": "done"},
+                    },
+                ]
+            )
+            if not stream:
+                return httpx.Response(200, json=_reply(content))
+            if first:
+                events = [
+                    {
+                        "type": "content_block_delta",
+                        "index": 0,
+                        "delta": {"type": "text_delta", "text": "try again"},
+                    }
+                ]
+            else:
+                events = [
+                    {
+                        "type": "content_block_start",
+                        "index": 0,
+                        "content_block": {
+                            "type": "tool_use",
+                            "id": "r",
+                            "name": "respond",
+                        },
+                    },
+                    {
+                        "type": "content_block_delta",
+                        "index": 0,
+                        "delta": {
+                            "type": "input_json_delta",
+                            "partial_json": '{"message":"done"}',
+                        },
+                    },
+                ]
+            events.append({"type": "message_stop"})
+        else:
+            message = {"role": "assistant", "content": "try again"}
+            if not first:
+                if backend == "prompt":
+                    message["content"] = '{"tool":"respond","args":{"message":"done"}}'
+                else:
+                    message = {
+                        "role": "assistant",
+                        "content": None,
+                        "tool_calls": [
+                            {
+                                "id": "r",
+                                "type": "function",
+                                "function": {
+                                    "name": "respond",
+                                    "arguments": '{"message":"done"}',
+                                },
+                            }
+                        ],
+                    }
+            if not stream:
+                return httpx.Response(200, json={"choices": [{"message": message}]})
+            delta = {key: value for key, value in message.items() if key != "role"}
+            if "tool_calls" in delta:
+                delta["tool_calls"][0]["index"] = 0
+            events = [{"choices": [{"delta": delta}]}]
+        data = "".join("data: " + json.dumps(event) + "\n\n" for event in events)
+        if backend != "anthropic":
+            data += "data: [DONE]\n\n"
+        return httpx.Response(
+            200, text=data, headers={"content-type": "text/event-stream"}
+        )
+
+    _http(client, handler)
+    try:
+        if stream:
+            from forge.core.inference import run_inference
+            from forge.proxy.handler import _extract_tool_definitions
+            from forge.proxy.convert import openai_to_messages
+            from forge.proxy.convert_anthropic import (
+                anthropic_tools_to_definitions,
+                anthropic_to_messages,
+            )
+            from forge.guardrails import ResponseValidator, ErrorTracker
+            from forge.tools.respond import respond_definition
+
+            definitions = (
+                _extract_tool_definitions(tools)
+                if inbound == "openai"
+                else anthropic_tools_to_definitions(tools)
+            )
+            definitions.append(respond_definition())
+            messages = (
+                openai_to_messages(body["messages"])
+                if inbound == "openai"
+                else anthropic_to_messages(body["messages"])
+            )
+            seen = []
+            original_stream = client.send_stream
+
+            async def recording_stream(*args, **kwargs):
+                seen.append(kwargs["tools"])
+                async for chunk in original_stream(*args, **kwargs):
+                    yield chunk
+
+            client.send_stream = recording_stream
+            result = await run_inference(
+                messages=messages,
+                client=client,
+                context_manager=ContextManager(
+                    strategy=NoCompact(), budget_tokens=None
+                ),
+                validator=ResponseValidator([tool.name for tool in definitions]),
+                error_tracker=ErrorTracker(max_retries=1),
+                tool_definitions=definitions,
+                inbound_anthropic_body=body if inbound == "anthropic" else None,
+                passthrough={"model": "route"},
+                stream=True,
+            )
+            assert seen == [definitions, definitions]
+            assert all(collection is definitions for collection in seen)
+        else:
+            result = await handle_chat_completions(
+                body,
+                client,
+                ContextManager(strategy=NoCompact(), budget_tokens=None),
+                protocol=inbound,
+                backend_protocol="anthropic" if backend == "anthropic" else "openai",
+                client_adapter=adapter,
+                native_passthrough=backend != "prompt",
+                max_retries=1,
+                inject_respond_tool=True,
+            )
+    finally:
+        await client.aclose()
+    assert result is not None
+    assert len(sent) == 2
+    if backend == "prompt":
+        prompts = [request["messages"][0]["content"] for request in sent]
+        for prompt in prompts:
+            assert "Input schema: " + json.dumps(schema) in prompt
+            assert '"x-extension": [1, {"a": 2}]' in prompt
+            assert "outer-ignored" not in prompt
+            assert (
+                prompt.index("## lookup")
+                < prompt.index("## search")
+                < prompt.index("## respond")
+            )
+            assert prompt.count("## respond") == 1
+    else:
+        assert sent[0]["tools"] == sent[1]["tools"]
+        definitions = sent[0]["tools"]
+        if backend == "openai":
+            definitions = [tool["function"] for tool in definitions]
+        assert [tool["name"] for tool in definitions] == ["lookup", "search", "respond"]
+        key = "parameters" if backend == "openai" else "input_schema"
+        for definition in definitions[:2]:
+            assert definition[key] == schema
+            for name, value in extras.items():
+                assert definition[name] == value
+            assert "outer-ignored" not in definition
+    assert body == before
+
+
+@pytest.mark.parametrize(
+    "inject, names",
+    [
+        (True, None),
+        (True, []),
+        (False, ["lookup"]),
+        (True, ["lookup", "respond"]),
+    ],
+)
+@pytest.mark.asyncio
+async def test_native_anthropic_copied_body_respond_policy(inject, names):
+    from copy import deepcopy
+
+    client = AnthropicClient(model=None, api_key="test")
+    tools = (
+        None
+        if names is None
+        else [
+            {
+                "name": name,
+                "description": "Caller definition",
+                "input_schema": {},
+                "x-tool": name,
+            }
+            for name in names
+        ]
+    )
+    body = _body(**({"tools": tools} if tools is not None else {}))
+    before = deepcopy(body)
+    sent = []
+
+    def handler(request):
+        sent.append(json.loads(request.content))
+        if not names:
+            return httpx.Response(200, json=_reply())
+        name = names[-1]
+        return httpx.Response(
+            200,
+            json=_reply(
+                [
+                    {
+                        "type": "tool_use",
+                        "id": "call",
+                        "name": name,
+                        "input": {"message": "done"} if name == "respond" else {},
+                    }
+                ]
+            ),
+        )
+
+    _http(client, handler)
+    try:
+        await handle_chat_completions(
+            body,
+            client,
+            ContextManager(strategy=NoCompact(), budget_tokens=None),
+            client_adapter=ClientAdapter.ANTHROPIC,
+            protocol="anthropic",
+            backend_protocol="anthropic",
+            inject_respond_tool=inject,
+        )
+    finally:
+        await client.aclose()
+    if tools is None:
+        assert "tools" not in sent[0]
+    else:
+        assert sent[0]["tools"] == tools
+    assert body == before

@@ -6,11 +6,11 @@ from unittest.mock import AsyncMock, MagicMock
 
 import httpx
 import pytest
-from pydantic import BaseModel, Field
 
-from forge.clients.base import ChunkType
+from forge.clients.base import format_tool, ChunkType
 from forge.clients.vllm import VLLMClient
-from forge.core.workflow import TextResponse, ToolCall, ToolSpec
+from forge.proxy.handler import _extract_tool_definitions
+from forge.core.workflow import TextResponse, ToolCall, ToolDefinition
 from forge.errors import BackendError
 
 
@@ -20,12 +20,18 @@ pytestmark = pytest.mark.usefixtures("mock_httpx_client_constructor")
 # ── helpers ────────────────────────────────────────────────────
 
 
-class CityParams(BaseModel):
-    city: str = Field(description="City name")
+CITY_SCHEMA = {
+    "properties": {
+        "city": {"description": "City name", "title": "City", "type": "string"}
+    },
+    "required": ["city"],
+    "title": "CityParams",
+    "type": "object",
+}
 
 
-def _make_spec(name: str = "get_weather") -> ToolSpec:
-    return ToolSpec(name=name, description=f"Get {name}", parameters=CityParams)
+def _make_spec(name: str = "get_weather") -> ToolDefinition:
+    return ToolDefinition(name=name, description=f"Get {name}", input_schema=CITY_SCHEMA)
 
 
 def _make_client(*, think: bool = True) -> VLLMClient:
@@ -347,10 +353,9 @@ class TestSend:
 
         await client.send(
             messages,
-            tools=[_make_spec()],
             sampling={"temperature": 0.25},
             passthrough=passthrough,
-            raw_openai_tools=raw_tools,
+            tools=_extract_tool_definitions(raw_tools),
         )
 
         body = client._http.post.call_args.kwargs["json"]
@@ -362,7 +367,7 @@ class TestSend:
         assert body["stop"] == ["END"]
         assert body["provider_extension"] is nested_extension
         assert body["temperature"] == 0.25
-        assert body["tools"] is raw_tools
+        assert body["tools"] == [format_tool(t) for t in _extract_tool_definitions(raw_tools)]
         assert body["tool_choice"] == "none"
         assert passthrough == passthrough_before
 
@@ -373,9 +378,8 @@ class TestSend:
 
         await client.send(
             [{"role": "user", "content": "x"}],
-            tools=[_make_spec()],
+            tools=[],
             passthrough={"tools": [{"stale": True}]},
-            raw_openai_tools=[],
         )
 
         body = client._http.post.call_args.kwargs["json"]
@@ -469,7 +473,7 @@ class TestSendStream:
         async for _ in client.send_stream(
             [{"role": "user", "content": "x"}],
             passthrough=passthrough,
-            raw_openai_tools=raw_tools,
+            tools=_extract_tool_definitions(raw_tools),
         ):
             pass
 
@@ -479,7 +483,7 @@ class TestSendStream:
         assert body["stream_options"] == {"include_usage": True}
         assert body["max_tokens"] == 222
         assert body["provider_extension"] is nested_extension
-        assert body["tools"] is raw_tools
+        assert body["tools"] == [format_tool(t) for t in _extract_tool_definitions(raw_tools)]
         assert body["tool_choice"] == "required"
         assert passthrough == passthrough_before
 

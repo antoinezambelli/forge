@@ -15,7 +15,7 @@ from __future__ import annotations
 import json
 
 from tests.eval.scenarios._model_reasoning import (
-    _inconsistent_api_recovery_tools,
+    _inconsistent_api_recovery_tools_handlers,
     _validate_inconsistent_api_recovery,
 )
 from tests.eval.scenarios._stateful_model_reasoning import (
@@ -29,7 +29,7 @@ from tests.eval.scenarios._stateful_model_reasoning import (
 
 class TestLambdaTools:
     def _call(self, tool_name: str, **kwargs: object) -> str:
-        return _inconsistent_api_recovery_tools[tool_name].callable(**kwargs)
+        return _inconsistent_api_recovery_tools_handlers[tool_name](**kwargs)
 
     # legacy_list_accounts ----------------------------------------
 
@@ -345,24 +345,24 @@ class TestStatefulValidateState:
         amounts: str = "5000.00|12500.00|8000.00",
         report: str | None = None,
     ) -> None:
-        tools["legacy_list_accounts"].callable(page=1, page_size=10)
-        tools["legacy_get_balance"].callable(account_id="ACC-12345")
-        tools["legacy_get_transactions"].callable(
+        tools["legacy_list_accounts"](page=1, page_size=10)
+        tools["legacy_get_balance"](account_id="ACC-12345")
+        tools["legacy_get_transactions"](
             account_id="ACC-12345", since="2024-10-01", until="2024-12-31",
         )
         if categorize:
-            tools["legacy_categorize_spend"].callable(txn_id=42, category="SVCS")
-        tools["legacy_check_compliance"].callable(
+            tools["legacy_categorize_spend"](txn_id=42, category="SVCS")
+        tools["legacy_check_compliance"](
             region=region, period="2024-Q4",
         )
-        tools["legacy_aggregate_subtotal"].callable(amounts=amounts)
-        tools["legacy_submit_audit"].callable(
+        tools["legacy_aggregate_subtotal"](amounts=amounts)
+        tools["legacy_submit_audit"](
             report=self._canonical_report() if report is None else report,
         )
 
     def test_canonical_path_passes(self) -> None:
         workflow, validate_state = _build_inconsistent_api_recovery_stateful()
-        self._drive_tools(workflow.tools)
+        self._drive_tools(workflow.handlers)
         assert validate_state() is True
 
     def test_each_invalid_state_or_report_fails(self) -> None:
@@ -383,5 +383,5 @@ class TestStatefulValidateState:
 
         for case, overrides in cases:
             workflow, validate_state = _build_inconsistent_api_recovery_stateful()
-            self._drive_tools(workflow.tools, **overrides)
+            self._drive_tools(workflow.handlers, **overrides)
             assert validate_state() is False, case

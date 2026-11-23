@@ -9,48 +9,130 @@ import re
 from collections.abc import Callable
 from typing import Any
 
-from pydantic import BaseModel, Field
 
-from forge.core.workflow import ToolDef, ToolSpec, Workflow
+from forge.core.workflow import ToolDefinition, Workflow
 
 from ._base import EvalScenario, _placeholder_workflow
 from ._stateful_model_quality import (
-    EmployeeIdParams,
-    EmployeeNameParams,
+    EMPLOYEE_ID_SCHEMA,
+    EMPLOYEE_NAME_SCHEMA,
     HRRecordsSystem,
-    SubmitReportParams,
+    SUBMIT_REPORT_SCHEMA,
 )
 
 
-# ── Pydantic param models (argument_transformation) ─────────────
+# ── Explicit input schemas (argument_transformation) ─────────────
 
 
-class NoParams(BaseModel):
-    pass
+NO_SCHEMA = {"properties": {}, "title": "NoParams", "type": "object"}
 
-class QuarterYearParams(BaseModel):
-    quarter: str = Field(description="Fiscal quarter, e.g. 'Q4'")
-    year: int = Field(description="Fiscal year, e.g. 2024")
+QUARTER_YEAR_SCHEMA = {
+    "properties": {
+        "quarter": {
+            "description": "Fiscal quarter, e.g. 'Q4'",
+            "title": "Quarter",
+            "type": "string",
+        },
+        "year": {
+            "description": "Fiscal year, e.g. 2024",
+            "title": "Year",
+            "type": "integer",
+        },
+    },
+    "required": ["quarter", "year"],
+    "title": "QuarterYearParams",
+    "type": "object",
+}
 
-class VendorNameParams(BaseModel):
-    vendor_name: str = Field(description="Vendor name (case-sensitive in our records)")
+VENDOR_NAME_SCHEMA = {
+    "properties": {
+        "vendor_name": {
+            "description": "Vendor name (case-sensitive in our records)",
+            "title": "Vendor Name",
+            "type": "string",
+        }
+    },
+    "required": ["vendor_name"],
+    "title": "VendorNameParams",
+    "type": "object",
+}
 
-class CurrencyConvertParams(BaseModel):
-    amount: float = Field(description="Amount to convert")
-    from_currency: str = Field(description="Source currency code, e.g. 'EUR'")
-    to_currency: str = Field(description="Target currency code, e.g. 'USD'")
+CURRENCY_CONVERT_SCHEMA = {
+    "properties": {
+        "amount": {
+            "description": "Amount to convert",
+            "title": "Amount",
+            "type": "number",
+        },
+        "from_currency": {
+            "description": "Source currency code, e.g. 'EUR'",
+            "title": "From Currency",
+            "type": "string",
+        },
+        "to_currency": {
+            "description": "Target currency code, e.g. 'USD'",
+            "title": "To Currency",
+            "type": "string",
+        },
+    },
+    "required": ["amount", "from_currency", "to_currency"],
+    "title": "CurrencyConvertParams",
+    "type": "object",
+}
 
-class CategorizeExpenseParams(BaseModel):
-    amount: float = Field(description="Expense amount")
-    category: str = Field(description="Expense category")
+CATEGORIZE_EXPENSE_SCHEMA = {
+    "properties": {
+        "amount": {
+            "description": "Expense amount",
+            "title": "Amount",
+            "type": "number",
+        },
+        "category": {
+            "description": "Expense category",
+            "title": "Category",
+            "type": "string",
+        },
+    },
+    "required": ["amount", "category"],
+    "title": "CategorizeExpenseParams",
+    "type": "object",
+}
 
-class TransactionIdParams(BaseModel):
-    transaction_id: str = Field(description="Transaction ID, e.g. 'TX-1001'")
+TRANSACTION_ID_SCHEMA = {
+    "properties": {
+        "transaction_id": {
+            "description": "Transaction ID, e.g. 'TX-1001'",
+            "title": "Transaction Id",
+            "type": "string",
+        }
+    },
+    "required": ["transaction_id"],
+    "title": "TransactionIdParams",
+    "type": "object",
+}
 
-class SubmitAuditReportParams(BaseModel):
-    transaction_ids: str = Field(description="Comma-separated transaction IDs to flag")
-    total_flagged_usd: str = Field(description="Total flagged amount in USD")
-    top_vendor: str = Field(description="Vendor of the single largest flagged transaction")
+SUBMIT_AUDIT_REPORT_SCHEMA = {
+    "properties": {
+        "transaction_ids": {
+            "description": "Comma-separated transaction IDs to flag",
+            "title": "Transaction Ids",
+            "type": "string",
+        },
+        "total_flagged_usd": {
+            "description": "Total flagged amount in USD",
+            "title": "Total Flagged Usd",
+            "type": "string",
+        },
+        "top_vendor": {
+            "description": "Vendor of the single largest flagged transaction",
+            "title": "Top Vendor",
+            "type": "string",
+        },
+    },
+    "required": ["transaction_ids", "total_flagged_usd", "top_vendor"],
+    "title": "SubmitAuditReportParams",
+    "type": "object",
+}
 
 
 # ── Backend: HRRecordsSystemExtended (subclass of HRRecordsSystem) ─
@@ -216,102 +298,82 @@ def _validate_data_gap_recovery_extended_stateful(
 
 def _build_data_gap_recovery_extended_stateful() -> tuple[Workflow, callable]:
     db = HRRecordsSystemExtended()
-    tools: dict[str, ToolDef] = {
-        "get_employee": ToolDef(
-            spec=ToolSpec(
-                name="get_employee",
-                description="Look up an employee record by name.",
-                parameters=EmployeeNameParams,
-            ),
-            callable=lambda **kw: db.get_employee(kw["name"]),
+    tools: dict[str, ToolDefinition] = {
+        "get_employee": ToolDefinition(
+            name="get_employee",
+            description="Look up an employee record by name.",
+            input_schema=EMPLOYEE_NAME_SCHEMA,
         ),
-        "security_audit": ToolDef(
-            spec=ToolSpec(
-                name="security_audit",
-                description="Query security audit records for an employee.",
-                parameters=EmployeeIdParams,
-            ),
-            callable=lambda **kw: db.security_audit(kw["employee_id"]),
+        "security_audit": ToolDefinition(
+            name="security_audit",
+            description="Query security audit records for an employee.",
+            input_schema=EMPLOYEE_ID_SCHEMA,
         ),
-        "onboarding_records": ToolDef(
-            spec=ToolSpec(
-                name="onboarding_records",
-                description="Access HR onboarding records for an employee.",
-                parameters=EmployeeIdParams,
-            ),
-            callable=lambda **kw: db.onboarding_records(kw["employee_id"]),
+        "onboarding_records": ToolDefinition(
+            name="onboarding_records",
+            description="Access HR onboarding records for an employee.",
+            input_schema=EMPLOYEE_ID_SCHEMA,
         ),
-        "personnel_file": ToolDef(
-            spec=ToolSpec(
-                name="personnel_file",
-                description="Access an employee's personnel file.",
-                parameters=EmployeeIdParams,
-            ),
-            callable=lambda **kw: db.personnel_file(kw["employee_id"]),
+        "personnel_file": ToolDefinition(
+            name="personnel_file",
+            description="Access an employee's personnel file.",
+            input_schema=EMPLOYEE_ID_SCHEMA,
         ),
-        "compensation_v2": ToolDef(
-            spec=ToolSpec(
-                name="compensation_v2",
-                description="Current compensation system — salary band lookup.",
-                parameters=EmployeeIdParams,
-            ),
-            callable=lambda **kw: db.compensation_v2(kw["employee_id"]),
+        "compensation_v2": ToolDefinition(
+            name="compensation_v2",
+            description="Current compensation system — salary band lookup.",
+            input_schema=EMPLOYEE_ID_SCHEMA,
         ),
-        "project_assignments": ToolDef(
-            spec=ToolSpec(
-                name="project_assignments",
-                description="Current project assignments and active access groups for an employee.",
-                parameters=EmployeeIdParams,
-            ),
-            callable=lambda **kw: db.project_assignments(kw["employee_id"]),
+        "project_assignments": ToolDefinition(
+            name="project_assignments",
+            description="Current project assignments and active access groups for an employee.",
+            input_schema=EMPLOYEE_ID_SCHEMA,
         ),
-        "compensation_history": ToolDef(
-            spec=ToolSpec(
-                name="compensation_history",
-                description="Look up compensation history for an employee.",
-                parameters=EmployeeIdParams,
-            ),
-            callable=lambda **kw: db.compensation_history(kw["employee_id"]),
+        "compensation_history": ToolDefinition(
+            name="compensation_history",
+            description="Look up compensation history for an employee.",
+            input_schema=EMPLOYEE_ID_SCHEMA,
         ),
-        "access_control": ToolDef(
-            spec=ToolSpec(
-                name="access_control",
-                description="Look up access control entries for an employee.",
-                parameters=EmployeeIdParams,
-            ),
-            callable=lambda **kw: db.access_control(kw["employee_id"]),
+        "access_control": ToolDefinition(
+            name="access_control",
+            description="Look up access control entries for an employee.",
+            input_schema=EMPLOYEE_ID_SCHEMA,
         ),
-        "legacy_records": ToolDef(
-            spec=ToolSpec(
-                name="legacy_records",
-                description="Search legacy records archive for an employee.",
-                parameters=EmployeeIdParams,
-            ),
-            callable=lambda **kw: db.legacy_records(kw["employee_id"]),
+        "legacy_records": ToolDefinition(
+            name="legacy_records",
+            description="Search legacy records archive for an employee.",
+            input_schema=EMPLOYEE_ID_SCHEMA,
         ),
-        "compliance_check": ToolDef(
-            spec=ToolSpec(
-                name="compliance_check",
-                description="Check compliance status for an employee.",
-                parameters=EmployeeIdParams,
-            ),
-            callable=lambda **kw: db.compliance_check(kw["employee_id"]),
+        "compliance_check": ToolDefinition(
+            name="compliance_check",
+            description="Check compliance status for an employee.",
+            input_schema=EMPLOYEE_ID_SCHEMA,
         ),
-        "hr_directory": ToolDef(
-            spec=ToolSpec(
-                name="hr_directory",
-                description="Look up an employee in the HR directory.",
-                parameters=EmployeeNameParams,
-            ),
-            callable=lambda **kw: db.hr_directory(kw["name"]),
+        "hr_directory": ToolDefinition(
+            name="hr_directory",
+            description="Look up an employee in the HR directory.",
+            input_schema=EMPLOYEE_NAME_SCHEMA,
         ),
-        "submit_report": ToolDef(
-            spec=ToolSpec(
-                name="submit_report",
-                description="Submit a completed employee profile report.",
-                parameters=SubmitReportParams,
-            ),
-            callable=lambda **kw: db.submit_report(kw.get("employee_name", ""), kw.get("report", "")),
+        "submit_report": ToolDefinition(
+            name="submit_report",
+            description="Submit a completed employee profile report.",
+            input_schema=SUBMIT_REPORT_SCHEMA,
+        ),
+    }
+    tools_handlers = {
+        "get_employee": lambda **kw: db.get_employee(kw["name"]),
+        "security_audit": lambda **kw: db.security_audit(kw["employee_id"]),
+        "onboarding_records": lambda **kw: db.onboarding_records(kw["employee_id"]),
+        "personnel_file": lambda **kw: db.personnel_file(kw["employee_id"]),
+        "compensation_v2": lambda **kw: db.compensation_v2(kw["employee_id"]),
+        "project_assignments": lambda **kw: db.project_assignments(kw["employee_id"]),
+        "compensation_history": lambda **kw: db.compensation_history(kw["employee_id"]),
+        "access_control": lambda **kw: db.access_control(kw["employee_id"]),
+        "legacy_records": lambda **kw: db.legacy_records(kw["employee_id"]),
+        "compliance_check": lambda **kw: db.compliance_check(kw["employee_id"]),
+        "hr_directory": lambda **kw: db.hr_directory(kw["name"]),
+        "submit_report": lambda **kw: db.submit_report(
+            kw.get("employee_name", ""), kw.get("report", "")
         ),
     }
     workflow = Workflow(
@@ -321,6 +383,7 @@ def _build_data_gap_recovery_extended_stateful() -> tuple[Workflow, callable]:
             "across legacy and current systems."
         ),
         tools=tools,
+        handlers=tools_handlers,
         required_steps=["get_employee"],
         terminal_tool="submit_report",
         system_prompt_template=(
@@ -524,70 +587,66 @@ def _validate_argument_transformation_stateful(args: dict[str, Any]) -> bool:
 
 def _build_argument_transformation_stateful() -> tuple[Workflow, callable]:
     db = ExpenseAuditSystem()
-    tools: dict[str, ToolDef] = {
-        "list_transactions": ToolDef(
-            spec=ToolSpec(
-                name="list_transactions",
-                description="List all expense transactions for a given fiscal quarter and year.",
-                parameters=QuarterYearParams,
-            ),
-            callable=lambda **kw: db.list_transactions(kw["quarter"], kw["year"]),
+    tools: dict[str, ToolDefinition] = {
+        "list_transactions": ToolDefinition(
+            name="list_transactions",
+            description="List all expense transactions for a given fiscal quarter and year.",
+            input_schema=QUARTER_YEAR_SCHEMA,
         ),
-        "get_approved_vendors": ToolDef(
-            spec=ToolSpec(
-                name="get_approved_vendors",
-                description="Return the canonical list of approved vendor names (case sensitive).",
-                parameters=NoParams,
-            ),
-            callable=lambda **kw: db.get_approved_vendors(),
+        "get_approved_vendors": ToolDefinition(
+            name="get_approved_vendors",
+            description="Return the canonical list of approved vendor names (case sensitive).",
+            input_schema=NO_SCHEMA,
         ),
-        "get_vendor_details": ToolDef(
-            spec=ToolSpec(
-                name="get_vendor_details",
-                description="Look up vendor details (status, legal entity, trade-name aliases).",
-                parameters=VendorNameParams,
-            ),
-            callable=lambda **kw: db.get_vendor_details(kw["vendor_name"]),
+        "get_vendor_details": ToolDefinition(
+            name="get_vendor_details",
+            description="Look up vendor details (status, legal entity, trade-name aliases).",
+            input_schema=VENDOR_NAME_SCHEMA,
         ),
-        "currency_convert": ToolDef(
-            spec=ToolSpec(
-                name="currency_convert",
-                description="Convert an amount between currencies (USD/EUR).",
-                parameters=CurrencyConvertParams,
-            ),
-            callable=lambda **kw: db.currency_convert(
-                kw["amount"], kw["from_currency"], kw["to_currency"],
-            ),
+        "currency_convert": ToolDefinition(
+            name="currency_convert",
+            description="Convert an amount between currencies (USD/EUR).",
+            input_schema=CURRENCY_CONVERT_SCHEMA,
         ),
-        "categorize_expense": ToolDef(
-            spec=ToolSpec(
-                name="categorize_expense",
-                description="Assign an expense to a GL category bucket.",
-                parameters=CategorizeExpenseParams,
-            ),
-            callable=lambda **kw: db.categorize_expense(kw["amount"], kw["category"]),
+        "categorize_expense": ToolDefinition(
+            name="categorize_expense",
+            description="Assign an expense to a GL category bucket.",
+            input_schema=CATEGORIZE_EXPENSE_SCHEMA,
         ),
-        "lookup_transaction": ToolDef(
-            spec=ToolSpec(
-                name="lookup_transaction",
-                description="Look up a single transaction's full record by ID.",
-                parameters=TransactionIdParams,
-            ),
-            callable=lambda **kw: db.lookup_transaction(kw["transaction_id"]),
+        "lookup_transaction": ToolDefinition(
+            name="lookup_transaction",
+            description="Look up a single transaction's full record by ID.",
+            input_schema=TRANSACTION_ID_SCHEMA,
         ),
-        "submit_audit_report": ToolDef(
-            spec=ToolSpec(
-                name="submit_audit_report",
-                description=(
-                    "Submit the completed audit report. Provide comma-separated "
-                    "transaction IDs of flagged items, the total flagged amount in "
-                    "USD, and the vendor of the single largest flagged transaction."
-                ),
-                parameters=SubmitAuditReportParams,
+        "submit_audit_report": ToolDefinition(
+            name="submit_audit_report",
+            description=(
+                "Submit the completed audit report. Provide comma-separated "
+                "transaction IDs of flagged items, the total flagged amount in "
+                "USD, and the vendor of the single largest flagged transaction."
             ),
-            callable=lambda **kw: db.submit_audit_report(
-                kw["transaction_ids"], kw["total_flagged_usd"], kw["top_vendor"],
-            ),
+            input_schema=SUBMIT_AUDIT_REPORT_SCHEMA,
+        ),
+    }
+    tools_handlers = {
+        "list_transactions": lambda **kw: db.list_transactions(
+            kw["quarter"], kw["year"]
+        ),
+        "get_approved_vendors": lambda **kw: db.get_approved_vendors(),
+        "get_vendor_details": lambda **kw: db.get_vendor_details(kw["vendor_name"]),
+        "currency_convert": lambda **kw: db.currency_convert(
+            kw["amount"],
+            kw["from_currency"],
+            kw["to_currency"],
+        ),
+        "categorize_expense": lambda **kw: db.categorize_expense(
+            kw["amount"], kw["category"]
+        ),
+        "lookup_transaction": lambda **kw: db.lookup_transaction(kw["transaction_id"]),
+        "submit_audit_report": lambda **kw: db.submit_audit_report(
+            kw["transaction_ids"],
+            kw["total_flagged_usd"],
+            kw["top_vendor"],
         ),
     }
     workflow = Workflow(
@@ -598,6 +657,7 @@ def _build_argument_transformation_stateful() -> tuple[Workflow, callable]:
             "data, then submitting the audit report."
         ),
         tools=tools,
+        handlers=tools_handlers,
         required_steps=["list_transactions", "get_approved_vendors"],
         terminal_tool="submit_audit_report",
         system_prompt_template=(
@@ -650,31 +710,101 @@ argument_transformation_stateful = EvalScenario(
 # ── Backend: LegacyAPISystem ────────────────────────────────────
 
 
-class PageParams(BaseModel):
-    page: int = Field(description="Page number")
-    page_size: int = Field(description="Records per page")
+PAGE_SCHEMA = {
+    "properties": {
+        "page": {"description": "Page number", "title": "Page", "type": "integer"},
+        "page_size": {
+            "description": "Records per page",
+            "title": "Page Size",
+            "type": "integer",
+        },
+    },
+    "required": ["page", "page_size"],
+    "title": "PageParams",
+    "type": "object",
+}
 
-class AccountIdParams(BaseModel):
-    account_id: str = Field(description="Account identifier")
+ACCOUNT_ID_SCHEMA = {
+    "properties": {
+        "account_id": {
+            "description": "Account identifier",
+            "title": "Account Id",
+            "type": "string",
+        }
+    },
+    "required": ["account_id"],
+    "title": "AccountIdParams",
+    "type": "object",
+}
 
-class TransactionRangeParams(BaseModel):
-    account_id: str = Field(description="Account identifier")
-    since: str = Field(description="Range start")
-    until: str = Field(description="Range end")
+TRANSACTION_RANGE_SCHEMA = {
+    "properties": {
+        "account_id": {
+            "description": "Account identifier",
+            "title": "Account Id",
+            "type": "string",
+        },
+        "since": {"description": "Range start", "title": "Since", "type": "string"},
+        "until": {"description": "Range end", "title": "Until", "type": "string"},
+    },
+    "required": ["account_id", "since", "until"],
+    "title": "TransactionRangeParams",
+    "type": "object",
+}
 
-class CategorizeSpendParams(BaseModel):
-    txn_id: int = Field(description="Transaction identifier")
-    category: str = Field(description="Spend category")
+CATEGORIZE_SPEND_SCHEMA = {
+    "properties": {
+        "txn_id": {
+            "description": "Transaction identifier",
+            "title": "Txn Id",
+            "type": "integer",
+        },
+        "category": {
+            "description": "Spend category",
+            "title": "Category",
+            "type": "string",
+        },
+    },
+    "required": ["txn_id", "category"],
+    "title": "CategorizeSpendParams",
+    "type": "object",
+}
 
-class ComplianceCheckParams(BaseModel):
-    region: str = Field(description="Region")
-    period: str = Field(description="Reporting period")
+COMPLIANCE_CHECK_SCHEMA = {
+    "properties": {
+        "region": {"description": "Region", "title": "Region", "type": "string"},
+        "period": {
+            "description": "Reporting period",
+            "title": "Period",
+            "type": "string",
+        },
+    },
+    "required": ["region", "period"],
+    "title": "ComplianceCheckParams",
+    "type": "object",
+}
 
-class AggregateSubtotalParams(BaseModel):
-    amounts: str = Field(description="Amounts to sum")
+AGGREGATE_SUBTOTAL_SCHEMA = {
+    "properties": {
+        "amounts": {
+            "description": "Amounts to sum",
+            "title": "Amounts",
+            "type": "string",
+        }
+    },
+    "required": ["amounts"],
+    "title": "AggregateSubtotalParams",
+    "type": "object",
+}
 
-class SubmitAuditParams(BaseModel):
-    report: str = Field(description="Audit report")
+SUBMIT_AUDIT_SCHEMA = {
+    "properties": {
+        "report": {"description": "Audit report", "title": "Report", "type": "string"}
+    },
+    "required": ["report"],
+    "title": "SubmitAuditParams",
+    "type": "object",
+}
 
 
 _LEGACY_ACCOUNTS_STATEFUL = [
@@ -862,69 +992,65 @@ def _validate_inconsistent_api_recovery_stateful(args: dict[str, Any]) -> bool:
 
 def _build_inconsistent_api_recovery_stateful() -> tuple[Workflow, Callable[[], bool]]:
     db = LegacyAPISystem()
-    tools: dict[str, ToolDef] = {
-        "legacy_list_accounts": ToolDef(
-            spec=ToolSpec(
-                name="legacy_list_accounts",
-                description="List available accounts.",
-                parameters=PageParams,
-            ),
-            callable=lambda **kw: db.list_accounts(kw.get("page"), kw.get("page_size")),
+    tools: dict[str, ToolDefinition] = {
+        "legacy_list_accounts": ToolDefinition(
+            name="legacy_list_accounts",
+            description="List available accounts.",
+            input_schema=PAGE_SCHEMA,
         ),
-        "legacy_get_balance": ToolDef(
-            spec=ToolSpec(
-                name="legacy_get_balance",
-                description="Get the current balance for an account.",
-                parameters=AccountIdParams,
-            ),
-            callable=lambda **kw: db.get_balance(kw.get("account_id", "")),
+        "legacy_get_balance": ToolDefinition(
+            name="legacy_get_balance",
+            description="Get the current balance for an account.",
+            input_schema=ACCOUNT_ID_SCHEMA,
         ),
-        "legacy_get_transactions": ToolDef(
-            spec=ToolSpec(
-                name="legacy_get_transactions",
-                description="List transactions for an account over a date range.",
-                parameters=TransactionRangeParams,
-            ),
-            callable=lambda **kw: db.get_transactions(
-                kw.get("account_id", ""), kw.get("since", ""), kw.get("until", ""),
-            ),
+        "legacy_get_transactions": ToolDefinition(
+            name="legacy_get_transactions",
+            description="List transactions for an account over a date range.",
+            input_schema=TRANSACTION_RANGE_SCHEMA,
         ),
-        "legacy_categorize_spend": ToolDef(
-            spec=ToolSpec(
-                name="legacy_categorize_spend",
-                description="Assign a spend category to a transaction.",
-                parameters=CategorizeSpendParams,
-            ),
-            callable=lambda **kw: db.categorize_spend(
-                kw.get("txn_id"), kw.get("category", ""),
-            ),
+        "legacy_categorize_spend": ToolDefinition(
+            name="legacy_categorize_spend",
+            description="Assign a spend category to a transaction.",
+            input_schema=CATEGORIZE_SPEND_SCHEMA,
         ),
-        "legacy_check_compliance": ToolDef(
-            spec=ToolSpec(
-                name="legacy_check_compliance",
-                description="Run a regional compliance check for a reporting period.",
-                parameters=ComplianceCheckParams,
-            ),
-            callable=lambda **kw: db.check_compliance(
-                kw.get("region", ""), kw.get("period", ""),
-            ),
+        "legacy_check_compliance": ToolDefinition(
+            name="legacy_check_compliance",
+            description="Run a regional compliance check for a reporting period.",
+            input_schema=COMPLIANCE_CHECK_SCHEMA,
         ),
-        "legacy_aggregate_subtotal": ToolDef(
-            spec=ToolSpec(
-                name="legacy_aggregate_subtotal",
-                description="Compute the subtotal of a set of amounts.",
-                parameters=AggregateSubtotalParams,
-            ),
-            callable=lambda **kw: db.aggregate_subtotal(kw.get("amounts", "")),
+        "legacy_aggregate_subtotal": ToolDefinition(
+            name="legacy_aggregate_subtotal",
+            description="Compute the subtotal of a set of amounts.",
+            input_schema=AGGREGATE_SUBTOTAL_SCHEMA,
         ),
-        "legacy_submit_audit": ToolDef(
-            spec=ToolSpec(
-                name="legacy_submit_audit",
-                description="Submit the final compliance audit report.",
-                parameters=SubmitAuditParams,
-            ),
-            callable=lambda **kw: db.submit_audit(kw.get("report", "")),
+        "legacy_submit_audit": ToolDefinition(
+            name="legacy_submit_audit",
+            description="Submit the final compliance audit report.",
+            input_schema=SUBMIT_AUDIT_SCHEMA,
         ),
+    }
+    tools_handlers = {
+        "legacy_list_accounts": lambda **kw: db.list_accounts(
+            kw.get("page"), kw.get("page_size")
+        ),
+        "legacy_get_balance": lambda **kw: db.get_balance(kw.get("account_id", "")),
+        "legacy_get_transactions": lambda **kw: db.get_transactions(
+            kw.get("account_id", ""),
+            kw.get("since", ""),
+            kw.get("until", ""),
+        ),
+        "legacy_categorize_spend": lambda **kw: db.categorize_spend(
+            kw.get("txn_id"),
+            kw.get("category", ""),
+        ),
+        "legacy_check_compliance": lambda **kw: db.check_compliance(
+            kw.get("region", ""),
+            kw.get("period", ""),
+        ),
+        "legacy_aggregate_subtotal": lambda **kw: db.aggregate_subtotal(
+            kw.get("amounts", "")
+        ),
+        "legacy_submit_audit": lambda **kw: db.submit_audit(kw.get("report", "")),
     }
     workflow = Workflow(
         name="inconsistent_api_recovery_stateful",
@@ -933,6 +1059,7 @@ def _build_inconsistent_api_recovery_stateful() -> tuple[Workflow, Callable[[], 
             "seven inconsistently-designed APIs."
         ),
         tools=tools,
+        handlers=tools_handlers,
         required_steps=["legacy_list_accounts"],
         terminal_tool="legacy_submit_audit",
         system_prompt_template=(
@@ -988,12 +1115,36 @@ inconsistent_api_recovery_stateful = EvalScenario(
 # ── Backend: HiringDecisionSystem ───────────────────────────────
 
 
-class CandidateNameParams(BaseModel):
-    candidate_name: str = Field(description="Candidate full name")
+CANDIDATE_NAME_SCHEMA = {
+    "properties": {
+        "candidate_name": {
+            "description": "Candidate full name",
+            "title": "Candidate Name",
+            "type": "string",
+        }
+    },
+    "required": ["candidate_name"],
+    "title": "CandidateNameParams",
+    "type": "object",
+}
 
-class SubmitHiringDecisionParams(BaseModel):
-    candidate: str = Field(description="Selected candidate's name")
-    rationale: str = Field(description="Brief justification for the decision")
+SUBMIT_HIRING_DECISION_SCHEMA = {
+    "properties": {
+        "candidate": {
+            "description": "Selected candidate's name",
+            "title": "Candidate",
+            "type": "string",
+        },
+        "rationale": {
+            "description": "Brief justification for the decision",
+            "title": "Rationale",
+            "type": "string",
+        },
+    },
+    "required": ["candidate", "rationale"],
+    "title": "SubmitHiringDecisionParams",
+    "type": "object",
+}
 
 
 _GS_OPEN_ROLE_STATEFUL = (
@@ -1286,58 +1437,53 @@ class HiringDecisionSystem:
 
 def _build_grounded_synthesis_stateful() -> tuple[Workflow, Callable[[], bool]]:
     db = HiringDecisionSystem()
-    tools: dict[str, ToolDef] = {
-        "get_open_role": ToolDef(
-            spec=ToolSpec(
-                name="get_open_role",
-                description="Get the spec and constraints for the open role.",
-                parameters=NoParams,
-            ),
-            callable=lambda **kw: db.get_open_role(),
+    tools: dict[str, ToolDefinition] = {
+        "get_open_role": ToolDefinition(
+            name="get_open_role",
+            description="Get the spec and constraints for the open role.",
+            input_schema=NO_SCHEMA,
         ),
-        "get_candidate_pool": ToolDef(
-            spec=ToolSpec(
-                name="get_candidate_pool",
-                description="List the candidates being considered.",
-                parameters=NoParams,
-            ),
-            callable=lambda **kw: db.get_candidate_pool(),
+        "get_candidate_pool": ToolDefinition(
+            name="get_candidate_pool",
+            description="List the candidates being considered.",
+            input_schema=NO_SCHEMA,
         ),
-        "get_skill_summary": ToolDef(
-            spec=ToolSpec(
-                name="get_skill_summary",
-                description="Get a candidate's distilled skill assessment.",
-                parameters=CandidateNameParams,
-            ),
-            callable=lambda **kw: db.get_skill_summary(kw.get("candidate_name", "")),
+        "get_skill_summary": ToolDefinition(
+            name="get_skill_summary",
+            description="Get a candidate's distilled skill assessment.",
+            input_schema=CANDIDATE_NAME_SCHEMA,
         ),
-        "get_compatibility_check": ToolDef(
-            spec=ToolSpec(
-                name="get_compatibility_check",
-                description="Check a candidate's compliance and eligibility for the open role.",
-                parameters=CandidateNameParams,
-            ),
-            callable=lambda **kw: db.get_compatibility_check(
-                kw.get("candidate_name", ""),
-            ),
+        "get_compatibility_check": ToolDefinition(
+            name="get_compatibility_check",
+            description="Check a candidate's compliance and eligibility for the open role.",
+            input_schema=CANDIDATE_NAME_SCHEMA,
         ),
-        "get_team_dynamics": ToolDef(
-            spec=ToolSpec(
-                name="get_team_dynamics",
-                description="Get the team-fit analysis for a candidate.",
-                parameters=CandidateNameParams,
-            ),
-            callable=lambda **kw: db.get_team_dynamics(kw.get("candidate_name", "")),
+        "get_team_dynamics": ToolDefinition(
+            name="get_team_dynamics",
+            description="Get the team-fit analysis for a candidate.",
+            input_schema=CANDIDATE_NAME_SCHEMA,
         ),
-        "submit_hiring_decision": ToolDef(
-            spec=ToolSpec(
-                name="submit_hiring_decision",
-                description="Submit the final hiring decision with a brief rationale.",
-                parameters=SubmitHiringDecisionParams,
-            ),
-            callable=lambda **kw: db.submit_hiring_decision(
-                kw.get("candidate", ""), kw.get("rationale", ""),
-            ),
+        "submit_hiring_decision": ToolDefinition(
+            name="submit_hiring_decision",
+            description="Submit the final hiring decision with a brief rationale.",
+            input_schema=SUBMIT_HIRING_DECISION_SCHEMA,
+        ),
+    }
+    tools_handlers = {
+        "get_open_role": lambda **kw: db.get_open_role(),
+        "get_candidate_pool": lambda **kw: db.get_candidate_pool(),
+        "get_skill_summary": lambda **kw: db.get_skill_summary(
+            kw.get("candidate_name", "")
+        ),
+        "get_compatibility_check": lambda **kw: db.get_compatibility_check(
+            kw.get("candidate_name", ""),
+        ),
+        "get_team_dynamics": lambda **kw: db.get_team_dynamics(
+            kw.get("candidate_name", "")
+        ),
+        "submit_hiring_decision": lambda **kw: db.submit_hiring_decision(
+            kw.get("candidate", ""),
+            kw.get("rationale", ""),
         ),
     }
     workflow = Workflow(
@@ -1347,6 +1493,7 @@ def _build_grounded_synthesis_stateful() -> tuple[Workflow, Callable[[], bool]]:
             "honoring compliance constraints surfaced by sub-agent tools."
         ),
         tools=tools,
+        handlers=tools_handlers,
         required_steps=["get_open_role", "get_candidate_pool"],
         terminal_tool="submit_hiring_decision",
         system_prompt_template=(

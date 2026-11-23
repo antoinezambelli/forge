@@ -20,7 +20,6 @@ from forge._endpoint_layouts import (
 )
 from forge.clients.base import (
     ChunkType,
-    RawOpenAITools,
     StreamChunk,
     TokenUsage,
     _record_captured_usage,
@@ -31,7 +30,7 @@ from forge.clients.base import (
     static_auth_present,
 )
 from forge.clients.sampling_defaults import apply_sampling_defaults
-from forge.core.workflow import LLMResponse, TextResponse, ToolCall, ToolSpec
+from forge.core.workflow import LLMResponse, TextResponse, ToolCall, ToolDefinition
 from forge.errors import BackendError, ContextDiscoveryError
 from forge.prompts.templates import build_tool_prompt, extract_tool_call
 # Re-exported under the historical private name so existing imports
@@ -512,11 +511,10 @@ class LlamafileClient:
     async def send(
         self,
         messages: list[dict[str, str]],
-        tools: list[ToolSpec] | None = None,
+        tools: list[ToolDefinition] | None = None,
         sampling: dict[str, Any] | None = None,
         passthrough: dict[str, Any] | None = None,
         inbound_anthropic_body: dict[str, Any] | None = None,
-        raw_openai_tools: RawOpenAITools | None = None,
         extra_headers: dict[str, str] | None = None,
     ) -> LLMResponse:
         """Dispatch to the native or prompt-injected path per the declared mode.
@@ -524,16 +522,12 @@ class LlamafileClient:
         ``inbound_anthropic_body`` is accepted for protocol symmetry and
         silently ignored — LlamafileClient only speaks OpenAI shape.
 
-        ``raw_openai_tools`` (proxy use) is forwarded verbatim as the
-        backend's ``tools`` array on the native path; the prompt path
-        accepts and ignores it (it keeps forge's prompt-injection format).
-
         ``extra_headers`` carries the per-call credential and is forwarded to
         both the native and prompt paths.
         """
         if self.mode == "native":
             return await self._send_native(
-                messages, tools, sampling, passthrough, raw_openai_tools,
+                messages, tools, sampling, passthrough,
                 extra_headers,
             )
         return await self._send_prompt(
@@ -543,19 +537,16 @@ class LlamafileClient:
     async def send_stream(
         self,
         messages: list[dict[str, str]],
-        tools: list[ToolSpec] | None = None,
+        tools: list[ToolDefinition] | None = None,
         sampling: dict[str, Any] | None = None,
         passthrough: dict[str, Any] | None = None,
         inbound_anthropic_body: dict[str, Any] | None = None,
-        raw_openai_tools: RawOpenAITools | None = None,
         extra_headers: dict[str, str] | None = None,
     ) -> AsyncIterator[StreamChunk]:
         """Stream via SSE, handling both native FC and prompt-injected paths.
 
         ``inbound_anthropic_body`` accepted for protocol symmetry, ignored.
-        ``raw_openai_tools`` (proxy use) is forwarded verbatim on the native
-        path; ignored on the prompt path. ``extra_headers`` carries the
-        per-call credential.
+        ``extra_headers`` carries the per-call credential.
         """
         mode = self.mode
 
@@ -573,12 +564,8 @@ class LlamafileClient:
             prepared = _merge_consecutive(messages)
         else:
             prepared = _merge_consecutive(_downgrade_messages(messages))
-        if mode == "native" and (raw_openai_tools is not None or tools):
-            body["tools"] = (
-                raw_openai_tools
-                if raw_openai_tools is not None
-                else [format_tool(t) for t in tools]
-            )
+        if mode == "native" and tools is not None:
+            body["tools"] = [format_tool(t) for t in tools]
             body["messages"] = prepared
         elif mode == "prompt" and tools:
             tool_prompt = build_tool_prompt(tools)
@@ -735,19 +722,12 @@ class LlamafileClient:
     async def _send_native(
         self,
         messages: list[dict[str, str]],
-        tools: list[ToolSpec] | None,
+        tools: list[ToolDefinition] | None,
         sampling: dict[str, Any] | None = None,
         passthrough: dict[str, Any] | None = None,
-        raw_openai_tools: RawOpenAITools | None = None,
         extra_headers: dict[str, str] | None = None,
     ) -> LLMResponse:
-        """Send using native function calling (OpenAI tools parameter).
-
-        When ``raw_openai_tools`` is supplied (proxy native passthrough), it is
-        sent as the ``tools`` array verbatim so the backend sees the client's
-        original schema instead of forge's re-emitted ``format_tool(spec)``.
-        ``extra_headers`` carries the per-call credential.
-        """
+        """Send using native function calling (OpenAI tools parameter)."""
         merged = _merge_consecutive(messages)
         body: dict[str, Any] = dict(passthrough or {})
         body.update({
@@ -757,9 +737,7 @@ class LlamafileClient:
         body.setdefault("model", self.model)
         self._apply_id_slot(body)
         self._apply_sampling(body, sampling)
-        if raw_openai_tools is not None:
-            body["tools"] = raw_openai_tools
-        elif tools:
+        if tools is not None:
             body["tools"] = [format_tool(t) for t in tools]
 
         resp = await self._http.post(
@@ -830,7 +808,7 @@ class LlamafileClient:
     async def _send_prompt(
         self,
         messages: list[dict[str, str]],
-        tools: list[ToolSpec] | None,
+        tools: list[ToolDefinition] | None,
         sampling: dict[str, Any] | None = None,
         passthrough: dict[str, Any] | None = None,
         extra_headers: dict[str, str] | None = None,

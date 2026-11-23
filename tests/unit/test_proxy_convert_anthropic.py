@@ -2,11 +2,13 @@
 
 import json
 
+import pytest
+
 from forge.core.messages import MessageRole, MessageType
 from forge.core.workflow import ToolCall
 from forge.proxy.convert_anthropic import (
     anthropic_to_messages,
-    anthropic_tools_to_specs,
+    anthropic_tools_to_definitions,
     anthropic_tool_choice_to_openai,
     anthropic_to_openai_passthrough,
     tool_calls_to_anthropic,
@@ -142,9 +144,9 @@ class TestAnthropicToMessages:
         assert msgs[0].content == "Here is the file."
 
 
-class TestAnthropicToolsToSpecs:
+class TestAnthropicToolsToDefinitions:
     def test_basic_tool(self):
-        specs = anthropic_tools_to_specs([{
+        specs = anthropic_tools_to_definitions([{
             "name": "get_weather",
             "description": "Get weather.",
             "input_schema": {
@@ -158,12 +160,12 @@ class TestAnthropicToolsToSpecs:
         assert specs[0].description == "Get weather."
 
     def test_empty_or_none(self):
-        assert anthropic_tools_to_specs(None) == []
-        assert anthropic_tools_to_specs([]) == []
+        assert anthropic_tools_to_definitions(None) == []
+        assert anthropic_tools_to_definitions([]) == []
 
-    def test_skips_nameless_tool(self):
-        specs = anthropic_tools_to_specs([{"description": "no name"}])
-        assert specs == []
+    def test_rejects_nameless_tool(self):
+        with pytest.raises(ValueError):
+            anthropic_tools_to_definitions([{"description": "no name", "input_schema": {}}])
 
 
 class TestAnthropicToolChoiceTranslation:
@@ -358,3 +360,44 @@ class TestTextToAnthropicSSE:
             if e["type"] == "content_block_delta"
         )
         assert text_delta["delta"]["text"] == "Hi there."
+
+
+@pytest.mark.parametrize(
+    "tools, message",
+    [
+        ({}, "list"),
+        ([None], "function"),
+        ([{}], "input_schema"),
+        ([{"type": "computer_20250124", "name": "computer"}], "function"),
+        ([{"input_schema": {}}], "name"),
+        ([{"name": "", "input_schema": {}}], "name"),
+        ([{"name": 3, "input_schema": {}}], "name"),
+        ([{"name": "x"}], "input_schema"),
+        ([{"name": "x", "input_schema": None}], "dictionary"),
+        ([{"name": "x", "input_schema": []}], "dictionary"),
+        ([{"name": "x", "input_schema": {}, "description": None}], "description"),
+        ([{"name": "x", "input_schema": {}, "description": 2}], "description"),
+        (
+            [{"name": "x", "input_schema": {}}, {"name": "x", "input_schema": {}}],
+            "Duplicate",
+        ),
+    ],
+)
+def test_anthropic_definition_failures(tools, message):
+    with pytest.raises(ValueError, match=message):
+        anthropic_tools_to_definitions(tools)
+
+
+def test_anthropic_defaults_and_flat_extras():
+    definition = anthropic_tools_to_definitions(
+        [
+            {
+                "name": "name with spaces",
+                "input_schema": {},
+                "cache_control": {"type": "ephemeral"},
+            }
+        ]
+    )[0]
+    assert definition.description == ""
+    assert definition.input_schema == {}
+    assert definition.extra_fields == {"cache_control": {"type": "ephemeral"}}

@@ -17,7 +17,6 @@ from forge.clients.base import (
     ChunkType,
     LLMClient,
     RawOpenAIMessages,
-    RawOpenAITools,
     StreamChunk,
     TokenUsage,
     _capture_usage,
@@ -30,7 +29,7 @@ from forge.core.reasoning import (
     filter_openai_reasoning_messages,
     validate_reasoning_replay,
 )
-from forge.core.workflow import LLMResponse, TextResponse, ToolCall, ToolSpec
+from forge.core.workflow import LLMResponse, TextResponse, ToolCall, ToolDefinition
 from forge.errors import StreamError, ToolCallError
 from forge.guardrails import ErrorTracker, ResponseValidator
 from forge.guardrails.nudge import TOOL_ERROR_KINDS
@@ -182,7 +181,7 @@ async def run_inference(
     context_manager: ContextManager,
     validator: ResponseValidator,
     error_tracker: ErrorTracker,
-    tool_specs: list[ToolSpec],
+    tool_definitions: list[ToolDefinition],
     tool_call_counter: int = 0,
     step_index: int = 0,
     step_hint: str = "",
@@ -193,7 +192,6 @@ async def run_inference(
     passthrough: dict[str, Any] | None = None,
     inbound_anthropic_body: dict[str, Any] | None = None,
     raw_openai_messages: RawOpenAIMessages | None = None,
-    raw_openai_tools: RawOpenAITools | None = None,
     extra_headers: dict[str, str] | None = None,
     reasoning_replay: ReasoningReplay = DEFAULT_REASONING_REPLAY,
 ) -> InferenceResult | None:
@@ -213,7 +211,7 @@ async def run_inference(
         validator: For rescue parsing, retry nudges, unknown tool checks.
         error_tracker: Tracks consecutive retry budget. The caller owns
             this object and passes it in so budget persists across calls.
-        tool_specs: Available tools to send to the LLM.
+        tool_definitions: Available tools to send to the LLM.
         tool_call_counter: Current counter for generating unique call IDs.
             The updated value is returned in the result.
         step_index: Current iteration index (for compaction and message metadata).
@@ -303,18 +301,8 @@ async def run_inference(
                 MessageMeta(MessageType.CONTEXT_WARNING, step_index=step_index),
             ))
 
-        # Forward raw tools only on the clean first attempt — on retries forge
-        # has appended nudge/tool-error messages, so the parsed tool_specs path
-        # (format_tool) is the correct serialization. Pass the kwarg only when
-        # set so non-proxy callers (and their client doubles) keep the original
-        # call signature.
-        raw_tools_kwarg: dict[str, Any] = {}
-        if raw_openai_tools is not None and _attempt == 0:
-            raw_tools_kwarg["raw_openai_tools"] = raw_openai_tools
-
         # Forward the per-call credential only when set, so clients/test
-        # doubles that omit the kwarg keep their original signature (same
-        # pattern as raw_openai_tools above).
+        # doubles that omit the kwarg keep their original signature.
         extra_headers_kwarg: dict[str, Any] = {}
         if extra_headers is not None:
             extra_headers_kwarg["extra_headers"] = extra_headers
@@ -326,17 +314,15 @@ async def run_inference(
         with _capture_usage() as usage_capture:
             if stream:
                 response = await _send_streaming(
-                    client, api_messages, tool_specs, on_chunk, sampling, passthrough,
+                    client, api_messages, tool_definitions, on_chunk, sampling, passthrough,
                     inbound_anthropic_body=verbatim_body,
-                    **raw_tools_kwarg,
                     **extra_headers_kwarg,
                 )
             else:
                 response = await client.send(
-                    api_messages, tools=tool_specs, sampling=sampling,
+                    api_messages, tools=tool_definitions, sampling=sampling,
                     passthrough=passthrough,
                     inbound_anthropic_body=verbatim_body,
-                    **raw_tools_kwarg,
                     **extra_headers_kwarg,
                 )
         # Subsequent attempts (retries) are mutations regardless of outcome.
@@ -463,26 +449,21 @@ async def run_inference(
 async def _send_streaming(
     client: LLMClient,
     api_messages: list[dict[str, Any]],
-    tool_specs: list[ToolSpec],
+    tool_definitions: list[ToolDefinition],
     on_chunk: Callable[[StreamChunk], Awaitable[None]] | None = None,
     sampling: dict[str, Any] | None = None,
     passthrough: dict[str, Any] | None = None,
     inbound_anthropic_body: dict[str, Any] | None = None,
-    raw_openai_tools: RawOpenAITools | None = None,
     extra_headers: dict[str, str] | None = None,
 ) -> LLMResponse:
     """Send via streaming, forwarding chunks to on_chunk callback."""
     response = None
-    raw_tools_kwarg: dict[str, Any] = {}
-    if raw_openai_tools is not None:
-        raw_tools_kwarg["raw_openai_tools"] = raw_openai_tools
     extra_headers_kwarg: dict[str, Any] = {}
     if extra_headers is not None:
         extra_headers_kwarg["extra_headers"] = extra_headers
     async for chunk in client.send_stream(
-        api_messages, tools=tool_specs, sampling=sampling, passthrough=passthrough,
+        api_messages, tools=tool_definitions, sampling=sampling, passthrough=passthrough,
         inbound_anthropic_body=inbound_anthropic_body,
-        **raw_tools_kwarg,
         **extra_headers_kwarg,
     ):
         if on_chunk is not None:

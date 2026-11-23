@@ -119,9 +119,8 @@ Then the Python you'll run (e.g. from another shell):
 
 ```python
 import asyncio
-from pydantic import BaseModel, Field
 from forge import (
-    Workflow, ToolDef, ToolSpec,
+    Workflow, ToolDefinition,
     WorkflowRunner, LlamafileClient,
     ContextManager, TieredCompact,
 )
@@ -129,22 +128,21 @@ from forge import (
 def get_weather(city: str) -> str:
     return f"72°F and sunny in {city}"
 
-class GetWeatherParams(BaseModel):
-    city: str = Field(description="City name")
-
 workflow = Workflow(
     name="weather",
     description="Look up weather for a city.",
     tools={
-        "get_weather": ToolDef(
-            spec=ToolSpec(
-                name="get_weather",
-                description="Get current weather",
-                parameters=GetWeatherParams,
-            ),
-            callable=get_weather,
+        "get_weather": ToolDefinition(
+            name="get_weather",
+            description="Get current weather",
+            input_schema={
+                "type": "object",
+                "properties": {"city": {"type": "string", "description": "City name"}},
+                "required": ["city"],
+            },
         ),
     },
+    handlers={"get_weather": get_weather},
     required_steps=[],
     terminal_tool="get_weather",
     system_prompt_template="You are a helpful assistant. Use the available tools to answer the user.",
@@ -320,7 +318,7 @@ src/forge/
   server.py            # setup_backend(), ServerManager, BudgetMode
   core/
     messages.py        # Message, MessageRole, MessageType, MessageMeta
-    workflow.py        # ToolSpec, ToolDef, ToolCall, TextResponse, Workflow
+    workflow.py        # ToolDefinition, ToolCall, TextResponse, Workflow
     inference.py       # run_inference() — shared front half (compact, fold, validate, retry)
     runner.py          # WorkflowRunner — the agentic loop
     slot_worker.py     # SlotWorker — priority-queued slot access
@@ -346,7 +344,7 @@ src/forge/
     templates.py       # Tool prompt builders (prompt-injected path)
     nudges.py          # Retry and step-enforcement nudge templates
   tools/
-    respond.py         # Synthetic respond tool (respond_tool(), respond_spec())
+    respond.py         # Synthetic respond tool (respond_definition(), respond())
   proxy/
     __main__.py        # CLI entry point: python -m forge.proxy
     proxy.py           # ProxyServer — programmatic start/stop API

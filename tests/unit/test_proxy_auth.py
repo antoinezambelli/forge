@@ -346,7 +346,9 @@ async def test_handler_no_tools_relocates_inbound_credential():
 async def test_handler_with_tools_threads_credential_via_run_inference():
     client = _mock_client([ToolCall(tool="search", args={})])
     await handle_chat_completions(
-        body=_body(tools=_SEARCH_TOOL),
+        body=_body(tools=[{
+            "name": "search", "description": "", "input_schema": {"type": "object", "properties": {}},
+        }]),
         client=client,
         context_manager=_ctx(),
         client_adapter=ClientAdapter.LLAMAFILE,

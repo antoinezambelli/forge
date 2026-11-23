@@ -4,24 +4,29 @@ import json
 
 import httpx
 import pytest
-from pydantic import BaseModel, Field
 from unittest.mock import AsyncMock, MagicMock
 
 from forge.clients.openai_compat import OpenAICompatClient
 from forge.clients.base import ChunkType
-from forge.core.workflow import TextResponse, ToolSpec
+from forge.core.workflow import TextResponse, ToolDefinition
 from forge.errors import BackendError, MultipleCredentialsError
 
 
 pytestmark = pytest.mark.usefixtures("mock_httpx_client_constructor")
 
 
-class PartParams(BaseModel):
-    part: str = Field(description="Part number")
+PART_SCHEMA = {
+    "properties": {
+        "part": {"description": "Part number", "title": "Part", "type": "string"}
+    },
+    "required": ["part"],
+    "title": "PartParams",
+    "type": "object",
+}
 
 
-def _make_spec(name: str = "get_pricing") -> ToolSpec:
-    return ToolSpec(name=name, description=f"Get {name}", parameters=PartParams)
+def _make_spec(name: str = "get_pricing") -> ToolDefinition:
+    return ToolDefinition(name=name, description=f"Get {name}", input_schema=PART_SCHEMA)
 
 
 def _make_client(model: str = "test-model", api_key: str = "tok") -> OpenAICompatClient:

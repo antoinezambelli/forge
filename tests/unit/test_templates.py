@@ -1,10 +1,7 @@
 """Prompt rendering and text tool-call parser contracts."""
 
-from typing import Literal
 
-from pydantic import BaseModel, Field
-
-from forge.core.workflow import ToolCall, ToolSpec
+from forge.core.workflow import ToolCall, ToolDefinition
 from forge.prompts.templates import (
     build_tool_prompt,
     extract_tool_call,
@@ -12,16 +9,26 @@ from forge.prompts.templates import (
 )
 
 
-class GetPricingParams(BaseModel):
-    part_number: str = Field(description="The part number")
+GET_PRICING_SCHEMA = {
+    "properties": {
+        "part_number": {
+            "description": "The part number",
+            "title": "Part Number",
+            "type": "string",
+        }
+    },
+    "required": ["part_number"],
+    "title": "GetPricingParams",
+    "type": "object",
+}
 
 
 def _make_spec(
     name: str = "get_pricing",
     description: str = "Get pricing for a part",
-    params: type[BaseModel] = GetPricingParams,
-) -> ToolSpec:
-    return ToolSpec(name=name, description=description, parameters=params)
+    params: dict = GET_PRICING_SCHEMA,
+) -> ToolDefinition:
+    return ToolDefinition(name=name, description=description, input_schema=params)
 
 
 def _signatures(calls: list[ToolCall]) -> list[tuple[str, object]]:
@@ -50,12 +57,32 @@ def test_build_tool_prompt_describes_tools_and_call_format() -> None:
 
 
 def test_build_tool_prompt_marks_parameter_styles() -> None:
-    class QueryParams(BaseModel):
-        query: str = Field(description="Search query")
-        limit: int | None = Field(default=None, description="Result limit")
-        sort: Literal["asc", "desc"] = Field(description="Sort order")
+    QUERY_SCHEMA = {
+        "properties": {
+            "query": {
+                "description": "Search query",
+                "title": "Query",
+                "type": "string",
+            },
+            "limit": {
+                "anyOf": [{"type": "integer"}, {"type": "null"}],
+                "default": None,
+                "description": "Result limit",
+                "title": "Limit",
+            },
+            "sort": {
+                "description": "Sort order",
+                "enum": ["asc", "desc"],
+                "title": "Sort",
+                "type": "string",
+            },
+        },
+        "required": ["query", "sort"],
+        "title": "QueryParams",
+        "type": "object",
+    }
 
-    prompt = build_tool_prompt([_make_spec(params=QueryParams)])
+    prompt = build_tool_prompt([_make_spec(params=QUERY_SCHEMA)])
 
     assert "required" in prompt.lower()
     assert "optional" in prompt.lower()
@@ -306,3 +333,30 @@ def test_rescue_tool_call_precedence_matrix() -> None:
         assert _signatures(rescue_tool_call(text, ["fetch", "submit"])) == [
             ("fetch", {"source": "json"})
         ], label
+
+
+def test_prompt_keeps_complete_schema_extras_and_boolean_properties():
+    import json
+    from copy import deepcopy
+
+    schema = {
+        "$defs": {"thing": {"oneOf": [{"type": "string"}, {"type": "integer"}]}},
+        "type": "object",
+        "properties": {
+            "any": True,
+            "never": False,
+            "nested": {"$ref": "#/$defs/thing"},
+        },
+        "additionalProperties": False,
+        "x-keyword": {"kept": [1, 2]},
+    }
+    definition = ToolDefinition(
+        "first", input_schema=schema, extra_fields={"x-extra": [1, 2]}
+    )
+    before = deepcopy(definition)
+    prompt = build_tool_prompt([definition, ToolDefinition("second")])
+    assert "Input schema: " + json.dumps(schema) in prompt
+    assert 'Extra fields: {"x-extra": [1, 2]}' in prompt
+    assert prompt.index("## first") < prompt.index("## second")
+    assert "To call a tool, respond with ONLY a JSON object" in prompt
+    assert definition == before

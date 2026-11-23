@@ -222,7 +222,7 @@ The middleware layer is the foundation. Both the proxy server and the standalone
 
 A forge workflow has four main pieces:
 
-- **Tools** — Python functions the LLM can call, each described by a `ToolSpec` with typed parameters.
+- **Tools** — Python functions the LLM can call, each described by a `ToolDefinition` with a complete input schema.
 - **Workflow** — A named bundle of tools, with optional `required_steps` (tools the LLM *must* call) and a `terminal_tool` (the tool or tools that end the workflow — accepts `str` or `list[str]`).
 - **Client** — An LLM backend adapter (`OpenAICompatClient`, `OllamaClient`,
   `LlamafileClient`, `VLLMClient`, or `AnthropicClient`).
@@ -235,8 +235,7 @@ A forge workflow has four main pieces:
 A two-step weather workflow: look up weather, then report it.
 
 ```python
-from pydantic import BaseModel, Field
-from forge.core.workflow import Workflow, ToolDef, ToolSpec
+from forge.core.workflow import Workflow, ToolDefinition
 from forge.core.runner import WorkflowRunner
 from forge.clients.llamafile import LlamafileClient
 from forge.server import setup_backend, BudgetMode
@@ -248,36 +247,36 @@ def get_weather(city: str) -> str:
 def report_weather(city: str, weather: str) -> str:
     return f"Weather report: {weather}"
 
-class GetWeatherParams(BaseModel):
-    city: str = Field(description="City name")
-
-class ReportWeatherParams(BaseModel):
-    city: str = Field(description="City name")
-    weather: str = Field(description="Weather description")
-
 workflow = Workflow(
     name="weather",
     description="Look up weather and report it.",
     tools={
-        "get_weather": ToolDef(
-            spec=ToolSpec(
-                name="get_weather",
-                description="Get current weather for a city",
-                parameters=GetWeatherParams,
-            ),
-            callable=get_weather,
+        "get_weather": ToolDefinition(
+            name="get_weather",
+            description="Get current weather for a city",
+            input_schema={
+                "type": "object",
+                "properties": {"city": {"type": "string", "description": "City name"}},
+                "required": ["city"],
+            },
         ),
-        "report_weather": ToolDef(
-            spec=ToolSpec(
-                name="report_weather",
-                description="Report the weather",
-                parameters=ReportWeatherParams,
-            ),
-            callable=report_weather,
+        "report_weather": ToolDefinition(
+            name="report_weather",
+            description="Report the weather",
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "city": {"type": "string", "description": "City name"},
+                    "weather": {"type": "string", "description": "Weather description"},
+                },
+                "required": ["city", "weather"],
+            },
         ),
     },
+    handlers={"get_weather": get_weather, "report_weather": report_weather},
     required_steps=["get_weather"],
     terminal_tool="report_weather",
+    system_prompt_template="Use the available tools to answer the user.",
 )
 
 # setup_backend() auto-manages llama-server: starts the process, health-checks,
@@ -534,22 +533,18 @@ The eval harness measures each guardrail's contribution — see [EVAL_GUIDE.md](
 
 ## Tool Prerequisites
 
-Tools can declare conditional dependencies — "if you call this tool, you must have called tool X first." This is enforced at runtime via nudge-and-retry, the same pattern as step enforcement.
+Workflow can declare conditional tool dependencies — "if you call this tool, you must have called tool X first." This is enforced at runtime via nudge-and-retry, the same pattern as step enforcement.
 
 ```python
-ToolDef(
-    spec=edit_spec,
-    callable=edit_file,
-    # Name-only: any prior call to read_file satisfies it
-    prerequisites=["read_file"],
-)
+# Workflow owns these mappings separately from its tool definitions:
+handlers = {"read_file": read_file, "edit_file": edit_file}
 
-ToolDef(
-    spec=edit_spec,
-    callable=edit_file,
-    # Arg-matched: must have called read_file with the same path
-    prerequisites=[{"tool": "read_file", "match_arg": "path"}],
-)
+# Name-only: any prior call to read_file satisfies it.
+prerequisites = {"edit_file": ["read_file"]}
+
+# Or arg-matched: must have called read_file with the same path.
+prerequisites = {"edit_file": [{"tool": "read_file", "match_arg": "path"}]}
+# Supply handlers=handlers and prerequisites=prerequisites to Workflow.
 ```
 
 If the model calls a tool without satisfying its prerequisites, the runner blocks the batch and emits one tool-error response per blocked tool call (`[PrereqError] ...` on the tool channel, with `PREREQUISITE_NUDGE` message type for compaction prioritization). The model retries off the canonical "tool failed" wire shape rather than a trailing user message — friendlier to OpenAI-tool-trained models. After `max_prereq_violations` (default 2) consecutive violations, `PrerequisiteError` is raised.

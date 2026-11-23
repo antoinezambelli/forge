@@ -45,7 +45,7 @@ from forge.clients.base import (
     static_auth_present,
 )
 from forge.clients.sampling_defaults import apply_sampling_defaults
-from forge.core.workflow import LLMResponse, TextResponse, ToolCall, ToolSpec
+from forge.core.workflow import LLMResponse, TextResponse, ToolCall, ToolDefinition
 from forge.errors import BackendError
 from forge.prompts.think_tags import extract_think_tags
 
@@ -227,10 +227,9 @@ class VLLMClient:
     def _build_request_body(
         self,
         messages: list[dict[str, str]],
-        tools: list[ToolSpec] | None,
+        tools: list[ToolDefinition] | None,
         sampling: dict[str, Any] | None,
         passthrough: dict[str, Any] | None,
-        raw_openai_tools: list[dict[str, Any]] | None,
         *,
         stream: bool,
     ) -> dict[str, Any]:
@@ -246,10 +245,7 @@ class VLLMClient:
         else:
             body.pop("stream_options", None)
 
-        if raw_openai_tools is not None:
-            body["tools"] = raw_openai_tools
-            selected_tools = raw_openai_tools
-        elif tools:
+        if tools is not None:
             selected_tools = [format_tool(tool) for tool in tools]
             body["tools"] = selected_tools
         else:
@@ -287,27 +283,21 @@ class VLLMClient:
     async def send(
         self,
         messages: list[dict[str, str]],
-        tools: list[ToolSpec] | None = None,
+        tools: list[ToolDefinition] | None = None,
         sampling: dict[str, Any] | None = None,
         passthrough: dict[str, Any] | None = None,
         inbound_anthropic_body: dict[str, Any] | None = None,
-        raw_openai_tools: list[dict[str, Any]] | None = None,
         extra_headers: dict[str, str] | None = None,
     ) -> LLMResponse:
         """Send messages via /v1/chat/completions and parse the response.
 
-        ``passthrough`` supplies caller-owned OpenAI fields and
-        ``raw_openai_tools`` preserves the caller's original tools array.
-        ``inbound_anthropic_body`` is accepted for protocol symmetry and
-        ignored. ``extra_headers`` carries the per-call credential, applied
-        over the construction headers.
+        ``passthrough`` supplies caller-owned OpenAI fields.
         """
         body = self._build_request_body(
             messages,
             tools,
             sampling,
             passthrough,
-            raw_openai_tools,
             stream=False,
         )
 
@@ -348,16 +338,15 @@ class VLLMClient:
     async def send_stream(
         self,
         messages: list[dict[str, str]],
-        tools: list[ToolSpec] | None = None,
+        tools: list[ToolDefinition] | None = None,
         sampling: dict[str, Any] | None = None,
         passthrough: dict[str, Any] | None = None,
         inbound_anthropic_body: dict[str, Any] | None = None,
-        raw_openai_tools: list[dict[str, Any]] | None = None,
         extra_headers: dict[str, str] | None = None,
     ) -> AsyncIterator[StreamChunk]:
         """Stream via SSE from /v1/chat/completions.
 
-        ``passthrough`` and ``raw_openai_tools`` follow ``send``. The
+        ``passthrough`` follows ``send``. The
         ``inbound_anthropic_body`` compatibility argument remains ignored.
         ``extra_headers`` carries the per-call credential.
         """
@@ -366,7 +355,6 @@ class VLLMClient:
             tools,
             sampling,
             passthrough,
-            raw_openai_tools,
             stream=True,
         )
 

@@ -9,30 +9,55 @@ from unittest.mock import AsyncMock, MagicMock
 import httpx
 
 from forge.clients.llamafile import LlamafileClient, _merge_consecutive
-from forge.core.workflow import TextResponse, ToolSpec
+from forge.core.workflow import TextResponse, ToolDefinition
 from forge.errors import BackendError
-from pydantic import BaseModel, Field
 from forge.clients.base import ChunkType
 
 
 pytestmark = pytest.mark.usefixtures("mock_httpx_client_constructor")
 
 
-class PartParams(BaseModel):
-    part: str = Field(description="Part number")
+PART_SCHEMA = {
+    "properties": {
+        "part": {"description": "Part number", "title": "Part", "type": "string"}
+    },
+    "required": ["part"],
+    "title": "PartParams",
+    "type": "object",
+}
 
 
-class WriteParams(BaseModel):
-    file_path: str = Field(description="Target path")
-    content: str = Field(description="File body")
+WRITE_SCHEMA = {
+    "properties": {
+        "file_path": {
+            "description": "Target path",
+            "title": "File Path",
+            "type": "string",
+        },
+        "content": {"description": "File body", "title": "Content", "type": "string"},
+    },
+    "required": ["file_path", "content"],
+    "title": "WriteParams",
+    "type": "object",
+}
 
 
-class _NoRequiredParams(BaseModel):
-    note: str | None = Field(default=None, description="Optional note")
+NO_REQUIRED_SCHEMA = {
+    "properties": {
+        "note": {
+            "anyOf": [{"type": "string"}, {"type": "null"}],
+            "default": None,
+            "description": "Optional note",
+            "title": "Note",
+        }
+    },
+    "title": "_NoRequiredParams",
+    "type": "object",
+}
 
 
-def _make_write_spec() -> ToolSpec:
-    return ToolSpec(name="write", description="Write a file", parameters=WriteParams)
+def _make_write_spec() -> ToolDefinition:
+    return ToolDefinition(name="write", description="Write a file", input_schema=WRITE_SCHEMA)
 
 
 def _malformed_500_body(raw_input: str) -> str:
@@ -90,11 +115,11 @@ _COMPLETE_BLOCK = (
 )
 
 
-def _make_spec(name: str = "get_pricing") -> ToolSpec:
-    return ToolSpec(
+def _make_spec(name: str = "get_pricing") -> ToolDefinition:
+    return ToolDefinition(
         name=name,
         description=f"Get {name}",
-        parameters=PartParams,
+        input_schema=PART_SCHEMA,
     )
 
 
@@ -291,9 +316,9 @@ class TestLlamafileNativeSend:
         client = _make_client("native")
         resp = MagicMock()
         resp.status_code = 500
-        # PartParams.part is required in _make_spec; build a no-required spec.
-        no_req_spec = ToolSpec(
-            name="ping", description="ping", parameters=_NoRequiredParams
+        # PART_SCHEMA.part is required in _make_spec; build a no-required spec.
+        no_req_spec = ToolDefinition(
+            name="ping", description="ping", input_schema=NO_REQUIRED_SCHEMA
         )
         resp.text = _malformed_500_body(
             "<tool_call>\n<function=ping>\n</function>\n</tool_call>"

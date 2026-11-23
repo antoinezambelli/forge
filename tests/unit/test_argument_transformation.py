@@ -6,7 +6,7 @@ from collections.abc import Callable
 from typing import Any
 
 from tests.eval.scenarios._model_reasoning import (
-    _argument_transformation_tools,
+    _argument_transformation_tools_handlers,
     _validate_argument_transformation,
 )
 from tests.eval.scenarios._stateful_model_reasoning import (
@@ -24,7 +24,7 @@ VALIDATORS: tuple[Callable[[dict[str, Any]], bool], ...] = (
 
 def _call_tool(implementation: str, tool_name: str, kwargs: dict[str, Any]) -> str:
     if implementation == "lambda":
-        return _argument_transformation_tools[tool_name].callable(**kwargs)
+        return _argument_transformation_tools_handlers[tool_name](**kwargs)
     return getattr(ExpenseAuditSystem(), tool_name)(**kwargs)
 
 
@@ -265,42 +265,42 @@ def test_stateful_tools_do_not_record_rejected_paths() -> None:
 
 
 def _exercise_required_stateful_calls(workflow: Any) -> None:
-    workflow.tools["list_transactions"].callable(quarter="Q4", year=2024)
-    workflow.tools["get_approved_vendors"].callable()
-    workflow.tools["currency_convert"].callable(
+    workflow.handlers["list_transactions"](quarter="Q4", year=2024)
+    workflow.handlers["get_approved_vendors"]()
+    workflow.handlers["currency_convert"](
         amount=4800,
         from_currency="EUR",
         to_currency="USD",
     )
-    workflow.tools["get_vendor_details"].callable(vendor_name="ACME Corp")
+    workflow.handlers["get_vendor_details"](vendor_name="ACME Corp")
 
 
 def test_validate_state_requires_full_reasoning_path_and_submission() -> None:
     workflow, validate_state = _build_argument_transformation_stateful()
 
     assert not validate_state()
-    workflow.tools["list_transactions"].callable(quarter="Q4", year=2024)
-    workflow.tools["get_approved_vendors"].callable()
+    workflow.handlers["list_transactions"](quarter="Q4", year=2024)
+    workflow.handlers["get_approved_vendors"]()
     assert not validate_state()
-    workflow.tools["currency_convert"].callable(
+    workflow.handlers["currency_convert"](
         amount=4800,
         from_currency="EUR",
         to_currency="USD",
     )
     assert not validate_state()
-    workflow.tools["get_vendor_details"].callable(vendor_name="ACME Corp")
+    workflow.handlers["get_vendor_details"](vendor_name="ACME Corp")
     assert not validate_state()
-    workflow.tools["submit_audit_report"].callable(**_canonical_args())
+    workflow.handlers["submit_audit_report"](**_canonical_args())
     assert validate_state()
 
 
 def test_validate_state_rejects_skipped_conversion() -> None:
     workflow, validate_state = _build_argument_transformation_stateful()
 
-    workflow.tools["list_transactions"].callable(quarter="Q4", year=2024)
-    workflow.tools["get_approved_vendors"].callable()
-    workflow.tools["get_vendor_details"].callable(vendor_name="ACME Corp")
-    workflow.tools["submit_audit_report"].callable(**_canonical_args())
+    workflow.handlers["list_transactions"](quarter="Q4", year=2024)
+    workflow.handlers["get_approved_vendors"]()
+    workflow.handlers["get_vendor_details"](vendor_name="ACME Corp")
+    workflow.handlers["submit_audit_report"](**_canonical_args())
 
     assert not validate_state()
 
@@ -311,6 +311,6 @@ def test_validate_state_rejects_wrong_submission() -> None:
     _exercise_required_stateful_calls(workflow)
     args = _canonical_args()
     args["total_flagged_usd"] = "$99,999"
-    workflow.tools["submit_audit_report"].callable(**args)
+    workflow.handlers["submit_audit_report"](**args)
 
     assert not validate_state()

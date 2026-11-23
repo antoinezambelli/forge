@@ -5,11 +5,11 @@ from __future__ import annotations
 import json
 import re
 
-from forge.core.workflow import ToolCall, ToolSpec
+from forge.core.workflow import ToolCall, ToolDefinition
 from forge.prompts.think_tags import THINK_TAG_RE as _THINK_TAG_RE
 
 
-def build_tool_prompt(tools: list[ToolSpec]) -> str:
+def build_tool_prompt(tools: list[ToolDefinition]) -> str:
     """Build tool description block for prompt injection.
 
     Args:
@@ -18,7 +18,7 @@ def build_tool_prompt(tools: list[ToolSpec]) -> str:
     lines = ["You have access to the following tools:", ""]
 
     for tool in tools:
-        schema = tool.get_json_schema()
+        schema = tool.input_schema
         properties = schema.get("properties", {})
         required = set(schema.get("required", []))
 
@@ -28,11 +28,15 @@ def build_tool_prompt(tools: list[ToolSpec]) -> str:
             lines.append("Parameters:")
             for name, prop in properties.items():
                 req = " (required)" if name in required else " (optional)"
-                ptype = prop.get("type", "any")
-                desc = prop.get("description", "")
+                readable = prop if isinstance(prop, dict) else {}
+                ptype = readable.get("type", "any")
+                desc = readable.get("description", "")
                 lines.append(f"  - {name} ({ptype}{req}): {desc}")
-                if "enum" in prop:
+                if "enum" in readable:
                     lines.append(f"    Allowed values: {', '.join(str(v) for v in prop['enum'])}")
+        lines.append("Input schema: " + json.dumps(schema))
+        if tool.extra_fields:
+            lines.append("Extra fields: " + json.dumps(tool.extra_fields))
         lines.append("")
 
     lines.append("To call a tool, respond with ONLY a JSON object in this exact format:")
@@ -41,7 +45,7 @@ def build_tool_prompt(tools: list[ToolSpec]) -> str:
     lines.append("Example:")
     if tools:
         example_tool = tools[0]
-        example_schema = example_tool.get_json_schema()
+        example_schema = example_tool.input_schema
         example_args = {
             name: f"<{name}>" for name in example_schema.get("properties", {})
         }
@@ -155,8 +159,7 @@ def _parse_qwen_xml_tool_calls(text: str, available_tools: list[str]) -> list[To
     wrapper. Whitespace behavior matches Qwen's reference parser: one leading
     and one trailing newline are stripped from each parameter value.
 
-    Type coercion is deferred to Pydantic — all parameter values are passed
-    as strings, and the tool's parameter model coerces at ToolCall construction.
+    Parameter values are passed through as strings.
     """
     found: list[ToolCall] = []
     for fn_match in _QWEN_FUNCTION_RE.finditer(text):

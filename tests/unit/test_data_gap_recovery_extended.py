@@ -6,7 +6,7 @@ from collections.abc import Callable
 from typing import Any
 
 from tests.eval.scenarios._model_reasoning import (
-    _data_gap_recovery_extended_tools,
+    _data_gap_recovery_extended_tools_handlers,
     _validate_data_gap_recovery_extended,
 )
 from tests.eval.scenarios._stateful_model_reasoning import (
@@ -24,7 +24,7 @@ VALIDATORS: tuple[Callable[[dict[str, Any]], bool], ...] = (
 
 def _call_tool(implementation: str, tool_name: str, kwargs: dict[str, Any]) -> str:
     if implementation == "lambda":
-        return _data_gap_recovery_extended_tools[tool_name].callable(**kwargs)
+        return _data_gap_recovery_extended_tools_handlers[tool_name](**kwargs)
     return getattr(HRRecordsSystemExtended(), tool_name)(**kwargs)
 
 
@@ -227,20 +227,20 @@ def test_validate_state_requires_every_current_data_source() -> None:
     workflow, validate_state = _build_data_gap_recovery_extended_stateful()
 
     assert not validate_state()
-    workflow.tools["get_employee"].callable(name="Sarah Chen")
+    workflow.handlers["get_employee"](name="Sarah Chen")
     assert not validate_state()
-    workflow.tools["security_audit"].callable(employee_id="E-1847")
-    workflow.tools["onboarding_records"].callable(employee_id="E-1847")
-    workflow.tools["compensation_v2"].callable(employee_id="E-1847")
+    workflow.handlers["security_audit"](employee_id="E-1847")
+    workflow.handlers["onboarding_records"](employee_id="E-1847")
+    workflow.handlers["compensation_v2"](employee_id="E-1847")
     assert not validate_state()
-    workflow.tools["project_assignments"].callable(employee_id="E-1847")
+    workflow.handlers["project_assignments"](employee_id="E-1847")
     assert validate_state()
 
 
 def test_validate_state_rejects_legacy_only_path() -> None:
     workflow, validate_state = _build_data_gap_recovery_extended_stateful()
 
-    workflow.tools["get_employee"].callable(name="Sarah Chen")
-    workflow.tools["legacy_records"].callable(employee_id="E-1847")
+    workflow.handlers["get_employee"](name="Sarah Chen")
+    workflow.handlers["legacy_records"](employee_id="E-1847")
 
     assert not validate_state()

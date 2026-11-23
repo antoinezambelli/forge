@@ -9,7 +9,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from forge.clients.base import ChunkType, StreamChunk
-from forge.core.workflow import LLMResponse, TextResponse, ToolCall, ToolSpec
+from forge.core.workflow import LLMResponse, TextResponse, ToolCall, ToolDefinition
 from tests.http_mocks import patch_httpx_client_constructor
 
 
@@ -70,8 +70,8 @@ class MockClient:
         self._stream_mode = stream_mode
         self.api_format = api_format
         self._context_length = context_length
-        self.send_calls: list[tuple[list[dict], list[ToolSpec] | None]] = []
-        self.send_stream_calls: list[tuple[list[dict], list[ToolSpec] | None]] = []
+        self.send_calls: list[tuple[list[dict], list[ToolDefinition] | None]] = []
+        self.send_stream_calls: list[tuple[list[dict], list[ToolDefinition] | None]] = []
 
     def _next(self) -> LLMResponse:
         if self._call_index >= len(self.responses):
@@ -87,7 +87,7 @@ class MockClient:
     async def send(
         self,
         messages: list[dict[str, str]],
-        tools: list[ToolSpec] | None = None,
+        tools: list[ToolDefinition] | None = None,
         sampling: dict[str, object] | None = None,
         passthrough: dict[str, object] | None = None,
         inbound_anthropic_body: dict[str, object] | None = None,
@@ -98,7 +98,7 @@ class MockClient:
     async def send_stream(
         self,
         messages: list[dict[str, str]],
-        tools: list[ToolSpec] | None = None,
+        tools: list[ToolDefinition] | None = None,
         sampling: dict[str, object] | None = None,
         passthrough: dict[str, object] | None = None,
         inbound_anthropic_body: dict[str, object] | None = None,

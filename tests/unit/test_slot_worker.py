@@ -17,12 +17,10 @@ from forge.core.slot_worker import SlotWorker
 from forge.core.workflow import (
     TextResponse,
     ToolCall,
-    ToolDef,
-    ToolSpec,
+    ToolDefinition,
     Workflow,
 )
 from forge.errors import WorkflowCancelledError
-from pydantic import BaseModel
 
 from tests.conftest import MockClient as _SharedMockClient
 
@@ -31,30 +29,26 @@ from tests.conftest import MockClient as _SharedMockClient
 MockClient = partial(_SharedMockClient, stream_mode="unsupported")
 
 
-class EmptyParams(BaseModel):
-    pass
+EMPTY_SCHEMA = {"properties": {}, "title": "EmptyParams", "type": "object"}
 
 
 # ── Helpers ──────────────────────────────────────────────────
 
 
-def _make_tool(name: str, fn=None) -> ToolDef:
-    if fn is None:
-        fn = lambda **kwargs: f"{name}_result"
-    return ToolDef(
-        spec=ToolSpec(name=name, description=f"Tool {name}", parameters=EmptyParams),
-        callable=fn,
-    )
+def _make_tool(name: str) -> ToolDefinition:
+    return ToolDefinition(name=name, description=f"Tool {name}", input_schema=EMPTY_SCHEMA)
 
 
 def _make_workflow(terminal_tool: str = "submit") -> Workflow:
     return Workflow(
         name="test_wf",
         description="A test workflow",
-        tools={
-            "fetch": _make_tool("fetch"),
-            terminal_tool: _make_tool(terminal_tool),
+        tools={"fetch": _make_tool("fetch"), terminal_tool: _make_tool(terminal_tool)},
+        handlers={
+            "fetch": (lambda **kw: "fetch" + "_result"),
+            terminal_tool: (lambda **kw: terminal_tool + "_result"),
         },
+        prerequisites={},
         required_steps=["fetch"],
         terminal_tool=terminal_tool,
         system_prompt_template="You are a {role}.",
@@ -121,15 +115,29 @@ class TestBasicOperation:
             return "second_result"
 
         wf1 = Workflow(
-            name="wf1", description="first",
-            tools={"fetch": _make_tool("fetch"), "submit": _make_tool("submit", fn=track_first)},
-            required_steps=["fetch"], terminal_tool="submit",
+            name="wf1",
+            description="first",
+            tools={"fetch": _make_tool("fetch"), "submit": _make_tool("submit")},
+            handlers={
+                "fetch": (lambda **kw: "fetch" + "_result"),
+                "submit": track_first,
+            },
+            prerequisites={},
+            required_steps=["fetch"],
+            terminal_tool="submit",
             system_prompt_template="You are a {role}.",
         )
         wf2 = Workflow(
-            name="wf2", description="second",
-            tools={"fetch": _make_tool("fetch"), "submit": _make_tool("submit", fn=track_second)},
-            required_steps=["fetch"], terminal_tool="submit",
+            name="wf2",
+            description="second",
+            tools={"fetch": _make_tool("fetch"), "submit": _make_tool("submit")},
+            handlers={
+                "fetch": (lambda **kw: "fetch" + "_result"),
+                "submit": track_second,
+            },
+            prerequisites={},
+            required_steps=["fetch"],
+            terminal_tool="submit",
             system_prompt_template="You are a {role}.",
         )
 
@@ -203,15 +211,26 @@ class TestPriority:
 
         wf_blocker = _make_workflow()
         wf_high = Workflow(
-            name="high", description="high",
-            tools={"fetch": _make_tool("fetch"), "submit": _make_tool("submit", fn=track_high)},
-            required_steps=["fetch"], terminal_tool="submit",
+            name="high",
+            description="high",
+            tools={"fetch": _make_tool("fetch"), "submit": _make_tool("submit")},
+            handlers={
+                "fetch": (lambda **kw: "fetch" + "_result"),
+                "submit": track_high,
+            },
+            prerequisites={},
+            required_steps=["fetch"],
+            terminal_tool="submit",
             system_prompt_template="You are a {role}.",
         )
         wf_low = Workflow(
-            name="low", description="low",
-            tools={"fetch": _make_tool("fetch"), "submit": _make_tool("submit", fn=track_low)},
-            required_steps=["fetch"], terminal_tool="submit",
+            name="low",
+            description="low",
+            tools={"fetch": _make_tool("fetch"), "submit": _make_tool("submit")},
+            handlers={"fetch": (lambda **kw: "fetch" + "_result"), "submit": track_low},
+            prerequisites={},
+            required_steps=["fetch"],
+            terminal_tool="submit",
             system_prompt_template="You are a {role}.",
         )
 
@@ -276,15 +295,21 @@ class TestPreemption:
             ToolCall(tool="fetch", args={}),
         ])
         wf = Workflow(
-            name="slow", description="slow",
+            name="slow",
+            description="slow",
             tools={
-                "fetch": ToolDef(
-                    spec=ToolSpec(name="fetch", description="fetch", parameters=EmptyParams),
-                    callable=slow_fetch,
+                "fetch": ToolDefinition(
+                    name="fetch", description="fetch", input_schema=EMPTY_SCHEMA
                 ),
                 "submit": _make_tool("submit"),
             },
-            required_steps=["fetch"], terminal_tool="submit",
+            handlers={
+                "fetch": slow_fetch,
+                "submit": (lambda **kw: "submit" + "_result"),
+            },
+            prerequisites={},
+            required_steps=["fetch"],
+            terminal_tool="submit",
             system_prompt_template="You are a {role}.",
         )
 
@@ -319,15 +344,21 @@ class TestPreemption:
             ToolCall(tool="submit", args={}),
         ])
         wf_slow = Workflow(
-            name="slow", description="slow",
+            name="slow",
+            description="slow",
             tools={
-                "fetch": ToolDef(
-                    spec=ToolSpec(name="fetch", description="fetch", parameters=EmptyParams),
-                    callable=slow_fetch,
+                "fetch": ToolDefinition(
+                    name="fetch", description="fetch", input_schema=EMPTY_SCHEMA
                 ),
                 "submit": _make_tool("submit"),
             },
-            required_steps=["fetch"], terminal_tool="submit",
+            handlers={
+                "fetch": slow_fetch,
+                "submit": (lambda **kw: "submit" + "_result"),
+            },
+            prerequisites={},
+            required_steps=["fetch"],
+            terminal_tool="submit",
             system_prompt_template="You are a {role}.",
         )
         wf_fast = _make_workflow()

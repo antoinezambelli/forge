@@ -6,13 +6,22 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
-from pydantic import BaseModel, Field
 
-from forge.core.workflow import ToolDef, ToolSpec, Workflow
+from forge.core.workflow import ToolDefinition, Workflow
 
 
-class _PlaceholderParams(BaseModel):
-    placeholder_field: str = Field(description="placeholder")
+__PLACEHOLDER_SCHEMA = {
+    "properties": {
+        "placeholder_field": {
+            "description": "placeholder",
+            "title": "Placeholder Field",
+            "type": "string",
+        }
+    },
+    "required": ["placeholder_field"],
+    "title": "_PlaceholderParams",
+    "type": "object",
+}
 
 
 @dataclass
@@ -45,24 +54,20 @@ def _placeholder_workflow(
     per run.  The placeholder only needs to pass Workflow.__post_init__
     validation — it is never actually executed.
     """
-    _noop = ToolDef(
-        spec=ToolSpec(name=terminal_tool, description="placeholder",
-                      parameters=_PlaceholderParams),
-        callable=lambda **kw: "",
-    )
     steps = required_steps or []
-    step_tools = {
-        s: ToolDef(
-            spec=ToolSpec(name=s, description="placeholder",
-                          parameters=_PlaceholderParams),
-            callable=lambda **kw: "",
+    tools = {
+        tool_name: ToolDefinition(
+            name=tool_name,
+            description="placeholder",
+            input_schema=__PLACEHOLDER_SCHEMA,
         )
-        for s in steps
+        for tool_name in [*steps, terminal_tool]
     }
     return Workflow(
         name=name,
         description="placeholder",
-        tools={**step_tools, terminal_tool: _noop},
+        tools=tools,
+        handlers={tool_name: lambda **kw: "" for tool_name in tools},
         required_steps=steps,
         terminal_tool=terminal_tool,
         system_prompt_template="",

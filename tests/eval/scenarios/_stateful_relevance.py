@@ -2,15 +2,15 @@
 
 from __future__ import annotations
 
-from forge.core.workflow import ToolDef, ToolSpec, Workflow
+from forge.core.workflow import ToolDefinition, Workflow
 
 from ._base import EvalScenario, _placeholder_workflow
 from ._compaction import (
-    CityParams,
-    CurrencyParams,
-    FlightParams,
-    HotelParams,
-    ReasonParams,
+    CITY_SCHEMA,
+    CURRENCY_SCHEMA,
+    FLIGHT_SCHEMA,
+    HOTEL_SCHEMA,
+    REASON_SCHEMA,
 )
 
 
@@ -49,54 +49,49 @@ class TravelBookingSystem:
 
 def _build_relevance_detection_stateful() -> tuple[Workflow, callable]:
     db = TravelBookingSystem()
-    tools: dict[str, ToolDef] = {
-        "get_forecast": ToolDef(
-            spec=ToolSpec(
-                name="get_forecast",
-                description="Get weather forecast for a city.",
-                parameters=CityParams,
-            ),
-            callable=lambda **kw: db.get_forecast(kw["city"]),
+    tools: dict[str, ToolDefinition] = {
+        "get_forecast": ToolDefinition(
+            name="get_forecast",
+            description="Get weather forecast for a city.",
+            input_schema=CITY_SCHEMA,
         ),
-        "book_flight": ToolDef(
-            spec=ToolSpec(
-                name="book_flight",
-                description="Book a flight between two cities.",
-                parameters=FlightParams,
-            ),
-            callable=lambda **kw: db.book_flight(kw["origin"], kw["destination"]),
+        "book_flight": ToolDefinition(
+            name="book_flight",
+            description="Book a flight between two cities.",
+            input_schema=FLIGHT_SCHEMA,
         ),
-        "check_hotel": ToolDef(
-            spec=ToolSpec(
-                name="check_hotel",
-                description="Check hotel availability in a city.",
-                parameters=HotelParams,
-            ),
-            callable=lambda **kw: db.check_hotel(kw["city"], kw["checkin"]),
+        "check_hotel": ToolDefinition(
+            name="check_hotel",
+            description="Check hotel availability in a city.",
+            input_schema=HOTEL_SCHEMA,
         ),
-        "convert_currency": ToolDef(
-            spec=ToolSpec(
-                name="convert_currency",
-                description="Convert an amount between currencies.",
-                parameters=CurrencyParams,
-            ),
-            callable=lambda **kw: db.convert_currency(
-                kw["amount"], kw["from_currency"], kw["to_currency"],
-            ),
+        "convert_currency": ToolDefinition(
+            name="convert_currency",
+            description="Convert an amount between currencies.",
+            input_schema=CURRENCY_SCHEMA,
         ),
-        "decline": ToolDef(
-            spec=ToolSpec(
-                name="decline",
-                description="Call this when none of the available tools are relevant to the user's request.",
-                parameters=ReasonParams,
-            ),
-            callable=lambda **kw: db.decline(kw.get("reason", "")),
+        "decline": ToolDefinition(
+            name="decline",
+            description="Call this when none of the available tools are relevant to the user's request.",
+            input_schema=REASON_SCHEMA,
         ),
+    }
+    tools_handlers = {
+        "get_forecast": lambda **kw: db.get_forecast(kw["city"]),
+        "book_flight": lambda **kw: db.book_flight(kw["origin"], kw["destination"]),
+        "check_hotel": lambda **kw: db.check_hotel(kw["city"], kw["checkin"]),
+        "convert_currency": lambda **kw: db.convert_currency(
+            kw["amount"],
+            kw["from_currency"],
+            kw["to_currency"],
+        ),
+        "decline": lambda **kw: db.decline(kw.get("reason", "")),
     }
     workflow = Workflow(
         name="relevance_detection_stateful",
         description="Travel tools that are irrelevant to the user's question",
         tools=tools,
+        handlers=tools_handlers,
         required_steps=[],
         terminal_tool="decline",
         system_prompt_template=(

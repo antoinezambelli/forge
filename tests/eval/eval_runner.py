@@ -15,7 +15,7 @@ from forge.context.strategies import CompactStrategy, NoCompact, SlidingWindowCo
 from forge.core.messages import Message, MessageType
 from forge.core.reasoning import DEFAULT_REASONING_REPLAY, REASONING_REPLAY_CHOICES, ReasoningReplay
 from forge.core.runner import WorkflowRunner
-from forge.core.workflow import ToolCall, ToolDef, ToolSpec, Workflow
+from forge.core.workflow import ToolCall, ToolDefinition, Workflow
 from forge.errors import ForgeError, StreamError
 from forge.server import BudgetMode, ServerManager
 
@@ -103,7 +103,7 @@ class CountingClientWrapper:
     async def send(
         self,
         messages: list[dict[str, str]],
-        tools: list[ToolSpec] | None = None,
+        tools: list[ToolDefinition] | None = None,
         sampling: dict[str, Any] | None = None,
         passthrough: dict[str, Any] | None = None,
         inbound_anthropic_body: dict[str, Any] | None = None,
@@ -119,7 +119,7 @@ class CountingClientWrapper:
     async def send_stream(
         self,
         messages: list[dict[str, str]],
-        tools: list[ToolSpec] | None = None,
+        tools: list[ToolDefinition] | None = None,
         sampling: dict[str, Any] | None = None,
         passthrough: dict[str, Any] | None = None,
         inbound_anthropic_body: dict[str, Any] | None = None,
@@ -176,18 +176,15 @@ def _build_workflow_with_capture(
         validate_state_fn = scenario.validate_state
 
     tools = dict(base_workflow.tools)
+    handlers = dict(base_workflow.handlers)
     for tt_name in base_workflow.terminal_tools:
-        original_fn = base_workflow.get_callable(tt_name)
-        terminal_spec = base_workflow.tools[tt_name].spec
+        original_fn = base_workflow.handlers[tt_name]
 
         def capturing_terminal(_fn=original_fn, **kwargs: Any) -> Any:
             capture["args"] = kwargs
             return _fn(**kwargs)
 
-        tools[tt_name] = ToolDef(
-            spec=terminal_spec,
-            callable=capturing_terminal,
-        )
+        handlers[tt_name] = capturing_terminal
 
     # Ablation: disable step enforcement by clearing required_steps
     required_steps = base_workflow.required_steps
@@ -198,6 +195,8 @@ def _build_workflow_with_capture(
         name=base_workflow.name,
         description=base_workflow.description,
         tools=tools,
+        handlers=handlers,
+        prerequisites=base_workflow.prerequisites,
         required_steps=required_steps,
         terminal_tool=base_workflow.terminal_tool,
         system_prompt_template=base_workflow.system_prompt_template,

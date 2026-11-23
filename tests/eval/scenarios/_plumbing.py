@@ -4,59 +4,101 @@ from __future__ import annotations
 
 from typing import Any
 
-from pydantic import BaseModel, Field
 
-from forge.core.workflow import ToolDef, ToolSpec, Workflow
+from forge.core.workflow import ToolDefinition, Workflow
 
 from ._base import EvalScenario, _check
 
-# ── Pydantic parameter models ──────────────────────────────────
+# ── Explicit input schemas ──────────────────────────────────
 
 
-class CountryParams(BaseModel):
-    country: str = Field(description="Country name")
+COUNTRY_SCHEMA = {
+    "properties": {
+        "country": {"description": "Country name", "title": "Country", "type": "string"}
+    },
+    "required": ["country"],
+    "title": "CountryParams",
+    "type": "object",
+}
 
 
-class ContentParams(BaseModel):
-    content: str = Field(description="The content to summarize")
+CONTENT_SCHEMA = {
+    "properties": {
+        "content": {
+            "description": "The content to summarize",
+            "title": "Content",
+            "type": "string",
+        }
+    },
+    "required": ["content"],
+    "title": "ContentParams",
+    "type": "object",
+}
 
 
-class FetchSalesParams(BaseModel):
-    quarter: int = Field(description="Quarter number (1-4)")
-    year: int = Field(description="Four-digit year")
+FETCH_SALES_SCHEMA = {
+    "properties": {
+        "quarter": {
+            "description": "Quarter number (1-4)",
+            "title": "Quarter",
+            "type": "integer",
+        },
+        "year": {"description": "Four-digit year", "title": "Year", "type": "integer"},
+    },
+    "required": ["quarter", "year"],
+    "title": "FetchSalesParams",
+    "type": "object",
+}
 
 
-class EmptyParams(BaseModel):
-    pass
+EMPTY_SCHEMA = {"properties": {}, "title": "EmptyParams", "type": "object"}
 
 
-class FindingsParams(BaseModel):
-    findings: str = Field(description="The findings to include in the report")
+FINDINGS_SCHEMA = {
+    "properties": {
+        "findings": {
+            "description": "The findings to include in the report",
+            "title": "Findings",
+            "type": "string",
+        }
+    },
+    "required": ["findings"],
+    "title": "FindingsParams",
+    "type": "object",
+}
 
 
-class CountParams(BaseModel):
-    count: str = Field(description="Number of records to fetch (must be a numeric string)")
+COUNT_SCHEMA = {
+    "properties": {
+        "count": {
+            "description": "Number of records to fetch (must be a numeric string)",
+            "title": "Count",
+            "type": "string",
+        }
+    },
+    "required": ["count"],
+    "title": "CountParams",
+    "type": "object",
+}
 
 
 # ── Scenario 1: basic_2step ──────────────────────────────────────
 
-_basic_2step_tools: dict[str, ToolDef] = {
-    "get_country_info": ToolDef(
-        spec=ToolSpec(
+_basic_2step_tools: dict[str, ToolDefinition] = {
+    "get_country_info": ToolDefinition(
             name="get_country_info",
             description="Look up facts about a country.",
-            parameters=CountryParams,
+            input_schema=COUNTRY_SCHEMA,
         ),
-        callable=lambda **kwargs: "The capital of France is Paris. Population: 2.1 million.",
-    ),
-    "summarize": ToolDef(
-        spec=ToolSpec(
+    "summarize": ToolDefinition(
             name="summarize",
             description="Summarize content and provide the final answer.",
-            parameters=ContentParams,
+            input_schema=CONTENT_SCHEMA,
         ),
-        callable=lambda **kwargs: kwargs.get("content", ""),
-    ),
+}
+_basic_2step_tools_handlers = {
+    "get_country_info": lambda **kwargs: "The capital of France is Paris. Population: 2.1 million.",
+    "summarize": lambda **kwargs: kwargs.get("content", ""),
 }
 
 basic_2step = EvalScenario(
@@ -66,6 +108,7 @@ basic_2step = EvalScenario(
         name="basic_2step",
         description="Simple 2-step information retrieval and summary",
         tools=_basic_2step_tools,
+        handlers=_basic_2step_tools_handlers,
         required_steps=["get_country_info"],
         terminal_tool="summarize",
         system_prompt_template=(
@@ -82,31 +125,27 @@ basic_2step = EvalScenario(
 
 # ── Scenario 2: sequential_3step ────────────────────────────────
 
-_sequential_3step_tools: dict[str, ToolDef] = {
-    "fetch_sales_data": ToolDef(
-        spec=ToolSpec(
+_sequential_3step_tools: dict[str, ToolDefinition] = {
+    "fetch_sales_data": ToolDefinition(
             name="fetch_sales_data",
             description="Fetch sales data for a given quarter and year.",
-            parameters=FetchSalesParams,
+            input_schema=FETCH_SALES_SCHEMA,
         ),
-        callable=lambda **kwargs: "Dataset: 150 records, 12 columns, covering Q1–Q4 2024 sales data.",
-    ),
-    "analyze_sales": ToolDef(
-        spec=ToolSpec(
+    "analyze_sales": ToolDefinition(
             name="analyze_sales",
             description="Analyze the loaded sales data and produce findings.",
-            parameters=EmptyParams,
+            input_schema=EMPTY_SCHEMA,
         ),
-        callable=lambda **kwargs: "Analysis: Revenue grew 23% YoY. Top product: Widget Pro. Weakest region: APAC.",
-    ),
-    "report": ToolDef(
-        spec=ToolSpec(
+    "report": ToolDefinition(
             name="report",
             description="Produce a final report from findings.",
-            parameters=FindingsParams,
+            input_schema=FINDINGS_SCHEMA,
         ),
-        callable=lambda **kwargs: kwargs.get("findings", ""),
-    ),
+}
+_sequential_3step_tools_handlers = {
+    "fetch_sales_data": lambda **kwargs: "Dataset: 150 records, 12 columns, covering Q1–Q4 2024 sales data.",
+    "analyze_sales": lambda **kwargs: "Analysis: Revenue grew 23% YoY. Top product: Widget Pro. Weakest region: APAC.",
+    "report": lambda **kwargs: kwargs.get("findings", ""),
 }
 
 sequential_3step = EvalScenario(
@@ -116,6 +155,7 @@ sequential_3step = EvalScenario(
         name="sequential_3step",
         description="Fetch data, analyze, then report",
         tools=_sequential_3step_tools,
+        handlers=_sequential_3step_tools_handlers,
         required_steps=["fetch_sales_data", "analyze_sales"],
         terminal_tool="report",
         system_prompt_template=(
@@ -124,7 +164,9 @@ sequential_3step = EvalScenario(
         ),
     ),
     user_message="Generate a sales report from the Q4 2024 dataset.",
-    validate=lambda args: _check(args.get("findings", ""), ["23", "widget pro", "apac"]),
+    validate=lambda args: _check(
+        args.get("findings", ""), ["23", "widget pro", "apac"]
+    ),
     tags=["plumbing"],
 )
 
@@ -141,23 +183,21 @@ def _fetch_with_validation(**kwargs: Any) -> str:
     return f"Fetched {int(count)} records."
 
 
-_error_recovery_tools: dict[str, ToolDef] = {
-    "fetch": ToolDef(
-        spec=ToolSpec(
+_error_recovery_tools: dict[str, ToolDefinition] = {
+    "fetch": ToolDefinition(
             name="fetch",
             description="Fetch records. The count parameter must be a numeric string.",
-            parameters=CountParams,
+            input_schema=COUNT_SCHEMA,
         ),
-        callable=_fetch_with_validation,
-    ),
-    "summarize": ToolDef(
-        spec=ToolSpec(
+    "summarize": ToolDefinition(
             name="summarize",
             description="Summarize the fetched content.",
-            parameters=ContentParams,
+            input_schema=CONTENT_SCHEMA,
         ),
-        callable=lambda **kwargs: kwargs.get("content", ""),
-    ),
+}
+_error_recovery_tools_handlers = {
+    "fetch": _fetch_with_validation,
+    "summarize": lambda **kwargs: kwargs.get("content", ""),
 }
 
 error_recovery = EvalScenario(
@@ -167,6 +207,7 @@ error_recovery = EvalScenario(
         name="error_recovery",
         description="Fetch with validation, then summarize",
         tools=_error_recovery_tools,
+        handlers=_error_recovery_tools_handlers,
         required_steps=["fetch"],
         terminal_tool="summarize",
         system_prompt_template=(

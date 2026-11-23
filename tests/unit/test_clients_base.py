@@ -32,3 +32,37 @@ class TestDecodeToolArgs:
 
         # Already-decoded dictionaries pass through without a copy.
         assert decode_tool_args(decoded) is decoded
+
+
+def test_canonical_tool_fields_win_without_mutating_definitions():
+    from copy import deepcopy
+    from forge.clients.base import format_tool
+    from forge.clients.anthropic import AnthropicClient
+    from forge.core.workflow import ToolDefinition
+
+    schema = {
+        "$defs": {"Item": {"type": "string"}},
+        "additionalProperties": False,
+        "properties": {"anything": True, "nothing": False},
+        "x-unknown": [1, {"a": 2}],
+    }
+    extras = {
+        "name": "wrong",
+        "description": "wrong",
+        "input_schema": [],
+        "parameters": {"wrong": True},
+        "strict": True,
+    }
+    original = deepcopy((schema, extras))
+    definition = ToolDefinition("correct", "Description", schema, extras)
+    before = deepcopy(definition)
+    openai = format_tool(definition)
+    anthropic = AnthropicClient._convert_tools([definition])[0]
+    assert openai["function"]["name"] == anthropic["name"] == "correct"
+    assert (
+        openai["function"]["description"] == anthropic["description"] == "Description"
+    )
+    assert openai["function"]["parameters"] == anthropic["input_schema"] == schema
+    assert openai["function"]["strict"] is anthropic["strict"] is True
+    assert definition == before
+    assert (schema, extras) == original

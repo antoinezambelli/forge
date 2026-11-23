@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from tests.eval.scenarios._model_reasoning import (
     _GS_CANDIDATES,
-    _grounded_synthesis_tools,
+    _grounded_synthesis_tools_handlers,
     _validate_grounded_synthesis,
 )
 from tests.eval.scenarios._stateful_model_reasoning import (
@@ -27,7 +27,7 @@ from tests.eval.scenarios._stateful_model_reasoning import (
 
 class TestLambdaTools:
     def _call(self, tool_name: str, **kwargs: object) -> str:
-        return _grounded_synthesis_tools[tool_name].callable(**kwargs)
+        return _grounded_synthesis_tools_handlers[tool_name](**kwargs)
 
     # get_open_role -----------------------------------------------
 
@@ -368,11 +368,11 @@ class TestStatefulBackend:
 
 class TestStatefulValidateState:
     def _drive_canonical(self, tools: dict) -> None:
-        tools["get_open_role"].callable()
-        tools["get_candidate_pool"].callable()
+        tools["get_open_role"]()
+        tools["get_candidate_pool"]()
         for name in ("Sarah Chen", "James Patel", "Aisha Nakamura", "Marcus Reyes"):
-            tools["get_compatibility_check"].callable(candidate_name=name)
-        tools["submit_hiring_decision"].callable(
+            tools["get_compatibility_check"](candidate_name=name)
+        tools["submit_hiring_decision"](
             candidate="Aisha Nakamura",
             rationale=(
                 "Selected Aisha for direct payments background. Sarah ruled "
@@ -383,18 +383,18 @@ class TestStatefulValidateState:
 
     def test_canonical_path_passes(self) -> None:
         workflow, validate_state = _build_grounded_synthesis_stateful()
-        self._drive_canonical(workflow.tools)
+        self._drive_canonical(workflow.handlers)
         assert validate_state() is True
 
     def test_skipping_sarah_compat_check_fails(self) -> None:
         workflow, validate_state = _build_grounded_synthesis_stateful()
-        tools = workflow.tools
-        tools["get_open_role"].callable()
-        tools["get_candidate_pool"].callable()
+        tools = workflow.handlers
+        tools["get_open_role"]()
+        tools["get_candidate_pool"]()
         # Skip Sarah's compat check entirely.
-        tools["get_compatibility_check"].callable(candidate_name="James Patel")
-        tools["get_compatibility_check"].callable(candidate_name="Aisha Nakamura")
-        tools["submit_hiring_decision"].callable(
+        tools["get_compatibility_check"](candidate_name="James Patel")
+        tools["get_compatibility_check"](candidate_name="Aisha Nakamura")
+        tools["submit_hiring_decision"](
             candidate="Aisha Nakamura",
             rationale="Aisha picked; James ruled out for visa.",
         )
@@ -417,8 +417,8 @@ class TestStatefulValidateState:
 
         for candidate, rationale in cases:
             workflow, validate_state = _build_grounded_synthesis_stateful()
-            self._drive_canonical(workflow.tools)
-            workflow.tools["submit_hiring_decision"].callable(
+            self._drive_canonical(workflow.handlers)
+            workflow.handlers["submit_hiring_decision"](
                 candidate=candidate,
                 rationale=rationale,
             )

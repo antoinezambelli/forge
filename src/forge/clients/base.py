@@ -10,13 +10,10 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Any, Protocol, runtime_checkable
 
-from forge.core.workflow import LLMResponse, ToolSpec
+from forge.core.workflow import LLMResponse, ToolDefinition
 from forge.errors import MultipleCredentialsError
 
-# Verbatim OpenAI-shape payloads forwarded by the proxy. The proxy hands the
-# client the user's original ``tools`` array so the backend sees the exact
-# schema the client authored, instead of forge's reconstructed ToolSpec.
-RawOpenAITools = list[dict[str, Any]]
+# OpenAI message preservation awaits rich-message migration.
 RawOpenAIMessages = list[dict[str, Any]]
 
 
@@ -234,14 +231,15 @@ def _record_captured_usage(usage: TokenUsage) -> None:
 
 # Both Ollama and llama-server use the OpenAI tool schema format today.
 # If a backend diverges, move this back into the relevant client module.
-def format_tool(spec: ToolSpec) -> dict[str, Any]:
-    """Convert a ToolSpec into the OpenAI-compatible tool schema."""
+def format_tool(spec: ToolDefinition) -> dict[str, Any]:
+    """Convert a ToolDefinition into the OpenAI-compatible tool schema."""
     return {
         "type": "function",
         "function": {
+            **spec.extra_fields,
             "name": spec.name,
             "description": spec.description,
-            "parameters": spec.get_json_schema(),
+            "parameters": spec.input_schema,
         },
     }
 
@@ -345,11 +343,10 @@ class LLMClient(Protocol):
     async def send(
         self,
         messages: list[dict[str, str]],
-        tools: list[ToolSpec] | None = None,
+        tools: list[ToolDefinition] | None = None,
         sampling: dict[str, Any] | None = None,
         passthrough: dict[str, Any] | None = None,
         inbound_anthropic_body: dict[str, Any] | None = None,
-        raw_openai_tools: RawOpenAITools | None = None,
         extra_headers: dict[str, str] | None = None,
     ) -> LLMResponse:
         """Send messages and return a parsed response.
@@ -362,7 +359,7 @@ class LLMClient(Protocol):
 
         Args:
             messages: API-format messages to send.
-            tools: Tool specs to include with the request.
+            tools: Canonical tool definitions to include with the request.
             sampling: Optional per-call sampling overrides
                 (``temperature``, ``top_p``, ``top_k``, ``min_p``,
                 ``repeat_penalty``, ``presence_penalty``, ``seed``).
@@ -375,17 +372,11 @@ class LLMClient(Protocol):
                 tool_choice, etc.) without forge having to enumerate every
                 supported field. None = no extras to merge.
             inbound_anthropic_body: Path-1 only — when set, the AnthropicClient
-                will send this body verbatim (bypassing its deconstruct/rebuild
-                path) to preserve block-level Anthropic fields like
+                preserves message/body fields such as
                 ``cache_control``. The shared inference primitive clears this
                 kwarg after a Forge mutation; in Proxy, which is permanently
                 ``NoCompact``, retries are the applicable mutation. Other
                 clients accept and ignore it. See ADR-015.
-            raw_openai_tools: Proxy-only raw OpenAI ``tools`` array. Compatible
-                generic llama/OpenAI and vLLM clean paths may send it as-is to
-                avoid schema drift. Adapters or protocols that require another
-                wire shape convert, rebuild, or ignore it; retries use parsed
-                ``ToolSpec`` values instead.
             extra_headers: Per-call HTTP headers, primarily the one credential
                 forge forwards to the backend (proxy: a relocated inbound auth
                 header; WorkflowRunner: a rotating SSO token). Applied per call
@@ -399,11 +390,10 @@ class LLMClient(Protocol):
     async def send_stream(
         self,
         messages: list[dict[str, str]],
-        tools: list[ToolSpec] | None = None,
+        tools: list[ToolDefinition] | None = None,
         sampling: dict[str, Any] | None = None,
         passthrough: dict[str, Any] | None = None,
         inbound_anthropic_body: dict[str, Any] | None = None,
-        raw_openai_tools: RawOpenAITools | None = None,
         extra_headers: dict[str, str] | None = None,
     ) -> AsyncIterator[StreamChunk]:
         """Send messages and yield streaming chunks.
@@ -417,12 +407,11 @@ class LLMClient(Protocol):
 
         Args:
             messages: API-format messages to send.
-            tools: Tool specs to include with the request.
+            tools: Canonical tool definitions to include with the request.
             sampling: Optional per-call sampling overrides (see ``send``).
                 Per-call values win over instance state without mutating self.
             passthrough: Optional inbound-body extras dict (see ``send``).
             inbound_anthropic_body: Optional path-1 verbatim body (see ``send``).
-            raw_openai_tools: Optional verbatim OpenAI tools array (see ``send``).
             extra_headers: Optional per-call credential header (see ``send``).
         """
         ...

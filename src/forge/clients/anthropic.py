@@ -30,7 +30,7 @@ from forge.clients.base import (
     resolve_request_headers,
     static_auth_present,
 )
-from forge.core.workflow import LLMResponse, TextResponse, ToolCall, ToolSpec
+from forge.core.workflow import LLMResponse, TextResponse, ToolCall, ToolDefinition
 from forge.errors import BackendError, MissingCredentialError, MissingModelError
 
 log = logging.getLogger(__name__)
@@ -257,13 +257,14 @@ class AnthropicClient:
     # ── Tool schema conversion ───────────────────────────────────
 
     @staticmethod
-    def _convert_tools(tools: list[ToolSpec]) -> list[dict[str, Any]]:
-        """ToolSpec list → Anthropic tool definitions."""
+    def _convert_tools(tools: list[ToolDefinition]) -> list[dict[str, Any]]:
+        """ToolDefinition list → Anthropic tool definitions."""
         return [
             {
+                **spec.extra_fields,
                 "name": spec.name,
                 "description": spec.description,
-                "input_schema": spec.get_json_schema(),
+                "input_schema": spec.input_schema,
             }
             for spec in tools
         ]
@@ -431,7 +432,7 @@ class AnthropicClient:
     def _build_kwargs(
         self,
         messages: list[dict[str, Any]],
-        tools: list[ToolSpec] | None,
+        tools: list[ToolDefinition] | None,
         passthrough: dict[str, Any] | None = None,
         inbound_anthropic_body: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
@@ -442,19 +443,24 @@ class AnthropicClient:
         ``metadata``, ``thinking``, etc.). Forge-owned fields (``model``,
         ``messages``, ``system``, ``tools``) overlay it.
 
-        ``inbound_anthropic_body`` (proxy path 1) bypasses the deconstruct/
-        rebuild path: the backend receives the original inbound body
-        verbatim, preserving block-level fields like ``cache_control`` that
-        forge.Message doesn't represent. The runner only passes this on the
+        ``inbound_anthropic_body`` (proxy path 1) preserves the message/body
+        fields while tools always render from canonical definitions. This keeps
+        fields like ``cache_control`` that forge.Message doesn't represent. The runner only passes this on the
         clean first-attempt call (no compaction, no retries) — see ADR-015.
         """
         if inbound_anthropic_body is not None:
-            # Verbatim emit. Drop the proxy-internal ``stream`` field; the
+            # Preserve body/message fields. Drop the internal ``stream`` field; the
             # caller (send vs send_stream) selects streaming. A fixed client
             # model is authoritative; a dynamic
             # proxy client keeps the already-resolved request-local model.
             kwargs = dict(inbound_anthropic_body)
             kwargs.pop("stream", None)
+            # Messages still use the copied-body lane; tools always render
+            # from the same canonical definitions as ordinary sends/retries.
+            if tools is not None:
+                kwargs["tools"] = self._convert_tools(tools)
+            else:
+                kwargs.pop("tools", None)
             if self.model is not None:
                 kwargs["model"] = self.model
             if kwargs.get("model") in (None, ""):
@@ -519,11 +525,10 @@ class AnthropicClient:
     async def send(
         self,
         messages: list[dict[str, str]],
-        tools: list[ToolSpec] | None = None,
+        tools: list[ToolDefinition] | None = None,
         sampling: dict[str, Any] | None = None,
         passthrough: dict[str, Any] | None = None,
         inbound_anthropic_body: dict[str, Any] | None = None,
-        raw_openai_tools: list[dict[str, Any]] | None = None,
         extra_headers: dict[str, str] | None = None,
     ) -> LLMResponse:
         """Send JSON with the existing body conversion and sampling policy."""
@@ -546,11 +551,10 @@ class AnthropicClient:
     async def send_stream(
         self,
         messages: list[dict[str, str]],
-        tools: list[ToolSpec] | None = None,
+        tools: list[ToolDefinition] | None = None,
         sampling: dict[str, Any] | None = None,
         passthrough: dict[str, Any] | None = None,
         inbound_anthropic_body: dict[str, Any] | None = None,
-        raw_openai_tools: list[dict[str, Any]] | None = None,
         extra_headers: dict[str, str] | None = None,
     ) -> AsyncIterator[StreamChunk]:
         """Consume native Messages SSE without replaying an interrupted stream."""

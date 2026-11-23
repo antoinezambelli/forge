@@ -10,12 +10,10 @@ from forge.context.manager import ContextManager
 from forge.context.strategies import NoCompact
 from forge.core.messages import Message, MessageMeta, MessageRole, MessageType, ToolCallInfo
 from forge.core.runner import WorkflowRunner
-from pydantic import BaseModel
 from forge.core.workflow import (
     TextResponse,
     ToolCall,
-    ToolDef,
-    ToolSpec,
+    ToolDefinition,
     Workflow,
 )
 from forge.errors import MaxIterationsError, PrerequisiteError, StepEnforcementError, StreamError, ToolCallError, ToolExecutionError, ToolResolutionError, WorkflowCancelledError
@@ -23,43 +21,36 @@ from forge.errors import MaxIterationsError, PrerequisiteError, StepEnforcementE
 from tests.conftest import MockClient
 
 
-class EmptyParams(BaseModel):
-    pass
+EMPTY_SCHEMA = {"properties": {}, "title": "EmptyParams", "type": "object"}
 
 
 # ── Helpers ──────────────────────────────────────────────────────
 
 
-def _make_tool(name: str, fn=None) -> ToolDef:
-    """Create a minimal ToolDef for testing."""
-    if fn is None:
-        def default_fn(**kwargs):
-            return f"{name}_result"
-
-        fn = default_fn
-    return ToolDef(
-        spec=ToolSpec(name=name, description=f"Tool {name}", parameters=EmptyParams),
-        callable=fn,
-    )
+def _make_tool(name: str) -> ToolDefinition:
+    return ToolDefinition(name=name, description=f"Tool {name}", input_schema=EMPTY_SCHEMA)
 
 
 def _make_workflow(
-    tools: dict[str, ToolDef] | None = None,
+    tools: dict[str, ToolDefinition] | None = None,
     required_steps: list[str] | None = None,
     terminal_tool: str = "submit",
+    handlers=None,
+    prerequisites=None,
 ) -> Workflow:
     """Create a test workflow with sensible defaults."""
     if tools is None:
-        tools = {
-            "fetch": _make_tool("fetch"),
-            "submit": _make_tool("submit"),
-        }
+        tools = {"fetch": _make_tool("fetch"), "submit": _make_tool("submit")}
     if required_steps is None:
         required_steps = ["fetch"]
     return Workflow(
         name="test_wf",
         description="A test workflow",
         tools=tools,
+        handlers=handlers
+        if handlers is not None
+        else {name: (lambda _name=name, **kw: _name + "_result") for name in tools},
+        prerequisites=prerequisites or {},
         required_steps=required_steps,
         terminal_tool=terminal_tool,
         system_prompt_template="You are a {role}.",
@@ -124,7 +115,18 @@ class TestHappyPath:
             "step_b": _make_tool("step_b"),
             "submit": _make_tool("submit"),
         }
-        wf = _make_workflow(tools=tools, required_steps=["step_a", "step_b"])
+        tools_handlers = {
+            "step_a": (lambda **kw: "step_a" + "_result"),
+            "step_b": (lambda **kw: "step_b" + "_result"),
+            "submit": (lambda **kw: "submit" + "_result"),
+        }
+        tools_prerequisites = {}
+        wf = _make_workflow(
+            tools=tools,
+            handlers=tools_handlers,
+            prerequisites=tools_prerequisites,
+            required_steps=["step_a", "step_b"],
+        )
         client = MockClient([
             ToolCall(tool="step_a", args={}),
             ToolCall(tool="step_b", args={}),
@@ -143,11 +145,18 @@ class TestHappyPath:
             received_args.update(kwargs)
             return "captured"
 
-        tools = {
-            "fetch": _make_tool("fetch", fn=capture_tool),
-            "submit": _make_tool("submit"),
+        tools = {"fetch": _make_tool("fetch"), "submit": _make_tool("submit")}
+        tools_handlers = {
+            "fetch": capture_tool,
+            "submit": (lambda **kw: "submit" + "_result"),
         }
-        wf = _make_workflow(tools=tools, required_steps=["fetch"])
+        tools_prerequisites = {}
+        wf = _make_workflow(
+            tools=tools,
+            handlers=tools_handlers,
+            prerequisites=tools_prerequisites,
+            required_steps=["fetch"],
+        )
         client = MockClient([
             ToolCall(tool="fetch", args={"key": "value", "count": 42}),
             ToolCall(tool="submit", args={}),
@@ -242,7 +251,18 @@ class TestRetryLogic:
             "step_b": _make_tool("step_b"),
             "submit": _make_tool("submit"),
         }
-        wf = _make_workflow(tools=tools, required_steps=["step_a", "step_b"])
+        tools_handlers = {
+            "step_a": (lambda **kw: "step_a" + "_result"),
+            "step_b": (lambda **kw: "step_b" + "_result"),
+            "submit": (lambda **kw: "submit" + "_result"),
+        }
+        tools_prerequisites = {}
+        wf = _make_workflow(
+            tools=tools,
+            handlers=tools_handlers,
+            prerequisites=tools_prerequisites,
+            required_steps=["step_a", "step_b"],
+        )
         client = MockClient([
             # 2 retries then success
             TextResponse(content="fail1"),
@@ -303,11 +323,18 @@ class TestStepEnforcement:
             call_count += 1
             return "submitted"
 
-        tools = {
-            "fetch": _make_tool("fetch"),
-            "submit": _make_tool("submit", fn=counting_submit),
+        tools = {"fetch": _make_tool("fetch"), "submit": _make_tool("submit")}
+        tools_handlers = {
+            "fetch": (lambda **kw: "fetch" + "_result"),
+            "submit": counting_submit,
         }
-        wf = _make_workflow(tools=tools, required_steps=["fetch"])
+        tools_prerequisites = {}
+        wf = _make_workflow(
+            tools=tools,
+            handlers=tools_handlers,
+            prerequisites=tools_prerequisites,
+            required_steps=["fetch"],
+        )
         client = MockClient([
             ToolCall(tool="submit", args={}),   # premature
             ToolCall(tool="fetch", args={}),     # do the required step
@@ -519,11 +546,18 @@ class TestErrorHandling:
                 raise TypeError("expected int, got str for argument 'count'")
             return "fetch_result"
 
-        tools = {
-            "fetch": _make_tool("fetch", fn=flaky_fetch),
-            "submit": _make_tool("submit"),
+        tools = {"fetch": _make_tool("fetch"), "submit": _make_tool("submit")}
+        tools_handlers = {
+            "fetch": flaky_fetch,
+            "submit": (lambda **kw: "submit" + "_result"),
         }
-        wf = _make_workflow(tools=tools, required_steps=["fetch"])
+        tools_prerequisites = {}
+        wf = _make_workflow(
+            tools=tools,
+            handlers=tools_handlers,
+            prerequisites=tools_prerequisites,
+            required_steps=["fetch"],
+        )
         client = MockClient([
             ToolCall(tool="fetch", args={"count": "five"}),   # will raise
             ToolCall(tool="fetch", args={"count": 5}),        # corrected
@@ -541,11 +575,18 @@ class TestErrorHandling:
         def bad_tool(**kwargs):
             raise ValueError("always fails")
 
-        tools = {
-            "fetch": _make_tool("fetch", fn=bad_tool),
-            "submit": _make_tool("submit"),
+        tools = {"fetch": _make_tool("fetch"), "submit": _make_tool("submit")}
+        tools_handlers = {
+            "fetch": bad_tool,
+            "submit": (lambda **kw: "submit" + "_result"),
         }
-        wf = _make_workflow(tools=tools, required_steps=["fetch"])
+        tools_prerequisites = {}
+        wf = _make_workflow(
+            tools=tools,
+            handlers=tools_handlers,
+            prerequisites=tools_prerequisites,
+            required_steps=["fetch"],
+        )
         client = MockClient([
             ToolCall(tool="fetch", args={}),  # error 1
             ToolCall(tool="fetch", args={}),  # error 2
@@ -573,11 +614,18 @@ class TestErrorHandling:
                 raise ValueError(f"fail #{call_count}")
             return "ok"
 
-        tools = {
-            "fetch": _make_tool("fetch", fn=sometimes_fails),
-            "submit": _make_tool("submit"),
+        tools = {"fetch": _make_tool("fetch"), "submit": _make_tool("submit")}
+        tools_handlers = {
+            "fetch": sometimes_fails,
+            "submit": (lambda **kw: "submit" + "_result"),
         }
-        wf = _make_workflow(tools=tools, required_steps=["fetch"])
+        tools_prerequisites = {}
+        wf = _make_workflow(
+            tools=tools,
+            handlers=tools_handlers,
+            prerequisites=tools_prerequisites,
+            required_steps=["fetch"],
+        )
         client = MockClient([
             ToolCall(tool="fetch", args={}),  # error 1 (call_count=1)
             ToolCall(tool="fetch", args={}),  # success  (call_count=2) → resets counter
@@ -602,11 +650,18 @@ class TestErrorHandling:
                 raise TypeError("bad args")
             return "submitted"
 
-        tools = {
-            "fetch": _make_tool("fetch"),
-            "submit": _make_tool("submit", fn=flaky_submit),
+        tools = {"fetch": _make_tool("fetch"), "submit": _make_tool("submit")}
+        tools_handlers = {
+            "fetch": (lambda **kw: "fetch" + "_result"),
+            "submit": flaky_submit,
         }
-        wf = _make_workflow(tools=tools, required_steps=["fetch"])
+        tools_prerequisites = {}
+        wf = _make_workflow(
+            tools=tools,
+            handlers=tools_handlers,
+            prerequisites=tools_prerequisites,
+            required_steps=["fetch"],
+        )
         client = MockClient([
             ToolCall(tool="fetch", args={}),
             ToolCall(tool="submit", args={"bad": True}),   # terminal raises
@@ -628,11 +683,18 @@ class TestErrorHandling:
                 raise ValueError("file not found")
             return "fetch_result"
 
-        tools = {
-            "fetch": _make_tool("fetch", fn=flaky_fetch),
-            "submit": _make_tool("submit"),
+        tools = {"fetch": _make_tool("fetch"), "submit": _make_tool("submit")}
+        tools_handlers = {
+            "fetch": flaky_fetch,
+            "submit": (lambda **kw: "submit" + "_result"),
         }
-        wf = _make_workflow(tools=tools, required_steps=["fetch"])
+        tools_prerequisites = {}
+        wf = _make_workflow(
+            tools=tools,
+            handlers=tools_handlers,
+            prerequisites=tools_prerequisites,
+            required_steps=["fetch"],
+        )
         client = MockClient([
             ToolCall(tool="fetch", args={}),    # fails — should NOT satisfy required step
             ToolCall(tool="submit", args={}),   # premature — fetch not satisfied yet
@@ -652,11 +714,18 @@ class TestErrorHandling:
         def bad_tool(**kwargs):
             raise ValueError("fails")
 
-        tools = {
-            "fetch": _make_tool("fetch", fn=bad_tool),
-            "submit": _make_tool("submit"),
+        tools = {"fetch": _make_tool("fetch"), "submit": _make_tool("submit")}
+        tools_handlers = {
+            "fetch": bad_tool,
+            "submit": (lambda **kw: "submit" + "_result"),
         }
-        wf = _make_workflow(tools=tools, required_steps=["fetch"])
+        tools_prerequisites = {}
+        wf = _make_workflow(
+            tools=tools,
+            handlers=tools_handlers,
+            prerequisites=tools_prerequisites,
+            required_steps=["fetch"],
+        )
         client = MockClient([
             ToolCall(tool="fetch", args={}),  # iteration 0 (error)
             ToolCall(tool="fetch", args={}),  # iteration 1 (error)
@@ -779,11 +848,18 @@ class TestAsyncToolSupport:
         async def async_fetch(**kwargs):
             return "async_result"
 
-        tools = {
-            "fetch": _make_tool("fetch", fn=async_fetch),
-            "submit": _make_tool("submit"),
+        tools = {"fetch": _make_tool("fetch"), "submit": _make_tool("submit")}
+        tools_handlers = {
+            "fetch": async_fetch,
+            "submit": (lambda **kw: "submit" + "_result"),
         }
-        wf = _make_workflow(tools=tools, required_steps=["fetch"])
+        tools_prerequisites = {}
+        wf = _make_workflow(
+            tools=tools,
+            handlers=tools_handlers,
+            prerequisites=tools_prerequisites,
+            required_steps=["fetch"],
+        )
         client = MockClient([
             ToolCall(tool="fetch", args={}),
             ToolCall(tool="submit", args={}),
@@ -976,11 +1052,18 @@ class TestRescueToolCalls:
             received_args.update(kwargs)
             return "captured"
 
-        tools = {
-            "fetch": _make_tool("fetch", fn=capture_tool),
-            "submit": _make_tool("submit"),
+        tools = {"fetch": _make_tool("fetch"), "submit": _make_tool("submit")}
+        tools_handlers = {
+            "fetch": capture_tool,
+            "submit": (lambda **kw: "submit" + "_result"),
         }
-        wf = _make_workflow(tools=tools, required_steps=["fetch"])
+        tools_prerequisites = {}
+        wf = _make_workflow(
+            tools=tools,
+            handlers=tools_handlers,
+            prerequisites=tools_prerequisites,
+            required_steps=["fetch"],
+        )
         client = MockClient([
             TextResponse(content='{"tool": "fetch", "args": {"count": 42}}'),
             ToolCall(tool="submit", args={}),
@@ -1065,11 +1148,18 @@ class TestReasoningCapture:
                 raise ValueError("bad input")
             return "ok"
 
-        tools = {
-            "fetch": _make_tool("fetch", fn=flaky_fetch),
-            "submit": _make_tool("submit"),
+        tools = {"fetch": _make_tool("fetch"), "submit": _make_tool("submit")}
+        tools_handlers = {
+            "fetch": flaky_fetch,
+            "submit": (lambda **kw: "submit" + "_result"),
         }
-        wf = _make_workflow(tools=tools, required_steps=["fetch"])
+        tools_prerequisites = {}
+        wf = _make_workflow(
+            tools=tools,
+            handlers=tools_handlers,
+            prerequisites=tools_prerequisites,
+            required_steps=["fetch"],
+        )
         client = MockClient([
             ToolCall(tool="fetch", args={}, reasoning="Let me try fetching."),
             ToolCall(tool="fetch", args={}),
@@ -1251,10 +1341,9 @@ class TestOnMessageCallback:
                 raise failure
 
             workflow = _make_workflow(
-                tools={
-                    "fetch": _make_tool("fetch", fn=fail),
-                    "submit": _make_tool("submit"),
-                }
+                tools={"fetch": _make_tool("fetch"), "submit": _make_tool("submit")},
+                handlers={"fetch": fail, "submit": (lambda **kw: "submit" + "_result")},
+                prerequisites={},
             )
             runner, collected = _collecting_runner(
                 MockClient([ToolCall(tool="fetch", args={})]),
@@ -1329,11 +1418,18 @@ class TestToolResolutionError:
                 raise ToolResolutionError("No entry found for 'capital of France'. Try another key.")
             return "The capital of France is Paris."
 
-        tools = {
-            "fetch": _make_tool("fetch", fn=lookup),
-            "submit": _make_tool("submit"),
+        tools = {"fetch": _make_tool("fetch"), "submit": _make_tool("submit")}
+        tools_handlers = {
+            "fetch": lookup,
+            "submit": (lambda **kw: "submit" + "_result"),
         }
-        wf = _make_workflow(tools=tools, required_steps=["fetch"])
+        tools_prerequisites = {}
+        wf = _make_workflow(
+            tools=tools,
+            handlers=tools_handlers,
+            prerequisites=tools_prerequisites,
+            required_steps=["fetch"],
+        )
         client = MockClient([
             ToolCall(tool="fetch", args={"query": "capital of France"}),
             ToolCall(tool="fetch", args={"query": "france"}),
@@ -1351,11 +1447,18 @@ class TestToolResolutionError:
         def always_miss(**kwargs):
             raise ToolResolutionError("No entry found for 'bad key'. Try another key.")
 
-        tools = {
-            "fetch": _make_tool("fetch", fn=always_miss),
-            "submit": _make_tool("submit"),
+        tools = {"fetch": _make_tool("fetch"), "submit": _make_tool("submit")}
+        tools_handlers = {
+            "fetch": always_miss,
+            "submit": (lambda **kw: "submit" + "_result"),
         }
-        wf = _make_workflow(tools=tools, required_steps=["fetch"])
+        tools_prerequisites = {}
+        wf = _make_workflow(
+            tools=tools,
+            handlers=tools_handlers,
+            prerequisites=tools_prerequisites,
+            required_steps=["fetch"],
+        )
         client = MockClient([
             ToolCall(tool="fetch", args={}),
             ToolCall(tool="fetch", args={}),
@@ -1378,11 +1481,18 @@ class TestToolResolutionError:
         def always_miss(**kwargs):
             raise ToolResolutionError("miss")
 
-        tools = {
-            "fetch": _make_tool("fetch", fn=always_miss),
-            "submit": _make_tool("submit"),
+        tools = {"fetch": _make_tool("fetch"), "submit": _make_tool("submit")}
+        tools_handlers = {
+            "fetch": always_miss,
+            "submit": (lambda **kw: "submit" + "_result"),
         }
-        wf = _make_workflow(tools=tools, required_steps=["fetch"])
+        tools_prerequisites = {}
+        wf = _make_workflow(
+            tools=tools,
+            handlers=tools_handlers,
+            prerequisites=tools_prerequisites,
+            required_steps=["fetch"],
+        )
         client = MockClient([
             ToolCall(tool="fetch", args={}) for _ in range(5)
         ])
@@ -1406,11 +1516,18 @@ class TestToolResolutionError:
                 raise ToolResolutionError("miss")
             return "hit"
 
-        tools = {
-            "fetch": _make_tool("fetch", fn=miss_then_hit),
-            "submit": _make_tool("submit"),
+        tools = {"fetch": _make_tool("fetch"), "submit": _make_tool("submit")}
+        tools_handlers = {
+            "fetch": miss_then_hit,
+            "submit": (lambda **kw: "submit" + "_result"),
         }
-        wf = _make_workflow(tools=tools, required_steps=["fetch"])
+        tools_prerequisites = {}
+        wf = _make_workflow(
+            tools=tools,
+            handlers=tools_handlers,
+            prerequisites=tools_prerequisites,
+            required_steps=["fetch"],
+        )
         client = MockClient([
             ToolCall(tool="fetch", args={}),    # ToolResolutionError — step NOT recorded
             ToolCall(tool="submit", args={}),   # premature — fetch not satisfied
@@ -1436,11 +1553,18 @@ class TestToolResolutionError:
                 raise ValueError("hard crash")
             return "ok"
 
-        tools = {
-            "fetch": _make_tool("fetch", fn=mixed_errors),
-            "submit": _make_tool("submit"),
+        tools = {"fetch": _make_tool("fetch"), "submit": _make_tool("submit")}
+        tools_handlers = {
+            "fetch": mixed_errors,
+            "submit": (lambda **kw: "submit" + "_result"),
         }
-        wf = _make_workflow(tools=tools, required_steps=["fetch"])
+        tools_prerequisites = {}
+        wf = _make_workflow(
+            tools=tools,
+            handlers=tools_handlers,
+            prerequisites=tools_prerequisites,
+            required_steps=["fetch"],
+        )
         client = MockClient([
             ToolCall(tool="fetch", args={}),   # ToolResolutionError (no increment)
             ToolCall(tool="fetch", args={}),   # ValueError (increment to 1)
@@ -1472,12 +1596,18 @@ class TestPrerequisiteEnforcement:
         """Model calls edit without read, gets nudged, reads, then edits."""
         tools = {
             "read_file": _make_tool("read_file"),
-            "edit_file": ToolDef(
-                spec=ToolSpec(name="edit_file", description="Edit", parameters=EmptyParams),
-                callable=lambda **kwargs: "edited",
-                prerequisites=[{"tool": "read_file", "match_arg": "path"}],
+            "edit_file": ToolDefinition(
+                name="edit_file", description="Edit", input_schema=EMPTY_SCHEMA
             ),
             "submit": _make_tool("submit"),
+        }
+        tools_handlers = {
+            "read_file": (lambda **kw: "read_file" + "_result"),
+            "edit_file": lambda **kwargs: "edited",
+            "submit": (lambda **kw: "submit" + "_result"),
+        }
+        tools_prerequisites = {
+            "edit_file": [{"tool": "read_file", "match_arg": "path"}]
         }
         client = MockClient([
             # 1: model tries edit_file first → blocked
@@ -1489,7 +1619,13 @@ class TestPrerequisiteEnforcement:
             # 4: terminal
             ToolCall(tool="submit", args={}),
         ])
-        wf = _make_workflow(tools=tools, required_steps=[], terminal_tool="submit")
+        wf = _make_workflow(
+            tools=tools,
+            handlers=tools_handlers,
+            prerequisites=tools_prerequisites,
+            required_steps=[],
+            terminal_tool="submit",
+        )
         runner = _make_runner(client)
         result = await runner.run(wf, "fix foo.py", prompt_vars={"role": "dev"})
         assert result == "submit_result"
@@ -1500,20 +1636,30 @@ class TestPrerequisiteEnforcement:
         collected = []
         tools = {
             "read_file": _make_tool("read_file"),
-            "edit_file": ToolDef(
-                spec=ToolSpec(name="edit_file", description="Edit", parameters=EmptyParams),
-                callable=lambda **kwargs: "edited",
-                prerequisites=["read_file"],
+            "edit_file": ToolDefinition(
+                name="edit_file", description="Edit", input_schema=EMPTY_SCHEMA
             ),
             "submit": _make_tool("submit"),
         }
+        tools_handlers = {
+            "read_file": (lambda **kw: "read_file" + "_result"),
+            "edit_file": lambda **kwargs: "edited",
+            "submit": (lambda **kw: "submit" + "_result"),
+        }
+        tools_prerequisites = {"edit_file": ["read_file"]}
         client = MockClient([
             ToolCall(tool="edit_file", args={}),
             ToolCall(tool="read_file", args={}),
             ToolCall(tool="edit_file", args={}),
             ToolCall(tool="submit", args={}),
         ])
-        wf = _make_workflow(tools=tools, required_steps=[], terminal_tool="submit")
+        wf = _make_workflow(
+            tools=tools,
+            handlers=tools_handlers,
+            prerequisites=tools_prerequisites,
+            required_steps=[],
+            terminal_tool="submit",
+        )
         runner = _make_runner(client)
         runner.on_message = collected.append
         await runner.run(wf, "go", prompt_vars={"role": "dev"})
@@ -1527,20 +1673,30 @@ class TestPrerequisiteEnforcement:
         """PrerequisiteError raised after max consecutive violations."""
         tools = {
             "read_file": _make_tool("read_file"),
-            "edit_file": ToolDef(
-                spec=ToolSpec(name="edit_file", description="Edit", parameters=EmptyParams),
-                callable=lambda **kwargs: "edited",
-                prerequisites=["read_file"],
+            "edit_file": ToolDefinition(
+                name="edit_file", description="Edit", input_schema=EMPTY_SCHEMA
             ),
             "submit": _make_tool("submit"),
         }
+        tools_handlers = {
+            "read_file": (lambda **kw: "read_file" + "_result"),
+            "edit_file": lambda **kwargs: "edited",
+            "submit": (lambda **kw: "submit" + "_result"),
+        }
+        tools_prerequisites = {"edit_file": ["read_file"]}
         client = MockClient([
             ToolCall(tool="edit_file", args={}),
             ToolCall(tool="edit_file", args={}),
             ToolCall(tool="edit_file", args={}),
             ToolCall(tool="edit_file", args={}),
         ])
-        wf = _make_workflow(tools=tools, required_steps=[], terminal_tool="submit")
+        wf = _make_workflow(
+            tools=tools,
+            handlers=tools_handlers,
+            prerequisites=tools_prerequisites,
+            required_steps=[],
+            terminal_tool="submit",
+        )
         ctx = ContextManager(strategy=NoCompact(), budget_tokens=100_000)
         runner = WorkflowRunner(client=client, context_manager=ctx, max_iterations=10)
         with pytest.raises(PrerequisiteError, match="read_file"):
@@ -1552,12 +1708,18 @@ class TestPrerequisiteEnforcement:
         collected = []
         tools = {
             "read_file": _make_tool("read_file"),
-            "edit_file": ToolDef(
-                spec=ToolSpec(name="edit_file", description="Edit", parameters=EmptyParams),
-                callable=lambda **kwargs: "edited",
-                prerequisites=[{"tool": "read_file", "match_arg": "path"}],
+            "edit_file": ToolDefinition(
+                name="edit_file", description="Edit", input_schema=EMPTY_SCHEMA
             ),
             "submit": _make_tool("submit"),
+        }
+        tools_handlers = {
+            "read_file": (lambda **kw: "read_file" + "_result"),
+            "edit_file": lambda **kwargs: "edited",
+            "submit": (lambda **kw: "submit" + "_result"),
+        }
+        tools_prerequisites = {
+            "edit_file": [{"tool": "read_file", "match_arg": "path"}]
         }
         client = MockClient([
             # Read a.py, then try to edit b.py → blocked (arg mismatch)
@@ -1568,7 +1730,13 @@ class TestPrerequisiteEnforcement:
             ToolCall(tool="edit_file", args={"path": "b.py"}),
             ToolCall(tool="submit", args={}),
         ])
-        wf = _make_workflow(tools=tools, required_steps=[], terminal_tool="submit")
+        wf = _make_workflow(
+            tools=tools,
+            handlers=tools_handlers,
+            prerequisites=tools_prerequisites,
+            required_steps=[],
+            terminal_tool="submit",
+        )
         runner = _make_runner(client)
         runner.on_message = collected.append
         result = await runner.run(wf, "go", prompt_vars={"role": "dev"})
@@ -1589,15 +1757,24 @@ class TestMultipleTerminalTools:
         for terminal, expected in [("set_ac", "ac_on"), ("no_action", "skipped")]:
             tools = {
                 "gather": _make_tool("gather"),
-                "set_ac": _make_tool("set_ac", fn=lambda **kw: "ac_on"),
-                "no_action": _make_tool("no_action", fn=lambda **kw: "skipped"),
+                "set_ac": _make_tool("set_ac"),
+                "no_action": _make_tool("no_action"),
             }
+            tools_handlers = {
+                "gather": (lambda **kw: "gather" + "_result"),
+                "set_ac": lambda **kw: "ac_on",
+                "no_action": lambda **kw: "skipped",
+            }
+            tools_prerequisites = {}
             client = MockClient([
                 ToolCall(tool="gather", args={}),
                 ToolCall(tool=terminal, args={}),
             ])
             wf = _make_workflow(
-                tools=tools, required_steps=["gather"],
+                tools=tools,
+                handlers=tools_handlers,
+                prerequisites=tools_prerequisites,
+                required_steps=["gather"],
                 terminal_tool=["set_ac", "no_action"],
             )
             runner = _make_runner(client)
@@ -1615,6 +1792,12 @@ class TestMultipleTerminalTools:
             "set_ac": _make_tool("set_ac"),
             "no_action": _make_tool("no_action"),
         }
+        tools_handlers = {
+            "gather": (lambda **kw: "gather" + "_result"),
+            "set_ac": (lambda **kw: "set_ac" + "_result"),
+            "no_action": (lambda **kw: "no_action" + "_result"),
+        }
+        tools_prerequisites = {}
         client = MockClient([
             ToolCall(tool="set_ac", args={}),       # premature
             ToolCall(tool="no_action", args={}),     # also premature
@@ -1622,7 +1805,10 @@ class TestMultipleTerminalTools:
             ToolCall(tool="set_ac", args={}),         # now allowed
         ])
         wf = _make_workflow(
-            tools=tools, required_steps=["gather"],
+            tools=tools,
+            handlers=tools_handlers,
+            prerequisites=tools_prerequisites,
+            required_steps=["gather"],
             terminal_tool=["set_ac", "no_action"],
         )
         runner = _make_runner(client)
@@ -1666,15 +1852,22 @@ class TestCancellation:
             cancel.set()
             return "fetch_result"
 
-        tools = {
-            "fetch": _make_tool("fetch", fn=cancel_after_fetch),
-            "submit": _make_tool("submit"),
+        tools = {"fetch": _make_tool("fetch"), "submit": _make_tool("submit")}
+        tools_handlers = {
+            "fetch": cancel_after_fetch,
+            "submit": (lambda **kw: "submit" + "_result"),
         }
+        tools_prerequisites = {}
         client = MockClient([
             ToolCall(tool="fetch", args={}),
             ToolCall(tool="submit", args={}),
         ])
-        wf = _make_workflow(tools=tools, required_steps=["fetch"])
+        wf = _make_workflow(
+            tools=tools,
+            handlers=tools_handlers,
+            prerequisites=tools_prerequisites,
+            required_steps=["fetch"],
+        )
         runner = _make_runner(client)
 
         with pytest.raises(WorkflowCancelledError) as exc_info:

@@ -6,11 +6,10 @@ from typing import Literal
 
 import httpx
 import pytest
-from pydantic import BaseModel, Field
 from unittest.mock import AsyncMock, MagicMock
 
 from forge.clients.ollama import OllamaClient
-from forge.core.workflow import TextResponse, ToolSpec
+from forge.core.workflow import TextResponse, ToolDefinition
 from forge.clients.base import ChunkType
 from forge.errors import BackendError, ThinkingNotSupportedError
 
@@ -18,15 +17,21 @@ from forge.errors import BackendError, ThinkingNotSupportedError
 pytestmark = pytest.mark.usefixtures("mock_httpx_client_constructor")
 
 
-class PartParams(BaseModel):
-    part: str = Field(description="Part number")
+PART_SCHEMA = {
+    "properties": {
+        "part": {"description": "Part number", "title": "Part", "type": "string"}
+    },
+    "required": ["part"],
+    "title": "PartParams",
+    "type": "object",
+}
 
 
-def _make_spec(name: str = "get_pricing") -> ToolSpec:
-    return ToolSpec(
+def _make_spec(name: str = "get_pricing") -> ToolDefinition:
+    return ToolDefinition(
         name=name,
         description=f"Get {name}",
-        parameters=PartParams,
+        input_schema=PART_SCHEMA,
     )
 
 
@@ -115,19 +120,35 @@ class TestOllamaSend:
 
     @pytest.mark.asyncio
     async def test_formats_tools_in_request(self) -> None:
-        class SearchParams(BaseModel):
-            query: str = Field(description="Query")
-            order: Literal["asc", "desc"] = Field(description="Sort order")
-            limit: int | None = Field(default=None, description="Limit")
+        SEARCH_SCHEMA = {
+            "properties": {
+                "query": {"description": "Query", "title": "Query", "type": "string"},
+                "order": {
+                    "description": "Sort order",
+                    "enum": ["asc", "desc"],
+                    "title": "Order",
+                    "type": "string",
+                },
+                "limit": {
+                    "anyOf": [{"type": "integer"}, {"type": "null"}],
+                    "default": None,
+                    "description": "Limit",
+                    "title": "Limit",
+                },
+            },
+            "required": ["query", "order"],
+            "title": "SearchParams",
+            "type": "object",
+        }
 
         client = _make_client()
         client._http.post.return_value = _mock_response({
             "message": {"role": "assistant", "content": "ok"}
         })
-        spec = ToolSpec(
+        spec = ToolDefinition(
             name="search",
             description="Search items",
-            parameters=SearchParams,
+            input_schema=SEARCH_SCHEMA,
         )
         await client.send([{"role": "user", "content": "test"}], tools=[spec])
 

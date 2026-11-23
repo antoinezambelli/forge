@@ -3,27 +3,31 @@
 import asyncio
 from collections.abc import AsyncIterator
 import json
-from typing import Literal
 
 import pytest
 import httpx
-from pydantic import BaseModel, Field
 
 from forge.clients.anthropic import AnthropicClient
 from forge.clients.base import ChunkType, TokenUsage
-from forge.core.workflow import TextResponse, ToolCall, ToolSpec
+from forge.core.workflow import TextResponse, ToolCall, ToolDefinition
 from forge.errors import BackendError, MissingModelError
 
 
-class CityParams(BaseModel):
-    city: str = Field(description="City name")
+CITY_SCHEMA = {
+    "properties": {
+        "city": {"description": "City name", "title": "City", "type": "string"}
+    },
+    "required": ["city"],
+    "title": "CityParams",
+    "type": "object",
+}
 
 
-def _make_spec(name: str = "get_weather") -> ToolSpec:
-    return ToolSpec(
+def _make_spec(name: str = "get_weather") -> ToolDefinition:
+    return ToolDefinition(
         name=name,
         description=f"Get {name}",
-        parameters=CityParams,
+        input_schema=CITY_SCHEMA,
     )
 
 
@@ -126,15 +130,26 @@ def _text_response(text: str = "ok", **usage: int) -> dict:
     }
 
 
-class SetUnitParams(BaseModel):
-    unit: Literal["celsius", "fahrenheit"] = Field(description="Unit")
+SET_UNIT_SCHEMA = {
+    "properties": {
+        "unit": {
+            "description": "Unit",
+            "enum": ["celsius", "fahrenheit"],
+            "title": "Unit",
+            "type": "string",
+        }
+    },
+    "required": ["unit"],
+    "title": "SetUnitParams",
+    "type": "object",
+}
 
 
-def _make_spec_with_enum() -> ToolSpec:
-    return ToolSpec(
+def _make_spec_with_enum() -> ToolDefinition:
+    return ToolDefinition(
         name="set_unit",
         description="Set temperature unit",
-        parameters=SetUnitParams,
+        input_schema=SET_UNIT_SCHEMA,
     )
 
 
@@ -176,14 +191,25 @@ class TestConvertTools:
         assert prop["enum"] == ["celsius", "fahrenheit"]
 
     def test_optional_param(self) -> None:
-        class SearchWithLimitParams(BaseModel):
-            query: str = Field(description="Query")
-            limit: int | None = Field(default=None, description="Max results")
+        SEARCH_WITH_LIMIT_SCHEMA = {
+            "properties": {
+                "query": {"description": "Query", "title": "Query", "type": "string"},
+                "limit": {
+                    "anyOf": [{"type": "integer"}, {"type": "null"}],
+                    "default": None,
+                    "description": "Max results",
+                    "title": "Limit",
+                },
+            },
+            "required": ["query"],
+            "title": "SearchWithLimitParams",
+            "type": "object",
+        }
 
-        spec = ToolSpec(
+        spec = ToolDefinition(
             name="search",
             description="Search",
-            parameters=SearchWithLimitParams,
+            input_schema=SEARCH_WITH_LIMIT_SCHEMA,
         )
         result = AnthropicClient._convert_tools([spec])
         assert "query" in result[0]["input_schema"]["required"]

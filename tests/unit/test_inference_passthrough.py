@@ -1,9 +1,4 @@
-"""Tests for run_inference's raw-OpenAI passthrough first-attempt gate.
-
-The proxy hands run_inference the client's verbatim OpenAI transcript/tools.
-They must be forwarded ONLY on the clean first attempt; any forge mutation
-(retry here) falls back to fold_and_serialize + the parsed tool_specs.
-"""
+"""Message-sidecar first-attempt behavior with canonical tools on every attempt."""
 
 import asyncio
 from unittest.mock import AsyncMock
@@ -15,7 +10,7 @@ from forge.context.manager import ContextManager
 from forge.context.strategies import NoCompact
 from forge.core.inference import run_inference
 from forge.core.messages import Message, MessageMeta, MessageRole, MessageType
-from forge.core.workflow import TextResponse, ToolCall, ToolSpec
+from forge.core.workflow import TextResponse, ToolCall, ToolDefinition
 from forge.guardrails import ErrorTracker, ResponseValidator
 
 
@@ -33,8 +28,8 @@ def _ctx():
 
 
 def _search_spec():
-    return ToolSpec.from_json_schema(
-        name="search", description="", schema={"type": "object", "properties": {}},
+    return ToolDefinition(
+        name="search", description="", input_schema={"type": "object", "properties": {}},
     )
 
 
@@ -116,21 +111,20 @@ async def test_raw_used_on_first_attempt_folded_on_retry():
         context_manager=_ctx(),
         validator=ResponseValidator(["search"], rescue_enabled=True),
         error_tracker=ErrorTracker(max_retries=2),
-        tool_specs=[_search_spec()],
+        tool_definitions=[_search_spec()],
         raw_openai_messages=raw_messages,
-        raw_openai_tools=raw_tools,
         reasoning_replay="full",
     )
 
     assert result is not None
     assert client.send.await_count == 2
 
-    # Attempt 0 (clean): forwarded the verbatim raw messages + raw tools.
+    # Attempt 0 (clean): forwarded the verbatim messages and canonical tools.
     first = client.send.call_args_list[0]
     assert first.args[0] == raw_messages
-    assert first.kwargs["raw_openai_tools"] == raw_tools
+    assert first.kwargs["tools"] == [_search_spec()]
 
-    # Attempt 1 (post-retry mutation): folded messages, no raw tools kwarg.
+    # Attempt 1 (post-retry mutation): folded messages and the same canonical tools.
     second = client.send.call_args_list[1]
     assert second.args[0] != raw_messages
     assert [message["content"] for message in second.args[0][:3]] == [
@@ -169,20 +163,19 @@ async def test_threshold_sized_proxy_request_stays_on_clean_raw_path():
         context_manager=context_manager,
         validator=ResponseValidator(["search"], rescue_enabled=True),
         error_tracker=ErrorTracker(max_retries=1),
-        tool_specs=[_search_spec()],
+        tool_definitions=[_search_spec()],
         raw_openai_messages=raw_messages,
-        raw_openai_tools=raw_tools,
     )
 
     call = client.send.await_args
     assert call.args[0] == raw_messages
-    assert call.kwargs["raw_openai_tools"] == raw_tools
+    assert call.kwargs["tools"] == [_search_spec()]
 
 
 @pytest.mark.asyncio
 async def test_no_raw_falls_back_to_fold():
     """Without raw_openai_* (the non-proxy runner path), folding is used and
-    no raw_openai_tools kwarg is passed to the client."""
+    canonical definitions still reach the client."""
     client = _client([ToolCall(tool="search", args={})])
     messages = [Message(
         MessageRole.USER, "hello",
@@ -195,7 +188,7 @@ async def test_no_raw_falls_back_to_fold():
         context_manager=_ctx(),
         validator=ResponseValidator(["search"], rescue_enabled=True),
         error_tracker=ErrorTracker(max_retries=1),
-        tool_specs=[_search_spec()],
+        tool_definitions=[_search_spec()],
     )
 
     call = client.send.call_args
@@ -234,9 +227,8 @@ async def test_non_full_reasoning_replay_filters_raw_reasoning_but_keeps_raw_sha
         context_manager=_ctx(),
         validator=ResponseValidator(["search"], rescue_enabled=True),
         error_tracker=ErrorTracker(max_retries=1),
-        tool_specs=[_search_spec()],
+        tool_definitions=[_search_spec()],
         raw_openai_messages=raw_messages,
-        raw_openai_tools=raw_tools,
         reasoning_replay="keep-last",
     )
 
@@ -245,7 +237,7 @@ async def test_non_full_reasoning_replay_filters_raw_reasoning_but_keeps_raw_sha
     assert "reasoning_content" not in call.args[0][0]
     assert call.args[0][1]["name"] == "a2"
     assert call.args[0][1]["reasoning_content"] == "latest"
-    assert call.kwargs["raw_openai_tools"] == raw_tools
+    assert call.kwargs["tools"] == [_search_spec()]
 
 
 async def _run_with_context(client, context_manager):
@@ -258,7 +250,7 @@ async def _run_with_context(client, context_manager):
         context_manager=context_manager,
         validator=ResponseValidator(["search"], rescue_enabled=True),
         error_tracker=ErrorTracker(max_retries=2),
-        tool_specs=[_search_spec()],
+        tool_definitions=[_search_spec()],
     )
 
 

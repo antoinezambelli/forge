@@ -15,61 +15,166 @@ from __future__ import annotations
 
 from typing import Any
 
-from pydantic import BaseModel, Field
 
-from forge.core.workflow import ToolDef, ToolSpec, Workflow
+from forge.core.workflow import ToolDefinition, Workflow
 
 from ._base import EvalScenario, _placeholder_workflow
 
 
-# ── Pydantic parameter models ────────────────────────────────
+# ── Explicit input schemas ────────────────────────────────
 
 
-class PatientLookupParams(BaseModel):
-    patient_name: str = Field(description="Full name of the patient to look up")
+PATIENT_LOOKUP_SCHEMA = {
+    "properties": {
+        "patient_name": {
+            "description": "Full name of the patient to look up",
+            "title": "Patient Name",
+            "type": "string",
+        }
+    },
+    "required": ["patient_name"],
+    "title": "PatientLookupParams",
+    "type": "object",
+}
 
 
-class PullRecordsParams(BaseModel):
-    mrn: str = Field(description="Medical Record Number from patient_lookup")
+PULL_RECORDS_SCHEMA = {
+    "properties": {
+        "mrn": {
+            "description": "Medical Record Number from patient_lookup",
+            "title": "Mrn",
+            "type": "string",
+        }
+    },
+    "required": ["mrn"],
+    "title": "PullRecordsParams",
+    "type": "object",
+}
 
 
-class OrderLabsParams(BaseModel):
-    encounter_id: str = Field(description="Encounter ID from pull_records")
+ORDER_LABS_SCHEMA = {
+    "properties": {
+        "encounter_id": {
+            "description": "Encounter ID from pull_records",
+            "title": "Encounter Id",
+            "type": "string",
+        }
+    },
+    "required": ["encounter_id"],
+    "title": "OrderLabsParams",
+    "type": "object",
+}
 
 
-class ReviewImagingParams(BaseModel):
-    lab_id: str = Field(description="Lab order ID from order_labs")
+REVIEW_IMAGING_SCHEMA = {
+    "properties": {
+        "lab_id": {
+            "description": "Lab order ID from order_labs",
+            "title": "Lab Id",
+            "type": "string",
+        }
+    },
+    "required": ["lab_id"],
+    "title": "ReviewImagingParams",
+    "type": "object",
+}
 
 
-class RequestReferralParams(BaseModel):
-    imaging_id: str = Field(description="Imaging study ID from review_imaging")
+REQUEST_REFERRAL_SCHEMA = {
+    "properties": {
+        "imaging_id": {
+            "description": "Imaging study ID from review_imaging",
+            "title": "Imaging Id",
+            "type": "string",
+        }
+    },
+    "required": ["imaging_id"],
+    "title": "RequestReferralParams",
+    "type": "object",
+}
 
 
-class CheckPharmacyParams(BaseModel):
-    referral_id: str = Field(description="Referral ID from request_referral")
+CHECK_PHARMACY_SCHEMA = {
+    "properties": {
+        "referral_id": {
+            "description": "Referral ID from request_referral",
+            "title": "Referral Id",
+            "type": "string",
+        }
+    },
+    "required": ["referral_id"],
+    "title": "CheckPharmacyParams",
+    "type": "object",
+}
 
 
-class VerifyInsuranceParams(BaseModel):
-    patient_mrn: str = Field(description="Patient MRN from patient_lookup")
+VERIFY_INSURANCE_SCHEMA = {
+    "properties": {
+        "patient_mrn": {
+            "description": "Patient MRN from patient_lookup",
+            "title": "Patient Mrn",
+            "type": "string",
+        }
+    },
+    "required": ["patient_mrn"],
+    "title": "VerifyInsuranceParams",
+    "type": "object",
+}
 
 
-class RequestPriorAuthParams(BaseModel):
-    plan_id: str = Field(description="Insurance plan ID from verify_insurance")
-    referral_id: str = Field(description="Referral ID from request_referral")
+REQUEST_PRIOR_AUTH_SCHEMA = {
+    "properties": {
+        "plan_id": {
+            "description": "Insurance plan ID from verify_insurance",
+            "title": "Plan Id",
+            "type": "string",
+        },
+        "referral_id": {
+            "description": "Referral ID from request_referral",
+            "title": "Referral Id",
+            "type": "string",
+        },
+    },
+    "required": ["plan_id", "referral_id"],
+    "title": "RequestPriorAuthParams",
+    "type": "object",
+}
 
 
-class ScheduleAppointmentParams(BaseModel):
-    auth_id: str = Field(description="Prior authorization ID from request_prior_auth")
-    referral_id: str = Field(description="Referral ID from request_referral")
+SCHEDULE_APPOINTMENT_SCHEMA = {
+    "properties": {
+        "auth_id": {
+            "description": "Prior authorization ID from request_prior_auth",
+            "title": "Auth Id",
+            "type": "string",
+        },
+        "referral_id": {
+            "description": "Referral ID from request_referral",
+            "title": "Referral Id",
+            "type": "string",
+        },
+    },
+    "required": ["auth_id", "referral_id"],
+    "title": "ScheduleAppointmentParams",
+    "type": "object",
+}
 
 
-class TreatmentPlanParams(BaseModel):
-    summary: str = Field(
-        description=(
-            "Treatment plan summary citing patient info, diagnosis, key lab values, "
-            "imaging findings, specialist, medication concerns, and scheduled appointment"
-        ),
-    )
+TREATMENT_PLAN_SCHEMA = {
+    "properties": {
+        "summary": {
+            "description": "Treatment plan summary citing patient info, "
+            "diagnosis, key lab values, imaging findings, "
+            "specialist, medication concerns, and scheduled "
+            "appointment",
+            "title": "Summary",
+            "type": "string",
+        }
+    },
+    "required": ["summary"],
+    "title": "TreatmentPlanParams",
+    "type": "object",
+}
 
 
 # ── Tool result strings ──────────────────────────────────────
@@ -389,90 +494,78 @@ _REQUIRED_STEPS = _EXPECTED_ORDER[:-1]  # everything except terminal
 def _build_compaction_chain() -> tuple[Workflow, callable]:
     db = MedicalInvestigation()
 
-    tools: dict[str, ToolDef] = {
-        "patient_lookup": ToolDef(
-            spec=ToolSpec(
-                name="patient_lookup",
-                description="Look up a patient by name. Returns MRN and demographics.",
-                parameters=PatientLookupParams,
-            ),
-            callable=lambda **kw: db.patient_lookup(kw["patient_name"]),
+    tools: dict[str, ToolDefinition] = {
+        "patient_lookup": ToolDefinition(
+            name="patient_lookup",
+            description="Look up a patient by name. Returns MRN and demographics.",
+            input_schema=PATIENT_LOOKUP_SCHEMA,
         ),
-        "pull_records": ToolDef(
-            spec=ToolSpec(
-                name="pull_records",
-                description="Pull recent medical records for a patient by MRN.",
-                parameters=PullRecordsParams,
-            ),
-            callable=lambda **kw: db.pull_records(kw["mrn"]),
+        "pull_records": ToolDefinition(
+            name="pull_records",
+            description="Pull recent medical records for a patient by MRN.",
+            input_schema=PULL_RECORDS_SCHEMA,
         ),
-        "order_labs": ToolDef(
-            spec=ToolSpec(
-                name="order_labs",
-                description="Order and retrieve lab results for an encounter.",
-                parameters=OrderLabsParams,
-            ),
-            callable=lambda **kw: db.order_labs(kw["encounter_id"]),
+        "order_labs": ToolDefinition(
+            name="order_labs",
+            description="Order and retrieve lab results for an encounter.",
+            input_schema=ORDER_LABS_SCHEMA,
         ),
-        "review_imaging": ToolDef(
-            spec=ToolSpec(
-                name="review_imaging",
-                description="Review imaging studies ordered alongside lab work.",
-                parameters=ReviewImagingParams,
-            ),
-            callable=lambda **kw: db.review_imaging(kw["lab_id"]),
+        "review_imaging": ToolDefinition(
+            name="review_imaging",
+            description="Review imaging studies ordered alongside lab work.",
+            input_schema=REVIEW_IMAGING_SCHEMA,
         ),
-        "request_referral": ToolDef(
-            spec=ToolSpec(
-                name="request_referral",
-                description="Request a specialist referral based on imaging findings.",
-                parameters=RequestReferralParams,
-            ),
-            callable=lambda **kw: db.request_referral(kw["imaging_id"]),
+        "request_referral": ToolDefinition(
+            name="request_referral",
+            description="Request a specialist referral based on imaging findings.",
+            input_schema=REQUEST_REFERRAL_SCHEMA,
         ),
-        "check_pharmacy": ToolDef(
-            spec=ToolSpec(
-                name="check_pharmacy",
-                description="Check current medications and flag contraindications for a referral.",
-                parameters=CheckPharmacyParams,
-            ),
-            callable=lambda **kw: db.check_pharmacy(kw["referral_id"]),
+        "check_pharmacy": ToolDefinition(
+            name="check_pharmacy",
+            description="Check current medications and flag contraindications for a referral.",
+            input_schema=CHECK_PHARMACY_SCHEMA,
         ),
-        "verify_insurance": ToolDef(
-            spec=ToolSpec(
-                name="verify_insurance",
-                description="Verify insurance coverage and authorization requirements for a patient.",
-                parameters=VerifyInsuranceParams,
-            ),
-            callable=lambda **kw: db.verify_insurance(kw["patient_mrn"]),
+        "verify_insurance": ToolDefinition(
+            name="verify_insurance",
+            description="Verify insurance coverage and authorization requirements for a patient.",
+            input_schema=VERIFY_INSURANCE_SCHEMA,
         ),
-        "request_prior_auth": ToolDef(
-            spec=ToolSpec(
-                name="request_prior_auth",
-                description="Request prior authorization from the insurance plan for a referral.",
-                parameters=RequestPriorAuthParams,
-            ),
-            callable=lambda **kw: db.request_prior_auth(kw["plan_id"], kw["referral_id"]),
+        "request_prior_auth": ToolDefinition(
+            name="request_prior_auth",
+            description="Request prior authorization from the insurance plan for a referral.",
+            input_schema=REQUEST_PRIOR_AUTH_SCHEMA,
         ),
-        "schedule_appointment": ToolDef(
-            spec=ToolSpec(
-                name="schedule_appointment",
-                description="Schedule a specialist appointment using authorization and referral.",
-                parameters=ScheduleAppointmentParams,
-            ),
-            callable=lambda **kw: db.schedule_appointment(kw["auth_id"], kw["referral_id"]),
+        "schedule_appointment": ToolDefinition(
+            name="schedule_appointment",
+            description="Schedule a specialist appointment using authorization and referral.",
+            input_schema=SCHEDULE_APPOINTMENT_SCHEMA,
         ),
-        "submit_treatment_plan": ToolDef(
-            spec=ToolSpec(
-                name="submit_treatment_plan",
-                description=(
-                    "Submit the final treatment plan summarizing the investigation. "
-                    "Must cite patient info, diagnosis, key lab values, imaging findings, "
-                    "specialist referral, medication concerns, and appointment details."
-                ),
-                parameters=TreatmentPlanParams,
+        "submit_treatment_plan": ToolDefinition(
+            name="submit_treatment_plan",
+            description=(
+                "Submit the final treatment plan summarizing the investigation. "
+                "Must cite patient info, diagnosis, key lab values, imaging findings, "
+                "specialist referral, medication concerns, and appointment details."
             ),
-            callable=lambda **kw: db.submit_treatment_plan(kw.get("summary", "")),
+            input_schema=TREATMENT_PLAN_SCHEMA,
+        ),
+    }
+    tools_handlers = {
+        "patient_lookup": lambda **kw: db.patient_lookup(kw["patient_name"]),
+        "pull_records": lambda **kw: db.pull_records(kw["mrn"]),
+        "order_labs": lambda **kw: db.order_labs(kw["encounter_id"]),
+        "review_imaging": lambda **kw: db.review_imaging(kw["lab_id"]),
+        "request_referral": lambda **kw: db.request_referral(kw["imaging_id"]),
+        "check_pharmacy": lambda **kw: db.check_pharmacy(kw["referral_id"]),
+        "verify_insurance": lambda **kw: db.verify_insurance(kw["patient_mrn"]),
+        "request_prior_auth": lambda **kw: db.request_prior_auth(
+            kw["plan_id"], kw["referral_id"]
+        ),
+        "schedule_appointment": lambda **kw: db.schedule_appointment(
+            kw["auth_id"], kw["referral_id"]
+        ),
+        "submit_treatment_plan": lambda **kw: db.submit_treatment_plan(
+            kw.get("summary", "")
         ),
     }
 
@@ -483,6 +576,7 @@ def _build_compaction_chain() -> tuple[Workflow, callable]:
             "Each step returns an ID needed by the next step."
         ),
         tools=tools,
+        handlers=tools_handlers,
         required_steps=_REQUIRED_STEPS,
         terminal_tool="submit_treatment_plan",
         system_prompt_template=(

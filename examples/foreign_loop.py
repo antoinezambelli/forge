@@ -143,7 +143,7 @@ EXAMPLES_WORKFLOW = [
 # perspective, every response is a valid tool call -- no retries wasted
 # on conversational turns, no accuracy loss on tool-calling turns.
 #
-# For WorkflowRunner consumers: use respond_tool() from forge.tools.
+# For WorkflowRunner consumers: use respond_definition() and the separate respond handler from forge.tools.
 # For proxy consumers: opt in with --inject-respond-tool.
 # For middleware consumers: include "respond" in tool_names and handle
 # the respond tool call in your execution logic.

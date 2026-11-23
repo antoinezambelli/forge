@@ -12,8 +12,7 @@ from forge.core.workflow import (
     LLMResponse,
     TextResponse,
     ToolCall,
-    ToolDef,
-    ToolSpec,
+    ToolDefinition,
     Workflow,
 )
 from forge.core.steps import StepTracker
@@ -46,7 +45,7 @@ from forge.context import (
 )
 from forge.server import BudgetMode, ServerManager, setup_backend
 from forge.rpc import LlamaCppRpcConfig, LlamaCppRpcWorkerConfig
-from forge.tools import RESPOND_TOOL_NAME, respond_spec, respond_tool
+from forge.tools import RESPOND_TOOL_NAME, respond_definition, respond
 from forge.prompts import build_tool_prompt, extract_tool_call, rescue_tool_call, retry_nudge, step_nudge
 from forge.guardrails import (
     CheckResult,
@@ -88,8 +87,7 @@ __all__ = [
     "LLMResponse",
     "TextResponse",
     "ToolCall",
-    "ToolDef",
-    "ToolSpec",
+    "ToolDefinition",
     "Workflow",
     # Steps
     "StepTracker",
@@ -140,8 +138,8 @@ __all__ = [
     "setup_backend",
     # Built-in tools
     "RESPOND_TOOL_NAME",
-    "respond_spec",
-    "respond_tool",
+    "respond_definition",
+    "respond",
     # Guardrails
     "CheckResult",
     "Guardrails",

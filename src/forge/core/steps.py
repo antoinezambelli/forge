@@ -61,7 +61,7 @@ class StepTracker:
         Args:
             tool_name: The tool about to be called (for error context).
             args: The arguments the tool is being called with.
-            prerequisites: The prerequisite definitions from ToolDef.
+            prerequisites: The prerequisite definitions from Workflow.
 
         Returns:
             PrerequisiteCheck with satisfied=True if all prereqs are met,

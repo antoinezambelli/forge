@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from forge.core.steps import StepTracker
-from forge.core.workflow import ToolCall, ToolDef
+from forge.core.workflow import ToolCall
 from forge.guardrails.nudge import Nudge
 from forge.prompts.nudges import prerequisite_nudge, step_nudge
 
@@ -33,7 +33,7 @@ class StepEnforcer:
     Args:
         required_steps: Tool names that must be called before the terminal tool.
         terminal_tools: The tools that can end the workflow.
-        tool_prerequisites: Map of tool name to its ToolDef.prerequisites list.
+        tool_prerequisites: Map of tool name to its Workflow.prerequisites list.
         max_premature_attempts: How many premature terminal attempts before
             the enforcer signals exhaustion (via StepCheck or raising).
         max_prereq_violations: How many consecutive prerequisite violations

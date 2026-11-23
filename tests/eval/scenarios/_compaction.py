@@ -1,66 +1,115 @@
-"""Compaction-related parameter models and relevance detection scenario."""
+"""Compaction-related input schemas and relevance detection scenario."""
 
 from __future__ import annotations
 
-from pydantic import BaseModel, Field
 
-from forge.core.workflow import ToolDef, ToolSpec, Workflow
+from forge.core.workflow import ToolDefinition, Workflow
 
 from ._base import EvalScenario
 
 
-class CityParams(BaseModel):
-    city: str = Field(description="The city name")
+CITY_SCHEMA = {
+    "properties": {
+        "city": {"description": "The city name", "title": "City", "type": "string"}
+    },
+    "required": ["city"],
+    "title": "CityParams",
+    "type": "object",
+}
 
 
-class FlightParams(BaseModel):
-    origin: str = Field(description="Departure city")
-    destination: str = Field(description="Arrival city")
+FLIGHT_SCHEMA = {
+    "properties": {
+        "origin": {
+            "description": "Departure city",
+            "title": "Origin",
+            "type": "string",
+        },
+        "destination": {
+            "description": "Arrival city",
+            "title": "Destination",
+            "type": "string",
+        },
+    },
+    "required": ["origin", "destination"],
+    "title": "FlightParams",
+    "type": "object",
+}
 
 
-class HotelParams(BaseModel):
-    city: str = Field(description="The city to check")
-    checkin: str = Field(description="Check-in date")
+HOTEL_SCHEMA = {
+    "properties": {
+        "city": {"description": "The city to check", "title": "City", "type": "string"},
+        "checkin": {
+            "description": "Check-in date",
+            "title": "Checkin",
+            "type": "string",
+        },
+    },
+    "required": ["city", "checkin"],
+    "title": "HotelParams",
+    "type": "object",
+}
 
 
-class CurrencyParams(BaseModel):
-    amount: str = Field(description="The amount to convert")
-    from_currency: str = Field(description="Source currency code")
-    to_currency: str = Field(description="Target currency code")
+CURRENCY_SCHEMA = {
+    "properties": {
+        "amount": {
+            "description": "The amount to convert",
+            "title": "Amount",
+            "type": "string",
+        },
+        "from_currency": {
+            "description": "Source currency code",
+            "title": "From Currency",
+            "type": "string",
+        },
+        "to_currency": {
+            "description": "Target currency code",
+            "title": "To Currency",
+            "type": "string",
+        },
+    },
+    "required": ["amount", "from_currency", "to_currency"],
+    "title": "CurrencyParams",
+    "type": "object",
+}
 
 
-class ReasonParams(BaseModel):
-    reason: str = Field(description="Brief explanation of why no tool is appropriate")
+REASON_SCHEMA = {
+    "properties": {
+        "reason": {
+            "description": "Brief explanation of why no tool is appropriate",
+            "title": "Reason",
+            "type": "string",
+        }
+    },
+    "required": ["reason"],
+    "title": "ReasonParams",
+    "type": "object",
+}
 
 
 # ── Scenario: relevance_detection ─────────────────────────────
 
-_relevance_detection_tools: dict[str, ToolDef] = {
-    "get_forecast": ToolDef(
-        spec=ToolSpec(name="get_forecast", description="Get weather forecast for a city.",
-                      parameters=CityParams),
-        callable=lambda **kwargs: f"Forecast for {kwargs.get('city', '???')}: 22°C, partly cloudy.",
-    ),
-    "book_flight": ToolDef(
-        spec=ToolSpec(name="book_flight", description="Book a flight between two cities.",
-                      parameters=FlightParams),
-        callable=lambda **kwargs: f"Flight booked: {kwargs.get('origin', '')} → {kwargs.get('destination', '')}.",
-    ),
-    "check_hotel": ToolDef(
-        spec=ToolSpec(name="check_hotel", description="Check hotel availability in a city.",
-                      parameters=HotelParams),
-        callable=lambda **kwargs: f"3 hotels available in {kwargs.get('city', '')}.",
-    ),
-    "convert_currency": ToolDef(
-        spec=ToolSpec(name="convert_currency", description="Convert an amount between currencies.",
-                      parameters=CurrencyParams),
-        callable=lambda **kwargs: f"{kwargs.get('amount', '0')} {kwargs.get('from_currency', '')} = 0.00 {kwargs.get('to_currency', '')}.",
-    ),
-    "decline": ToolDef(
-        spec=ToolSpec(name="decline", description="Call this when none of the available tools are relevant to the user's request.",
-                      parameters=ReasonParams),
-        callable=lambda **kwargs: kwargs.get("reason", ""),
-    ),
+_relevance_detection_tools: dict[str, ToolDefinition] = {
+    "get_forecast": ToolDefinition(name="get_forecast", description="Get weather forecast for a city.",
+                      input_schema=CITY_SCHEMA),
+    "book_flight": ToolDefinition(name="book_flight", description="Book a flight between two cities.",
+                      input_schema=FLIGHT_SCHEMA),
+    "check_hotel": ToolDefinition(name="check_hotel", description="Check hotel availability in a city.",
+                      input_schema=HOTEL_SCHEMA),
+    "convert_currency": ToolDefinition(name="convert_currency", description="Convert an amount between currencies.",
+                      input_schema=CURRENCY_SCHEMA),
+    "decline": ToolDefinition(name="decline", description="Call this when none of the available tools are relevant to the user's request.",
+                      input_schema=REASON_SCHEMA),
+}
+_relevance_detection_tools_handlers = {
+    "get_forecast": lambda **kwargs: f"Forecast for {kwargs.get('city', '???')}: 22°C, partly cloudy.",
+    "book_flight": lambda **kwargs: f"Flight booked: {kwargs.get('origin', '')} → {kwargs.get('destination', '')}.",
+    "check_hotel": lambda **kwargs: f"3 hotels available in {kwargs.get('city', '')}.",
+    "convert_currency": lambda **kwargs: f"{kwargs.get('amount', '0')} {kwargs.get('from_currency', '')} = 0.00 {kwargs.get('to_currency', '')}.",
+    "decline": lambda **kwargs: kwargs.get("reason", ""),
 }
 
 relevance_detection = EvalScenario(
@@ -70,6 +119,7 @@ relevance_detection = EvalScenario(
         name="relevance_detection",
         description="Travel tools that are irrelevant to the user's question",
         tools=_relevance_detection_tools,
+        handlers=_relevance_detection_tools_handlers,
         required_steps=[],
         terminal_tool="decline",
         system_prompt_template=(

@@ -230,7 +230,7 @@ class TestInferenceInjection:
             context_manager=ctx,
             validator=validator,
             error_tracker=error_tracker,
-            tool_specs=[],
+            tool_definitions=[],
         )
 
         # The injected warning should be the last message (user role)
@@ -273,7 +273,7 @@ class TestInferenceInjection:
             context_manager=ctx,
             validator=validator,
             error_tracker=error_tracker,
-            tool_specs=[],
+            tool_definitions=[],
         )
 
         # No context warning should be injected

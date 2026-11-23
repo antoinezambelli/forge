@@ -11,7 +11,7 @@ Visual guide to the forge agentic tool-calling loop.
 **Critical Files:**
 - `src/forge/core/inference.py` - run_inference() — shared "front half" (compact, fold, validate, retry)
 - `src/forge/core/runner.py` - Agentic loop "back half" (step enforcement, tool execution, terminal check)
-- `src/forge/core/workflow.py` - Workflow, ToolSpec, ToolCall, TextResponse
+- `src/forge/core/workflow.py` - Workflow, ToolDefinition, ToolCall, TextResponse
 - `src/forge/core/messages.py` - Message, MessageRole, MessageType, MessageMeta
 - `src/forge/core/steps.py` - StepTracker (used internally by StepEnforcer)
 - `src/forge/guardrails/` - Composable middleware (ResponseValidator, StepEnforcer, ErrorTracker, Nudge)
@@ -19,7 +19,7 @@ Visual guide to the forge agentic tool-calling loop.
 - `src/forge/context/strategies.py` - TieredCompact (3-phase compaction)
 - `src/forge/clients/base.py` - LLMClient protocol
 - `src/forge/server.py` - ServerManager, BudgetMode, setup_backend()
-- `src/forge/tools/respond.py` - Synthetic respond tool (respond_tool(), respond_spec())
+- `src/forge/tools/respond.py` - Synthetic respond tool (respond_definition(), respond())
 - `src/forge/prompts/nudges.py` - Retry, unknown-tool, and step nudges
 - `src/forge/prompts/templates.py` - Prompt-injected tool prompt, extract/rescue
 
@@ -383,7 +383,7 @@ flowchart TB
     subgraph forge["src/forge/"]
         subgraph core["core/"]
             RUNNER["runner.py<br/>WorkflowRunner"]
-            WORKFLOW["workflow.py<br/>Workflow, ToolSpec,<br/>ToolCall, TextResponse"]
+            WORKFLOW["workflow.py<br/>Workflow, ToolDefinition,<br/>ToolCall, TextResponse"]
             MESSAGES["messages.py<br/>Message, MessageMeta"]
             STEPTRACK["steps.py<br/>StepTracker"]
         end
@@ -452,21 +452,19 @@ flowchart TB
 Workflow
 ├── name: str
 ├── description: str
-├── tools: dict[str, ToolDef]          # keyed by tool name
+├── tools: dict[str, ToolDefinition]   # ordered model-visible definitions
+├── handlers: dict[str, Callable]      # execution keyed by tool name
+├── prerequisites: dict[str, list]     # conditional dependencies keyed by name
 ├── required_steps: list[str]          # must be called before terminal
 ├── terminal_tool: str | list[str]     # tool(s) that end the workflow
 ├── terminal_tools: frozenset[str]     # normalized (init=False)
 └── system_prompt_template: str        # may contain {placeholders}
 
-ToolDef
-├── spec: ToolSpec
-├── callable: Callable[..., Any]
-└── prerequisites: list[str | dict]   # conditional dependencies (default [])
-
-ToolSpec
+ToolDefinition
 ├── name: str
-├── description: str
-└── parameters: type[BaseModel]        # dynamic Pydantic model (from_json_schema)
+├── description: str                   # defaults to empty string
+├── input_schema: dict                 # complete schema
+└── extra_fields: dict                 # applicable function-tool extras
 
 ToolCall
 ├── tool: str

@@ -4,31 +4,75 @@ from __future__ import annotations
 
 from typing import Any
 
-from pydantic import BaseModel, Field
 
-from forge.core.workflow import ToolDef, ToolSpec, Workflow
+from forge.core.workflow import ToolDefinition, Workflow
 
 from ._base import EvalScenario, _check, _placeholder_workflow
 
 
-class CountryParams(BaseModel):
-    country: str = Field(description="Country name")
+COUNTRY_SCHEMA = {
+    "properties": {
+        "country": {"description": "Country name", "title": "Country", "type": "string"}
+    },
+    "required": ["country"],
+    "title": "CountryParams",
+    "type": "object",
+}
 
-class ContentParams(BaseModel):
-    content: str = Field(description="The content to summarize")
+CONTENT_SCHEMA = {
+    "properties": {
+        "content": {
+            "description": "The content to summarize",
+            "title": "Content",
+            "type": "string",
+        }
+    },
+    "required": ["content"],
+    "title": "ContentParams",
+    "type": "object",
+}
 
-class FetchSalesParams(BaseModel):
-    quarter: int = Field(description="Quarter number (1-4)")
-    year: int = Field(description="Four-digit year")
+FETCH_SALES_SCHEMA = {
+    "properties": {
+        "quarter": {
+            "description": "Quarter number (1-4)",
+            "title": "Quarter",
+            "type": "integer",
+        },
+        "year": {"description": "Four-digit year", "title": "Year", "type": "integer"},
+    },
+    "required": ["quarter", "year"],
+    "title": "FetchSalesParams",
+    "type": "object",
+}
 
-class EmptyParams(BaseModel):
-    pass
+EMPTY_SCHEMA = {"properties": {}, "title": "EmptyParams", "type": "object"}
 
-class FindingsParams(BaseModel):
-    findings: str = Field(description="The findings to include in the report")
+FINDINGS_SCHEMA = {
+    "properties": {
+        "findings": {
+            "description": "The findings to include in the report",
+            "title": "Findings",
+            "type": "string",
+        }
+    },
+    "required": ["findings"],
+    "title": "FindingsParams",
+    "type": "object",
+}
 
-class CountParams(BaseModel):
-    count: str = Field(description="Number of records to fetch (must be a numeric string)")
+COUNT_SCHEMA = {
+    "properties": {
+        "count": {
+            "description": "Number of records to fetch (must be a numeric string)",
+            "title": "Count",
+            "type": "string",
+        }
+    },
+    "required": ["count"],
+    "title": "CountParams",
+    "type": "object",
+}
 
 
 # ── Backend 1: CountryFactsDB ──────────────────────────────────
@@ -55,28 +99,27 @@ class CountryFactsDB:
 
 def _build_basic_2step_stateful() -> tuple[Workflow, callable]:
     db = CountryFactsDB()
-    tools: dict[str, ToolDef] = {
-        "get_country_info": ToolDef(
-            spec=ToolSpec(
-                name="get_country_info",
-                description="Look up facts about a country.",
-                parameters=CountryParams,
-            ),
-            callable=lambda **kw: db.get_country_info(kw["country"]),
+    tools: dict[str, ToolDefinition] = {
+        "get_country_info": ToolDefinition(
+            name="get_country_info",
+            description="Look up facts about a country.",
+            input_schema=COUNTRY_SCHEMA,
         ),
-        "summarize": ToolDef(
-            spec=ToolSpec(
-                name="summarize",
-                description="Summarize content and provide the final answer.",
-                parameters=ContentParams,
-            ),
-            callable=lambda **kw: db.summarize(kw.get("content", "")),
+        "summarize": ToolDefinition(
+            name="summarize",
+            description="Summarize content and provide the final answer.",
+            input_schema=CONTENT_SCHEMA,
         ),
+    }
+    tools_handlers = {
+        "get_country_info": lambda **kw: db.get_country_info(kw["country"]),
+        "summarize": lambda **kw: db.summarize(kw.get("content", "")),
     }
     workflow = Workflow(
         name="basic_2step_stateful",
         description="Look up country facts, then summarize",
         tools=tools,
+        handlers=tools_handlers,
         required_steps=["get_country_info"],
         terminal_tool="summarize",
         system_prompt_template=(
@@ -135,36 +178,33 @@ class SalesPipeline:
 
 def _build_sequential_3step_stateful() -> tuple[Workflow, callable]:
     db = SalesPipeline()
-    tools: dict[str, ToolDef] = {
-        "fetch_sales_data": ToolDef(
-            spec=ToolSpec(
-                name="fetch_sales_data",
-                description="Fetch sales data for a given quarter and year.",
-                parameters=FetchSalesParams,
-            ),
-            callable=lambda **kw: db.fetch_sales_data(kw["quarter"], kw["year"]),
+    tools: dict[str, ToolDefinition] = {
+        "fetch_sales_data": ToolDefinition(
+            name="fetch_sales_data",
+            description="Fetch sales data for a given quarter and year.",
+            input_schema=FETCH_SALES_SCHEMA,
         ),
-        "analyze_sales": ToolDef(
-            spec=ToolSpec(
-                name="analyze_sales",
-                description="Analyze the loaded sales data and produce findings.",
-                parameters=EmptyParams,
-            ),
-            callable=lambda **kw: db.analyze_sales(),
+        "analyze_sales": ToolDefinition(
+            name="analyze_sales",
+            description="Analyze the loaded sales data and produce findings.",
+            input_schema=EMPTY_SCHEMA,
         ),
-        "report": ToolDef(
-            spec=ToolSpec(
-                name="report",
-                description="Produce a final report from findings.",
-                parameters=FindingsParams,
-            ),
-            callable=lambda **kw: db.report(kw.get("findings", "")),
+        "report": ToolDefinition(
+            name="report",
+            description="Produce a final report from findings.",
+            input_schema=FINDINGS_SCHEMA,
         ),
+    }
+    tools_handlers = {
+        "fetch_sales_data": lambda **kw: db.fetch_sales_data(kw["quarter"], kw["year"]),
+        "analyze_sales": lambda **kw: db.analyze_sales(),
+        "report": lambda **kw: db.report(kw.get("findings", "")),
     }
     workflow = Workflow(
         name="sequential_3step_stateful",
         description="Fetch sales data, analyze, then report",
         tools=tools,
+        handlers=tools_handlers,
         required_steps=["fetch_sales_data", "analyze_sales"],
         terminal_tool="report",
         system_prompt_template=(
@@ -214,28 +254,27 @@ class RecordFetcher:
 
 def _build_error_recovery_stateful() -> tuple[Workflow, callable]:
     db = RecordFetcher()
-    tools: dict[str, ToolDef] = {
-        "fetch": ToolDef(
-            spec=ToolSpec(
-                name="fetch",
-                description="Fetch records. The count parameter must be a numeric string.",
-                parameters=CountParams,
-            ),
-            callable=lambda **kw: db.fetch(kw["count"]),
+    tools: dict[str, ToolDefinition] = {
+        "fetch": ToolDefinition(
+            name="fetch",
+            description="Fetch records. The count parameter must be a numeric string.",
+            input_schema=COUNT_SCHEMA,
         ),
-        "summarize": ToolDef(
-            spec=ToolSpec(
-                name="summarize",
-                description="Summarize the fetched content.",
-                parameters=ContentParams,
-            ),
-            callable=lambda **kw: db.summarize(kw.get("content", "")),
+        "summarize": ToolDefinition(
+            name="summarize",
+            description="Summarize the fetched content.",
+            input_schema=CONTENT_SCHEMA,
         ),
+    }
+    tools_handlers = {
+        "fetch": lambda **kw: db.fetch(kw["count"]),
+        "summarize": lambda **kw: db.summarize(kw.get("content", "")),
     }
     workflow = Workflow(
         name="error_recovery_stateful",
         description="Fetch with validation, then summarize",
         tools=tools,
+        handlers=tools_handlers,
         required_steps=["fetch"],
         terminal_tool="summarize",
         system_prompt_template=(

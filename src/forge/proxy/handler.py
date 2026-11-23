@@ -13,7 +13,6 @@ from forge.clients.base import (
     LLMClient,
     TokenUsage,
     _capture_usage,
-    format_tool,
     redact_auth_headers,
 )
 from forge.context.manager import ContextManager
@@ -28,7 +27,7 @@ from forge.core.reasoning import (
     ReasoningReplay,
     validate_reasoning_replay,
 )
-from forge.core.workflow import ToolCall, ToolSpec, TextResponse
+from forge.core.workflow import ToolCall, ToolDefinition, TextResponse
 from forge.errors import (
     BackendDiscoveryError,
     BackendError,
@@ -47,13 +46,13 @@ from forge.proxy.convert import (
 from forge.proxy.convert_anthropic import (
     anthropic_to_messages,
     anthropic_to_openai_passthrough,
-    anthropic_tools_to_specs,
+    anthropic_tools_to_definitions,
     tool_calls_to_anthropic,
     tool_calls_to_anthropic_sse,
     text_response_to_anthropic,
     text_to_anthropic_sse,
 )
-from forge.tools.respond import RESPOND_TOOL_NAME, respond_spec
+from forge.tools.respond import RESPOND_TOOL_NAME, respond_definition
 
 logger = logging.getLogger("forge.proxy")
 
@@ -214,36 +213,37 @@ def resolve_effective_model(
     return model
 
 
-def _extract_tool_specs(request_tools: list[dict[str, Any]] | None) -> list[ToolSpec]:
-    """Extract ToolSpec objects from the OpenAI tools array in the request."""
-    if not request_tools:
+def _extract_tool_definitions(request_tools: list[dict[str, Any]] | None) -> list[ToolDefinition]:
+    """Parse OpenAI function envelopes into ordered canonical definitions."""
+    if request_tools is None:
         return []
-    specs = []
-    for tool in request_tools:
-        if tool.get("type") != "function":
-            continue
-        func = tool.get("function", {})
-        name = func.get("name", "")
-        description = func.get("description", "")
-        parameters = func.get("parameters", {})
-        specs.append(ToolSpec.from_json_schema(
-            name=name,
-            description=description,
-            schema=parameters,
-        ))
-    return specs
-
-
-def _extract_tool_names(tool_specs: list[ToolSpec]) -> list[str]:
-    """Get tool names from specs."""
-    return [s.name for s in tool_specs]
-
-
-def _raw_openai_tools(request_tools: Any) -> list[dict[str, Any]] | None:
-    """Return a detached deep copy of the inbound OpenAI tools array."""
     if not isinstance(request_tools, list):
-        return None
-    return [deepcopy(tool) for tool in request_tools if isinstance(tool, dict)]
+        raise ValueError("OpenAI tools must be a list")
+    definitions = []
+    names = set()
+    for tool in request_tools:
+        if not isinstance(tool, dict) or tool.get("type") != "function":
+            raise ValueError("Expected an OpenAI function tool")
+        function = tool.get("function")
+        if not isinstance(function, dict):
+            raise ValueError("OpenAI function must be a dictionary")
+        definition = ToolDefinition(
+            name=function.get("name"),
+            description=function.get("description", ""),
+            input_schema=function.get("parameters", {}),
+            extra_fields={key: value for key, value in function.items()
+                          if key not in {"name", "description", "parameters", "input_schema"}},
+        )
+        if definition.name in names:
+            raise ValueError(f"Duplicate tool name '{definition.name}'")
+        names.add(definition.name)
+        definitions.append(definition)
+    return definitions
+
+
+def _extract_tool_names(tool_definitions: list[ToolDefinition]) -> list[str]:
+    """Get tool names from specs."""
+    return [s.name for s in tool_definitions]
 
 
 def _raw_openai_messages(request_messages: Any) -> list[dict[str, Any]] | None:
@@ -385,7 +385,7 @@ async def handle_chat_completions(
             body.get("messages", []),
             body.get("system"),
         )
-        tool_specs = anthropic_tools_to_specs(body.get("tools"))
+        tool_definitions = anthropic_tools_to_definitions(body.get("tools"))
         # Anthropic inbound's sampling fields don't overlap with the OpenAI
         # sampling set; the translated passthrough carries them in OpenAI
         # shape for the (OpenAI-shape) backend client.
@@ -396,34 +396,22 @@ async def handle_chat_completions(
         # OpenAI-shape clients (LlamafileClient) accept and ignore. See
         # ADR-015.
         inbound_anthropic_body = dict(body)
+        inbound_anthropic_body.pop("tools", None)
     else:
         request_messages = body.get("messages", [])
         request_tools = body.get("tools")
         messages = openai_to_messages(request_messages)
-        tool_specs = _extract_tool_specs(request_tools)
+        tool_definitions = _extract_tool_definitions(request_tools)
         sampling = _extract_sampling(body)
         passthrough = _extract_passthrough(body)
         inbound_anthropic_body = None
-        # Detached verbatim copies of the client's OpenAI tools/messages.
-        # Forwarded to the native backend on the clean first attempt so it
-        # sees the exact schema/transcript the client authored, bypassing the
-        # lossy ToolSpec round-trip. tool_specs stays as forge's validation
-        # sidecar. (Anthropic protocol converts shapes itself → None.)
-        #
-        # In prompt capability (native_passthrough=False) we suppress the raw
-        # passthrough: the request folds normally and the client's prompt path
-        # (LlamafileClient._send_prompt) strips the tools into the prompt and
-        # downgrades tool history. A verbatim native transcript is meaningless
-        # once tools are injected as prompt text.
+        # Message preservation remains until the rich-message migration.
         if native_passthrough:
-            raw_tools_for_backend = _raw_openai_tools(request_tools)
             raw_messages_for_backend = _raw_openai_messages(request_messages)
         else:
-            raw_tools_for_backend = None
             raw_messages_for_backend = None
 
     if protocol == "anthropic":
-        raw_tools_for_backend = None
         raw_messages_for_backend = None
 
     if backend_protocol == "anthropic":
@@ -439,19 +427,17 @@ async def handle_chat_completions(
     # stripped from the outbound response — the client never sees it.
     if (
         inject_respond_tool
-        and tool_specs
-        and not any(s.name == RESPOND_TOOL_NAME for s in tool_specs)
+        and tool_definitions
+        and not any(s.name == RESPOND_TOOL_NAME for s in tool_definitions)
     ):
-        respond = respond_spec()
-        tool_specs.append(respond)
-        if raw_tools_for_backend is not None:
-            raw_tools_for_backend.append(format_tool(respond))
+        respond = respond_definition()
+        tool_definitions.append(respond)
 
-    tool_names = _extract_tool_names(tool_specs)
+    tool_names = _extract_tool_names(tool_definitions)
 
     # No tools → plain chat completion, no guardrails needed.
     # Forward to backend and return the response directly.
-    if not tool_specs:
+    if not tool_definitions:
         logger.info("No tools in request, passing through to backend")
         api_format = getattr(client, "api_format", "ollama")
         api_messages = prepare_backend_messages(
@@ -461,15 +447,12 @@ async def handle_chat_completions(
             raw_openai_messages=raw_messages_for_backend,
             use_raw_messages=raw_messages_for_backend is not None,
         )
-        raw_tools_kwarg: dict[str, Any] = {}
-        if raw_tools_for_backend is not None:
-            raw_tools_kwarg["raw_openai_tools"] = raw_tools_for_backend
         with _capture_usage() as usage_capture:
             response = await client.send(
-                api_messages, tools=None, sampling=sampling, passthrough=passthrough,
+                api_messages, tools=tool_definitions if body.get("tools") is not None else None,
+                sampling=sampling, passthrough=passthrough,
                 inbound_anthropic_body=inbound_anthropic_body,
                 extra_headers=extra_headers,
-                **raw_tools_kwarg,
             )
         usage = usage_capture.usage
         _sync_token_count(usage, context_manager)
@@ -492,12 +475,11 @@ async def handle_chat_completions(
             context_manager=context_manager,
             validator=validator,
             error_tracker=error_tracker,
-            tool_specs=tool_specs,
+            tool_definitions=tool_definitions,
             sampling=sampling,
             passthrough=passthrough,
             inbound_anthropic_body=inbound_anthropic_body,
             raw_openai_messages=raw_messages_for_backend,
-            raw_openai_tools=raw_tools_for_backend,
             extra_headers=extra_headers,
             reasoning_replay=reasoning_replay,
         )

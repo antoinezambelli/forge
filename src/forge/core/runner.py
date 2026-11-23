@@ -13,7 +13,7 @@ from forge.context.manager import ContextManager
 from forge.core.inference import _NUDGE_KIND_TO_TYPE, _build_tool_call_infos, run_inference
 from forge.core.messages import Message, MessageMeta, MessageRole, MessageType, ToolCallInfo
 from forge.core.reasoning import DEFAULT_REASONING_REPLAY, ReasoningReplay, validate_reasoning_replay
-from forge.core.workflow import ToolCall, TextResponse, Workflow, ToolSpec
+from forge.core.workflow import ToolCall, TextResponse, Workflow
 from forge.errors import MaxIterationsError, PrerequisiteError, StepEnforcementError, ToolCallError, ToolExecutionError, ToolResolutionError, WorkflowCancelledError
 from forge.guardrails import ErrorTracker, ResponseValidator, StepEnforcer
 
@@ -143,11 +143,7 @@ class WorkflowRunner:
             tool_names, rescue_enabled=self.rescue_enabled,
             retry_nudge_fn=self._retry_nudge_fn,
         )
-        tool_prerequisites = {
-            name: td.prerequisites
-            for name, td in workflow.tools.items()
-            if td.prerequisites
-        }
+        tool_prerequisites = workflow.prerequisites
         step_enforcer = StepEnforcer(
             required_steps=workflow.required_steps,
             terminal_tools=workflow.terminal_tools,
@@ -159,7 +155,7 @@ class WorkflowRunner:
         )
 
         # Step 3 — Main loop (one LLM call per iteration, retries consume iterations)
-        tool_specs = workflow.get_tool_specs()
+        tool_definitions = workflow.get_tool_definitions()
         tool_call_counter = 0
         iteration = 0
 
@@ -179,7 +175,7 @@ class WorkflowRunner:
                 context_manager=self.context_manager,
                 validator=validator,
                 error_tracker=error_tracker,
-                tool_specs=tool_specs,
+                tool_definitions=tool_definitions,
                 tool_call_counter=tool_call_counter,
                 step_index=iteration,
                 step_hint=step_enforcer.summary_hint(),
@@ -326,7 +322,7 @@ class WorkflowRunner:
             terminal_result = None
             for i, tc in enumerate(tool_calls):
                 tc_id = call_ids[i]
-                fn = workflow.get_callable(tc.tool)
+                fn = workflow.handlers[tc.tool]
                 try:
                     if inspect.iscoroutinefunction(fn):
                         result_val = await fn(**tc.args)

@@ -38,7 +38,7 @@ from forge.clients.base import (
 )
 from forge.clients.sampling_defaults import apply_sampling_defaults
 from forge.core.reasoning import REASONING_MESSAGE_FIELDS
-from forge.core.workflow import LLMResponse, TextResponse, ToolCall, ToolSpec
+from forge.core.workflow import LLMResponse, TextResponse, ToolCall, ToolDefinition
 from forge.errors import BackendError
 from forge.prompts.think_tags import extract_think_tags
 
@@ -165,7 +165,7 @@ class OpenAICompatClient:
     def _build_body(
         self,
         messages: list[dict[str, str]],
-        tools: list[ToolSpec] | None,
+        tools: list[ToolDefinition] | None,
         sampling: dict[str, Any] | None,
         stream: bool,
         passthrough: dict[str, Any] | None = None,
@@ -285,7 +285,7 @@ class OpenAICompatClient:
     async def send(
         self,
         messages: list[dict[str, str]],
-        tools: list[ToolSpec] | None = None,
+        tools: list[ToolDefinition] | None = None,
         sampling: dict[str, Any] | None = None,
         passthrough: dict[str, Any] | None = None,
         inbound_anthropic_body: dict[str, Any] | None = None,
@@ -340,7 +340,7 @@ class OpenAICompatClient:
     async def send_stream(
         self,
         messages: list[dict[str, str]],
-        tools: list[ToolSpec] | None = None,
+        tools: list[ToolDefinition] | None = None,
         sampling: dict[str, Any] | None = None,
         passthrough: dict[str, Any] | None = None,
         inbound_anthropic_body: dict[str, Any] | None = None,
