@@ -360,81 +360,97 @@ await server.stop()
 
 ## Multi-Turn Conversations
 
-`WorkflowRunner` accepts an optional `on_message` callback that fires each time a `Message` is appended to the conversation during `run()`. This is the primary observability hook — use it for logging, eval metric collection, or building conversation history for multi-turn flows.
-
-`WorkflowRunner(reasoning_replay=...)` uses the same policy as the proxy: `none` by default (captured reasoning is not replayed to the backend), `keep-last` to replay only the latest reasoning block, and `full` for the historical replay-all behavior. The policy affects backend-facing serialization only; `MessageType.REASONING` entries still appear in `on_message` and internal history unless context compaction removes them.
-
-- **Single-turn (default):** `on_message` fires for every message the runner creates — system prompt, user input, assistant responses, tool results, nudges.
-- **Multi-turn (`initial_messages`):** `run()` accepts an optional `initial_messages` parameter that seeds the conversation with prior history. `on_message` fires **only for new messages created during this turn**, not for the replayed history.
-
-`WorkflowRunner` does not manage server lifecycle or track conversation history across `run()` calls — both are the consumer's responsibility.
+`WorkflowRunner` uses one canonical `ConversationState` during each run.
+`on_message` receives each new `RichMessage` once, including fresh system/user
+seeds, recorded assistant replies, execution results and corrections. Supplied
+`initial_messages` entries are shallow-list seeded without re-emission or an
+extra system/user pair. Include the system prompt and new user turn yourself.
 
 ```python
-from forge.server import setup_backend, BudgetMode
-from forge.core.runner import WorkflowRunner
-from forge.core.messages import Message, MessageMeta, MessageRole, MessageType
+from forge import WorkflowRunner, RichMessage, MessageRole, TextPart
 
-# 1. Start server once — stays up for the lifetime of the consumer
-client = OllamaClient(model="ministral-3:8b-instruct-2512-q4_K_M", recommended_sampling=True)
-server, ctx = await setup_backend(
-    backend="ollama", model="ministral-3:8b-instruct-2512-q4_K_M",
-    budget_mode=BudgetMode.FORGE_FULL, client=client,
-)
+conversation: list[RichMessage] = []
 
-# 2. Consumer owns the conversation history
-conversation: list[Message] = []
+def collect(message: RichMessage) -> None:
+    # Warnings are transient events, not part of canonical history.
+    if message.forge_purpose != "context_warning":
+        conversation.append(message)
 
-# Turn 0 — normal run, on_message collects everything (system prompt, user input, etc.)
-runner = WorkflowRunner(client=client, context_manager=ctx,
-                        on_message=lambda msg: conversation.append(msg))
-await runner.run(workflow, "first question")
+runner = WorkflowRunner(client, ctx, on_message=collect)
+value = await runner.run(workflow, "first question")
 
-# Turn 1+ — seed with full history, append new user message
-turn_messages: list[Message] = []
-runner = WorkflowRunner(client=client, context_manager=ctx,
-                        on_message=lambda msg: turn_messages.append(msg))
-seed = list(conversation)
-seed.append(Message(MessageRole.USER, "follow-up question",
-                    MessageMeta(MessageType.USER_INPUT)))
-await runner.run(workflow, "follow-up question", initial_messages=seed)
-conversation.extend(turn_messages)
-
-# 3. Shut down when the consumer is done (not per-turn)
-await server.stop()
+seed = [*conversation,
+        RichMessage(MessageRole.USER, [TextPart("follow-up question")])]
+# Store the new user turn once; supplied seeds are silent.
+conversation = list(seed)
+value = await runner.run(workflow, "follow-up question", initial_messages=seed)
 ```
 
-The system prompt lives in `conversation` from turn 0 — it is not rebuilt or duplicated on subsequent turns. `StepEnforcer` and `tool_call_counter` reset each `run()` call since they are per-turn state.
+The system prompt is not rebuilt when seeds are supplied. Step enforcement
+and the generated-call counter reset per run, as before. The consumer still
+owns server lifecycle and history between runs. Callbacks are event delivery,
+so they can include messages later removed by configured compaction.
 
-### Long-Running Sessions: Filtering Transient Messages
+### Migrating Python callers
 
-`on_message` emits everything the runner creates during a turn, including transient retry artifacts — failed bare text responses, retry nudges, step nudges, and prerequisite nudges. This is by design: consumers get full visibility for logging and debugging.
+| Old usage | New usage |
+|---|---|
+| `Message(role, content, MessageMeta(...))` | `RichMessage(role, [TextPart(content)])` |
+| `message.metadata.step_index` | `message.step_index` |
+| `MessageType.REASONING` | Ordered `ReasoningPart` values in an assistant message |
+| `message.tool_calls` / `ToolCallInfo` | `ToolCallPart` values in `message.parts` |
+| `ToolCall(tool, args)` / `TextResponse(content)` replies | Assistant `RichMessage` with typed parts |
+| `tc.tool`, `tc.args` | `tc.name`, `tc.arguments.value` after validation |
+| `message.tool_call_id` / result string | `ToolResultPart.call_id`, `.content`, `.outcome` |
+| Retry/step/prerequisite classifications | `forge_purpose` values `retry`, `step`, `prerequisite` |
+| `run_inference(messages=..., reasoning_replay=...)` | `run_inference(state=..., metadata=RequestMetadata(reasoning_replay=...))` |
 
-For long-running sessions where conversation history persists across turns, these transient messages accumulate. The model sees its own past failures and corrective nudges on every subsequent turn, polluting effective context and degrading coherence — especially on smaller models (8-14B).
-
-**Who's affected:** Any consumer that appends all `on_message` outputs to a persistent message list and reuses it via `initial_messages` on subsequent turns.
-
-**Not affected:** Single-shot workflows, eval scenarios, or consumers that rebuild the message list from scratch each turn.
-
-**Fix:** Filter transient message types before persisting. The metadata already tags these:
+Removed imports fail; string entries, dictionaries and malformed seed forms
+raise `TypeError`. There is no alternate legacy seed API. Definitions are
+`ToolDefinition` objects; `Workflow.handlers` and `Workflow.prerequisites`
+remain separate execution data.
 
 ```python
-from forge.core.messages import MessageType
+from forge import ReasoningPart, ToolCallPart, ToolResultPart
 
-TRANSIENT_TYPES = {
-    MessageType.RETRY_NUDGE,
-    MessageType.STEP_NUDGE,
-    MessageType.PREREQUISITE_NUDGE,
-    MessageType.TEXT_RESPONSE,
-}
-
-def on_message(self, msg: Message) -> None:
-    if msg.metadata.type not in TRANSIENT_TYPES:
-        self.messages.append(msg)
+def inspect_message(message: RichMessage) -> None:
+    for part in message.parts:
+        if isinstance(part, TextPart):
+            print("visible", part.text)
+        elif isinstance(part, ReasoningPart):
+            print("reasoning", part.text)
+        elif isinstance(part, ToolCallPart):
+            print("call", part.name, part.arguments, part.call_id)
+        elif isinstance(part, ToolResultPart):
+            print("result", part.call_id, part.outcome,
+                  [text.text for text in part.content])
 ```
 
-`TEXT_RESPONSE` is included because in tool-calling workflows, bare text is always a failed attempt that triggered a retry — the successful response comes as a `TOOL_CALL`. Consumers using the respond tool for conversational replies should keep `TEXT_RESPONSE` in their persist list.
+One assistant message can contain all visible text, multiple reasoning parts,
+and parallel calls. Do not split or reconstruct that reply. The accepted reply's
+`step_index` is the completed iteration index, shared with Runner corrections
+and execution results; rejected attempts and retry corrections retain their
+inference-call grouping. `on_chunk` is a side channel: streamed `FINAL` arrives
+before reply callbacks and tool execution, including on exhaustion.
 
-**Why not fix this in forge?** The runner's job is to emit everything — within a turn, retry nudges are useful (the model needs to see the nudge to self-correct). The distinction between "within a turn" and "across turns" is a consumer concern. Compaction handles context overflow but doesn't proactively clean up transient messages — it fires based on token budget pressure, not session hygiene.
+`reasoning_replay` changes only the rendered view: `none` omits reasoning,
+`keep-last` includes every reasoning part in the last reasoning-bearing assistant
+turn, and `full` includes all reasoning. Canonical history and callbacks retain
+it until explicit compaction.
+
+Terminal handlers return their actual Python value after the whole call batch
+and error bookkeeping finish. Results in history hold model-visible text only:
+successful non-string values use `json.dumps(value)`. Each result uses the shared
+inference-generated call ID. Callable errors, resolution errors and workflow
+corrections retain their existing prefixes/channels and distinct budgets.
+
+### Persistent sessions
+
+Keep correlated call/result exchanges together when choosing history for later
+turns. Corrections have `forge_purpose`; ordinary roles and parts describe the
+rest. Context warnings are transient callback events and should not be added to
+persistent seeds. Consumer persistence policy remains separate from Runner's
+within-turn corrections and configured compaction.
 
 ---
 

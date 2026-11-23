@@ -3,25 +3,22 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncIterator
 from functools import partial
-from unittest.mock import AsyncMock
 
 import pytest
 
 from forge.context.manager import ContextManager
 from forge.context.strategies import NoCompact
-from forge.core.messages import MessageType
+from forge.core.messages import TextPart
 from forge.core.runner import WorkflowRunner
 from forge.core.slot_worker import SlotWorker
 from forge.core.workflow import (
-    TextResponse,
-    ToolCall,
     ToolDefinition,
     Workflow,
 )
 from forge.errors import WorkflowCancelledError
 
+from tests.canonical import assistant, call
 from tests.conftest import MockClient as _SharedMockClient
 
 # SlotWorker tests never stream; the shared double's send_stream is left
@@ -69,8 +66,8 @@ class TestBasicOperation:
     @pytest.mark.asyncio
     async def test_submit_returns_result(self):
         client = MockClient([
-            ToolCall(tool="fetch", args={}),
-            ToolCall(tool="submit", args={}),
+            assistant(call("fetch", {})),
+            assistant(call("submit", {})),
         ])
         worker = _make_worker(client)
         await worker.start()
@@ -92,18 +89,18 @@ class TestBasicOperation:
                 order.append(tag)
                 return f"{tag}_done"
             client = MockClient([
-                ToolCall(tool="fetch", args={}),
-                ToolCall(tool="submit", args={}),
+                assistant(call("fetch", {})),
+                assistant(call("submit", {})),
             ])
             return client, fn
 
         # We need a single client that can handle multiple sequential workflows.
         # Use a client with enough responses for 2 sequential workflows.
         client = MockClient([
-            ToolCall(tool="fetch", args={}),
-            ToolCall(tool="submit", args={}),
-            ToolCall(tool="fetch", args={}),
-            ToolCall(tool="submit", args={}),
+            assistant(call("fetch", {})),
+            assistant(call("submit", {})),
+            assistant(call("fetch", {})),
+            assistant(call("submit", {})),
         ])
 
         def track_first(**kw):
@@ -199,14 +196,14 @@ class TestPriority:
         # First workflow blocks, then two more queue up
         client = MockClient([
             # First workflow (blocker)
-            ToolCall(tool="fetch", args={}),
-            ToolCall(tool="submit", args={}),
+            assistant(call("fetch", {})),
+            assistant(call("submit", {})),
             # High priority (should run second)
-            ToolCall(tool="fetch", args={}),
-            ToolCall(tool="submit", args={}),
+            assistant(call("fetch", {})),
+            assistant(call("submit", {})),
             # Low priority (should run third)
-            ToolCall(tool="fetch", args={}),
-            ToolCall(tool="submit", args={}),
+            assistant(call("fetch", {})),
+            assistant(call("submit", {})),
         ])
 
         wf_blocker = _make_workflow()
@@ -262,8 +259,8 @@ class TestPriority:
     async def test_default_priority_is_zero(self):
         """Default priority is 0 (equal for all tasks)."""
         client = MockClient([
-            ToolCall(tool="fetch", args={}),
-            ToolCall(tool="submit", args={}),
+            assistant(call("fetch", {})),
+            assistant(call("submit", {})),
         ])
         worker = _make_worker(client)
         await worker.start()
@@ -292,7 +289,7 @@ class TestPreemption:
             return "fetch_result"
 
         client = MockClient([
-            ToolCall(tool="fetch", args={}),
+            assistant(call("fetch", {})),
         ])
         wf = Workflow(
             name="slow",
@@ -339,9 +336,9 @@ class TestPreemption:
 
         # Slow workflow on slot (priority 10)
         client = MockClient([
-            ToolCall(tool="fetch", args={}),  # slow task
-            ToolCall(tool="fetch", args={}),  # high-priority task
-            ToolCall(tool="submit", args={}),
+            assistant(call("fetch", {})),  # slow task
+            assistant(call("fetch", {})),  # high-priority task
+            assistant(call("submit", {})),
         ])
         wf_slow = Workflow(
             name="slow",
@@ -389,10 +386,10 @@ class TestPreemption:
     async def test_no_preempt_equal_priority(self):
         """Equal priority does not trigger preemption."""
         client = MockClient([
-            ToolCall(tool="fetch", args={}),
-            ToolCall(tool="submit", args={}),
-            ToolCall(tool="fetch", args={}),
-            ToolCall(tool="submit", args={}),
+            assistant(call("fetch", {})),
+            assistant(call("submit", {})),
+            assistant(call("fetch", {})),
+            assistant(call("submit", {})),
         ])
         worker = _make_worker(client)
         await worker.start()
@@ -420,10 +417,10 @@ class TestErrorHandling:
         from forge.errors import MaxIterationsError
 
         client = MockClient([
-            TextResponse(content="bare text"),
-            TextResponse(content="bare text again"),
-            TextResponse(content="bare text third"),
-            TextResponse(content="bare text fourth"),
+            assistant(TextPart("bare text")),
+            assistant(TextPart("bare text again")),
+            assistant(TextPart("bare text third")),
+            assistant(TextPart("bare text fourth")),
         ])
         ctx = ContextManager(strategy=NoCompact(), budget_tokens=100_000)
         runner = WorkflowRunner(
@@ -445,13 +442,13 @@ class TestErrorHandling:
         """Worker processes next task after a failed one."""
         client = MockClient([
             # First workflow: will fail (not enough responses to complete)
-            TextResponse(content="fail"),
-            TextResponse(content="fail"),
-            TextResponse(content="fail"),
-            TextResponse(content="fail"),
+            assistant(TextPart("fail")),
+            assistant(TextPart("fail")),
+            assistant(TextPart("fail")),
+            assistant(TextPart("fail")),
             # Second workflow: succeeds
-            ToolCall(tool="fetch", args={}),
-            ToolCall(tool="submit", args={}),
+            assistant(call("fetch", {})),
+            assistant(call("submit", {})),
         ])
         ctx = ContextManager(strategy=NoCompact(), budget_tokens=100_000)
         runner = WorkflowRunner(

@@ -22,7 +22,7 @@ No LLM backend required -- uses scripted responses to show each guardrail.
 
 from __future__ import annotations
 
-from forge.core.workflow import TextResponse, ToolCall
+from forge.core.messages import RichMessage, MessageRole, TextPart, ToolCallPart, ValidArguments
 
 
 # =====================================================================
@@ -48,14 +48,14 @@ def handle_response_simple(response):
     if result.action == "fatal":
         return f"FATAL: {result.reason}"
 
-    if result.action in ("retry", "step_blocked"):
+    if result.action in ("retry", "tool_error", "step_blocked"):
         # Inject result.nudge into your conversation history
         return f"{result.action}: {result.nudge.content[:80]}..."
 
     # result.action == "execute"
     # Run the tools yourself, then tell forge what succeeded.
     tool_calls = result.tool_calls
-    executed = [tc.tool for tc in tool_calls]  # your execution here
+    executed = [tc.name for tc in tool_calls]  # your execution here
     done = guardrails.record(executed)
     return f"executed {executed}" + (" -- DONE" if done else "")
 
@@ -77,7 +77,7 @@ validator = ResponseValidator(
 )
 enforcer = StepEnforcer(
     required_steps=["search", "lookup"],
-    terminal_tool="answer",
+    terminal_tools=frozenset({"answer"}),
 )
 errors = ErrorTracker(max_retries=3, max_tool_errors=2)
 
@@ -89,8 +89,13 @@ def handle_response_granular(response):
     result = validator.validate(response)
 
     if result.needs_retry:
-        errors.record_retry()
-        if errors.retries_exhausted:
+        if result.nudge.kind == "tool_arg_validation":
+            errors.record_result(success=False)
+            exhausted = errors.tool_errors_exhausted
+        else:
+            errors.record_retry()
+            exhausted = errors.retries_exhausted
+        if exhausted:
             return "FATAL: too many consecutive bad responses"
         return f"retry: {result.nudge.content[:80]}..."
 
@@ -104,7 +109,7 @@ def handle_response_granular(response):
 
     # Execute tools yourself, then sync up.
     tool_calls = result.tool_calls
-    executed = [tc.tool for tc in tool_calls]  # your execution here
+    executed = [tc.name for tc in tool_calls]  # your execution here
     for name in executed:
         enforcer.record(name)
     errors.reset_errors()
@@ -120,15 +125,15 @@ def handle_response_granular(response):
 
 EXAMPLES_WORKFLOW = [
     ("Model returns plain text (no tool call)",
-     TextResponse(content="I think the answer is 42.")),
+     RichMessage(MessageRole.ASSISTANT, [TextPart("I think the answer is 42.")])),
     ("Model jumps to terminal tool, skipping required steps",
-     [ToolCall(tool="answer", args={"text": "42"})]),
+     RichMessage(MessageRole.ASSISTANT, [ToolCallPart("answer", ValidArguments({"text": "42"}))])),
     ("Model calls first required step",
-     [ToolCall(tool="search", args={"query": "meaning of life"})]),
+     RichMessage(MessageRole.ASSISTANT, [ToolCallPart("search", ValidArguments({"query": "meaning of life"}))])),
     ("Model calls second required step",
-     [ToolCall(tool="lookup", args={"id": "result-1"})]),
+     RichMessage(MessageRole.ASSISTANT, [ToolCallPart("lookup", ValidArguments({"id": "result-1"}))])),
     ("Model calls terminal tool (steps now satisfied)",
-     [ToolCall(tool="answer", args={"text": "The answer is 42."})]),
+     RichMessage(MessageRole.ASSISTANT, [ToolCallPart("answer", ValidArguments({"text": "The answer is 42."}))])),
 ]
 
 # =====================================================================
@@ -149,7 +154,7 @@ EXAMPLES_WORKFLOW = [
 # the respond tool call in your execution logic.
 # =====================================================================
 
-from forge.tools import RESPOND_TOOL_NAME, respond_spec
+from forge.tools import RESPOND_TOOL_NAME
 
 # Middleware with respond -- include it in tool_names
 respond_guardrails = Guardrails(
@@ -167,32 +172,32 @@ def handle_response_with_respond(response):
     if result.action == "fatal":
         return f"FATAL: {result.reason}"
 
-    if result.action in ("retry", "step_blocked"):
+    if result.action in ("retry", "tool_error", "step_blocked"):
         return f"{result.action}: {result.nudge.content[:80]}..."
 
     tool_calls = result.tool_calls
 
     # Check if the model called respond -- extract the message
     for tc in tool_calls:
-        if tc.tool == RESPOND_TOOL_NAME:
-            message = tc.args.get("message", "")
+        if tc.name == RESPOND_TOOL_NAME:
+            message = tc.arguments.value.get("message", "")
             return f"MODEL SAYS: {message}"
 
     # Normal tool execution
-    executed = [tc.tool for tc in tool_calls]
+    executed = [tc.name for tc in tool_calls]
     done = respond_guardrails.record(executed)
     return f"executed {executed}" + (" -- DONE" if done else "")
 
 
 EXAMPLES_RESPOND = [
     ("Model produces bare text (retried -- respond not used)",
-     TextResponse(content="Hello, how can I help?")),
+     RichMessage(MessageRole.ASSISTANT, [TextPart("Hello, how can I help?")])),
     ("Model correctly uses respond for chat",
-     [ToolCall(tool="respond", args={"message": "Hello! How can I help you?"})]),
+     RichMessage(MessageRole.ASSISTANT, [ToolCallPart("respond", ValidArguments({"message": "Hello! How can I help you?"}))])),
     ("Model calls a real tool",
-     [ToolCall(tool="search", args={"query": "meaning of life"})]),
+     RichMessage(MessageRole.ASSISTANT, [ToolCallPart("search", ValidArguments({"query": "meaning of life"}))])),
     ("Model calls respond after completing work",
-     [ToolCall(tool="respond", args={"message": "I found the answer: 42."})]),
+     RichMessage(MessageRole.ASSISTANT, [ToolCallPart("respond", ValidArguments({"message": "I found the answer: 42."}))])),
 ]
 
 

@@ -72,7 +72,10 @@ async def run_inference(
     max_attempts: int | None = None,
     stream: bool = False,
     on_chunk: Callable[[StreamChunk], Awaitable[None]] | None = None,
+    _on_exhausted: Callable[[list[RichMessage]], None] | None = None,
 ) -> InferenceResult | None:
+    # Runner normally delivers InferenceResult.new_messages after step grouping.
+    # Exhaustion has no result, so flush those same references on these exits.
     metadata = metadata or RequestMetadata()
     new_messages = []
     limit = error_tracker.max_retries + 1
@@ -133,12 +136,16 @@ async def run_inference(
                     p.text for p in response.parts if isinstance(p, TextPart)
                 )
             )
+            if _on_exhausted is not None:
+                _on_exhausted(new_messages)
             raise _ToolCallExhausted(
                 f"Exhausted after {budget} consecutive failed attempts ({nudge.kind})",
                 raw,
                 usage,
             )
         if attempt + 1 == limit:
+            if _on_exhausted is not None:
+                _on_exhausted(new_messages)
             return None
         if calls:
             prefix = (

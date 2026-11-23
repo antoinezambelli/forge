@@ -70,10 +70,8 @@ class MockClient:
         self._stream_mode = stream_mode
         self.api_format = api_format
         self._context_length = context_length
-        self.send_calls: list[tuple[list[dict], list[ToolDefinition] | None]] = []
-        self.send_stream_calls: list[
-            tuple[list[dict], list[ToolDefinition] | None]
-        ] = []
+        self.send_calls: list[InferenceRequest] = []
+        self.send_stream_calls: list[InferenceRequest] = []
 
     def _next(self) -> RichMessage:
         if self._call_index >= len(self.responses):

@@ -148,3 +148,76 @@ def test_significance_reads_both_outcome_dialects() -> None:
     assert analysis[1]["paired_n"] == 2
     assert analysis[1]["discordant_b"] == 1
     assert analysis[1]["discordant_c"] == 0
+
+
+def test_rich_history_counts_parallel_calls_all_reasoning_and_distinct_errors(capsys):
+    from forge import MessageRole, RichMessage, TextPart, ReasoningPart, ToolResultPart
+    from tests.canonical import assistant, call
+    from tests.eval.eval_runner import _verbose_printer
+    from tests.eval.metrics import analyze_history, count_wire_reasoning
+
+    history = [
+        assistant(ReasoningPart("earlier"), call("fetch", {})),
+        assistant(TextPart("visible"), ReasoningPart("one"), call("fetch", {}),
+                  ReasoningPart("two"), call("submit", {})),
+        RichMessage(MessageRole.USER, [TextPart("retry")], forge_purpose="retry"),
+        RichMessage(MessageRole.TOOL, [ToolResultPart("a", [TextPart("[StepEnforcementError] blocked")], "error")], forge_purpose="step"),
+        RichMessage(MessageRole.TOOL, [ToolResultPart("b", [TextPart("[PrerequisiteError] blocked")], "error")], forge_purpose="prerequisite"),
+        RichMessage(MessageRole.TOOL, [ToolResultPart("c", [TextPart("[ToolArgValidationError] malformed")], "error")], forge_purpose="tool_arg_validation"),
+        RichMessage(MessageRole.TOOL, [ToolResultPart("unknown", [TextPart("[UnknownTool] absent")], "error")], forge_purpose="unknown_tool"),
+        RichMessage(MessageRole.TOOL, [ToolResultPart("d", [TextPart("[ToolResolutionError] absent")], "error")]),
+        RichMessage(MessageRole.TOOL, [ToolResultPart("e", [TextPart("[ToolError] ValueError: broken")], "error")]),
+        RichMessage(MessageRole.TOOL, [ToolResultPart("f", [TextPart("[ToolError] literal successful output")])]),
+    ]
+    stats = analyze_history(history)
+    assert stats.total_tool_calls == 3
+    assert stats.unique_tools_called == {"fetch", "submit"}
+    assert stats.reasoning_messages == 3
+    assert stats.retry_nudges == 3
+    assert stats.step_nudges == stats.tool_errors == 1
+    for api_format in ("openai", "anthropic", "ollama"):
+        assert count_wire_reasoning(history, "none", api_format) == (0, 3)
+        assert count_wire_reasoning(history, "keep-last", api_format) == (2, 3)
+        assert count_wire_reasoning(history, "full", api_format) == (3, 3)
+    _verbose_printer(history[1])
+    output = capsys.readouterr().out
+    assert "PARALLEL 2" in output
+    assert "fetch, submit" in output
+    assert "[text]      visible" in output
+    assert "[thinking]  one" in output
+    assert "[thinking]  two" in output
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stream", [False, True])
+async def test_counting_wrapper_delegates_exact_rendered_request_and_usage(stream):
+    from forge import ConversationState, RequestMetadata, TokenUsage, ChunkType
+    from tests.canonical import assistant, call
+    from tests.conftest import MockClient
+    from tests.eval.eval_runner import CountingClientWrapper
+
+    class Client(MockClient):
+        def render_request(self, *args, **kwargs):
+            self.rendered = super().render_request(*args, **kwargs)
+            return self.rendered
+
+        def _next(self):
+            self.last_usage = {0: TokenUsage(10, 2, 12, cache_creation_input_tokens=3, cache_read_input_tokens=4)}
+            return super()._next()
+
+    reply = assistant(call("submit", {}))
+    client = Client([reply])
+    wrapper = CountingClientWrapper(client)
+    request = wrapper.render_request(ConversationState(), [], RequestMetadata(), stream=stream)
+    assert request is client.rendered
+    if stream:
+        chunks = [chunk async for chunk in wrapper.send_stream(request)]
+        assert chunks[-1].type == ChunkType.FINAL
+        assert chunks[-1].response is reply
+        assert client.send_stream_calls == [request]
+    else:
+        assert await wrapper.send(request) is reply
+        assert client.send_calls == [request]
+    assert wrapper.call_count == 1
+    assert (wrapper.total_input_tokens, wrapper.total_output_tokens) == (10, 2)
+    assert (wrapper.total_cache_creation_tokens, wrapper.total_cache_read_tokens) == (3, 4)

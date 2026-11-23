@@ -9,13 +9,13 @@ from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass, field
 from typing import Any
 
-from forge.clients.base import ChunkType, LLMClient, StreamChunk
+from forge.clients.base import ChunkType, InferenceRequest, LLMClient, StreamChunk
 from forge.context.manager import CompactEvent, ContextManager
-from forge.context.strategies import CompactStrategy, NoCompact, SlidingWindowCompact, TieredCompact
-from forge.core.messages import Message, MessageType
+from forge.context.strategies import CompactStrategy, NoCompact
+from forge.core.messages import (MessageRole, RichMessage, TextPart, ReasoningPart, ToolCallPart, ToolResultPart)
 from forge.core.reasoning import DEFAULT_REASONING_REPLAY, REASONING_REPLAY_CHOICES, ReasoningReplay
 from forge.core.runner import WorkflowRunner
-from forge.core.workflow import ToolCall, ToolDefinition, Workflow
+from forge.core.workflow import Workflow
 from forge.errors import ForgeError, StreamError
 from forge.server import BudgetMode, ServerManager
 
@@ -44,7 +44,7 @@ class RunResult:
     error_type: str | None = None
     error_message: str | None = None
     compaction_events: list[CompactEvent] = field(default_factory=list)
-    messages: list[Message] | None = None
+    messages: list[RichMessage] | None = None
     elapsed_seconds: float = 0.0
     stream_retries: int = 0
     input_tokens: int = 0
@@ -100,35 +100,18 @@ class CountingClientWrapper:
                     tu, "cache_read_input_tokens", 0
                 )
 
-    async def send(
-        self,
-        messages: list[dict[str, str]],
-        tools: list[ToolDefinition] | None = None,
-        sampling: dict[str, Any] | None = None,
-        passthrough: dict[str, Any] | None = None,
-        inbound_anthropic_body: dict[str, Any] | None = None,
-    ) -> Any:
+    def render_request(self, state, tools, metadata, *, stream=False) -> InferenceRequest:
+        return self._client.render_request(state, tools, metadata, stream=stream)
+
+    async def send(self, request: InferenceRequest) -> RichMessage:
         self.call_count += 1
-        result = await self._client.send(
-            messages, tools=tools, sampling=sampling, passthrough=passthrough,
-            inbound_anthropic_body=inbound_anthropic_body,
-        )
+        result = await self._client.send(request)
         self._collect_usage()
         return result
 
-    async def send_stream(
-        self,
-        messages: list[dict[str, str]],
-        tools: list[ToolDefinition] | None = None,
-        sampling: dict[str, Any] | None = None,
-        passthrough: dict[str, Any] | None = None,
-        inbound_anthropic_body: dict[str, Any] | None = None,
-    ) -> AsyncIterator[StreamChunk]:
+    async def send_stream(self, request: InferenceRequest) -> AsyncIterator[StreamChunk]:
         self.call_count += 1
-        async for chunk in self._client.send_stream(
-            messages, tools=tools, sampling=sampling, passthrough=passthrough,
-            inbound_anthropic_body=inbound_anthropic_body,
-        ):
+        async for chunk in self._client.send_stream(request):
             yield chunk
         self._collect_usage()
 
@@ -225,30 +208,33 @@ def _evaluate_validators(
     return correct, None
 
 
-def _verbose_printer(msg: Message) -> None:
+def _verbose_printer(msg: RichMessage) -> None:
     """Print a live trace line for a single message."""
-    _MAX = 120
-    match msg.metadata.type:
-        case MessageType.TOOL_CALL:
-            if msg.tool_calls:
-                names = [tc.name for tc in msg.tool_calls]
-                label = ", ".join(names)
-                if len(names) > 1:
-                    print(f"    [tool_call] *** PARALLEL {len(names)} *** {label}")
-                else:
-                    print(f"    [tool_call] {label}")
+    if msg.forge_purpose in {"retry", "unknown_tool", "tool_arg_validation"}:
+        print("    [nudge]     retry")
+        return
+    if msg.forge_purpose == "step":
+        print("    [nudge]     step enforcement")
+        return
+    if msg.forge_purpose in {"prerequisite", "context_warning"}:
+        return
+    calls = [p for p in msg.parts if isinstance(p, ToolCallPart)]
+    parallel_printed = False
+    for part in msg.parts:
+        if isinstance(part, ToolCallPart):
+            if len(calls) > 1:
+                if not parallel_printed:
+                    print(f"    [tool_call] *** PARALLEL {len(calls)} *** {', '.join(p.name for p in calls)}")
+                    parallel_printed = True
             else:
-                print(f"    [tool_call] {msg.content}")
-        case MessageType.TOOL_RESULT:
-            text = msg.content[:_MAX] + "..." if len(msg.content) > _MAX else msg.content
-            print(f"    [result]    {text}")
-        case MessageType.REASONING:
-            text = msg.content[:_MAX] + "..." if len(msg.content) > _MAX else msg.content
-            print(f"    [thinking]  {text}")
-        case MessageType.RETRY_NUDGE:
-            print("    [nudge]     retry")
-        case MessageType.STEP_NUDGE:
-            print("    [nudge]     step enforcement")
+                print(f"    [tool_call] {part.name}")
+        elif isinstance(part, ToolResultPart):
+            text = "\n".join(p.text for p in part.content)
+            print(f"    [result]    {text[:120]}{'...' if len(text) > 120 else ''}")
+        elif isinstance(part, ReasoningPart):
+            print(f"    [thinking]  {part.text[:120]}{'...' if len(part.text) > 120 else ''}")
+        elif isinstance(part, TextPart) and msg.role == MessageRole.ASSISTANT and calls:
+            print(f"    [text]      {part.text[:120]}{'...' if len(part.text) > 120 else ''}")
 
 
 async def run_scenario(
@@ -261,7 +247,7 @@ async def run_scenario(
     # Set up per-run state
     counting_client = CountingClientWrapper(client)
     compaction_events: list[CompactEvent] = []
-    collected_messages: list[Message] = []
+    collected_messages: list[RichMessage] = []
 
     # Ablation: force NoCompact when compaction is disabled
     if ablation is not None and not ablation.compaction_enabled:
@@ -290,7 +276,7 @@ async def run_scenario(
     elif len(callbacks) == 1:
         on_message = callbacks[0]
     else:
-        def on_message(msg: Message) -> None:
+        def on_message(msg: RichMessage) -> None:
             for cb in callbacks:
                 cb(msg)
 
@@ -685,14 +671,16 @@ async def main() -> None:
         sys.exit(0)
 
     # Resolve compaction strategy
-    _STRATEGY_MAP = {
-        "tiered": TieredCompact(keep_recent=2),
-        "sliding": SlidingWindowCompact(keep_recent=2),
-        "none": NoCompact(),
-    }
+    if args.compact_strategy != "none":
+        from forge.context.phase_strategies import SlidingWindowCompact, TieredCompact
+    if args.compact_strategy == "tiered":
+        cli_strategy = TieredCompact(keep_recent=2)
+    elif args.compact_strategy == "sliding":
+        cli_strategy = SlidingWindowCompact(keep_recent=2)
+    else:
+        cli_strategy = NoCompact()
     if args.compact_strategy is not None:
         # CLI flag overrides everything — no tag-based overrides
-        cli_strategy = _STRATEGY_MAP[args.compact_strategy]
         config = EvalConfig(
             runs_per_scenario=args.runs,
             stream=args.stream,

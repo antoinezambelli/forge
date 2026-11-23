@@ -1356,7 +1356,6 @@ async def run_batch(
     scenarios (compaction_stress, phase2_compaction) always override
     with their own hardcoded budget.
     """
-    from forge.context.strategies import TieredCompact
     from tests.eval.eval_runner import _COMPACTION_SCENARIOS
 
     generation = _validate_generation(generation)
@@ -1561,13 +1560,18 @@ async def run_batch(
                 if hasattr(client, "set_num_ctx"):
                     client.set_num_ctx(scenario_budget)
 
+                strategy_overrides = {}
+                if "compaction" in scenario.tags:
+                    from forge.context.phase_strategies import TieredCompact
+                    strategy_overrides["compaction"] = TieredCompact(keep_recent=2)
+
                 eval_config = EvalConfig(
                     runs_per_scenario=1,  # we loop ourselves
                     stream=True,
                     keep_message_history=True,
                     verbose=verbose,
                     budget_override=scenario_budget,
-                    strategy_overrides={"compaction": TieredCompact(keep_recent=2)},
+                    strategy_overrides=strategy_overrides,
                     reasoning_replay=reasoning_replay,
                 )
 

@@ -22,6 +22,8 @@ from forge.core.workflow import (
     ToolDefinition,
     Workflow,
 )
+from forge.core.runner import WorkflowRunner
+from forge.core.slot_worker import SlotWorker
 from forge.core.steps import StepTracker
 from forge.core.inference import (
     InferenceResult,
@@ -117,7 +119,9 @@ __all__ = [
     "REASONING_REPLAY_CHOICES",
     "ReasoningReplay",
     # Runner
+    "WorkflowRunner",
     # Slot worker
+    "SlotWorker",
     # Client
     "ChunkType",
     "LLMClient",

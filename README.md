@@ -309,6 +309,39 @@ python -m tests.eval.report eval_results.jsonl --html docs/results/dashboard.htm
 python -m tests.eval.report eval_results.jsonl --markdown docs/results/
 ```
 
+## Runner history and callbacks
+
+`WorkflowRunner` uses `ConversationState` internally and accepts only
+`initial_messages: list[RichMessage]`. Supplied seeds are shallow-list copied,
+replace the fresh system/user pair, and are not emitted again. String seeds,
+legacy `Message` values and the removed `ToolCall`/`TextResponse` imports are
+an intentional Python API break.
+
+```python
+from forge import RichMessage, MessageRole, TextPart, ToolCallPart, ToolResultPart
+
+new_messages = []
+runner = WorkflowRunner(client, ctx, on_message=new_messages.append)
+seed = [RichMessage(MessageRole.SYSTEM, [TextPart("Use the workflow tools.")]),
+        RichMessage(MessageRole.USER, [TextPart("Do the task.")])]
+value = await runner.run(workflow, "Do the task.", initial_messages=seed)
+for message in new_messages:
+    for part in message.parts:
+        if isinstance(part, ToolCallPart):
+            print(part.name, part.arguments, part.call_id)
+        elif isinstance(part, ToolResultPart):
+            print(part.call_id, part.outcome, [text.text for text in part.content])
+```
+
+Shared inference records each assistant reply once, including its ordered
+visible text, reasoning and calls. Runner callbacks receive that same reply,
+then correlated execution results or purpose-marked corrections. Transient
+`forge_purpose == "context_warning"` events are not persistent history.
+`on_chunk` receives streamed `FINAL` before reply delivery or execution.
+The terminal return is the handler's actual Python value; successful non-string
+values are represented as JSON text in model-visible results.
+See [the migration and multi-turn guide](docs/USER_GUIDE.md#multi-turn-conversations).
+
 ## Project Structure
 
 ```
@@ -317,9 +350,9 @@ src/forge/
   errors.py            # ForgeError hierarchy
   server.py            # setup_backend(), ServerManager, BudgetMode
   core/
-    messages.py        # Message, MessageRole, MessageType, MessageMeta
-    workflow.py        # ToolDefinition, ToolCall, TextResponse, Workflow
-    inference.py       # run_inference() — shared front half (compact, fold, validate, retry)
+    messages.py        # ConversationState, RichMessage, ordered typed parts
+    workflow.py        # ToolDefinition, Workflow, separate execution registries
+    inference.py       # run_inference() — shared front half (compact, render, validate, record, retry)
     runner.py          # WorkflowRunner — the agentic loop
     slot_worker.py     # SlotWorker — priority-queued slot access
     steps.py           # StepTracker
