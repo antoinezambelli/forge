@@ -1,199 +1,216 @@
-"""Unit tests for forge.core.messages."""
+"""Canonical state/ingress fidelity, replacing legacy flat serialization assertions."""
 
-import dataclasses
-
+import json
+from copy import deepcopy
+from dataclasses import FrozenInstanceError
 import pytest
-
-from forge.core.messages import Message, MessageMeta, MessageRole, MessageType, ToolCallInfo
-
-
-class TestMessageRole:
-    def test_values_and_string_behavior(self):
-        assert MessageRole.SYSTEM == "system"
-        assert MessageRole.USER == "user"
-        assert MessageRole.ASSISTANT == "assistant"
-        assert MessageRole.TOOL == "tool"
-        for role in MessageRole:
-            assert isinstance(role, str)
+from forge.core.messages import *
+from forge.core.codecs import (
+    openai_state,
+    anthropic_state,
+    render_openai,
+    render_anthropic,
+    decode_arguments,
+    argument_value,
+)
 
 
-class TestMessageType:
-    def test_values_and_string_behavior(self):
-        expected = {
-            "system_prompt",
-            "user_input",
-            "tool_call",
-            "tool_result",
-            "reasoning",
-            "text_response",
-            "step_nudge",
-            "prerequisite_nudge",
-            "retry_nudge",
-            "context_warning",
-            "summary",
-        }
-        actual = {mt.value for mt in MessageType}
-        assert actual == expected
-        for mt in MessageType:
-            assert isinstance(mt, str)
+@pytest.mark.parametrize(
+    "value", [{}, {"nested": [1, False]}, [], None, False, 0, 0.0, "", "broken{"]
+)
+def test_argument_variants_are_immutable_and_retain_received_values(value):
+    wrapped = decode_arguments(json.dumps(value))
+    assert isinstance(
+        wrapped, ValidArguments if isinstance(value, dict) else InvalidArguments
+    )
+    part = ToolCallPart("f", wrapped)
+    assert argument_value(part) == value
+    with pytest.raises(FrozenInstanceError):
+        wrapped.value = {}
+    wire = render_openai([RichMessage(MessageRole.ASSISTANT, [part])])[0]
+    assert json.loads(wire["tool_calls"][0]["function"]["arguments"]) == value
+    assert (
+        render_anthropic([RichMessage(MessageRole.ASSISTANT, [part])])[1][0]["content"][
+            0
+        ]["input"]
+        == value
+    )
+    assert (
+        render_openai([RichMessage(MessageRole.ASSISTANT, [part])], ollama=True)[0][
+            "tool_calls"
+        ][0]["function"]["arguments"]
+        == value
+    )
 
 
-class TestMessageMeta:
-    def test_is_frozen(self):
-        meta = MessageMeta(type=MessageType.TOOL_CALL, step_index=1)
-        with pytest.raises(dataclasses.FrozenInstanceError):
-            meta.type = MessageType.SUMMARY  # type: ignore[misc]
-
-    def test_defaults(self):
-        meta = MessageMeta(type=MessageType.USER_INPUT)
-        assert meta.step_index is None
-        assert meta.original_type is None
-        assert meta.token_estimate is None
-
-    def test_all_fields(self):
-        meta = MessageMeta(
-            type=MessageType.SUMMARY,
-            step_index=3,
-            original_type=MessageType.TOOL_RESULT,
-            token_estimate=120,
-        )
-        assert meta.type == MessageType.SUMMARY
-        assert meta.step_index == 3
-        assert meta.original_type == MessageType.TOOL_RESULT
-        assert meta.token_estimate == 120
+@pytest.mark.parametrize(
+    "content",
+    [
+        "hello",
+        "",
+        None,
+        [],
+        [
+            {"type": "text", "text": "a", "cache_control": {"type": "ephemeral"}},
+            {"type": "text", "text": "b", "x": 2},
+        ],
+        ["a", {"type": "text", "text": "b"}],
+    ],
+)
+def test_openai_content_shapes_boundaries_and_fields(content):
+    raw = [{"role": "user", "name": "n", "content": content, "x": {"nested": True}}]
+    state = openai_state(raw)
+    assert len(state.messages) == 1
+    assert render_openai(state.messages) == raw
 
 
-class TestMessage:
-    def test_to_api_dict_returns_role_and_content(self):
-        msg = Message(
-            role=MessageRole.ASSISTANT,
-            content="Hello",
-            metadata=MessageMeta(type=MessageType.REASONING),
-        )
-        api_dict = msg.to_api_dict()
-        assert api_dict == {"role": "assistant", "content": "Hello"}
-
-    def test_metadata_not_in_api_dict(self):
-        msg = Message(
-            role=MessageRole.USER,
-            content="Do something",
-            metadata=MessageMeta(
-                type=MessageType.USER_INPUT, step_index=0, token_estimate=50
-            ),
-        )
-        api_dict = msg.to_api_dict()
-        assert "metadata" not in api_dict
-        assert "_meta" not in api_dict
-        assert set(api_dict.keys()) == {"role", "content"}
-
-    def test_all_roles_round_trip(self):
-        for role in MessageRole:
-            msg = Message(
-                role=role,
-                content="test",
-                metadata=MessageMeta(type=MessageType.USER_INPUT),
-            )
-            api_dict = msg.to_api_dict()
-            assert api_dict["role"] == role.value
-
-    def test_tool_call_emits_structured_tool_calls_ollama(self):
-        msg = Message(
-            role=MessageRole.ASSISTANT,
-            content="",
-            metadata=MessageMeta(type=MessageType.TOOL_CALL),
-            tool_calls=[ToolCallInfo(name="fetch", args={"key": "val"}, call_id="call_000000001")],
-        )
-        api_dict = msg.to_api_dict(format="ollama")
-        assert api_dict["role"] == "assistant"
-        assert api_dict["tool_calls"] == [{
-            "function": {"name": "fetch", "arguments": {"key": "val"}},
-        }]
-
-    def test_tool_call_emits_structured_tool_calls_openai(self):
-        msg = Message(
-            role=MessageRole.ASSISTANT,
-            content="",
-            metadata=MessageMeta(type=MessageType.TOOL_CALL),
-            tool_calls=[ToolCallInfo(name="fetch", args={"key": "val"}, call_id="call_000000001")],
-        )
-        api_dict = msg.to_api_dict(format="openai")
-        assert api_dict["role"] == "assistant"
-        assert api_dict["tool_calls"] == [{
-            "id": "call_000000001",
-            "type": "function",
-            "function": {"name": "fetch", "arguments": '{"key": "val"}'},
-        }]
-
-    def test_multi_tool_calls_ollama(self):
-        msg = Message(
-            role=MessageRole.ASSISTANT,
-            content="",
-            metadata=MessageMeta(type=MessageType.TOOL_CALL),
-            tool_calls=[
-                ToolCallInfo(name="fetch", args={"key": "a"}, call_id="call_000000001"),
-                ToolCallInfo(name="analyze", args={"key": "b"}, call_id="call_000000002"),
+def test_openai_mixed_message_call_and_function_fields_win_extras():
+    raw = [
+        {
+            "role": "assistant",
+            "content": [{"type": "text", "text": "visible", "x": 1}],
+            "reasoning_content": "r1",
+            "reasoning": "r2",
+            "name": "a",
+            "tool_calls": [
+                {
+                    "id": "imported",
+                    "type": "function",
+                    "x": "outer",
+                    "function": {"name": "f", "arguments": '{"x":1}', "x": "inner"},
+                }
             ],
-        )
-        api_dict = msg.to_api_dict(format="ollama")
-        assert len(api_dict["tool_calls"]) == 2
-        assert api_dict["tool_calls"][0]["function"]["name"] == "fetch"
-        assert api_dict["tool_calls"][1]["function"]["name"] == "analyze"
+        }
+    ]
+    state = openai_state(raw)
+    before = deepcopy(state)
+    wire = render_openai(state.messages)
+    assert wire[0]["tool_calls"][0]["function"]["arguments"] == '{"x": 1}'
+    raw[0]["tool_calls"][0]["function"]["arguments"] = '{"x": 1}'
+    assert wire == raw
+    assert state == before
+    assert len(state.messages[0].parts) == 4
+    part = state.messages[0].parts[-1]
+    part.extra_fields.update(type="bad", id="bad")
+    part.function_fields.update(name="bad", arguments="bad")
+    rendered = render_openai(state.messages)[0]["tool_calls"][0]
+    assert rendered["type"] == "function" and rendered["id"] == "imported"
+    assert rendered["function"]["name"] == "f"
 
-    def test_multi_tool_calls_openai(self):
-        msg = Message(
-            role=MessageRole.ASSISTANT,
-            content="",
-            metadata=MessageMeta(type=MessageType.TOOL_CALL),
-            tool_calls=[
-                ToolCallInfo(name="fetch", args={"key": "a"}, call_id="call_000000001"),
-                ToolCallInfo(name="analyze", args={"key": "b"}, call_id="call_000000002"),
+
+def test_anthropic_grouping_order_system_and_multipart_results_round_trip():
+    blocks = [
+        {"type": "text", "text": "before", "cache_control": {"type": "ephemeral"}},
+        {
+            "type": "tool_result",
+            "tool_use_id": "",
+            "is_error": True,
+            "x": 4,
+            "content": [
+                {"type": "text", "text": "one", "x": 1},
+                {"type": "text", "text": "two"},
             ],
-        )
-        api_dict = msg.to_api_dict(format="openai")
-        assert len(api_dict["tool_calls"]) == 2
-        assert api_dict["tool_calls"][0]["id"] == "call_000000001"
-        assert api_dict["tool_calls"][1]["id"] == "call_000000002"
+        },
+        {"type": "text", "text": "after"},
+    ]
+    raw = [
+        {"role": "user", "content": blocks, "x": 2},
+        {
+            "role": "assistant",
+            "content": [
+                {"type": "thinking", "thinking": "r1", "signature": "s1"},
+                {"type": "text", "text": "visible"},
+                {"type": "tool_use", "id": "c", "name": "f", "input": {}, "x": 3},
+                {"type": "thinking", "thinking": "r2", "signature": "s2"},
+            ],
+        },
+    ]
+    system = [
+        {"type": "text", "text": "system", "cache_control": {"type": "ephemeral"}}
+    ]
+    state = anthropic_state(raw, system)
+    assert len(state.messages) == 3
+    assert len(state.messages[1].parts) == 3
+    assert render_anthropic(state.messages) == (system, raw)
+    result = state.messages[1].parts[1]
+    assert result.outcome == "error" and result.call_id == ""
+    assert not hasattr(result, "name")
 
-    def test_tool_result_emits_tool_name_ollama(self):
-        msg = Message(
-            role=MessageRole.TOOL,
-            content="result data",
-            metadata=MessageMeta(type=MessageType.TOOL_RESULT),
-            tool_name="fetch",
-        )
-        api_dict = msg.to_api_dict(format="ollama")
-        assert api_dict == {
-            "role": "tool",
-            "content": "result data",
-            "tool_name": "fetch",
-        }
 
-    def test_tool_result_openai_uses_name_and_tool_call_id(self):
-        msg = Message(
-            role=MessageRole.TOOL,
-            content="result data",
-            metadata=MessageMeta(type=MessageType.TOOL_RESULT),
-            tool_name="fetch",
-            tool_call_id="call_000000001",
-        )
-        api_dict = msg.to_api_dict(format="openai")
-        assert api_dict == {
-            "role": "tool",
-            "content": "result data",
-            "name": "fetch",
-            "tool_call_id": "call_000000001",
-        }
+@pytest.mark.parametrize("protocol", ["openai", "anthropic"])
+def test_unknown_structural_blocks_fail_clearly(protocol):
+    parse = openai_state if protocol == "openai" else anthropic_state
+    with pytest.raises(ValueError, match="Unsupported content block"):
+        parse([{"role": "user", "content": [{"type": "image", "url": "x"}]}])
 
-    def test_tool_result_openai_without_id(self):
-        msg = Message(
-            role=MessageRole.TOOL,
-            content="result data",
-            metadata=MessageMeta(type=MessageType.TOOL_RESULT),
-            tool_name="fetch",
-        )
-        api_dict = msg.to_api_dict(format="openai")
-        assert api_dict == {
-            "role": "tool",
-            "content": "result data",
-            "name": "fetch",
-        }
+
+def test_forge_fields_are_direct_and_never_rendered():
+    message = RichMessage(
+        MessageRole.USER, [TextPart("x")], step_index=4, forge_purpose="retry"
+    )
+    assert render_openai([message]) == [{"role": "user", "content": "x"}]
+    assert not hasattr(message, "metadata")
+
+
+def test_missing_history_id_fallbacks_and_empty_result_reference():
+    state = openai_state(
+        [
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [{"function": {"name": "f", "arguments": "{}"}}],
+            },
+            {"role": "tool", "content": "result"},
+        ]
+    )
+    assert state.messages[0].parts[-1].call_id.startswith("call_")
+    assert state.messages[1].parts[0].call_id == ""
+    assert render_openai(state.messages)[1]["tool_call_id"] == ""
+
+
+def test_cross_protocol_native_result_error_flag_is_not_added_to_openai_wire():
+    state = anthropic_state(
+        [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": "c",
+                        "is_error": True,
+                        "content": "failed",
+                    }
+                ],
+            }
+        ]
+    )
+    assert state.messages[0].parts[0].outcome == "error"
+    assert render_anthropic(state.messages)[1][0]["content"][0]["is_error"] is True
+    assert "is_error" not in render_openai(state.messages)[0]
+
+
+def test_imported_openai_result_does_not_acquire_tool_name_identity():
+    raw = [
+        {
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [{"id": "c", "function": {"name": "f", "arguments": "{}"}}],
+        },
+        {"role": "tool", "content": "result", "tool_call_id": "c"},
+    ]
+    state = openai_state(raw)
+    assert "name" not in render_openai(state.messages)[1]
+
+
+def test_canonical_message_parts_win_over_structural_extras_even_when_absent():
+    message = RichMessage(
+        MessageRole.ASSISTANT,
+        [TextPart("canonical")],
+        extra_fields={
+            "role": "user",
+            "content": "wrong",
+            "tool_calls": [{"wrong": True}],
+            "reasoning_content": "wrong",
+        },
+    )
+    assert render_openai([message]) == [{"role": "assistant", "content": "canonical"}]

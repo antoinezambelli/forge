@@ -12,9 +12,7 @@ the ``api_key``.
 
 from __future__ import annotations
 
-import json
 from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager
 from typing import Any
 
 import httpx
@@ -27,20 +25,21 @@ from forge._endpoint_layouts import (
     resolve_endpoint,
 )
 from forge.clients.base import (
-    ChunkType,
     StreamChunk,
     TokenUsage,
     _record_captured_usage,
-    decode_tool_args,
     format_tool,
     resolve_request_headers,
     static_auth_present,
 )
 from forge.clients.sampling_defaults import apply_sampling_defaults
-from forge.core.reasoning import REASONING_MESSAGE_FIELDS
-from forge.core.workflow import LLMResponse, TextResponse, ToolCall, ToolDefinition
+from forge.core.workflow import ToolDefinition
+from forge.core.messages import ConversationState, RichMessage
+from forge.clients.base import RequestMetadata, InferenceRequest
+from forge.core.codecs import render_openai, replay_messages
+from forge.clients.requests import request_extras
+from forge.clients.replies import openai_reply, openai_stream
 from forge.errors import BackendError
-from forge.prompts.think_tags import extract_think_tags
 
 
 class OpenAICompatClient:
@@ -78,10 +77,13 @@ class OpenAICompatClient:
     ) -> None:
         self.base_url = base_url.rstrip("/")
         connection = normalize_connection(
-            self.base_url, ConnectionInputKind.OPENAI_API_BASE,
+            self.base_url,
+            ConnectionInputKind.OPENAI_API_BASE,
         )
         self._chat_url = resolve_endpoint(
-            EndpointLayout.OPENAI_COMPAT, BackendOperation.INFERENCE, connection,
+            EndpointLayout.OPENAI_COMPAT,
+            BackendOperation.INFERENCE,
+            connection,
         )
         self.model = model
         # sampling_key is the registry-lookup key. For OpenAI-compat backends
@@ -94,17 +96,30 @@ class OpenAICompatClient:
         # apply_sampling_defaults returns an empty dict silently — which
         # is the common case for hosted providers whose model identifiers
         # aren't in forge's registry.
-        defaults = apply_sampling_defaults(self.sampling_key, strict=recommended_sampling)
-        self.temperature = temperature if temperature is not None else defaults.get("temperature")
+        defaults = apply_sampling_defaults(
+            self.sampling_key, strict=recommended_sampling
+        )
+        self.temperature = (
+            temperature if temperature is not None else defaults.get("temperature")
+        )
         self.top_p = top_p if top_p is not None else defaults.get("top_p")
         self.top_k = top_k if top_k is not None else defaults.get("top_k")
         self.min_p = min_p if min_p is not None else defaults.get("min_p")
-        self.repeat_penalty = repeat_penalty if repeat_penalty is not None else defaults.get("repeat_penalty")
-        self.presence_penalty = presence_penalty if presence_penalty is not None else defaults.get("presence_penalty")
+        self.repeat_penalty = (
+            repeat_penalty
+            if repeat_penalty is not None
+            else defaults.get("repeat_penalty")
+        )
+        self.presence_penalty = (
+            presence_penalty
+            if presence_penalty is not None
+            else defaults.get("presence_penalty")
+        )
         # chat_template_kwargs is a nested dict of Jinja template variables
         # — whole-value replacement at this field level (no nested merge).
         self.chat_template_kwargs = (
-            chat_template_kwargs if chat_template_kwargs is not None
+            chat_template_kwargs
+            if chat_template_kwargs is not None
             else defaults.get("chat_template_kwargs")
         )
 
@@ -130,7 +145,8 @@ class OpenAICompatClient:
         await self._http.aclose()
 
     def _request_headers(
-        self, extra_headers: dict[str, str] | None,
+        self,
+        extra_headers: dict[str, str] | None,
     ) -> dict[str, str] | None:
         """Per-call headers to apply, enforcing the one-credential rule.
 
@@ -140,16 +156,6 @@ class OpenAICompatClient:
         """
         return resolve_request_headers(self._static_auth, extra_headers)
 
-    @asynccontextmanager
-    async def _stream_with_timeout(
-        self, *args: Any, **kwargs: Any,
-    ) -> AsyncIterator[httpx.Response]:
-        try:
-            async with self._http.stream(*args, **kwargs) as response:
-                yield response
-        except httpx.ReadTimeout as exc:
-            raise BackendError(408, "Read timeout during streaming") from exc
-
     # ── request building ─────────────────────────────────────────────
 
     # Sampling fields recognized in per-call overrides. ``seed`` is
@@ -157,8 +163,13 @@ class OpenAICompatClient:
     # ``chat_template_kwargs`` is a nested dict — whole-value replacement
     # at this field level (no nested merge).
     _SAMPLING_FIELDS = (
-        "temperature", "top_p", "top_k", "min_p",
-        "repeat_penalty", "presence_penalty", "seed",
+        "temperature",
+        "top_p",
+        "top_k",
+        "min_p",
+        "repeat_penalty",
+        "presence_penalty",
+        "seed",
         "chat_template_kwargs",
     )
 
@@ -204,258 +215,68 @@ class OpenAICompatClient:
         self.last_usage[0] = normalized
         _record_captured_usage(normalized)
 
-    @staticmethod
-    def _structured_reasoning(source: dict[str, Any]) -> str:
-        """First non-empty canonical reasoning field, or ''.
-
-        Ordered by ``REASONING_MESSAGE_FIELDS`` (``reasoning_content`` →
-        ``reasoning`` → ``reasoning_text``) so providers using different field
-        names all work.
-
-        Fail-loud on a non-string reasoning value (some providers ship
-        structured block lists): silently ``str()``-coercing it would turn a
-        Python repr into chain-of-thought and replay it to the model under
-        ``full``/``keep-last``.
-        """
-        for field in REASONING_MESSAGE_FIELDS:
-            val = source.get(field)
-            if not val:
-                continue
-            if not isinstance(val, str):
-                raise BackendError(
-                    500,
-                    f"reasoning field {field!r} is {type(val).__name__}, not a "
-                    f"string: {val!r} — refusing to coerce it into replayable "
-                    "chain-of-thought",
-                )
-            return val
-        return ""
-
-    @staticmethod
-    def _resolve_reasoning(structured: str, content: str) -> str | None:
-        """Reasoning from a structured field or inline ``<think>`` tags — never
-        bare content.
-
-        This client is provider-agnostic (Groq/Together/OpenRouter/hosted
-        instruct), where a ``content`` preamble alongside a tool call is
-        routinely legitimate user-facing text, not chain-of-thought; labeling it
-        reasoning would mis-route a real assistant turn (and silently drop it
-        under ``reasoning_replay=none``, the default). So — unlike
-        vLLM/Ollama/llamafile — there is deliberately no raw-content fallback
-        (issue #114). Both send paths pass the same ``(structured, content)``
-        pair so they resolve identically.
-        """
-        if structured:
-            return structured
-        think, _ = extract_think_tags(content)
-        return think or None
-
-    @staticmethod
-    def _parse_tool_calls(
-        tool_calls: list[dict[str, Any]],
-        *,
-        reasoning: str | None = None,
-    ) -> LLMResponse:
-        """Parse OpenAI ``tool_calls`` into ``ToolCall`` objects.
-
-        Tool-call ``arguments`` arrive as JSON strings. Forge is fail-loud:
-        malformed argument JSON must NOT be coerced into executable empty args,
-        or a provider/model can emit invalid arguments and Forge proceeds with
-        ``fn(**{})`` — exactly the quiet false success the library avoids.
-        Instead ``decode_tool_args`` keeps the raw (non-dict) args on the
-        ``ToolCall``; ``ResponseValidator``'s args-shape check then routes it
-        through the tool-error channel, so the model self-corrects on the
-        canonical tool-result channel rather than a trailing retry nudge.
-
-        ``reasoning`` is keyword-only with a default so existing positional
-        callers keep working; it is attached to the FIRST ToolCall only
-        (parity with vLLM/Ollama).
-        """
-        return [
-            ToolCall(
-                tool=tc.get("function", {}).get("name", ""),
-                args=decode_tool_args(tc.get("function", {}).get("arguments")),
-                reasoning=reasoning if i == 0 else None,
-            )
-            for i, tc in enumerate(tool_calls)
-        ]
-
-    # ── send ─────────────────────────────────────────────────────────
-
-    async def send(
+    def render_request(
         self,
-        messages: list[dict[str, str]],
-        tools: list[ToolDefinition] | None = None,
-        sampling: dict[str, Any] | None = None,
-        passthrough: dict[str, Any] | None = None,
-        inbound_anthropic_body: dict[str, Any] | None = None,
-        extra_headers: dict[str, str] | None = None,
-    ) -> LLMResponse:
-        """Send messages via /chat/completions and parse the response.
+        state: ConversationState,
+        tools: list[ToolDefinition] | None,
+        metadata: RequestMetadata,
+        *,
+        stream: bool = False,
+    ) -> InferenceRequest:
+        messages = render_openai(replay_messages(state, metadata.reasoning_replay))
+        body = self._build_body(
+            messages,
+            tools,
+            metadata.sampling,
+            stream,
+            request_extras(metadata, "openai"),
+        )
+        return InferenceRequest(
+            body,
+            self._chat_url,
+            {
+                **dict(self._http.headers),
+                **(self._request_headers(metadata.extra_headers) or {}),
+            },
+        )
 
-        ``inbound_anthropic_body`` is accepted to satisfy the LLMClient
-        protocol but ignored — Path-1 Anthropic forwarding doesn't apply
-        to OpenAI-shape clients. ``extra_headers`` carries the per-call
-        credential (relocated inbound auth or a rotating token), applied over
-        the construction headers; a second auth source raises.
-        """
-        del inbound_anthropic_body  # protocol-only, never read here
-        body = self._build_body(messages, tools, sampling, stream=False, passthrough=passthrough)
+    async def send(self, request: InferenceRequest) -> RichMessage:
         try:
             resp = await self._http.post(
-                self._chat_url,
-                json=body,
-                headers=self._request_headers(extra_headers),
+                request.url, json=request.payload, headers=request.headers
             )
         except httpx.ReadTimeout as exc:
             raise BackendError(408, "Read timeout") from exc
-
         if resp.status_code != 200:
             raise BackendError(resp.status_code, raw_body=resp.text)
-
         data = resp.json()
         self._record_usage(data)
-
         choices = data.get("choices") or []
         if not choices:
             raise BackendError(500, f"response has no choices: {data}")
-        msg = choices[0].get("message", {})
-        tool_calls = msg.get("tool_calls")
-        if tool_calls:
-            return self._parse_tool_calls(
-                tool_calls,
-                reasoning=self._resolve_reasoning(
-                    self._structured_reasoning(msg), msg.get("content") or "",
-                ),
-            )
-        # No tool calls: strip inline <think> so the TextResponse carries clean,
-        # user-facing content (reasoning is only useful attached to a ToolCall).
-        # extract_think_tags returns the text unchanged when no tags are present,
-        # so plain preambles/answers survive verbatim.
-        _, content = extract_think_tags(msg.get("content") or "")
-        return TextResponse(content=content)
-
-    # ── streaming ────────────────────────────────────────────────────
+        return openai_reply(choices[0].get("message", {}), capture_reasoning=True)
 
     async def send_stream(
-        self,
-        messages: list[dict[str, str]],
-        tools: list[ToolDefinition] | None = None,
-        sampling: dict[str, Any] | None = None,
-        passthrough: dict[str, Any] | None = None,
-        inbound_anthropic_body: dict[str, Any] | None = None,
-        extra_headers: dict[str, str] | None = None,
+        self, request: InferenceRequest
     ) -> AsyncIterator[StreamChunk]:
-        """Stream via SSE from /chat/completions.
-
-        ``inbound_anthropic_body`` is accepted to satisfy the LLMClient
-        protocol but ignored — see :meth:`send`. ``extra_headers`` carries
-        the per-call credential (see :meth:`send`).
-        """
-        del inbound_anthropic_body  # protocol-only, never read here
-        body = self._build_body(messages, tools, sampling, stream=True, passthrough=passthrough)
-
-        accumulated_content = ""
-        accumulated_reasoning = ""
-        tool_calls: dict[int, dict[str, Any]] = {}
-        usage: dict[str, Any] | None = None
-
-        async with self._stream_with_timeout(
-            "POST",
-            self._chat_url,
-            json=body,
-            headers=self._request_headers(extra_headers),
-        ) as response:
-            if response.status_code != 200:
-                error_body = await response.aread()
-                raise BackendError(response.status_code, raw_body=error_body.decode(errors="replace"))
-
-            async for line in response.aiter_lines():
-                if not line.startswith("data: "):
-                    continue
-                data_str = line[6:]
-                if data_str == "[DONE]":
-                    break
-                chunk = json.loads(data_str)
-                if chunk.get("usage"):
-                    usage = chunk["usage"]
-                choices = chunk.get("choices") or []
-                if not choices:
-                    continue
-                delta = choices[0].get("delta", {})
-
-                content = delta.get("content")
-                if content is not None:
-                    if not isinstance(content, str):
-                        content = str(content)
-                    if content:
-                        accumulated_content += content
-                        yield StreamChunk(type=ChunkType.TEXT_DELTA, content=content)
-
-                # Accumulate structured reasoning deltas across all canonical
-                # field names (a given provider streams reasoning under one name
-                # consistently). Do NOT yield a chunk for reasoning deltas —
-                # mirror vLLM, which only accumulates; content deltas keep being
-                # yielded as TEXT_DELTA even when they are <think> fragments, and
-                # are stripped only in the FINAL response.
-                for field in REASONING_MESSAGE_FIELDS:
-                    frag = delta.get(field)
-                    if not frag:
-                        continue
-                    if not isinstance(frag, str):
-                        # Same fail-loud rule as _structured_reasoning: never
-                        # repr-coerce provider block structures into replayable
-                        # chain-of-thought.
-                        raise BackendError(
-                            500,
-                            f"streamed reasoning field {field!r} is "
-                            f"{type(frag).__name__}, not a string: {frag!r}",
-                        )
-                    accumulated_reasoning += frag
-
-                for tc in delta.get("tool_calls") or []:
-                    idx = tc.get("index", 0)
-                    slot = tool_calls.setdefault(
-                        idx, {"function": {"name": "", "arguments": ""}}
+        try:
+            async with self._http.stream(
+                "POST", request.url, json=request.payload, headers=request.headers
+            ) as response:
+                if response.status_code != 200:
+                    raw = await response.aread()
+                    raise BackendError(
+                        response.status_code, raw_body=raw.decode(errors="replace")
                     )
-                    fn = tc.get("function", {})
-                    if fn.get("name"):
-                        slot["function"]["name"] += str(fn["name"])
-                    # OpenAI streaming sends `arguments` as JSON-string
-                    # fragments we concatenate into the final JSON string. A
-                    # non-string fragment is a non-compliant provider; serialize
-                    # it into the buffer rather than silently dropping it.
-                    # Dropping leaves a gap in the assembled JSON that may parse
-                    # into wrong-but-valid args (a quiet false success); folding
-                    # it in instead means the single parse at stream end either
-                    # recovers a whole-object fragment or survives as raw
-                    # (non-dict) args for ResponseValidator to route to the
-                    # tool-error channel, matching LlamafileClient.
-                    args_frag = fn.get("arguments")
-                    if args_frag is not None:
-                        slot["function"]["arguments"] += (
-                            args_frag if isinstance(args_frag, str) else json.dumps(args_frag)
-                        )
-
-        if usage:
-            self._record_usage({"usage": usage})
-
-        if tool_calls:
-            ordered = [tool_calls[i] for i in sorted(tool_calls)]
-            # Resolve reasoning exactly like send(): a structured field wins,
-            # else inline <think> tags. Accumulating raw content across chunks
-            # and extracting once at the end handles <think> tags that straddle
-            # chunk boundaries, and multi-chunk structured reasoning deltas.
-            final: LLMResponse = self._parse_tool_calls(
-                ordered,
-                reasoning=self._resolve_reasoning(
-                    accumulated_reasoning, accumulated_content,
-                ),
-            )
-        else:
-            _, text = extract_think_tags(accumulated_content)
-            final = TextResponse(content=text)
-        yield StreamChunk(type=ChunkType.FINAL, response=final)
+                async for chunk in openai_stream(
+                    response,
+                    self._record_usage,
+                    capture_reasoning=True,
+                    emit_tool_deltas=False,
+                ):
+                    yield chunk
+        except httpx.ReadTimeout as exc:
+            raise BackendError(408, "Read timeout during streaming") from exc
 
     async def get_context_length(self) -> int | None:
         """OpenAI-compatible endpoints don't expose context length. Returns None."""

@@ -20,62 +20,20 @@ from forge.clients.base import (
     StreamChunk,
     TokenUsage,
     _record_captured_usage,
-    decode_tool_args,
-    flatten_content_to_text,
     format_tool,
     resolve_request_headers,
     static_auth_present,
 )
 from forge.clients.sampling_defaults import apply_sampling_defaults
-from forge.core.workflow import LLMResponse, TextResponse, ToolCall, ToolDefinition
+from forge.core.workflow import ToolDefinition
+from forge.core.messages import ConversationState, RichMessage
+from forge.clients.base import RequestMetadata, InferenceRequest
+from forge.core.codecs import render_openai, replay_messages
+from forge.clients.requests import request_extras
+from forge.clients.replies import openai_reply, text_reply
 from forge.errors import BackendError, ThinkingNotSupportedError
-from forge.prompts.think_tags import extract_think_tags
 
 _THINK_HEURISTIC_KEYWORDS = ("reason", "think")
-
-
-def _normalize_messages_for_ollama(
-    messages: list[dict[str, Any]],
-) -> list[dict[str, Any]]:
-    """Coerce OpenAI-wire messages into Ollama's native /api/chat schema.
-
-    Ollama's native endpoint is stricter than the OpenAI wire format the proxy
-    forwards verbatim on the native-passthrough path (issues #111/#115):
-
-      - ``content`` must be a plain string, not a multi-part array. Multi-part
-        arrays are flattened text-only (images dropped, matching the converted
-        path's long-standing behavior).
-      - tool-call ``arguments`` must be a dict, not the JSON string OpenAI
-        clients replay in assistant history. Only a value that decodes to a
-        dict is rewritten; a malformed / non-object payload is left untouched
-        (it rides the validator's tool-error lane rather than being coerced).
-
-    Returns a new list; the input messages and their nested dicts are not
-    mutated (direct callers may reuse their list).
-    """
-    normalized: list[dict[str, Any]] = []
-    for msg in messages:
-        new_msg = dict(msg)
-        if isinstance(new_msg.get("content"), list):
-            new_msg["content"] = flatten_content_to_text(new_msg["content"])
-
-        tool_calls = new_msg.get("tool_calls")
-        if isinstance(tool_calls, list):
-            new_calls: list[Any] = []
-            for tc in tool_calls:
-                new_tc = dict(tc) if isinstance(tc, dict) else tc
-                func = new_tc.get("function") if isinstance(new_tc, dict) else None
-                if isinstance(func, dict) and "arguments" in func:
-                    decoded = decode_tool_args(func["arguments"])
-                    if isinstance(decoded, dict):
-                        new_func = dict(func)
-                        new_func["arguments"] = decoded
-                        new_tc["function"] = new_func
-                new_calls.append(new_tc)
-            new_msg["tool_calls"] = new_calls
-
-        normalized.append(new_msg)
-    return normalized
 
 
 def _is_think_unsupported_error(status_code: int, body: str) -> bool:
@@ -120,9 +78,13 @@ class OllamaClient:
         extra_headers: dict[str, str] | None = None,
     ) -> None:
         self.base_url = base_url
-        connection = normalize_connection(base_url, ConnectionInputKind.OLLAMA_DAEMON_ROOT)
+        connection = normalize_connection(
+            base_url, ConnectionInputKind.OLLAMA_DAEMON_ROOT
+        )
         self._chat_url = resolve_endpoint(
-            EndpointLayout.OLLAMA_NATIVE, BackendOperation.INFERENCE, connection,
+            EndpointLayout.OLLAMA_NATIVE,
+            BackendOperation.INFERENCE,
+            connection,
         )
         self.model = model
         # sampling_key is the registry-lookup key. For Ollama the wire "model"
@@ -130,13 +92,25 @@ class OllamaClient:
         self.sampling_key = self.model
         # Apply per-model recommended sampling defaults. Caller's explicit
         # (non-None) kwargs win over the map field-by-field.
-        defaults = apply_sampling_defaults(self.sampling_key, strict=recommended_sampling)
-        self.temperature = temperature if temperature is not None else defaults.get("temperature")
+        defaults = apply_sampling_defaults(
+            self.sampling_key, strict=recommended_sampling
+        )
+        self.temperature = (
+            temperature if temperature is not None else defaults.get("temperature")
+        )
         self.top_p = top_p if top_p is not None else defaults.get("top_p")
         self.top_k = top_k if top_k is not None else defaults.get("top_k")
         self.min_p = min_p if min_p is not None else defaults.get("min_p")
-        self.repeat_penalty = repeat_penalty if repeat_penalty is not None else defaults.get("repeat_penalty")
-        self.presence_penalty = presence_penalty if presence_penalty is not None else defaults.get("presence_penalty")
+        self.repeat_penalty = (
+            repeat_penalty
+            if repeat_penalty is not None
+            else defaults.get("repeat_penalty")
+        )
+        self.presence_penalty = (
+            presence_penalty
+            if presence_penalty is not None
+            else defaults.get("presence_penalty")
+        )
         # Optional backend auth (api_key → Authorization: Bearer; extra_headers
         # ride on top). Local Ollama is usually unauthenticated, but a gateway
         # in front of it may require a credential. One credential per request:
@@ -166,7 +140,8 @@ class OllamaClient:
         await self._http.aclose()
 
     def _request_headers(
-        self, extra_headers: dict[str, str] | None,
+        self,
+        extra_headers: dict[str, str] | None,
     ) -> dict[str, str] | None:
         """Per-call headers to apply, enforcing the one-credential rule.
 
@@ -179,12 +154,18 @@ class OllamaClient:
     # Sampling fields recognized in per-call overrides. ``seed`` is
     # accepted only as a per-call override (not an instance field).
     _SAMPLING_FIELDS = (
-        "temperature", "top_p", "top_k", "min_p",
-        "repeat_penalty", "presence_penalty", "seed",
+        "temperature",
+        "top_p",
+        "top_k",
+        "min_p",
+        "repeat_penalty",
+        "presence_penalty",
+        "seed",
     )
 
     def _build_options(
-        self, sampling: dict[str, Any] | None = None,
+        self,
+        sampling: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Build the Ollama options dict.
 
@@ -204,25 +185,6 @@ class OllamaClient:
             opts["num_ctx"] = self._num_ctx
         return opts
 
-    def _resolve_reasoning(
-        self,
-        thinking: str,
-        content: str,
-    ) -> str | None:
-        """Gate reasoning capture on _think flag.
-
-        When _think is False, discard all reasoning. When True: prefer the
-        structured ``thinking`` field; if absent, extract ``<think>`` tags from
-        content; finally fall back to the raw content (an instruct model
-        narrating before its tool call). Mirrors LlamafileClient.
-        """
-        if not self._think:
-            return None
-        if thinking:
-            return thinking
-        think, _ = extract_think_tags(content)
-        return think or content or None
-
     def _record_usage(self, data: dict[str, Any]) -> None:
         """Extract token usage from an Ollama response."""
         prompt = data.get("prompt_eval_count")
@@ -239,50 +201,46 @@ class OllamaClient:
         self.last_usage[0] = normalized
         _record_captured_usage(normalized)
 
-    async def send(
+    def render_request(
         self,
-        messages: list[dict[str, str]],
-        tools: list[ToolDefinition] | None = None,
-        sampling: dict[str, Any] | None = None,
-        passthrough: dict[str, Any] | None = None,
-        inbound_anthropic_body: dict[str, Any] | None = None,
-        extra_headers: dict[str, str] | None = None,
-    ) -> LLMResponse:
-        """Send messages via /api/chat and parse the response.
-
-        ``passthrough`` is accepted for protocol symmetry but not yet
-        plumbed — Ollama is not currently a proxy-side external backend
-        (forge proxy uses LlamafileClient for external mode). Adding
-        Ollama passthrough is a follow-up.
-
-        ``inbound_anthropic_body`` accepted for protocol
-        symmetry, ignored (Ollama is OpenAI-shape only). ``extra_headers``
-        carries the per-call credential, applied over the construction headers
-        on every request (including the think-unsupported retry).
-        """
-        body: dict[str, Any] = {
+        state: ConversationState,
+        tools: list[ToolDefinition] | None,
+        metadata: RequestMetadata,
+        *,
+        stream: bool = False,
+    ) -> InferenceRequest:
+        body = {
             "model": self.model,
-            "messages": _normalize_messages_for_ollama(messages),
-            "stream": False,
-            "options": self._build_options(sampling),
+            "messages": render_openai(
+                replay_messages(state, metadata.reasoning_replay), ollama=True
+            ),
+            "stream": stream,
+            "options": self._build_options(metadata.sampling),
         }
         if self._think:
             body["think"] = True
         if tools:
             body["tools"] = [format_tool(t) for t in tools]
-        if passthrough is not None and "litellm_session_id" in passthrough:
+        passthrough = request_extras(metadata, "openai")
+        if "litellm_session_id" in passthrough:
             body["litellm_session_id"] = passthrough["litellm_session_id"]
+        return InferenceRequest(
+            body,
+            self._chat_url,
+            {
+                **dict(self._http.headers),
+                **(self._request_headers(metadata.extra_headers) or {}),
+            },
+        )
 
-        # One credential per request: resolve once and reuse for the retry.
-        req_headers = self._request_headers(extra_headers)
+    async def send(self, request: InferenceRequest) -> RichMessage:
+        body = request.payload
         try:
             resp = await self._http.post(
-                self._chat_url, json=body, headers=req_headers,
+                request.url, json=body, headers=request.headers
             )
         except httpx.ReadTimeout as exc:
             raise BackendError(408, "Read timeout") from exc
-
-        # Think unsupported: fail fast if explicit, fall back if auto-detected
         if _is_think_unsupported_error(resp.status_code, resp.text):
             if self._think_resolved:
                 raise ThinkingNotSupportedError(self.model, resp.status_code, resp.text)
@@ -290,106 +248,42 @@ class OllamaClient:
             self._think_resolved = True
             del body["think"]
             resp = await self._http.post(
-                self._chat_url, json=body, headers=req_headers,
+                request.url, json=body, headers=request.headers
             )
-
         if resp.status_code == 500:
-            return TextResponse(content=resp.text)
+            return text_reply(resp.text)
         if resp.status_code != 200:
             raise BackendError(resp.status_code, raw_body=resp.text)
         data = resp.json()
         self._record_usage(data)
-
-        if not self._think_resolved:
-            self._think_resolved = True
-
-        msg = data.get("message", {})
-        tool_calls = msg.get("tool_calls")
-        if tool_calls:
-            reasoning = self._resolve_reasoning(
-                msg.get("thinking", ""), msg.get("content", ""),
-            )
-            # Ollama returns tool-call arguments already decoded as a dict
-            # (unlike vLLM/llama.cpp, which send a JSON string) — no json.loads
-            # needed. Defensive .get on function/name so a broken tool-call
-            # entry degrades to empty rather than raising KeyError.
-            return [
-                ToolCall(
-                    tool=tc.get("function", {}).get("name", ""),
-                    args=tc.get("function", {}).get("arguments", {}),
-                    reasoning=reasoning if i == 0 else None,
-                )
-                for i, tc in enumerate(tool_calls)
-            ]
-
-        # No tool calls: strip inline thinking so the TextResponse carries
-        # clean content (parity with LlamafileClient).
-        _, content = extract_think_tags(msg.get("content", ""))
-        return TextResponse(content=content)
+        self._think_resolved = True
+        return openai_reply(
+            data.get("message", {}), capture_reasoning=self._think, ollama=True
+        )
 
     async def send_stream(
-        self,
-        messages: list[dict[str, str]],
-        tools: list[ToolDefinition] | None = None,
-        sampling: dict[str, Any] | None = None,
-        passthrough: dict[str, Any] | None = None,
-        inbound_anthropic_body: dict[str, Any] | None = None,
-        extra_headers: dict[str, str] | None = None,
+        self, request: InferenceRequest
     ) -> AsyncIterator[StreamChunk]:
-        """Stream via NDJSON from /api/chat.
-
-        ``passthrough`` / ``inbound_anthropic_body``
-        accepted for protocol symmetry; see ``send`` notes. ``extra_headers``
-        carries the per-call credential, applied on both the initial stream
-        and the think-unsupported retry stream.
-        """
-        body: dict[str, Any] = {
-            "model": self.model,
-            "messages": _normalize_messages_for_ollama(messages),
-            "stream": True,
-            "options": self._build_options(sampling),
-        }
-        if self._think:
-            body["think"] = True
-        if tools:
-            body["tools"] = [format_tool(t) for t in tools]
-        if passthrough is not None and "litellm_session_id" in passthrough:
-            body["litellm_session_id"] = passthrough["litellm_session_id"]
-
-        # One credential per request: resolve once and reuse for the retry.
-        req_headers = self._request_headers(extra_headers)
+        body = request.payload
         async with self._http.stream(
-            "POST", self._chat_url, json=body, headers=req_headers,
+            "POST", request.url, json=body, headers=request.headers
         ) as response:
-            # Think unsupported: fail fast if explicit, fall back if auto-detected
             if response.status_code == 400:
-                error_body = ""
-                async for line in response.aiter_lines():
-                    error_body += line
-                if _is_think_unsupported_error(400, error_body):
-                    if self._think_resolved:
-                        raise ThinkingNotSupportedError(self.model, 400, error_body)
-                    self._think = False
-                    self._think_resolved = True
-                    del body["think"]
-                    # Fall through to retry below
-                else:
-                    raise BackendError(400, raw_body=error_body)
-
-            if not self._think_resolved:
+                raw = (await response.aread()).decode(errors="replace")
+                if not _is_think_unsupported_error(400, raw):
+                    raise BackendError(400, raw_body=raw)
+                if self._think_resolved:
+                    raise ThinkingNotSupportedError(self.model, 400, raw)
+                self._think = False
                 self._think_resolved = True
-
-            # If we just disabled think, we need a new stream
-            if "think" not in body and self._think is False and response.status_code == 400:
-                pass  # Exit context manager, retry below
+                del body["think"]
             else:
+                self._think_resolved = True
                 async for chunk in self._iter_stream(response):
                     yield chunk
                 return
-
-        # Retry stream without think
         async with self._http.stream(
-            "POST", self._chat_url, json=body, headers=req_headers,
+            "POST", request.url, json=body, headers=request.headers
         ) as response:
             async for chunk in self._iter_stream(response):
                 yield chunk
@@ -397,63 +291,31 @@ class OllamaClient:
     async def _iter_stream(
         self, response: httpx.Response
     ) -> AsyncIterator[StreamChunk]:
-        """Parse NDJSON stream chunks from an Ollama response."""
         if response.status_code == 500:
-            error_body = ""
-            async for line in response.aiter_lines():
-                error_body += line
-            yield StreamChunk(
-                type=ChunkType.FINAL,
-                response=TextResponse(content=error_body),
-            )
+            raw = (await response.aread()).decode(errors="replace")
+            yield StreamChunk(ChunkType.FINAL, response=text_reply(raw))
             return
-
-        accumulated_content = ""
-        accumulated_thinking = ""
-        pending_tool_calls: list[dict[str, Any]] | None = None
+        content, thinking, calls = "", "", []
         try:
             async for line in response.aiter_lines():
                 if not line.strip():
                     continue
                 data = json.loads(line)
                 msg = data.get("message", {})
-
+                content += msg.get("content") or ""
+                thinking += msg.get("thinking") or ""
+                if msg.get("tool_calls"):
+                    calls = msg["tool_calls"]
                 if data.get("done"):
                     self._record_usage(data)
-                    tool_calls = msg.get("tool_calls") or pending_tool_calls
-                    if tool_calls:
-                        reasoning = self._resolve_reasoning(
-                            accumulated_thinking,
-                            accumulated_content or msg.get("content", ""),
-                        )
-                        final: LLMResponse = [
-                            ToolCall(
-                                tool=tc.get("function", {}).get("name", ""),
-                                args=tc.get("function", {}).get("arguments", {}),
-                                reasoning=reasoning if i == 0 else None,
-                            )
-                            for i, tc in enumerate(tool_calls)
-                        ]
-                    else:
-                        content = msg.get("content", "")
-                        if content:
-                            accumulated_content += content
-                        _, text = extract_think_tags(accumulated_content)
-                        final = TextResponse(content=text)
-                    yield StreamChunk(type=ChunkType.FINAL, response=final)
-                else:
-                    tool_calls = msg.get("tool_calls")
-                    if tool_calls:
-                        pending_tool_calls = tool_calls
-                    thinking = msg.get("thinking", "")
-                    if thinking:
-                        accumulated_thinking += thinking
-                    content = msg.get("content", "")
-                    if content:
-                        accumulated_content += content
-                        yield StreamChunk(
-                            type=ChunkType.TEXT_DELTA, content=content
-                        )
+                    reply = openai_reply(
+                        {"content": content, "thinking": thinking, "tool_calls": calls},
+                        capture_reasoning=self._think,
+                        ollama=True,
+                    )
+                    yield StreamChunk(ChunkType.FINAL, response=reply)
+                elif msg.get("content"):
+                    yield StreamChunk(ChunkType.TEXT_DELTA, content=msg["content"])
         except httpx.ReadTimeout as exc:
             raise BackendError(408, "Read timeout during streaming") from exc
 

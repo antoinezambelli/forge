@@ -23,7 +23,7 @@ class ErrorTracker:
         self._consecutive_tool_errors = 0
 
     def record_retry(self) -> None:
-        """Record a validation failure (TextResponse or unknown tool)."""
+        """Record a validation failure (bare text or unknown tool)."""
         self._consecutive_retries += 1
 
     def reset_retries(self) -> None:

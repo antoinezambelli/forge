@@ -14,7 +14,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Literal
 
-from forge.core.workflow import LLMResponse, ToolCall
+from forge.core.messages import RichMessage, ToolCallPart
 from forge.guardrails.error_tracker import ErrorTracker
 from forge.guardrails.nudge import TOOL_CHANNEL_KINDS, TOOL_ERROR_KINDS, Nudge
 from forge.guardrails.response_validator import ResponseValidator
@@ -43,7 +43,7 @@ class CheckResult:
     """
 
     action: Literal["execute", "retry", "tool_error", "step_blocked", "fatal"]
-    tool_calls: list[ToolCall] | None = None
+    tool_calls: list[ToolCallPart] | None = None
     nudge: Nudge | None = None
     reason: str | None = None
 
@@ -105,15 +105,15 @@ class Guardrails:
         )
 
     def check(
-        self, response: LLMResponse,
+        self,
+        response: RichMessage,
     ) -> CheckResult:
         """Check an LLM response against all guardrails.
 
         Call this after each LLM response, before executing any tools.
 
         Args:
-            response: The LLM response -- either a TextResponse or a
-                list of ToolCall objects.
+            response: The assistant RichMessage returned by the backend.
 
         Returns:
             CheckResult indicating what the caller should do next.
@@ -183,6 +183,7 @@ class Guardrails:
         self._errors.reset_errors()
         self._enforcer.reset_premature()
         return self._enforcer.is_satisfied() and any(
-            (entry if isinstance(entry, str) else entry[0]) in self._enforcer.terminal_tools
+            (entry if isinstance(entry, str) else entry[0])
+            in self._enforcer.terminal_tools
             for entry in executed
         )

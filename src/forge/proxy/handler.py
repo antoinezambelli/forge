@@ -4,13 +4,13 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Awaitable, Callable
-from copy import deepcopy
 from dataclasses import dataclass
 from typing import Any, Literal
 
 from forge._backend_profiles import ClientAdapter, ModelCatalog
 from forge.clients.base import (
     LLMClient,
+    RequestMetadata,
     TokenUsage,
     _capture_usage,
     redact_auth_headers,
@@ -19,7 +19,6 @@ from forge.context.manager import ContextManager
 from forge.context.observations import ContextSession
 from forge.core.inference import (
     _sync_token_count,
-    prepare_backend_messages,
     run_inference,
 )
 from forge.core.reasoning import (
@@ -27,7 +26,8 @@ from forge.core.reasoning import (
     ReasoningReplay,
     validate_reasoning_replay,
 )
-from forge.core.workflow import ToolCall, ToolDefinition, TextResponse
+from forge.core.workflow import ToolDefinition
+from forge.core.messages import RichMessage, ToolCallPart, TextPart
 from forge.errors import (
     BackendDiscoveryError,
     BackendError,
@@ -38,17 +38,16 @@ from forge.guardrails import ErrorTracker, ResponseValidator
 from forge.proxy.auth import resolve_inbound_credential
 from forge.proxy.convert import (
     openai_to_messages,
-    tool_calls_to_openai,
-    tool_calls_to_sse_events,
+    reply_to_openai,
+    reply_to_sse_events,
     text_response_to_openai,
     text_to_sse_events,
 )
 from forge.proxy.convert_anthropic import (
     anthropic_to_messages,
-    anthropic_to_openai_passthrough,
     anthropic_tools_to_definitions,
-    tool_calls_to_anthropic,
-    tool_calls_to_anthropic_sse,
+    reply_to_anthropic,
+    reply_to_anthropic_sse,
     text_response_to_anthropic,
     text_to_anthropic_sse,
 )
@@ -65,8 +64,13 @@ logger = logging.getLogger("forge.proxy")
 # Everything else in the inbound body rides through via ``passthrough`` —
 # the client merges it into its outbound body verbatim.
 _SAMPLING_FIELDS = (
-    "temperature", "top_p", "top_k", "min_p",
-    "repeat_penalty", "presence_penalty", "seed",
+    "temperature",
+    "top_p",
+    "top_k",
+    "min_p",
+    "repeat_penalty",
+    "presence_penalty",
+    "seed",
     "chat_template_kwargs",
 )
 
@@ -170,7 +174,8 @@ def _extract_passthrough(body: dict[str, Any]) -> dict[str, Any] | None:
     every supported field.
     """
     extras = {
-        k: v for k, v in body.items()
+        k: v
+        for k, v in body.items()
         if k not in _FORGE_OWNED and k not in _SAMPLING_FIELDS
     }
     return extras or None
@@ -213,7 +218,9 @@ def resolve_effective_model(
     return model
 
 
-def _extract_tool_definitions(request_tools: list[dict[str, Any]] | None) -> list[ToolDefinition]:
+def _extract_tool_definitions(
+    request_tools: list[dict[str, Any]] | None,
+) -> list[ToolDefinition]:
     """Parse OpenAI function envelopes into ordered canonical definitions."""
     if request_tools is None:
         return []
@@ -231,8 +238,11 @@ def _extract_tool_definitions(request_tools: list[dict[str, Any]] | None) -> lis
             name=function.get("name"),
             description=function.get("description", ""),
             input_schema=function.get("parameters", {}),
-            extra_fields={key: value for key, value in function.items()
-                          if key not in {"name", "description", "parameters", "input_schema"}},
+            extra_fields={
+                key: value
+                for key, value in function.items()
+                if key not in {"name", "description", "parameters", "input_schema"}
+            },
         )
         if definition.name in names:
             raise ValueError(f"Duplicate tool name '{definition.name}'")
@@ -246,13 +256,6 @@ def _extract_tool_names(tool_definitions: list[ToolDefinition]) -> list[str]:
     return [s.name for s in tool_definitions]
 
 
-def _raw_openai_messages(request_messages: Any) -> list[dict[str, Any]] | None:
-    """Return a detached deep copy of the inbound OpenAI messages array."""
-    if not isinstance(request_messages, list) or not request_messages:
-        return None
-    return [deepcopy(msg) for msg in request_messages if isinstance(msg, dict)]
-
-
 async def handle_chat_completions(
     body: dict[str, Any],
     client: LLMClient,
@@ -261,7 +264,6 @@ async def handle_chat_completions(
     max_retries: int = 3,
     max_tool_errors: int = 2,
     rescue_enabled: bool = True,
-    native_passthrough: bool = True,
     inject_respond_tool: bool = False,
     protocol: Literal["openai", "anthropic"] = "openai",
     reasoning_replay: ReasoningReplay = DEFAULT_REASONING_REPLAY,
@@ -286,17 +288,6 @@ async def handle_chat_completions(
         max_retries: Max consecutive retries for bad responses.
         max_tool_errors: Max consecutive tool-call errors (malformed args).
         rescue_enabled: Whether to attempt rescue parsing.
-        native_passthrough: When True (default, native capability), make the
-            client's raw OpenAI tools/message content available to compatible
-            adapters on the clean first attempt. Generic OpenAI/llama and vLLM
-            paths preserve applicable fields; Ollama and Anthropic convert or
-            rebuild their downstream shapes. The llama/OpenAI adapter may merge
-            consecutive visible same-role messages for template compatibility;
-            this is not compaction or deletion. When False (prompt capability), suppress
-            the raw passthrough so the request folds normally and the client's
-            prompt path injects the tool prompt and downgrades tool history —
-            the raw passthrough is meaningless when tools are serialized into
-            the prompt text.
         inject_respond_tool: When True and the client request supplies tools,
             inject forge's synthetic respond() tool so the model stays in
             tool-calling mode (the call is stripped from the outbound
@@ -370,7 +361,9 @@ async def handle_chat_completions(
     )
     if request_facts.effective_model is None:
         request_facts.effective_model = resolve_effective_model(
-            body, client, client_adapter,
+            body,
+            client,
+            client_adapter,
         )
     model_name = request_facts.effective_model
 
@@ -379,47 +372,23 @@ async def handle_chat_completions(
     # Proxy publication is handled separately.
     context_manager.invalidate_usage()
 
-    # Inbound parse + sampling/passthrough extraction (protocol-specific)
     if protocol == "anthropic":
-        messages = anthropic_to_messages(
-            body.get("messages", []),
-            body.get("system"),
-        )
+        state = anthropic_to_messages(body.get("messages", []), body.get("system"))
         tool_definitions = anthropic_tools_to_definitions(body.get("tools"))
-        # Anthropic inbound's sampling fields don't overlap with the OpenAI
-        # sampling set; the translated passthrough carries them in OpenAI
-        # shape for the (OpenAI-shape) backend client.
+        # Native extras enter metadata directly, before backend selection.
         sampling = None
-        passthrough = anthropic_to_openai_passthrough(body) or None
-        # Path-1 cache_control opt-in. The Anthropic client uses this when
-        # the runner hasn't mutated messages (clean first-attempt call);
-        # OpenAI-shape clients (LlamafileClient) accept and ignore. See
-        # ADR-015.
-        inbound_anthropic_body = dict(body)
-        inbound_anthropic_body.pop("tools", None)
+        extras = {
+            k: v for k, v in body.items() if k not in _FORGE_OWNED and k != "model"
+        }
     else:
-        request_messages = body.get("messages", [])
-        request_tools = body.get("tools")
-        messages = openai_to_messages(request_messages)
-        tool_definitions = _extract_tool_definitions(request_tools)
+        state = openai_to_messages(body.get("messages", []))
+        tool_definitions = _extract_tool_definitions(body.get("tools"))
         sampling = _extract_sampling(body)
-        passthrough = _extract_passthrough(body)
-        inbound_anthropic_body = None
-        # Message preservation remains until the rich-message migration.
-        if native_passthrough:
-            raw_messages_for_backend = _raw_openai_messages(request_messages)
-        else:
-            raw_messages_for_backend = None
-
-    if protocol == "anthropic":
-        raw_messages_for_backend = None
-
-    if backend_protocol == "anthropic":
-        if passthrough is None:
-            passthrough = {}
-        passthrough["model"] = model_name
-        if inbound_anthropic_body is not None:
-            inbound_anthropic_body["model"] = model_name
+        extras = _extract_passthrough(body) or {}
+        extras.pop("model", None)
+    metadata = RequestMetadata(
+        model_name, sampling, extras, extra_headers, protocol, reasoning_replay
+    )
 
     # Optionally inject the respond tool (default off). When on, the model
     # calls respond(message="...") instead of producing bare text, keeping it
@@ -439,49 +408,41 @@ async def handle_chat_completions(
     # Forward to backend and return the response directly.
     if not tool_definitions:
         logger.info("No tools in request, passing through to backend")
-        api_format = getattr(client, "api_format", "ollama")
-        api_messages = prepare_backend_messages(
-            messages,
-            api_format,
-            reasoning_replay=reasoning_replay,
-            raw_openai_messages=raw_messages_for_backend,
-            use_raw_messages=raw_messages_for_backend is not None,
+        request = client.render_request(
+            state, tool_definitions if body.get("tools") is not None else None, metadata
         )
         with _capture_usage() as usage_capture:
-            response = await client.send(
-                api_messages, tools=tool_definitions if body.get("tools") is not None else None,
-                sampling=sampling, passthrough=passthrough,
-                inbound_anthropic_body=inbound_anthropic_body,
-                extra_headers=extra_headers,
-            )
+            response = await client.send(request)
+        state.messages.append(response)
         usage = usage_capture.usage
         _sync_token_count(usage, context_manager)
         request_facts.usage = usage
         request_facts.completed = True
-        text = response.content if isinstance(response, TextResponse) else ""
+        text = "\n".join(p.text for p in response.parts if isinstance(p, TextPart))
         return _emit_text(
-            text, model_name, protocol, is_stream, usage=usage,
+            text,
+            model_name,
+            protocol,
+            is_stream,
+            usage=usage,
         )
 
     # Set up guardrails
     validator = ResponseValidator(tool_names, rescue_enabled=rescue_enabled)
-    error_tracker = ErrorTracker(max_retries=max_retries, max_tool_errors=max_tool_errors)
+    error_tracker = ErrorTracker(
+        max_retries=max_retries, max_tool_errors=max_tool_errors
+    )
 
     # Run the shared guardrail inference path; Proxy supplies NoCompact.
     try:
         result = await run_inference(
-            messages=messages,
+            state=state,
             client=client,
             context_manager=context_manager,
             validator=validator,
             error_tracker=error_tracker,
             tool_definitions=tool_definitions,
-            sampling=sampling,
-            passthrough=passthrough,
-            inbound_anthropic_body=inbound_anthropic_body,
-            raw_openai_messages=raw_messages_for_backend,
-            extra_headers=extra_headers,
-            reasoning_replay=reasoning_replay,
+            metadata=metadata,
         )
     except ToolCallError as exc:
         # Retries exhausted — the model kept returning text instead of tool
@@ -493,14 +454,19 @@ async def handle_chat_completions(
         request_facts.usage = usage
         request_facts.completed = True
         return _emit_text(
-            raw, model_name, protocol, is_stream, usage=usage,
+            raw,
+            model_name,
+            protocol,
+            is_stream,
+            usage=usage,
         )
 
     # run_inference returns None when max_attempts exhausted
     if result is None:
         return _emit_text("", model_name, protocol, is_stream)
 
-    tool_calls = result.response
+    reply = result.response
+    tool_calls = [p for p in reply.parts if isinstance(p, ToolCallPart)]
     usage = result.usage
     request_facts.usage = usage
     request_facts.completed = True
@@ -509,12 +475,12 @@ async def handle_chat_completions(
     # If the model called respond(message="..."), the client sees a
     # normal text response (stop_reason/finish_reason indicates "stop"),
     # not a tool call.
-    respond_calls = [tc for tc in tool_calls if tc.tool == RESPOND_TOOL_NAME]
-    other_calls = [tc for tc in tool_calls if tc.tool != RESPOND_TOOL_NAME]
+    respond_calls = [tc for tc in tool_calls if tc.name == RESPOND_TOOL_NAME]
+    other_calls = [tc for tc in tool_calls if tc.name != RESPOND_TOOL_NAME]
 
     if respond_calls and not other_calls:
         # Pure respond — convert to text
-        text = respond_calls[0].args.get("message", "")
+        text = respond_calls[0].arguments.value.get("message", "")
         logger.info("Stripping respond() call, returning as text")
         return _emit_text(text, model_name, protocol, is_stream, usage=usage)
 
@@ -522,7 +488,18 @@ async def handle_chat_completions(
         # Real tool calls (possibly mixed with respond) — return the
         # real tool calls only, drop respond.
         return _emit_tool_calls(
-            other_calls, model_name, protocol, is_stream, usage=usage,
+            RichMessage(
+                reply.role,
+                [
+                    p
+                    for p in reply.parts
+                    if not isinstance(p, ToolCallPart) or p.name != RESPOND_TOOL_NAME
+                ],
+            ),
+            model_name,
+            protocol,
+            is_stream,
+            usage=usage,
             reasoning_replay=reasoning_replay,
         )
 
@@ -548,7 +525,7 @@ def _emit_text(
 
 
 def _emit_tool_calls(
-    tool_calls: list[ToolCall],
+    reply: RichMessage,
     model: str,
     protocol: str,
     is_stream: bool,
@@ -558,17 +535,28 @@ def _emit_tool_calls(
     """Protocol-aware tool-call response emitter."""
     if protocol == "anthropic":
         if is_stream:
-            return tool_calls_to_anthropic_sse(
-                tool_calls, model=model, usage=usage,
+            return reply_to_anthropic_sse(
+                reply,
+                model=model,
+                usage=usage,
                 reasoning_replay=reasoning_replay,
             )
-        return tool_calls_to_anthropic(
-            tool_calls, model=model, usage=usage, reasoning_replay=reasoning_replay,
+        return reply_to_anthropic(
+            reply,
+            model=model,
+            usage=usage,
+            reasoning_replay=reasoning_replay,
         )
     if is_stream:
-        return tool_calls_to_sse_events(
-            tool_calls, model=model, usage=usage, reasoning_replay=reasoning_replay,
+        return reply_to_sse_events(
+            reply,
+            model=model,
+            usage=usage,
+            reasoning_replay=reasoning_replay,
         )
-    return tool_calls_to_openai(
-        tool_calls, model=model, usage=usage, reasoning_replay=reasoning_replay,
+    return reply_to_openai(
+        reply,
+        model=model,
+        usage=usage,
+        reasoning_replay=reasoning_replay,
     )

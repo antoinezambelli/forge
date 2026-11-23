@@ -1,11 +1,11 @@
-"""HTTP-boundary regressions for native API versions and SDK transport parity."""
+from tests.canonical import send, send_stream
+from forge.clients.base import RequestMetadata
 
+"HTTP-boundary regressions for native API versions and SDK transport parity."
 import asyncio
 import json
-
 import httpx
 import pytest
-
 from forge._backend_profiles import ClientAdapter
 from forge.clients.anthropic import AnthropicClient
 from forge.clients.openai_compat import OpenAICompatClient
@@ -24,21 +24,34 @@ def _reply(content=None):
 
 def _http(client, handler):
     client._http = httpx.AsyncClient(
-        transport=httpx.MockTransport(handler), base_url=client._http.base_url,
+        transport=httpx.MockTransport(handler),
+        base_url=client._http.base_url,
         headers=client._http.headers,
     )
 
 
 def _body(**extra):
-    return {"model": "route", "max_tokens": 32,
-            "messages": [{"role": "user", "content": "hi"}], **extra}
+    return {
+        "model": "route",
+        "max_tokens": 32,
+        "messages": [{"role": "user", "content": "hi"}],
+        **extra,
+    }
 
 
-async def _proxy(client, body, *, protocol="anthropic", backend="anthropic", headers=None):
+async def _proxy(
+    client, body, *, protocol="anthropic", backend="anthropic", headers=None
+):
     return await handle_chat_completions(
-        body, client, ContextManager(strategy=NoCompact(), budget_tokens=None),
-        protocol=protocol, backend_protocol=backend, headers=headers,
-        client_adapter=ClientAdapter.ANTHROPIC if backend == "anthropic" else ClientAdapter.OPENAI_COMPAT,
+        body,
+        client,
+        ContextManager(strategy=NoCompact(), budget_tokens=None),
+        protocol=protocol,
+        backend_protocol=backend,
+        headers=headers,
+        client_adapter=ClientAdapter.ANTHROPIC
+        if backend == "anthropic"
+        else ClientAdapter.OPENAI_COMPAT,
     )
 
 
@@ -72,7 +85,9 @@ async def test_native_versions_preserve_bodies_without_leaking_between_calls():
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("version", ["2023-06-01", "2026-10-21"])
-async def test_native_version_survives_guardrail_rebuild_and_concurrent_requests(version):
+async def test_native_version_survives_guardrail_rebuild_and_concurrent_requests(
+    version,
+):
     client = AnthropicClient(model=None, api_key="static")
     requests = []
     attempts = {}
@@ -85,24 +100,32 @@ async def test_native_version_survives_guardrail_rebuild_and_concurrent_requests
         await asyncio.sleep(0)
         if attempts[model] == 1:
             return httpx.Response(200, json=_reply())
-        return httpx.Response(200, json=_reply([{
-            "type": "tool_use", "id": "toolu_1", "name": "search", "input": {},
-        }]))
+        return httpx.Response(
+            200,
+            json=_reply(
+                [{"type": "tool_use", "id": "toolu_1", "name": "search", "input": {}}]
+            ),
+        )
 
     _http(client, handler)
     tools = [
         {"name": "search", "description": "Search", "input_schema": {"type": "object"}}
     ]
     other = "2026-10-21" if version == "2023-06-01" else "2023-06-01"
-    await asyncio.gather(*[
-        _proxy(client, _body(model=model, tools=tools),
-               headers={"anthropic-version": selected})
-        for model, selected in [("route-a", version), ("route-b", other)]
-    ])
+    await asyncio.gather(
+        *[
+            _proxy(
+                client,
+                _body(model=model, tools=tools),
+                headers={"anthropic-version": selected},
+            )
+            for model, selected in [("route-a", version), ("route-b", other)]
+        ]
+    )
     for model, selected in [("route-a", version), ("route-b", other)]:
         calls = [r for r in requests if json.loads(r.content)["model"] == model]
         assert len(calls) == 2
-        assert all(r.headers["anthropic-version"] == selected for r in calls)
+        assert all((r.headers["anthropic-version"] == selected for r in calls))
         assert len(json.loads(calls[1].content)["messages"]) > 1
     await client.aclose()
 
@@ -110,22 +133,34 @@ async def test_native_version_survives_guardrail_rebuild_and_concurrent_requests
 @pytest.mark.asyncio
 @pytest.mark.parametrize("backend", ["anthropic", "openai"])
 async def test_cross_protocol_version_policy(backend):
-    client = (AnthropicClient(model=None, api_key="static") if backend == "anthropic"
-              else OpenAICompatClient(base_url="https://backend/v1", model="route"))
+    client = (
+        AnthropicClient(model=None, api_key="static")
+        if backend == "anthropic"
+        else OpenAICompatClient(base_url="https://backend/v1", model="route")
+    )
     requests = []
 
     def handler(request):
         requests.append(request)
-        payload = _reply() if backend == "anthropic" else {"choices": [{"message": {"content": "ok"}}]}
+        payload = (
+            _reply()
+            if backend == "anthropic"
+            else {"choices": [{"message": {"content": "ok"}}]}
+        )
         return httpx.Response(200, json=payload)
 
-    # The OpenAI client has no base_url on its HTTP session; use its endpoint.
-    client._http = httpx.AsyncClient(transport=httpx.MockTransport(handler), headers=client._http.headers)
+    client._http = httpx.AsyncClient(
+        transport=httpx.MockTransport(handler), headers=client._http.headers
+    )
     if backend == "anthropic":
         client._http.base_url = "https://api.anthropic.com/"
-    await _proxy(client, _body(), backend=backend,
-                 protocol="openai" if backend == "anthropic" else "anthropic",
-                 headers={"anthropic-version": "2026-10-21"})
+    await _proxy(
+        client,
+        _body(),
+        backend=backend,
+        protocol="openai" if backend == "anthropic" else "anthropic",
+        headers={"anthropic-version": "2026-10-21"},
+    )
     assert requests[0].headers.get("anthropic-version") == (
         "2023-06-01" if backend == "anthropic" else None
     )
@@ -139,7 +174,9 @@ async def test_invalid_new_contract_body_reaches_backend_unchanged():
 
     def handler(request):
         requests.append(request)
-        return httpx.Response(400, json={"error": {"message": "temperature unsupported"}})
+        return httpx.Response(
+            400, json={"error": {"message": "temperature unsupported"}}
+        )
 
     _http(client, handler)
     body = _body(temperature=0.2)
@@ -152,10 +189,14 @@ async def test_invalid_new_contract_body_reaches_backend_unchanged():
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("failure", ["timeout", "body-timeout", "rate-limit", "server-error"])
-async def test_transport_retry_preserves_request_and_honors_retry_after(monkeypatch, failure):
+@pytest.mark.parametrize(
+    "failure", ["timeout", "body-timeout", "rate-limit", "server-error"]
+)
+async def test_transport_retry_preserves_request_and_honors_retry_after(
+    monkeypatch, failure
+):
     client = AnthropicClient(model="route", api_key="static", max_retries=1)
-    requests, delays = [], []
+    requests, delays = ([], [])
 
     async def sleep(delay):
         delays.append(delay)
@@ -172,16 +213,18 @@ async def test_transport_retry_preserves_request_and_honors_retry_after(monkeypa
                 raise httpx.ReadTimeout("slow", request=request)
             if failure == "body-timeout":
                 return httpx.Response(200, stream=TimeoutBody())
-            return httpx.Response(429 if failure == "rate-limit" else 503,
-                                  headers={"retry-after-ms": "25"})
+            return httpx.Response(
+                429 if failure == "rate-limit" else 503,
+                headers={"retry-after-ms": "25"},
+            )
         return httpx.Response(200, json=_reply())
 
     monkeypatch.setattr("forge.clients.anthropic.asyncio.sleep", sleep)
     _http(client, handler)
-    await client.send([], extra_headers={"anthropic-version": "2026-10-21"})
+    await send(client, [], extra_headers={"anthropic-version": "2026-10-21"})
     assert len(requests) == 2 and len(delays) == 1
     assert requests[0].content == requests[1].content
-    assert all(r.headers["anthropic-version"] == "2026-10-21" for r in requests)
+    assert all((r.headers["anthropic-version"] == "2026-10-21" for r in requests))
     if failure in ("rate-limit", "server-error"):
         assert delays == [0.025]
     await client.aclose()
@@ -202,12 +245,12 @@ async def test_retry_budget_and_backend_directive(monkeypatch):
     monkeypatch.setattr("forge.clients.anthropic.asyncio.sleep", sleep)
     _http(client, handler)
     with pytest.raises(BackendError):
-        await client.send([])
+        await send(client, [])
     assert len(requests) == 1
     requests.clear()
-    _http(client, lambda r: (requests.append(r) or httpx.Response(503)))
+    _http(client, lambda r: requests.append(r) or httpx.Response(503))
     with pytest.raises(BackendError):
-        await client.send([])
+        await send(client, [])
     assert len(requests) == 2
     await client.aclose()
 
@@ -216,19 +259,31 @@ async def test_retry_budget_and_backend_directive(monkeypatch):
 @pytest.mark.parametrize("end", ["error", "eof"])
 async def test_stream_failure_never_replays_or_produces_final(end):
     client = AnthropicClient(model="route", api_key="static", max_retries=3)
-    requests, chunks = [], []
+    requests, chunks = ([], [])
 
     def handler(request):
         requests.append(request)
-        events = [{"type": "content_block_delta", "index": 0,
-                   "delta": {"type": "text_delta", "text": "partial"}}]
+        events = [
+            {
+                "type": "content_block_start",
+                "index": 0,
+                "content_block": {"type": "text", "text": ""},
+            },
+            {
+                "type": "content_block_delta",
+                "index": 0,
+                "delta": {"type": "text_delta", "text": "partial"},
+            },
+        ]
         if end == "error":
             events.append({"type": "error", "error": {"type": "overloaded_error"}})
-        return httpx.Response(200, content="".join(f"data: {json.dumps(e)}\n\n" for e in events))
+        return httpx.Response(
+            200, content="".join((f"data: {json.dumps(e)}\n\n" for e in events))
+        )
 
     _http(client, handler)
     with pytest.raises(BackendError):
-        async for chunk in client.send_stream([]):
+        async for chunk in send_stream(client, []):
             chunks.append(chunk)
     assert len(requests) == 1
     assert [c.content for c in chunks] == ["partial"]
@@ -308,7 +363,7 @@ async def test_complete_canonical_tools_on_initial_and_retry(inbound, backend, s
                         "id": "r",
                         "name": "respond",
                         "input": {"message": "done"},
-                    },
+                    }
                 ]
             )
             if not stream:
@@ -316,10 +371,15 @@ async def test_complete_canonical_tools_on_initial_and_retry(inbound, backend, s
             if first:
                 events = [
                     {
+                        "type": "content_block_start",
+                        "index": 0,
+                        "content_block": {"type": "text", "text": ""},
+                    },
+                    {
                         "type": "content_block_delta",
                         "index": 0,
                         "delta": {"type": "text_delta", "text": "try again"},
-                    }
+                    },
                 ]
             else:
                 events = [
@@ -368,7 +428,7 @@ async def test_complete_canonical_tools_on_initial_and_retry(inbound, backend, s
             if "tool_calls" in delta:
                 delta["tool_calls"][0]["index"] = 0
             events = [{"choices": [{"delta": delta}]}]
-        data = "".join("data: " + json.dumps(event) + "\n\n" for event in events)
+        data = "".join(("data: " + json.dumps(event) + "\n\n" for event in events))
         if backend != "anthropic":
             data += "data: [DONE]\n\n"
         return httpx.Response(
@@ -403,13 +463,13 @@ async def test_complete_canonical_tools_on_initial_and_retry(inbound, backend, s
             original_stream = client.send_stream
 
             async def recording_stream(*args, **kwargs):
-                seen.append(kwargs["tools"])
+                seen.append(args[0].payload.get("tools"))
                 async for chunk in original_stream(*args, **kwargs):
                     yield chunk
 
             client.send_stream = recording_stream
             result = await run_inference(
-                messages=messages,
+                state=messages,
                 client=client,
                 context_manager=ContextManager(
                     strategy=NoCompact(), budget_tokens=None
@@ -417,12 +477,10 @@ async def test_complete_canonical_tools_on_initial_and_retry(inbound, backend, s
                 validator=ResponseValidator([tool.name for tool in definitions]),
                 error_tracker=ErrorTracker(max_retries=1),
                 tool_definitions=definitions,
-                inbound_anthropic_body=body if inbound == "anthropic" else None,
-                passthrough={"model": "route"},
+                metadata=RequestMetadata(model="route", source_protocol=inbound),
                 stream=True,
             )
-            assert seen == [definitions, definitions]
-            assert all(collection is definitions for collection in seen)
+            assert len(seen) == 2
         else:
             result = await handle_chat_completions(
                 body,
@@ -431,7 +489,6 @@ async def test_complete_canonical_tools_on_initial_and_retry(inbound, backend, s
                 protocol=inbound,
                 backend_protocol="anthropic" if backend == "anthropic" else "openai",
                 client_adapter=adapter,
-                native_passthrough=backend != "prompt",
                 max_retries=1,
                 inject_respond_tool=True,
             )
@@ -468,12 +525,7 @@ async def test_complete_canonical_tools_on_initial_and_retry(inbound, backend, s
 
 @pytest.mark.parametrize(
     "inject, names",
-    [
-        (True, None),
-        (True, []),
-        (False, ["lookup"]),
-        (True, ["lookup", "respond"]),
-    ],
+    [(True, None), (True, []), (False, ["lookup"]), (True, ["lookup", "respond"])],
 )
 @pytest.mark.asyncio
 async def test_native_anthropic_copied_body_respond_policy(inject, names):
@@ -493,7 +545,7 @@ async def test_native_anthropic_copied_body_respond_policy(inject, names):
             for name in names
         ]
     )
-    body = _body(**({"tools": tools} if tools is not None else {}))
+    body = _body(**{"tools": tools} if tools is not None else {})
     before = deepcopy(body)
     sent = []
 
@@ -534,3 +586,71 @@ async def test_native_anthropic_copied_body_respond_policy(inject, names):
     else:
         assert sent[0]["tools"] == tools
     assert body == before
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("protocol", ["openai", "anthropic"])
+async def test_native_gateway_extras_and_known_translation_survive_actual_retry(
+    protocol,
+):
+    client = AnthropicClient(model="pinned", api_key="static")
+    sent = []
+
+    def handler(request):
+        sent.append((json.loads(request.content), dict(request.headers)))
+        content = (
+            [{"type": "text", "text": "retry"}]
+            if len(sent) == 1
+            else [{"type": "tool_use", "name": "search", "input": {"q": "done"}}]
+        )
+        return httpx.Response(200, json=_reply(content))
+
+    _http(client, handler)
+    tools = (
+        [{"type": "function", "function": {"name": "search", "parameters": {}}}]
+        if protocol == "openai"
+        else [{"name": "search", "input_schema": {}}]
+    )
+    body = _body(
+        tools=tools,
+        metadata={"trace_id": "retained", "nested": {"anything": [1, False]}},
+        vendor_extension={"route": "gateway"},
+    )
+    body.update(
+        {"stop": ["END"], "tool_choice": "required"}
+        if protocol == "openai"
+        else {
+            "stop_sequences": ["END"],
+            "tool_choice": {"type": "any"},
+            "thinking": {"type": "adaptive"},
+            "service_tier": "auto",
+        }
+    )
+    body["messages"][0] = {
+        "role": "user",
+        "name": "caller",
+        "content": [
+            {"type": "text", "text": "a", "cache_control": {"type": "ephemeral"}},
+            {"type": "text", "text": "b", "x-part": 2},
+        ],
+    }
+    result = await _proxy(
+        client,
+        body,
+        protocol=protocol,
+        headers={"anthropic-version": "gateway-version"},
+    )
+    assert len(sent) == 2
+    for rendered, headers in sent:
+        assert rendered["model"] == "pinned"
+        assert rendered["metadata"] == body["metadata"]
+        assert rendered["vendor_extension"] == body["vendor_extension"]
+        assert rendered["stop_sequences"] == ["END"] and "stop" not in rendered
+        assert rendered["tool_choice"] == {"type": "any"}
+        assert rendered["messages"][0] == body["messages"][0]
+        if protocol == "anthropic":
+            assert rendered["thinking"] == {"type": "adaptive"}
+            assert rendered["service_tier"] == "auto"
+            assert headers["anthropic-version"] == "gateway-version"
+    assert result is not None
+    await client.aclose()

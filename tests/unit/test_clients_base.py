@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from forge.clients.base import decode_tool_args
+from forge.core.codecs import decode_arguments
+from forge.core.messages import ValidArguments, InvalidArguments
 
 
 class TestDecodeToolArgs:
@@ -18,8 +19,9 @@ class TestDecodeToolArgs:
         decoded = {"city": "Paris"}
         cases = [
             ("json object", '{"city": "Paris"}', {"city": "Paris"}),
-            ("empty string", "", {}),
-            ("missing arguments", None, {}),
+            ("empty wire string", "", {}),
+            ("JSON-encoded empty string", '""', ""),
+            ("received null", None, None),
             ("malformed json", '{"city": ', '{"city": '),
             ("json list", "[1, 2]", [1, 2]),
             ("json number", "42", 42),
@@ -28,10 +30,15 @@ class TestDecodeToolArgs:
             ("decoded list", [1, 2], [1, 2]),
         ]
         for case, raw, expected in cases:
-            assert decode_tool_args(raw) == expected, case
+            decoded_args = decode_arguments(raw)
+            assert (
+                decoded_args.value
+                if isinstance(decoded_args, ValidArguments)
+                else decoded_args.received
+            ) == expected, case
 
         # Already-decoded dictionaries pass through without a copy.
-        assert decode_tool_args(decoded) is decoded
+        assert decode_arguments(decoded).value is decoded
 
 
 def test_canonical_tool_fields_win_without_mutating_definitions():
@@ -66,3 +73,9 @@ def test_canonical_tool_fields_win_without_mutating_definitions():
     assert openai["function"]["strict"] is anthropic["strict"] is True
     assert definition == before
     assert (schema, extras) == original
+
+
+def test_empty_wire_arguments_are_distinct_from_decoded_empty_string():
+    assert decode_arguments("") == ValidArguments({})
+    assert decode_arguments('""') == InvalidArguments("")
+    assert decode_arguments("", json_encoded=False) == InvalidArguments("")

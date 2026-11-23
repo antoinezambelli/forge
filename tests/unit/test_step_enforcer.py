@@ -1,6 +1,7 @@
 """Tests for StepEnforcer."""
 
-from forge.core.workflow import ToolCall
+from tests.canonical import call
+from forge.core.codecs import argument_value
 from forge.guardrails import StepEnforcer
 
 
@@ -14,7 +15,7 @@ class TestStepEnforcerCheck:
         )
 
     def test_terminal_before_steps_escalates_and_caps_nudge_tier(self):
-        calls = [ToolCall(tool="answer", args={})]
+        calls = [call(name="answer", arguments={})]
         results = [self.enforcer.check(calls) for _ in range(5)]
         assert results[0].needs_nudge is True
         assert results[0].nudge.kind == "step"
@@ -24,26 +25,26 @@ class TestStepEnforcerCheck:
     def test_terminal_after_steps_satisfied_no_nudge(self):
         self.enforcer.record("search")
         self.enforcer.record("lookup")
-        calls = [ToolCall(tool="answer", args={})]
+        calls = [call(name="answer", arguments={})]
         result = self.enforcer.check(calls)
         assert result.needs_nudge is False
 
     def test_terminal_with_partial_steps_nudges(self):
         self.enforcer.record("search")
-        calls = [ToolCall(tool="answer", args={})]
+        calls = [call(name="answer", arguments={})]
         result = self.enforcer.check(calls)
         assert result.needs_nudge is True
         assert "lookup" in result.nudge.content
 
     def test_non_terminal_tools_always_pass(self):
-        calls = [ToolCall(tool="search", args={}), ToolCall(tool="lookup", args={})]
+        calls = [call(name="search", arguments={}), call(name="lookup", arguments={})]
         result = self.enforcer.check(calls)
         assert result.needs_nudge is False
 
     def test_batch_with_terminal_and_others(self):
         calls = [
-            ToolCall(tool="search", args={}),
-            ToolCall(tool="answer", args={}),
+            call(name="search", arguments={}),
+            call(name="answer", arguments={}),
         ]
         result = self.enforcer.check(calls)
         assert result.needs_nudge is True
@@ -80,8 +81,8 @@ class TestStepEnforcerTerminalReached:
         )
 
     def test_requires_both_satisfied_steps_and_terminal_call(self):
-        terminal = [ToolCall(tool="answer", args={})]
-        nonterminal = [ToolCall(tool="search", args={})]
+        terminal = [call(name="answer", arguments={})]
+        nonterminal = [call(name="search", arguments={})]
         assert self.enforcer.terminal_reached(terminal) is False
         self.enforcer.record("search")
         assert self.enforcer.terminal_reached(nonterminal) is False
@@ -97,7 +98,7 @@ class TestStepEnforcerExhaustion:
             terminal_tools=frozenset(["answer"]),
             max_premature_attempts=2,
         )
-        calls = [ToolCall(tool="answer", args={})]
+        calls = [call(name="answer", arguments={})]
         assert enforcer.premature_attempts == 0
         enforcer.check(calls)
         enforcer.check(calls)
@@ -116,7 +117,7 @@ class TestStepEnforcerResetPremature:
             terminal_tools=frozenset(["answer"]),
             max_premature_attempts=2,
         )
-        calls = [ToolCall(tool="answer", args={})]
+        calls = [call(name="answer", arguments={})]
         enforcer.check(calls)
         enforcer.check(calls)
         assert enforcer.premature_attempts == 2
@@ -144,11 +145,9 @@ class TestStepEnforcerNoRequiredSteps:
     """Edge case: no required steps."""
 
     def test_is_satisfied_and_never_blocks_terminal(self):
-        enforcer = StepEnforcer(
-            required_steps=[], terminal_tools=frozenset(["answer"])
-        )
+        enforcer = StepEnforcer(required_steps=[], terminal_tools=frozenset(["answer"]))
         assert enforcer.is_satisfied() is True
-        calls = [ToolCall(tool="answer", args={})]
+        calls = [call(name="answer", arguments={})]
         result = enforcer.check(calls)
         assert result.needs_nudge is False
 
@@ -164,7 +163,7 @@ class TestPrerequisiteCheckNameOnly:
         )
 
     def test_blocks_without_prereq(self):
-        calls = [ToolCall(tool="edit_file", args={"path": "foo.py"})]
+        calls = [call(name="edit_file", arguments={"path": "foo.py"})]
         result = self.enforcer.check_prerequisites(calls)
         assert result.needs_nudge is True
         assert result.nudge.kind == "prerequisite"
@@ -172,12 +171,12 @@ class TestPrerequisiteCheckNameOnly:
 
     def test_passes_after_prereq_satisfied(self):
         self.enforcer.record("read_file", {"path": "bar.py"})
-        calls = [ToolCall(tool="edit_file", args={"path": "foo.py"})]
+        calls = [call(name="edit_file", arguments={"path": "foo.py"})]
         result = self.enforcer.check_prerequisites(calls)
         assert result.needs_nudge is False
 
     def test_tool_without_prereqs_always_passes(self):
-        calls = [ToolCall(tool="read_file", args={"path": "foo.py"})]
+        calls = [call(name="read_file", arguments={"path": "foo.py"})]
         result = self.enforcer.check_prerequisites(calls)
         assert result.needs_nudge is False
 
@@ -205,12 +204,12 @@ class TestPrerequisiteCheckArgMatched:
             )
             if recorded_path is not None:
                 enforcer.record("read_file", {"path": recorded_path})
-            calls = [ToolCall(tool="edit_file", args={"path": "foo.py"})]
+            calls = [call(name="edit_file", arguments={"path": "foo.py"})]
             assert enforcer.check_prerequisites(calls).needs_nudge is True, label
 
     def test_passes_with_matching_arg(self):
         self.enforcer.record("read_file", {"path": "foo.py"})
-        calls = [ToolCall(tool="edit_file", args={"path": "foo.py"})]
+        calls = [call(name="edit_file", arguments={"path": "foo.py"})]
         result = self.enforcer.check_prerequisites(calls)
         assert result.needs_nudge is False
 
@@ -219,7 +218,7 @@ class TestPrerequisiteCheckArgMatched:
         # normally rejects them before dispatch, but a granular caller may reach
         # here directly — it must block, not crash on ``args.get``.
         self.enforcer.record("read_file", {"path": "foo.py"})
-        calls = [ToolCall(tool="edit_file", args="not a dict")]  # type: ignore[arg-type]
+        calls = [call(name="edit_file", arguments="not a dict")]  # type: ignore[arg-type]
         result = self.enforcer.check_prerequisites(calls)
         assert result.needs_nudge is True
 
@@ -227,13 +226,13 @@ class TestPrerequisiteCheckArgMatched:
         self.enforcer.record("read_file", {"path": "a.py"})
         self.enforcer.record("read_file", {"path": "b.py"})
         # a.py satisfied
-        calls_a = [ToolCall(tool="edit_file", args={"path": "a.py"})]
+        calls_a = [call(name="edit_file", arguments={"path": "a.py"})]
         assert self.enforcer.check_prerequisites(calls_a).needs_nudge is False
         # b.py satisfied
-        calls_b = [ToolCall(tool="edit_file", args={"path": "b.py"})]
+        calls_b = [call(name="edit_file", arguments={"path": "b.py"})]
         assert self.enforcer.check_prerequisites(calls_b).needs_nudge is False
         # c.py not satisfied
-        calls_c = [ToolCall(tool="edit_file", args={"path": "c.py"})]
+        calls_c = [call(name="edit_file", arguments={"path": "c.py"})]
         assert self.enforcer.check_prerequisites(calls_c).needs_nudge is True
 
 
@@ -252,7 +251,7 @@ class TestPrerequisiteCheckMixed:
             },
         )
         # Neither satisfied
-        calls = [ToolCall(tool="edit_file", args={"path": "foo.py"})]
+        calls = [call(name="edit_file", arguments={"path": "foo.py"})]
         result = enforcer.check_prerequisites(calls)
         assert result.needs_nudge is True
         assert "authenticate" in result.nudge.content
@@ -279,8 +278,8 @@ class TestPrerequisiteBatchBlocking:
             tool_prerequisites={"edit_file": ["read_file"]},
         )
         calls = [
-            ToolCall(tool="read_file", args={"path": "foo.py"}),
-            ToolCall(tool="edit_file", args={"path": "foo.py"}),
+            call(name="read_file", arguments={"path": "foo.py"}),
+            call(name="edit_file", arguments={"path": "foo.py"}),
         ]
         # edit_file prereq not yet satisfied (read_file hasn't been recorded)
         result = enforcer.check_prerequisites(calls)
@@ -297,7 +296,7 @@ class TestPrerequisiteExhaustion:
             tool_prerequisites={"edit_file": ["read_file"]},
             max_prereq_violations=2,
         )
-        calls = [ToolCall(tool="edit_file", args={"path": "foo.py"})]
+        calls = [call(name="edit_file", arguments={"path": "foo.py"})]
         assert enforcer.prereq_violations == 0
         enforcer.check_prerequisites(calls)
         enforcer.check_prerequisites(calls)
@@ -313,8 +312,8 @@ class TestPrerequisiteExhaustion:
             tool_prerequisites={"edit_file": ["read_file"]},
             max_prereq_violations=1,
         )
-        enforcer.check_prerequisites([ToolCall(tool="edit_file", args={})])
-        enforcer.check_prerequisites([ToolCall(tool="edit_file", args={})])
+        enforcer.check_prerequisites([call(name="edit_file", arguments={})])
+        enforcer.check_prerequisites([call(name="edit_file", arguments={})])
         assert enforcer.prereq_exhausted is True
         enforcer.reset_prereq_violations()
         assert enforcer.prereq_violations == 0
@@ -336,23 +335,23 @@ class TestMultipleTerminalTools:
                 required_steps=["gather_data"],
                 terminal_tools=frozenset(["set_ac", "no_action"]),
             )
-            result = enforcer.check([ToolCall(tool=terminal, args={})])
+            result = enforcer.check([call(name=terminal, arguments={})])
             assert result.needs_nudge is True, terminal
             assert terminal in result.nudge.content, terminal
 
     def test_either_terminal_succeeds_after_steps(self):
         self.enforcer.record("gather_data")
-        calls_a = [ToolCall(tool="set_ac", args={})]
+        calls_a = [call(name="set_ac", arguments={})]
         assert self.enforcer.terminal_reached(calls_a) is True
-        calls_b = [ToolCall(tool="no_action", args={})]
+        calls_b = [call(name="no_action", arguments={})]
         assert self.enforcer.terminal_reached(calls_b) is True
 
     def test_non_terminal_does_not_trigger(self):
-        calls = [ToolCall(tool="gather_data", args={})]
+        calls = [call(name="gather_data", arguments={})]
         result = self.enforcer.check(calls)
         assert result.needs_nudge is False
 
     def test_non_terminal_does_not_reach(self):
         self.enforcer.record("gather_data")
-        calls = [ToolCall(tool="gather_data", args={})]
+        calls = [call(name="gather_data", arguments={})]
         assert self.enforcer.terminal_reached(calls) is False

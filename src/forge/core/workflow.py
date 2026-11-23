@@ -24,35 +24,10 @@ class ToolDefinition:
         if not isinstance(self.input_schema, dict):
             raise ValueError("Tool input_schema must be a dictionary")
         self.extra_fields = {
-            key: value for key, value in self.extra_fields.items()
+            key: value
+            for key, value in self.extra_fields.items()
             if key not in {"name", "description", "input_schema"}
         }
-
-
-@dataclass
-class ToolCall:
-    """Tool invocation returned by an LLMClient.
-
-    ``args`` is *not* validated at construction. ResponseValidator enforces
-    args-shape (must be a dict) before the call reaches downstream stages
-    that read into it. Treating args-shape uniformly with other validator
-    checks (unknown tool name) lets a malformed call ride the canonical
-    tool-error channel instead of crashing the parser.
-    """
-
-    tool: str
-    args: Any  # may be a non-dict when malformed; ResponseValidator rejects shape
-    reasoning: str | None = None
-
-
-@dataclass
-class TextResponse:
-    """Non-tool-call response from the model (reasoning trace, refusal, etc.)."""
-
-    content: str
-
-
-type LLMResponse = list[ToolCall] | TextResponse
 
 
 @dataclass
@@ -95,21 +70,17 @@ class Workflow:
                 raise ValueError(f"Missing handler for tool '{name}'")
         for name in self.prerequisites:
             if name not in tool_names:
-                raise ValueError(f"Prerequisite owner '{name}' not in tools: {tool_names}")
+                raise ValueError(
+                    f"Prerequisite owner '{name}' not in tools: {tool_names}"
+                )
         for step in self.required_steps:
             if step not in tool_names:
-                raise ValueError(
-                    f"Required step '{step}' not in tools: {tool_names}"
-                )
+                raise ValueError(f"Required step '{step}' not in tools: {tool_names}")
         for tt in self.terminal_tools:
             if tt not in tool_names:
-                raise ValueError(
-                    f"Terminal tool '{tt}' not in tools: {tool_names}"
-                )
+                raise ValueError(f"Terminal tool '{tt}' not in tools: {tool_names}")
             if tt in self.required_steps:
-                raise ValueError(
-                    f"Terminal tool '{tt}' cannot also be a required step"
-                )
+                raise ValueError(f"Terminal tool '{tt}' cannot also be a required step")
         for key, prerequisites in self.prerequisites.items():
             for prereq in prerequisites:
                 prereq_name = prereq if isinstance(prereq, str) else prereq["tool"]

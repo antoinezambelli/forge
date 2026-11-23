@@ -7,7 +7,8 @@ from dataclasses import dataclass
 from typing import Any
 
 from forge.core.steps import StepTracker
-from forge.core.workflow import ToolCall
+from forge.core.messages import ToolCallPart
+from forge.core.codecs import argument_value
 from forge.guardrails.nudge import Nudge
 from forge.prompts.nudges import prerequisite_nudge, step_nudge
 
@@ -56,7 +57,7 @@ class StepEnforcer:
         self._premature_attempts = 0
         self._consecutive_prereq_violations = 0
 
-    def check(self, tool_calls: list[ToolCall]) -> StepCheck:
+    def check(self, tool_calls: list[ToolCallPart]) -> StepCheck:
         """Check whether tool calls include a premature terminal call.
 
         If a terminal tool is in the batch and required steps aren't
@@ -70,14 +71,14 @@ class StepEnforcer:
         Returns:
             StepCheck with nudge if premature, or no nudge if clear to proceed.
         """
-        has_terminal = any(tc.tool in self.terminal_tools for tc in tool_calls)
+        has_terminal = any(tc.name in self.terminal_tools for tc in tool_calls)
 
         if has_terminal and not self._tracker.is_satisfied():
             self._premature_attempts += 1
             tier = min(self._premature_attempts, 3)
             # Find which terminal tool was attempted for the nudge message
             attempted = next(
-                tc.tool for tc in tool_calls if tc.tool in self.terminal_tools
+                tc.name for tc in tool_calls if tc.name in self.terminal_tools
             )
             return StepCheck(
                 nudge=Nudge(
@@ -95,7 +96,7 @@ class StepEnforcer:
 
         return StepCheck(nudge=None, needs_nudge=False)
 
-    def check_prerequisites(self, tool_calls: list[ToolCall]) -> StepCheck:
+    def check_prerequisites(self, tool_calls: list[ToolCallPart]) -> StepCheck:
         """Check whether any tool call has unsatisfied prerequisites.
 
         Evaluates against pre-batch state. Any violation in the batch blocks
@@ -108,17 +109,20 @@ class StepEnforcer:
             StepCheck with nudge if any prereq is unsatisfied.
         """
         for tc in tool_calls:
-            prereqs = self._tool_prerequisites.get(tc.tool)
+            prereqs = self._tool_prerequisites.get(tc.name)
             if not prereqs:
                 continue
-            result = self._tracker.check_prerequisites(tc.tool, tc.args, prereqs)
+            result = self._tracker.check_prerequisites(
+                tc.name, argument_value(tc), prereqs
+            )
             if not result.satisfied:
                 self._consecutive_prereq_violations += 1
                 return StepCheck(
                     nudge=Nudge(
                         role="user",
                         content=prerequisite_nudge(
-                            tc.tool, result.missing,
+                            tc.name,
+                            result.missing,
                         ),
                         kind="prerequisite",
                     ),
@@ -139,9 +143,9 @@ class StepEnforcer:
         """Return required steps not yet completed."""
         return self._tracker.pending()
 
-    def terminal_reached(self, tool_calls: list[ToolCall]) -> bool:
+    def terminal_reached(self, tool_calls: list[ToolCallPart]) -> bool:
         """True if a terminal tool is in the batch and steps are satisfied."""
-        has_terminal = any(tc.tool in self.terminal_tools for tc in tool_calls)
+        has_terminal = any(tc.name in self.terminal_tools for tc in tool_calls)
         return has_terminal and self._tracker.is_satisfied()
 
     @property

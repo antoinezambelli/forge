@@ -9,7 +9,10 @@ from unittest.mock import MagicMock
 import pytest
 
 from forge.clients.base import ChunkType, StreamChunk
-from forge.core.workflow import LLMResponse, TextResponse, ToolCall, ToolDefinition
+from forge.core.messages import RichMessage
+from forge.core.workflow import ToolDefinition
+from forge.clients.base import InferenceRequest
+from forge.clients.openai_compat import OpenAICompatClient
 from tests.http_mocks import patch_httpx_client_constructor
 
 
@@ -32,14 +35,11 @@ class MockClient:
 
     Constructor knobs:
         responses:
-            Scripted ``ToolCall`` / ``TextResponse`` entries, consumed one
-            per ``send`` / ``send_stream`` call. A bare ``ToolCall`` entry is
-            auto-wrapped to ``[ToolCall]`` to match
-            ``LLMResponse = list[ToolCall] | TextResponse``.
+            Scripted assistant RichMessages, consumed once per send/send_stream.
         on_exhausted:
             What to do once ``responses`` is exhausted. ``"raise"`` (default)
             raises ``IndexError``. Otherwise pass a fallback response object
-            (e.g. ``TextResponse(content="stuck")``) which is returned
+            (e.g. an assistant RichMessage) which is returned
             instead of raising.
         stream_mode:
             How ``send_stream`` behaves. ``"deltas"`` (default) yields a
@@ -57,9 +57,9 @@ class MockClient:
 
     def __init__(
         self,
-        responses: list[ToolCall | TextResponse],
+        responses: list[RichMessage],
         *,
-        on_exhausted: Literal["raise"] | LLMResponse = "raise",
+        on_exhausted: Literal["raise"] | RichMessage = "raise",
         stream_mode: Literal["deltas", "final", "unsupported"] = "deltas",
         api_format: str = "ollama",
         context_length: int | None = None,
@@ -71,45 +71,49 @@ class MockClient:
         self.api_format = api_format
         self._context_length = context_length
         self.send_calls: list[tuple[list[dict], list[ToolDefinition] | None]] = []
-        self.send_stream_calls: list[tuple[list[dict], list[ToolDefinition] | None]] = []
+        self.send_stream_calls: list[
+            tuple[list[dict], list[ToolDefinition] | None]
+        ] = []
 
-    def _next(self) -> LLMResponse:
+    def _next(self) -> RichMessage:
         if self._call_index >= len(self.responses):
             if self._on_exhausted == "raise":
                 raise IndexError("MockClient: scripted responses exhausted")
             return self._on_exhausted
         resp = self.responses[self._call_index]
         self._call_index += 1
-        if isinstance(resp, ToolCall):
-            return [resp]
         return resp
 
-    async def send(
-        self,
-        messages: list[dict[str, str]],
-        tools: list[ToolDefinition] | None = None,
-        sampling: dict[str, object] | None = None,
-        passthrough: dict[str, object] | None = None,
-        inbound_anthropic_body: dict[str, object] | None = None,
-    ) -> LLMResponse:
-        self.send_calls.append((messages, tools))
+    def render_request(self, state, tools, metadata, *, stream=False):
+        from forge.core.codecs import render_openai, replay_messages
+        from forge.clients.base import format_tool
+
+        return InferenceRequest(
+            {
+                "messages": render_openai(
+                    replay_messages(state, metadata.reasoning_replay)
+                ),
+                "tools": [format_tool(t) for t in tools or []],
+                "stream": stream,
+            },
+            "https://mock/chat",
+            metadata.extra_headers,
+        )
+
+    async def send(self, request: InferenceRequest) -> RichMessage:
+        self.send_calls.append(request)
         return self._next()
 
     async def send_stream(
-        self,
-        messages: list[dict[str, str]],
-        tools: list[ToolDefinition] | None = None,
-        sampling: dict[str, object] | None = None,
-        passthrough: dict[str, object] | None = None,
-        inbound_anthropic_body: dict[str, object] | None = None,
+        self, request: InferenceRequest
     ) -> AsyncIterator[StreamChunk]:
         if self._stream_mode == "unsupported":
             raise NotImplementedError
-        self.send_stream_calls.append((messages, tools))
-        resp = self._next()
+        self.send_stream_calls.append(request)
+        response = self._next()
         if self._stream_mode == "deltas":
             yield StreamChunk(type=ChunkType.TEXT_DELTA, content="partial...")
-        yield StreamChunk(type=ChunkType.FINAL, response=resp)
+        yield StreamChunk(type=ChunkType.FINAL, response=response)
 
     async def get_context_length(self) -> int | None:
         return self._context_length

@@ -744,7 +744,7 @@ async def retry_compaction_and_exhaustion() -> None:
         assert len(retry_wires) == 2
         assert retry_wires[0]["messages"] == retry["messages"]
         assert len(retry_wires[1]["messages"]) > len(retry_wires[0]["messages"])
-        assert "name" not in retry_wires[1]["messages"][0]
+        assert retry_wires[1]["messages"][0]["name"] == "raw-first-attempt"
 
         before = len(backend.journal)
         exhausted = await _request(
@@ -1049,7 +1049,7 @@ async def anthropic_unpinned_concurrency_retry() -> None:
         rebuilt_body = retry_wires[1].json_body
         assert first_body["model"] == rebuilt_body["model"] == "route-retry"
         assert "cache_control" in json.dumps(first_body)
-        assert "cache_control" not in json.dumps(rebuilt_body)
+        assert "cache_control" in json.dumps(rebuilt_body)
         assert len(rebuilt_body["messages"]) > len(first_body["messages"])
         assert "use a tool" in json.dumps(rebuilt_body["messages"])
         assert all(
@@ -1492,8 +1492,16 @@ class _RecordingManagedClient:
         self.events: list[tuple[str, int, int]] = []
         self.last_usage: dict[int, Any] = {}
 
-    async def send(self, *_args: Any, **_kwargs: Any) -> Any:
-        from forge.core.workflow import TextResponse
+    def render_request(self, state, tools, metadata, *, stream=False):
+        from forge.clients.base import InferenceRequest
+        from forge.core.codecs import render_openai, replay_messages
+        return InferenceRequest(
+            {"messages": render_openai(replay_messages(state, metadata.reasoning_replay))},
+            "mock://managed",
+        )
+
+    async def send(self, request) -> Any:
+        from forge.clients.replies import text_reply
 
         self.calls += 1
         call = self.calls
@@ -1503,7 +1511,7 @@ class _RecordingManagedClient:
             released = await asyncio.to_thread(self.release.wait, 10.0)
             assert released
         self.events.append(("end", call, _next_sequence()))
-        return TextResponse(content=f"managed-{call}")
+        return text_reply(f"managed-{call}")
 
     async def aclose(self) -> None:
         return None

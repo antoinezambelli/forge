@@ -18,7 +18,6 @@ Differences from LlamafileClient:
 
 from __future__ import annotations
 
-import json
 import logging
 from collections.abc import AsyncIterator
 from pathlib import Path
@@ -35,19 +34,21 @@ from forge._endpoint_layouts import (
     resolve_endpoint,
 )
 from forge.clients.base import (
-    ChunkType,
     StreamChunk,
     TokenUsage,
     _record_captured_usage,
-    decode_tool_args,
     format_tool,
     resolve_request_headers,
     static_auth_present,
 )
 from forge.clients.sampling_defaults import apply_sampling_defaults
-from forge.core.workflow import LLMResponse, TextResponse, ToolCall, ToolDefinition
+from forge.core.workflow import ToolDefinition
+from forge.core.messages import ConversationState, RichMessage
+from forge.clients.base import RequestMetadata, InferenceRequest
+from forge.core.codecs import render_openai, replay_messages
+from forge.clients.requests import request_extras
+from forge.clients.replies import openai_reply, openai_stream
 from forge.errors import BackendError
-from forge.prompts.think_tags import extract_think_tags
 
 logger = logging.getLogger("forge.clients.vllm")
 
@@ -86,10 +87,14 @@ class VLLMClient:
         self.base_url = base_url
         connection = normalize_connection(base_url, ConnectionInputKind.OPENAI_API_BASE)
         self._chat_url = resolve_endpoint(
-            EndpointLayout.VLLM_OPENAI, BackendOperation.INFERENCE, connection,
+            EndpointLayout.VLLM_OPENAI,
+            BackendOperation.INFERENCE,
+            connection,
         )
         self._models_url = resolve_endpoint(
-            EndpointLayout.VLLM_OPENAI, BackendOperation.MODEL_CATALOG, connection,
+            EndpointLayout.VLLM_OPENAI,
+            BackendOperation.MODEL_CATALOG,
+            connection,
         )
         # Two identity roles, set together (see _set_model_identity):
         #   self.model        — the wire "model" field, sent verbatim. For vLLM
@@ -107,19 +112,32 @@ class VLLMClient:
 
         # Apply per-model recommended sampling defaults. Caller's explicit
         # (non-None) kwargs win over the map field-by-field.
-        defaults = apply_sampling_defaults(self.sampling_key, strict=recommended_sampling)
-        self.temperature = temperature if temperature is not None else defaults.get("temperature")
+        defaults = apply_sampling_defaults(
+            self.sampling_key, strict=recommended_sampling
+        )
+        self.temperature = (
+            temperature if temperature is not None else defaults.get("temperature")
+        )
         self.top_p = top_p if top_p is not None else defaults.get("top_p")
         self.top_k = top_k if top_k is not None else defaults.get("top_k")
         self.min_p = min_p if min_p is not None else defaults.get("min_p")
-        self.repeat_penalty = repeat_penalty if repeat_penalty is not None else defaults.get("repeat_penalty")
-        self.presence_penalty = presence_penalty if presence_penalty is not None else defaults.get("presence_penalty")
+        self.repeat_penalty = (
+            repeat_penalty
+            if repeat_penalty is not None
+            else defaults.get("repeat_penalty")
+        )
+        self.presence_penalty = (
+            presence_penalty
+            if presence_penalty is not None
+            else defaults.get("presence_penalty")
+        )
         # chat_template_kwargs is a nested dict of Jinja template variables
         # (e.g. {"enable_thinking": True}) that vLLM unpacks into the chat
         # template at render time. Whole-value replacement at the field
         # level — no nested merge.
         self.chat_template_kwargs = (
-            chat_template_kwargs if chat_template_kwargs is not None
+            chat_template_kwargs
+            if chat_template_kwargs is not None
             else defaults.get("chat_template_kwargs")
         )
         # Optional backend auth (api_key → Authorization: Bearer; extra_headers
@@ -143,7 +161,8 @@ class VLLMClient:
         await self._http.aclose()
 
     def _request_headers(
-        self, extra_headers: dict[str, str] | None,
+        self,
+        extra_headers: dict[str, str] | None,
     ) -> dict[str, str] | None:
         """Per-call headers to apply, enforcing the one-credential rule.
 
@@ -188,13 +207,20 @@ class VLLMClient:
     # ``chat_template_kwargs`` is a nested dict of Jinja template variables
     # — whole-value replacement at this field level (no nested merge).
     _SAMPLING_FIELDS = (
-        "temperature", "top_p", "top_k", "min_p",
-        "repeat_penalty", "presence_penalty", "seed",
+        "temperature",
+        "top_p",
+        "top_k",
+        "min_p",
+        "repeat_penalty",
+        "presence_penalty",
+        "seed",
         "chat_template_kwargs",
     )
 
     def _apply_sampling(
-        self, body: dict[str, Any], sampling: dict[str, Any] | None = None,
+        self,
+        body: dict[str, Any],
+        sampling: dict[str, Any] | None = None,
     ) -> None:
         """Inject optional sampling params into a request body.
 
@@ -235,11 +261,13 @@ class VLLMClient:
     ) -> dict[str, Any]:
         """Build one OpenAI-shaped vLLM request without mutating inputs."""
         body: dict[str, Any] = dict(passthrough or {})
-        body.update({
-            "model": self.model,
-            "messages": messages,
-            "stream": stream,
-        })
+        body.update(
+            {
+                "model": self.model,
+                "messages": messages,
+                "stream": stream,
+            }
+        )
         if stream:
             body["stream_options"] = {"include_usage": True}
         else:
@@ -259,217 +287,67 @@ class VLLMClient:
         self._apply_sampling(body, sampling)
         return body
 
-    def _resolve_reasoning(self, reasoning: str, content: str) -> str | None:
-        """Build final reasoning from the structured field and content, gated
-        on _think.
-
-        vLLM 0.21 returns reasoning in the ``reasoning`` field of the assistant
-        message when ``--reasoning-parser`` is enabled at server boot. When
-        that parser is absent — or doesn't split a given model's output — the
-        thinking instead arrives inline in ``content`` (often wrapped in
-        ``<think>...</think>``). To avoid silently dropping it (issue #110) and
-        to keep send() and send_stream() in lockstep with LlamafileClient, fall
-        back to ``<think>``-tag extraction and then to the raw content when the
-        structured field is empty. Both call sites pass the same (reasoning,
-        content) pair, so the two paths resolve identically.
-        """
-        if not self._think:
-            return None
-        if reasoning:
-            return reasoning
-        think, _ = extract_think_tags(content)
-        return think or content or None
-
-    async def send(
+    def render_request(
         self,
-        messages: list[dict[str, str]],
-        tools: list[ToolDefinition] | None = None,
-        sampling: dict[str, Any] | None = None,
-        passthrough: dict[str, Any] | None = None,
-        inbound_anthropic_body: dict[str, Any] | None = None,
-        extra_headers: dict[str, str] | None = None,
-    ) -> LLMResponse:
-        """Send messages via /v1/chat/completions and parse the response.
-
-        ``passthrough`` supplies caller-owned OpenAI fields.
-        """
+        state: ConversationState,
+        tools: list[ToolDefinition] | None,
+        metadata: RequestMetadata,
+        *,
+        stream: bool = False,
+    ) -> InferenceRequest:
+        messages = render_openai(replay_messages(state, metadata.reasoning_replay))
         body = self._build_request_body(
             messages,
             tools,
-            sampling,
-            passthrough,
-            stream=False,
+            metadata.sampling,
+            request_extras(metadata, "openai"),
+            stream=stream,
+        )
+        return InferenceRequest(
+            body,
+            self._chat_url,
+            {
+                **dict(self._http.headers),
+                **(self._request_headers(metadata.extra_headers) or {}),
+            },
         )
 
+    async def send(self, request: InferenceRequest) -> RichMessage:
         try:
             resp = await self._http.post(
-                self._chat_url,
-                json=body,
-                headers=self._request_headers(extra_headers),
+                request.url, json=request.payload, headers=request.headers
             )
         except httpx.ReadTimeout as exc:
             raise BackendError(408, "Read timeout") from exc
-
         if resp.status_code != 200:
             raise BackendError(resp.status_code, raw_body=resp.text)
         data = resp.json()
         self._record_usage(data)
-
         choices = data.get("choices") or []
         if not choices:
-            raise BackendError(500, f"vLLM response has no choices: {data}")
-        message = choices[0].get("message", {})
-
-        tool_calls = message.get("tool_calls") or []
-        if tool_calls:
-            return self._parse_tool_calls(
-                tool_calls,
-                reasoning=self._resolve_reasoning(
-                    message.get("reasoning") or "", message.get("content") or "",
-                ),
-            )
-
-        # No tool calls: strip any inline thinking — reasoning is only useful
-        # attached to a ToolCall; a TextResponse carries clean content (parity
-        # with LlamafileClient.send()).
-        _, content = extract_think_tags(message.get("content") or "")
-        return TextResponse(content=content)
-
-    async def send_stream(
-        self,
-        messages: list[dict[str, str]],
-        tools: list[ToolDefinition] | None = None,
-        sampling: dict[str, Any] | None = None,
-        passthrough: dict[str, Any] | None = None,
-        inbound_anthropic_body: dict[str, Any] | None = None,
-        extra_headers: dict[str, str] | None = None,
-    ) -> AsyncIterator[StreamChunk]:
-        """Stream via SSE from /v1/chat/completions.
-
-        ``passthrough`` follows ``send``. The
-        ``inbound_anthropic_body`` compatibility argument remains ignored.
-        ``extra_headers`` carries the per-call credential.
-        """
-        body = self._build_request_body(
-            messages,
-            tools,
-            sampling,
-            passthrough,
-            stream=True,
+            raise BackendError(500, f"response has no choices: {data}")
+        return openai_reply(
+            choices[0].get("message", {}), capture_reasoning=self._think
         )
 
-        accumulated_content = ""
-        accumulated_reasoning = ""
-        # Track multiple tool calls by index — OpenAI streaming sends
-        # tool_calls[N] deltas with an index field.
-        tool_call_parts: dict[int, dict[str, str]] = {}
-
-        async with self._http.stream(
-            "POST",
-            self._chat_url,
-            json=body,
-            headers=self._request_headers(extra_headers),
-        ) as response:
-            if response.status_code != 200:
-                error_body = ""
-                async for line in response.aiter_lines():
-                    error_body += line
-                raise BackendError(response.status_code, raw_body=error_body)
-
-            async for line in response.aiter_lines():
-                line = line.strip()
-                if not line or not line.startswith("data: "):
-                    continue
-                data_str = line[6:]
-                if data_str == "[DONE]":
-                    break
-
-                chunk = json.loads(data_str)
-                if "choices" not in chunk or not chunk["choices"]:
-                    self._record_usage(chunk)
-                    continue
-                choice = chunk["choices"][0]
-                delta = choice.get("delta", {})
-
-                if "tool_calls" in delta:
-                    for tc_delta in delta["tool_calls"]:
-                        idx = tc_delta.get("index", 0)
-                        if idx not in tool_call_parts:
-                            tool_call_parts[idx] = {"name": "", "args": ""}
-                        func = tc_delta.get("function", {})
-                        if "name" in func:
-                            tool_call_parts[idx]["name"] = func["name"]
-                        if "arguments" in func:
-                            tool_call_parts[idx]["args"] += func["arguments"]
-                            yield StreamChunk(
-                                type=ChunkType.TOOL_CALL_DELTA,
-                                content=func["arguments"],
-                            )
-
-                # vLLM 0.21 streams reasoning as `reasoning` deltas (mirroring
-                # the non-streaming response field). If a future vLLM renames,
-                # this assignment becomes empty and tests should catch it.
-                reasoning_delta = delta.get("reasoning") or ""
-                if reasoning_delta:
-                    accumulated_reasoning += reasoning_delta
-
-                content = delta.get("content") or ""
-                if content:
-                    accumulated_content += content
-                    yield StreamChunk(
-                        type=ChunkType.TEXT_DELTA, content=content,
+    async def send_stream(
+        self, request: InferenceRequest
+    ) -> AsyncIterator[StreamChunk]:
+        try:
+            async with self._http.stream(
+                "POST", request.url, json=request.payload, headers=request.headers
+            ) as response:
+                if response.status_code != 200:
+                    raw = await response.aread()
+                    raise BackendError(
+                        response.status_code, raw_body=raw.decode(errors="replace")
                     )
-
-        # Build the final response. Reassemble the accumulated deltas into the
-        # OpenAI tool-call shape and route through the same parser as send(), so
-        # streaming and non-streaming agree on malformed-args handling: a fully
-        # accumulated but unparseable arguments string rides through as raw
-        # (non-dict) args on the ToolCall — which ResponseValidator routes to
-        # the tool-error channel — not an exception.
-        if tool_call_parts:
-            reassembled = [
-                {"function": {"name": part["name"], "arguments": part["args"]}}
-                for part in (tool_call_parts[k] for k in sorted(tool_call_parts))
-            ]
-            final: LLMResponse = self._parse_tool_calls(
-                reassembled,
-                reasoning=self._resolve_reasoning(
-                    accumulated_reasoning, accumulated_content,
-                ),
-            )
-        else:
-            # Strip inline thinking from the final text for parity with send().
-            _, text = extract_think_tags(accumulated_content)
-            final = TextResponse(content=text)
-        yield StreamChunk(type=ChunkType.FINAL, response=final)
-
-    @staticmethod
-    def _parse_tool_calls(
-        tool_calls: list[dict[str, Any]],
-        reasoning: str | None,
-    ) -> LLMResponse:
-        """Parse vLLM ``tool_calls`` into ``ToolCall`` objects.
-
-        Mirrors ``OpenAICompatClient`` / ``LlamafileClient`` so every
-        OpenAI-shape client behaves the same. Tool-call ``arguments`` arrive as
-        a JSON string (vLLM's native format) or an already-decoded dict.
-        ``decode_tool_args`` is fail-loud: malformed JSON (or any non-dict
-        shape) is NOT coerced into empty args — the raw value is kept so
-        ``ResponseValidator`` routes it through the tool-error channel instead
-        of crashing or letting the model proceed with wrong arguments.
-
-        Defensive ``.get`` on ``function`` / ``name`` keeps a broken tool-call
-        entry from raising ``KeyError``. Used by both send() and send_stream()
-        for parity (the stream path reassembles deltas into this shape first).
-        """
-        return [
-            ToolCall(
-                tool=tc.get("function", {}).get("name", ""),
-                args=decode_tool_args(tc.get("function", {}).get("arguments")),
-                reasoning=reasoning if i == 0 else None,
-            )
-            for i, tc in enumerate(tool_calls)
-        ]
+                async for chunk in openai_stream(
+                    response, self._record_usage, capture_reasoning=self._think
+                ):
+                    yield chunk
+        except httpx.ReadTimeout as exc:
+            raise BackendError(408, "Read timeout during streaming") from exc
 
     async def get_context_length(self) -> int | None:
         """Return this client's exact model window from /v1/models.

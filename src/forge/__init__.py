@@ -7,25 +7,39 @@ try:
 except PackageNotFoundError:
     __version__ = "0.0.0+unknown"
 
-from forge.core.messages import Message, MessageMeta, MessageRole, MessageType, ToolCallInfo
+from forge.core.messages import (
+    ConversationState,
+    RichMessage,
+    MessageRole,
+    TextPart,
+    ReasoningPart,
+    ToolCallPart,
+    ToolResultPart,
+    ValidArguments,
+    InvalidArguments,
+)
 from forge.core.workflow import (
-    LLMResponse,
-    TextResponse,
-    ToolCall,
     ToolDefinition,
     Workflow,
 )
 from forge.core.steps import StepTracker
 from forge.core.inference import (
     InferenceResult,
-    fold_and_serialize,
-    prepare_backend_messages,
     run_inference,
 )
-from forge.core.reasoning import DEFAULT_REASONING_REPLAY, REASONING_REPLAY_CHOICES, ReasoningReplay
-from forge.core.runner import WorkflowRunner
-from forge.core.slot_worker import SlotWorker
-from forge.clients.base import ChunkType, LLMClient, StreamChunk, TokenUsage
+from forge.core.reasoning import (
+    DEFAULT_REASONING_REPLAY,
+    REASONING_REPLAY_CHOICES,
+    ReasoningReplay,
+)
+from forge.clients.base import (
+    ChunkType,
+    LLMClient,
+    StreamChunk,
+    TokenUsage,
+    RequestMetadata,
+    InferenceRequest,
+)
 from forge.clients.llamafile import LlamafileClient
 from forge.clients.ollama import OllamaClient
 from forge.clients.openai_compat import OpenAICompatClient
@@ -38,15 +52,19 @@ from forge.context import (
     ContextSession,
     HardwareProfile,
     NoCompact,
-    SlidingWindowCompact,
-    TieredCompact,
     default_context_warning,
     detect_hardware,
 )
 from forge.server import BudgetMode, ServerManager, setup_backend
 from forge.rpc import LlamaCppRpcConfig, LlamaCppRpcWorkerConfig
 from forge.tools import RESPOND_TOOL_NAME, respond_definition, respond
-from forge.prompts import build_tool_prompt, extract_tool_call, rescue_tool_call, retry_nudge, step_nudge
+from forge.prompts import (
+    build_tool_prompt,
+    extract_tool_call,
+    rescue_tool_call,
+    retry_nudge,
+    step_nudge,
+)
 from forge.guardrails import (
     CheckResult,
     ErrorTracker,
@@ -78,31 +96,28 @@ __all__ = [
     # Version
     "__version__",
     # Messages
-    "Message",
-    "MessageMeta",
     "MessageRole",
-    "MessageType",
-    "ToolCallInfo",
+    "ConversationState",
+    "RichMessage",
+    "TextPart",
+    "ReasoningPart",
+    "ToolCallPart",
+    "ToolResultPart",
+    "ValidArguments",
+    "InvalidArguments",
     # Tools & Workflow
-    "LLMResponse",
-    "TextResponse",
-    "ToolCall",
     "ToolDefinition",
     "Workflow",
     # Steps
     "StepTracker",
     # Inference (front half — shared by runner and proxy)
     "InferenceResult",
-    "fold_and_serialize",
-    "prepare_backend_messages",
     "run_inference",
     "DEFAULT_REASONING_REPLAY",
     "REASONING_REPLAY_CHOICES",
     "ReasoningReplay",
     # Runner
-    "WorkflowRunner",
     # Slot worker
-    "SlotWorker",
     # Client
     "ChunkType",
     "LLMClient",
@@ -112,6 +127,8 @@ __all__ = [
     "VLLMClient",
     "StreamChunk",
     "TokenUsage",
+    "RequestMetadata",
+    "InferenceRequest",
     # Context
     "CompactEvent",
     "CompactStrategy",
@@ -121,8 +138,6 @@ __all__ = [
     "default_context_warning",
     "HardwareProfile",
     "NoCompact",
-    "SlidingWindowCompact",
-    "TieredCompact",
     "detect_hardware",
     # Prompts
     "build_tool_prompt",

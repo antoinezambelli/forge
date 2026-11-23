@@ -1,44 +1,30 @@
-"""Response validation — rescue, retry, and unknown-tool nudges."""
+"""Response validation over canonical assistant parts."""
 
 from __future__ import annotations
-
 from collections.abc import Callable
 from dataclasses import dataclass
-
-from forge.core.workflow import LLMResponse, TextResponse, ToolCall
+from forge.core.messages import RichMessage, TextPart, ToolCallPart, InvalidArguments
 from forge.guardrails.nudge import Nudge
-from forge.prompts.nudges import retry_nudge, tool_arg_validation_nudge, unknown_tool_nudge
+from forge.prompts.nudges import (
+    retry_nudge,
+    tool_arg_validation_nudge,
+    unknown_tool_nudge,
+)
 from forge.prompts.templates import rescue_tool_call
 
 
 @dataclass
 class ValidationResult:
-    """Result of validating an LLM response.
+    reply: RichMessage
+    nudge: Nudge | None = None
+    needs_retry: bool = False
 
-    Exactly one of ``tool_calls`` or ``nudge`` is set:
-    - If ``needs_retry`` is False: ``tool_calls`` contains validated tool calls.
-    - If ``needs_retry`` is True: ``nudge`` contains the message to inject.
-    """
-
-    tool_calls: list[ToolCall] | None
-    nudge: Nudge | None
-    needs_retry: bool
+    @property
+    def tool_calls(self) -> list[ToolCallPart]:
+        return [p for p in self.reply.parts if isinstance(p, ToolCallPart)]
 
 
 class ResponseValidator:
-    """Validates LLM responses: rescues tool calls from text, checks tool names.
-
-    Stateless — safe to reuse across turns and sessions.
-
-    Args:
-        tool_names: Valid tool names for this workflow.
-        rescue_enabled: If True, attempt to parse tool calls from TextResponse
-            before generating a retry nudge.
-        retry_nudge_fn: Custom nudge function for bare text responses. Takes
-            the raw response text and returns the nudge message. If None,
-            uses the default retry nudge from ``forge.prompts.nudges``.
-    """
-
     def __init__(
         self,
         tool_names: list[str],
@@ -49,66 +35,47 @@ class ResponseValidator:
         self.rescue_enabled = rescue_enabled
         self._retry_nudge_fn = retry_nudge_fn or retry_nudge
 
-    def validate(
-        self, response: LLMResponse,
-    ) -> ValidationResult:
-        """Validate an LLM response.
-
-        Args:
-            response: Either a TextResponse or a list of ToolCall objects.
-
-        Returns:
-            ValidationResult with tool_calls on success, or a Nudge on failure.
-        """
-        # TextResponse: rescue, then retry nudge
-        if isinstance(response, TextResponse):
-            if self.rescue_enabled:
-                rescued = rescue_tool_call(response.content, self.tool_names)
-                if rescued:
-                    return ValidationResult(
-                        tool_calls=rescued, nudge=None, needs_retry=False
-                    )
-            return ValidationResult(
-                tool_calls=None,
-                nudge=Nudge(
-                    role="user",
-                    content=self._retry_nudge_fn(response.content),
-                    kind="retry",
-                ),
-                needs_retry=True,
+    def validate(self, response: RichMessage) -> ValidationResult:
+        calls = [p for p in response.parts if isinstance(p, ToolCallPart)]
+        if not calls:
+            text = "\n".join(p.text for p in response.parts if isinstance(p, TextPart))
+            calls = (
+                rescue_tool_call(text, self.tool_names) if self.rescue_enabled else []
             )
-
-        # list[ToolCall]: check for unknown tools first (cheap, no point
-        # validating args of a hallucinated tool).
-        tool_calls = response
-        unknown = [tc for tc in tool_calls if tc.tool not in self.tool_names]
-        if unknown:
+            if calls:
+                response.parts = [
+                    p for p in response.parts if not isinstance(p, TextPart)
+                ] + calls
+            else:
+                return ValidationResult(
+                    response,
+                    Nudge(
+                        role="user", content=self._retry_nudge_fn(text), kind="retry"
+                    ),
+                    True,
+                )
+        unknown = next((p for p in calls if p.name not in self.tool_names), None)
+        if unknown is not None:
             return ValidationResult(
-                tool_calls=None,
-                nudge=Nudge(
+                response,
+                Nudge(
                     role="tool",
-                    content=unknown_tool_nudge(unknown[0].tool, self.tool_names),
+                    content=unknown_tool_nudge(unknown.name, self.tool_names),
                     kind="unknown_tool",
                 ),
-                needs_retry=True,
+                True,
             )
-
-        # Args-shape check. ToolCall no longer enforces dict-args at
-        # construction (see workflow.py); the structural check lives here so
-        # malformed args ride the tool-error channel via inference.py instead
-        # of crashing the client parser.
-        bad_args = [tc for tc in tool_calls if not isinstance(tc.args, dict)]
-        if bad_args:
+        bad = next(
+            (p for p in calls if isinstance(p.arguments, InvalidArguments)), None
+        )
+        if bad is not None:
             return ValidationResult(
-                tool_calls=None,
-                nudge=Nudge(
+                response,
+                Nudge(
                     role="tool",
-                    content=tool_arg_validation_nudge(bad_args[0].tool, bad_args[0].args),
+                    content=tool_arg_validation_nudge(bad.name, bad.arguments.received),
                     kind="tool_arg_validation",
                 ),
-                needs_retry=True,
+                True,
             )
-
-        return ValidationResult(
-            tool_calls=tool_calls, nudge=None, needs_retry=False
-        )
+        return ValidationResult(response)

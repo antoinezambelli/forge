@@ -1,7 +1,9 @@
 """Prompt rendering and text tool-call parser contracts."""
 
-
-from forge.core.workflow import ToolCall, ToolDefinition
+from forge.core.workflow import ToolDefinition
+from tests.canonical import call
+from forge.core.messages import ToolCallPart
+from forge.core.codecs import argument_value
 from forge.prompts.templates import (
     build_tool_prompt,
     extract_tool_call,
@@ -31,8 +33,8 @@ def _make_spec(
     return ToolDefinition(name=name, description=description, input_schema=params)
 
 
-def _signatures(calls: list[ToolCall]) -> list[tuple[str, object]]:
-    return [(call.tool, call.args) for call in calls]
+def _signatures(calls: list[ToolCallPart]) -> list[tuple[str, object]]:
+    return [(part.name, argument_value(part)) for part in calls]
 
 
 def test_build_tool_prompt_describes_tools_and_call_format() -> None:
