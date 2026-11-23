@@ -35,7 +35,9 @@ def openai_reply(
                     isinstance(p, ReasoningPart) and p.text for p in reply.parts
                 )
             ):
-                reply.parts.insert(0, ReasoningPart(thinking))
+                reply.parts.insert(
+                    0, ReasoningPart(thinking, field_name="reasoning_content")
+                )
     if not capture_reasoning:
         reply.parts = [p for p in reply.parts if not isinstance(p, ReasoningPart)]
     return reply

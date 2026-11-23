@@ -314,6 +314,9 @@ def render_anthropic(
                     {**deepcopy(part.extra_fields), "type": "text", "text": part.text}
                 )
             elif isinstance(part, ReasoningPart):
+                if part.field_name is not None:
+                    # OpenAI reasoning has no signed native thinking-block form.
+                    continue
                 blocks.append(
                     {
                         **deepcopy(part.extra_fields),
@@ -343,6 +346,11 @@ def render_anthropic(
                 )
                 if part.call_id in pending:
                     pending.remove(part.call_id)
+        if not blocks and any(
+            isinstance(part, ReasoningPart) and part.field_name is not None
+            for part in message.parts
+        ):
+            continue
         role = "user" if message.role == MessageRole.TOOL else message.role.value
         if (
             role == "user"

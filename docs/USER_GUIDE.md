@@ -101,6 +101,14 @@ request-routed backend identity, not a fabricated Forge alias.
 
 **Reasoning replay.** Reasoning-capable backends may return hidden reasoning alongside tool calls. Forge captures that reasoning for observability, then controls how much is replayed to the backend on later turns with `--reasoning-replay {full,keep-last,none}`. The default is `none`: captured reasoning stays out of backend-facing history entirely. This is the most token-efficient policy, and on forge's eval suite it is statistically indistinguishable from replay-all (no aggregate score cost; see [reasoning-replay results](results/raw/reasoning-replay.md)). `keep-last` replays only the latest captured reasoning block. `full` preserves the historical behavior and replays every captured reasoning block. In OpenAI-compatible proxy responses, `keep-last` exposes current reasoning as `reasoning_content` instead of normal assistant `content` so clients that preserve reasoning fields can replay only the latest block without turning it into plain text; under the default `none`, proxy responses omit captured reasoning. Anthropic proxy responses only emit reasoning text under `full`; Forge does not synthesize signed Anthropic thinking blocks, so default Anthropic proxy responses do not expose replayable reasoning. See [ADR-017](decisions/017-reasoning-replay-policy.md) for the policy design and the eval evidence behind the default.
 
+For an Anthropic-shaped backend, OpenAI-format reasoning (including reasoning
+extracted from inline thinking tags) stays in canonical history but is omitted
+from the outgoing request, even under `full`: Forge cannot turn it into signed
+Anthropic thinking and does not substitute ordinary assistant text. Native
+Anthropic thinking blocks retain their existing fields/signatures when selected
+for replay. In the other direction, the OpenAI-compatible renderer carries the
+reasoning text without Anthropic-only signatures.
+
 **Downstream profile.**
 
 - **Local/OpenAI-shaped downstream (external omission or `--backend openai`)** — forge translates Claude Code's Anthropic requests to OpenAI and converts the reply back to Anthropic SSE. Anthropic-only fields with no OpenAI analog (`cache_control`, `thinking`, `document` blocks) are dropped at that boundary; see [ADR-015](decisions/015-cache-control-preservation-path1.md).
