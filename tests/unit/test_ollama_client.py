@@ -274,9 +274,13 @@ class TestOllamaSend:
         assert visible(result) == "I should look up the price for this part."
 
     @pytest.mark.asyncio
-    async def test_thinking_preferred_over_content(self) -> None:
-        """Thinking field (reasoning model) is preferred over content for reasoning."""
-        client = _make_client(think=True)
+    @pytest.mark.parametrize(
+        "model", ["qwen3:8b", "ministral-reasoning-14b", "example-thinking-8b"]
+    )
+    async def test_default_preserves_backend_thinking_and_tool_calls(
+        self, model: str
+    ) -> None:
+        client = _make_client(model=model)
         client._http.post.return_value = _mock_response(
             {
                 "message": {
@@ -299,6 +303,10 @@ class TestOllamaSend:
         )
         assert isinstance(result, RichMessage)
         assert reasoning(result) == "I need to calculate 17 * 23 first..."
+        assert visible(result) == "Final answer text"
+        assert reply_calls(result)[0].name == "get_pricing"
+        assert argument_value(reply_calls(result)[0]) == {"part": "X"}
+        assert "think" not in client._http.post.call_args.kwargs["json"]
 
     @pytest.mark.asyncio
     async def test_content_used_when_no_thinking(self) -> None:
@@ -395,6 +403,7 @@ class TestOllamaSend:
         result = await send(client, [{"role": "user", "content": "test"}])
         assert isinstance(result, RichMessage)
         assert visible(result) == "Hello there."
+        assert reasoning(result) == "pondering"
 
     @pytest.mark.asyncio
     async def test_think_true_explicit(self) -> None:
@@ -421,52 +430,19 @@ class TestOllamaSend:
         assert "think" not in body
 
     @pytest.mark.asyncio
-    async def test_think_auto_heuristic_match(self) -> None:
-        """think=None + 'reason' in model name → think=True in body."""
-        client = _make_client(model="ministral-reasoning-14b")
-        client._http.post.return_value = _mock_response(
-            {"message": {"role": "assistant", "content": "ok"}}
-        )
-        await send(client, [{"role": "user", "content": "test"}])
-        call_args = client._http.post.call_args
-        body = call_args.kwargs.get("json") or call_args[1].get("json")
-        assert body["think"] is True
-
-    @pytest.mark.asyncio
-    async def test_think_auto_no_match(self) -> None:
-        """think=None + no keywords in model name → no think in body."""
-        client = _make_client(model="ministral-instruct-14b")
-        client._http.post.return_value = _mock_response(
-            {"message": {"role": "assistant", "content": "ok"}}
-        )
-        await send(client, [{"role": "user", "content": "test"}])
-        call_args = client._http.post.call_args
-        body = call_args.kwargs.get("json") or call_args[1].get("json")
-        assert "think" not in body
-
-    @pytest.mark.asyncio
-    async def test_think_auto_fallback_on_unsupported(self) -> None:
-        """think=None + heuristic says yes + 400 error → retries without think."""
+    async def test_default_does_not_retry_on_unsupported_thinking(self) -> None:
         client = _make_client(model="ministral-reasoning-14b")
         error_resp = _mock_response(
             {"error": '"ministral-reasoning-14b" does not support thinking'},
             status_code=400,
         )
-        ok_resp = _mock_response({"message": {"role": "assistant", "content": "ok"}})
-        client._http.post.side_effect = [error_resp, ok_resp]
-        result = await send(client, [{"role": "user", "content": "test"}])
-        assert isinstance(result, RichMessage)
-        assert visible(result) == "ok"
-        second_body = client._http.post.call_args_list[1].kwargs.get(
-            "json"
-        ) or client._http.post.call_args_list[1][1].get("json")
-        assert "think" not in second_body
-        assert client._think is False
-        assert client._think_resolved is True
-        assert [call.args[0] for call in client._http.post.call_args_list] == [
-            "http://test:11434/api/chat",
-            "http://test:11434/api/chat",
-        ]
+        client._http.post.return_value = error_resp
+        with pytest.raises(BackendError) as exc_info:
+            await send(client, [{"role": "user", "content": "test"}])
+        assert exc_info.value.status_code == 400
+        assert exc_info.value.body == error_resp.text
+        assert client._http.post.call_count == 1
+        assert "think" not in client._http.post.call_args.kwargs["json"]
 
     @pytest.mark.asyncio
     async def test_think_true_explicit_raises_on_unsupported(self) -> None:
@@ -785,11 +761,16 @@ class TestOllamaSendStream:
         final = [c for c in chunks if c.type == ChunkType.FINAL][0]
         assert isinstance(final.response, RichMessage)
         assert visible(final.response) == "Hello there."
+        assert reasoning(final.response) == "pondering"
 
     @pytest.mark.asyncio
-    async def test_streaming_thinking_preferred_over_content(self) -> None:
-        """Streamed thinking tokens are preferred over content for reasoning."""
-        client = _make_client(think=True)
+    @pytest.mark.parametrize(
+        "model", ["qwen3:8b", "ministral-reasoning-14b", "example-thinking-8b"]
+    )
+    async def test_streaming_default_preserves_backend_thinking_and_tool_calls(
+        self, model: str
+    ) -> None:
+        client = _make_client(model=model)
         lines = [
             json.dumps(
                 {"message": {"role": "assistant", "thinking": "Let me "}, "done": False}
@@ -830,6 +811,10 @@ class TestOllamaSendStream:
         final = [c for c in chunks if c.type == ChunkType.FINAL][0]
         assert isinstance(final.response, RichMessage)
         assert reasoning(final.response) == "Let me reason..."
+        assert visible(final.response) == "Final."
+        assert reply_calls(final.response)[0].name == "get_pricing"
+        assert argument_value(reply_calls(final.response)[0]) == {"part": "X"}
+        assert "think" not in client._http.stream.call_args.kwargs["json"]
 
     @pytest.mark.asyncio
     async def test_streaming_think_true_explicit(self) -> None:
@@ -861,14 +846,14 @@ class TestOllamaSendStream:
 
     @pytest.mark.asyncio
     async def test_streaming_think_false_discards_reasoning(self) -> None:
-        """think=False + streamed content before tool_call → reasoning is None."""
+        """Explicit capture opt-out omits streamed thinking, preserving the call."""
         client = _make_client(think=False)
         lines = [
             json.dumps(
-                {"message": {"role": "assistant", "content": "Let me "}, "done": False}
+                {"message": {"role": "assistant", "thinking": "Let me "}, "done": False}
             ),
             json.dumps(
-                {"message": {"role": "assistant", "content": "think..."}, "done": False}
+                {"message": {"role": "assistant", "thinking": "think..."}, "done": False}
             ),
             json.dumps(
                 {
@@ -897,6 +882,7 @@ class TestOllamaSendStream:
         final = [c for c in chunks if c.type == ChunkType.FINAL][0]
         assert isinstance(final.response, RichMessage)
         assert reasoning(final.response) == ""
+        assert reply_calls(final.response)[0].name == "get_pricing"
 
     @pytest.mark.asyncio
     async def test_streaming_no_reasoning_when_no_content(self) -> None:
@@ -946,34 +932,24 @@ class TestOllamaSendStream:
                 pass
         assert exc_info.value.model == "ministral-instruct-14b"
         assert "does not support thinking" in str(exc_info.value)
+        assert client._http.stream.call_count == 1
 
     @pytest.mark.asyncio
-    async def test_streaming_think_auto_fallback_on_unsupported(self) -> None:
-        """think=None + heuristic match + streaming 400 → falls back without think."""
+    async def test_streaming_default_does_not_retry_on_unsupported_thinking(self) -> None:
         client = _make_client(model="ministral-reasoning-14b")
         error_body = json.dumps(
             {"error": '"ministral-reasoning-14b" does not support thinking'}
         )
-        error_stream = _MockStreamResponse([error_body], status_code=400)
-        ok_lines = [
-            json.dumps(
-                {"message": {"role": "assistant", "content": "ok"}, "done": True}
-            )
-        ]
-        ok_stream = _MockStreamResponse(ok_lines)
-        client._http.stream.side_effect = [error_stream, ok_stream]
-        chunks = []
-        async for chunk in send_stream(client, [{"role": "user", "content": "test"}]):
-            chunks.append(chunk)
-        assert len(chunks) == 1
-        assert isinstance(chunks[0].response, RichMessage)
-        assert visible(chunks[0].response) == "ok"
-        assert client._think is False
-        assert client._think_resolved is True
-        assert [call.args[:2] for call in client._http.stream.call_args_list] == [
-            ("POST", "http://test:11434/api/chat"),
-            ("POST", "http://test:11434/api/chat"),
-        ]
+        client._http.stream.return_value = _MockStreamResponse(
+            [error_body], status_code=400
+        )
+        with pytest.raises(BackendError) as exc_info:
+            async for _ in send_stream(client, [{"role": "user", "content": "test"}]):
+                pass
+        assert exc_info.value.status_code == 400
+        assert exc_info.value.body == error_body
+        assert client._http.stream.call_count == 1
+        assert "think" not in client._http.stream.call_args.kwargs["json"]
 
     @pytest.mark.asyncio
     async def test_streaming_read_timeout_raises_backend_error(self) -> None:

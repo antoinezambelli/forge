@@ -303,13 +303,12 @@ class VLLMClient:
             request_extras(metadata, "openai"),
             stream=stream,
         )
+        headers = httpx.Headers(self._http.headers)
+        headers.update(self._request_headers(metadata.extra_headers) or {})
         return InferenceRequest(
             body,
             self._chat_url,
-            {
-                **dict(self._http.headers),
-                **(self._request_headers(metadata.extra_headers) or {}),
-            },
+            dict(headers),
         )
 
     async def send(self, request: InferenceRequest) -> RichMessage:

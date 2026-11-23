@@ -33,8 +33,6 @@ from forge.clients.requests import request_extras
 from forge.clients.replies import openai_reply, text_reply
 from forge.errors import BackendError, ThinkingNotSupportedError
 
-_THINK_HEURISTIC_KEYWORDS = ("reason", "think")
-
 
 def _is_think_unsupported_error(status_code: int, body: str) -> bool:
     """Check if a response is Ollama's 'does not support thinking' error."""
@@ -54,9 +52,9 @@ class OllamaClient:
     structured function calling. Primary path for Mistral models.
 
     think parameter controls Ollama's thinking/reasoning mode:
-        None (default) — auto-detect from model name, fall back on error
+        None (default) — use the backend default and retain returned reasoning
         True  — always send think=True (error if model doesn't support it)
-        False — never send think
+        False — never send think and omit returned reasoning
     """
 
     api_format: str = "ollama"
@@ -126,13 +124,7 @@ class OllamaClient:
         self._http = httpx.AsyncClient(headers=headers, timeout=timeout)
         self._num_ctx: int | None = None
 
-        if think is not None:
-            self._think: bool = think
-        else:
-            # Heuristic: enable for models with "reason"/"think" in name
-            model_lower = model.lower()
-            self._think = any(kw in model_lower for kw in _THINK_HEURISTIC_KEYWORDS)
-        self._think_resolved: bool = think is not None
+        self._think = think
         self.last_usage: dict[int, TokenUsage] = {}
 
     async def aclose(self) -> None:
@@ -217,20 +209,19 @@ class OllamaClient:
             "stream": stream,
             "options": self._build_options(metadata.sampling),
         }
-        if self._think:
+        if self._think is True:
             body["think"] = True
         if tools:
             body["tools"] = [format_tool(t) for t in tools]
         passthrough = request_extras(metadata, "openai")
         if "litellm_session_id" in passthrough:
             body["litellm_session_id"] = passthrough["litellm_session_id"]
+        headers = httpx.Headers(self._http.headers)
+        headers.update(self._request_headers(metadata.extra_headers) or {})
         return InferenceRequest(
             body,
             self._chat_url,
-            {
-                **dict(self._http.headers),
-                **(self._request_headers(metadata.extra_headers) or {}),
-            },
+            dict(headers),
         )
 
     async def send(self, request: InferenceRequest) -> RichMessage:
@@ -241,24 +232,20 @@ class OllamaClient:
             )
         except httpx.ReadTimeout as exc:
             raise BackendError(408, "Read timeout") from exc
-        if _is_think_unsupported_error(resp.status_code, resp.text):
-            if self._think_resolved:
-                raise ThinkingNotSupportedError(self.model, resp.status_code, resp.text)
-            self._think = False
-            self._think_resolved = True
-            del body["think"]
-            resp = await self._http.post(
-                request.url, json=body, headers=request.headers
-            )
+        if self._think is True and _is_think_unsupported_error(
+            resp.status_code, resp.text
+        ):
+            raise ThinkingNotSupportedError(self.model, resp.status_code, resp.text)
         if resp.status_code == 500:
             return text_reply(resp.text)
         if resp.status_code != 200:
             raise BackendError(resp.status_code, raw_body=resp.text)
         data = resp.json()
         self._record_usage(data)
-        self._think_resolved = True
         return openai_reply(
-            data.get("message", {}), capture_reasoning=self._think, ollama=True
+            data.get("message", {}),
+            capture_reasoning=self._think is not False,
+            ollama=True,
         )
 
     async def send_stream(
@@ -270,21 +257,9 @@ class OllamaClient:
         ) as response:
             if response.status_code == 400:
                 raw = (await response.aread()).decode(errors="replace")
-                if not _is_think_unsupported_error(400, raw):
-                    raise BackendError(400, raw_body=raw)
-                if self._think_resolved:
+                if self._think is True and _is_think_unsupported_error(400, raw):
                     raise ThinkingNotSupportedError(self.model, 400, raw)
-                self._think = False
-                self._think_resolved = True
-                del body["think"]
-            else:
-                self._think_resolved = True
-                async for chunk in self._iter_stream(response):
-                    yield chunk
-                return
-        async with self._http.stream(
-            "POST", request.url, json=body, headers=request.headers
-        ) as response:
+                raise BackendError(400, raw_body=raw)
             async for chunk in self._iter_stream(response):
                 yield chunk
 
@@ -310,7 +285,7 @@ class OllamaClient:
                     self._record_usage(data)
                     reply = openai_reply(
                         {"content": content, "thinking": thinking, "tool_calls": calls},
-                        capture_reasoning=self._think,
+                        capture_reasoning=self._think is not False,
                         ollama=True,
                     )
                     yield StreamChunk(ChunkType.FINAL, response=reply)

@@ -226,6 +226,32 @@ async def test_per_call_extra_headers_reach_the_wire(factory) -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("factory", _FACTORIES)
+async def test_per_call_header_overrides_default_without_leaking(factory) -> None:
+    client, cap = factory(
+        extra_headers={"X-Request-ID": "default", "X-Client": "shared"}
+    )
+    try:
+        await send(
+            client,
+            _USER_MSG,
+            extra_headers={"X-Request-ID": "this-call", "X-Call": "one"},
+        )
+        wire = cap["request"].headers
+        assert wire.get_list("x-request-id") == ["this-call"]
+        assert wire["x-client"] == "shared"
+        assert wire["x-call"] == "one"
+
+        await send(client, _USER_MSG)
+        wire = cap["request"].headers
+        assert wire.get_list("x-request-id") == ["default"]
+        assert wire["x-client"] == "shared"
+        assert "x-call" not in wire
+    finally:
+        await client.aclose()
+
+
+@pytest.mark.asyncio
 async def test_matching_pair_reaches_openai_wire() -> None:
     client, cap = _openai(api_key="")
     await send(
@@ -260,25 +286,6 @@ async def test_no_credential_leak_across_serialized_requests() -> None:
     assert cap["request"].headers["authorization"] == "Bearer A"
     await send(client, _USER_MSG)
     assert "authorization" not in cap["request"].headers
-
-
-@pytest.mark.asyncio
-async def test_ollama_think_retry_keeps_credential() -> None:
-    requests: list[httpx.Request] = []
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        requests.append(request)
-        if len(requests) == 1:
-            return httpx.Response(
-                400, json={"error": "registry.ollama.ai does not support thinking"}
-            )
-        return httpx.Response(200, json={"message": {"content": "ok"}})
-
-    client = OllamaClient(model="reasoner", base_url="https://b", think=None)
-    _swap_transport(client, handler)
-    await send(client, _USER_MSG, extra_headers={"Authorization": "Bearer INBOUND"})
-    assert len(requests) == 2
-    assert requests[1].headers["authorization"] == "Bearer INBOUND"
 
 
 @pytest.mark.asyncio

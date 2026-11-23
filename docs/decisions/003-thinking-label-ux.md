@@ -2,6 +2,12 @@
 
 **Status:** Done (implemented on `az/async_think` branch)
 
+**Default updated by the canonical-primitives refactor:** the name-based
+`think=None` behavior described below is superseded. Auto now leaves generation
+to the backend's defaults and captures returned reasoning, matching the llama.cpp
+path. Explicit `think=False` still opts out of capture. See the current
+[`--think` reference](../EVAL_GUIDE.md).
+
 ## Problem
 
 With `--think false`, the eval verbose printer still shows `[thinking]` lines for models like Qwen3 that embed `<think>` tags in `content`. This is confusing — the user explicitly opted out of thinking output.

@@ -1786,6 +1786,7 @@ def test_native_merge_preserves_fields_first_message_extras_and_history():
                 "role": "user",
                 "name": "first",
                 "first": True,
+                "reasoning_content": "first user extension",
                 "content": [
                     {
                         "type": "text",
@@ -1806,6 +1807,7 @@ def test_native_merge_preserves_fields_first_message_extras_and_history():
                 "role": "user",
                 "name": "later",
                 "later": True,
+                "reasoning_content": "later user extension",
                 "content": [{"type": "text", "text": "b", "x": 2}],
             },
         ]
@@ -1821,6 +1823,116 @@ def test_native_merge_preserves_fields_first_message_extras_and_history():
     assert (
         merged["name"] == "first" and merged["first"] is True and "later" not in merged
     )
+    assert merged["reasoning_content"] == "first user extension"
+    assert state == before
+
+
+@pytest.mark.parametrize(
+    ("mode", "expected"),
+    [
+        ("none", {}),
+        ("keep-last", {"reasoning_content": "last", "reasoning_text": ""}),
+        (
+            "full",
+            {
+                "reasoning_content": "old\nlast",
+                "reasoning": "old detail",
+                "reasoning_text": "",
+            },
+        ),
+    ],
+)
+def test_native_merge_retains_selected_reasoning_fields(mode, expected):
+    from copy import deepcopy
+    from forge.clients.base import RequestMetadata
+    from forge.core.codecs import openai_state
+    from forge.core.reasoning import REASONING_MESSAGE_FIELDS
+
+    state = openai_state(
+        [
+            {"role": "user", "content": "question"},
+            {
+                "role": "assistant",
+                "content": "first",
+                "reasoning_content": "old",
+                "reasoning": "old detail",
+                "name": "first",
+            },
+            {
+                "role": "assistant",
+                "content": None,
+                "reasoning_content": "tool reasoning",
+                "tool_calls": [
+                    {"id": "c", "function": {"name": "get_pricing", "arguments": "{}"}}
+                ],
+            },
+            {"role": "tool", "content": "result", "tool_call_id": "c"},
+            {
+                "role": "assistant",
+                "content": "second",
+                "reasoning_content": "last",
+                "reasoning_text": "",
+                "name": "later",
+                "later": True,
+            },
+        ]
+    )
+    before = deepcopy(state)
+    request = _make_client().render_request(
+        state, None, RequestMetadata(reasoning_replay=mode)
+    )
+    messages = request.payload["messages"]
+    merged = messages[1]
+    assert merged["content"] == "first\n\nsecond"
+    assert {
+        key: merged[key] for key in REASONING_MESSAGE_FIELDS if key in merged
+    } == expected
+    assert merged["name"] == "first" and "later" not in merged
+    assert len(messages) == 4
+    assert messages[2]["tool_calls"][0]["id"] == messages[3]["tool_call_id"] == "c"
+    assert messages[2].get("reasoning_content") == (
+        "tool reasoning" if mode == "full" else None
+    )
+    assert state == before
+
+
+def test_native_merge_retains_multiple_block_origin_reasoning_parts():
+    from copy import deepcopy
+    from forge.clients.base import RequestMetadata
+    from forge.core.codecs import anthropic_state
+
+    state = anthropic_state(
+        [
+            {"role": "user", "content": "question"},
+            {
+                "role": "assistant",
+                "content": [
+                    {"type": "thinking", "thinking": "old one"},
+                    {"type": "text", "text": "first"},
+                    {"type": "thinking", "thinking": "old two"},
+                ],
+            },
+            {
+                "role": "assistant",
+                "content": [
+                    {"type": "thinking", "thinking": "last one"},
+                    {"type": "text", "text": "second", "x": 2},
+                    {"type": "thinking", "thinking": "last two"},
+                ],
+            },
+        ]
+    )
+    before = deepcopy(state)
+    request = _make_client().render_request(
+        state, None, RequestMetadata(reasoning_replay="full")
+    )
+    merged = request.payload["messages"][1]
+    assert merged["reasoning_content"] == "old one\nold two\nlast one\nlast two"
+    assert merged["content"] == [
+        {"type": "text", "text": "first"},
+        {"type": "text", "text": "\n\n"},
+        {"type": "text", "text": "second", "x": 2},
+    ]
     assert state == before
 
 

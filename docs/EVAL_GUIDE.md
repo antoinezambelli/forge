@@ -34,7 +34,7 @@ python -m tests.eval.eval_runner --backend anthropic --model claude-haiku-4-5-20
 | `--tags` | `plumbing`, `model_quality`, `advanced_reasoning`, `compaction`, `stateful`, `reasoning`, `error_recovery` | all | Filter scenarios by tag |
 | `--scenario` | name(s) | all | Run specific scenario(s) by name |
 | `--llamafile-mode` | `native`, `prompt` | `native` | FC mode for llamafile/llama-server backend (native-first; `prompt` for non-FC backends) |
-| `--think` | `true`, `false`, `auto` | `auto` | Thinking mode. Ollama: controls `think` param. Llamafile: captures `[THINK]` tags and `reasoning_content` |
+| `--think` | `true`, `false`, `auto` | `auto` | `auto`: backend generation defaults, returned reasoning captured. `false`: discard captured reasoning. Ollama `true` also sends `think: true`; Llamafile `true` enables capture only. |
 | `--budget-mode` | `backend`, `manual`, `forge-full`, `forge-fast` | `forge-full` | Context budget strategy. Compaction scenarios always override with their own budget |
 | `--num-ctx` | int | none | Exact token budget (requires `--budget-mode manual`) |
 | `--no-history` | flag | off | Disable message history collection (lighter, fewer metrics) |

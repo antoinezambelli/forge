@@ -40,6 +40,7 @@ from forge.core.messages import (
 )
 from forge.clients.base import RequestMetadata, InferenceRequest
 from forge.core.codecs import render_openai, replay_messages
+from forge.core.reasoning import REASONING_MESSAGE_FIELDS
 from forge.clients.requests import request_extras
 from forge.clients.replies import openai_reply, openai_stream, text_reply
 from forge.errors import BackendError, ContextDiscoveryError
@@ -277,7 +278,15 @@ def _merge_consecutive(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
                         else right
                     )
                     content = left + [{"type": "text", "text": "\n\n"}] + right
-                result[last_visible_idx] = {**target, "content": content}
+                merged = {**target, "content": content}
+                if role == "assistant":
+                    # These are lowered typed parts, not first-message-only extras.
+                    for key in REASONING_MESSAGE_FIELDS:
+                        if key in m:
+                            merged[key] = (
+                                merged[key] + "\n" + m[key] if key in merged else m[key]
+                            )
+                result[last_visible_idx] = merged
                 continue
 
         result.append(m)
@@ -571,13 +580,12 @@ class LlamafileClient:
                 + "\n\n"
                 + _prompt_text(prepared[0]["content"]),
             }
+        headers = httpx.Headers(self._http.headers)
+        headers.update(self._request_headers(metadata.extra_headers) or {})
         return InferenceRequest(
             body,
             self._chat_url,
-            {
-                **dict(self._http.headers),
-                **(self._request_headers(metadata.extra_headers) or {}),
-            },
+            dict(headers),
             tuple(t.name for t in tools or []),
         )
 

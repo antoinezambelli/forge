@@ -516,8 +516,9 @@ async def main() -> None:
         "--think",
         choices=["true", "false", "auto"],
         default="auto",
-        help="Think mode: true/false/auto. Ollama: controls think param in request. "
-        "Llamafile: true/auto captures [THINK] tags from content, false discards them.",
+        help="Think mode: true/false/auto. Auto uses backend generation defaults "
+        "and captures returned reasoning; false discards captured reasoning. "
+        "Ollama true also sends think=true; Llamafile true enables capture only.",
     )
     parser.add_argument("--tags", nargs="*", help="Filter scenarios by tag")
     parser.add_argument("--scenario", nargs="*", help="Run specific scenario(s) by name")
