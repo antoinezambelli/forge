@@ -508,18 +508,35 @@ See [MODEL_GUIDE.md#sampling-parameters](MODEL_GUIDE.md#sampling-parameters) for
 
 ## Context Management
 
+Context strategies consume `ConversationState` and return `(compacted_state,
+phase_reached)` from `compact(state, budget_tokens, step_hint="")`.
+`ContextManager.maybe_compact(state, step_index=0, step_hint="")` returns the
+state to apply. `NoCompact` returns the input unchanged. The other strategies
+return a compacted copy, preserving the first two messages and recent
+`step_index` iteration groups.
+
+Tiered compaction removes eligible correction text/results, truncates each old
+result to 200 original text characters across its ordered blocks, then drops
+old results and finally old assistant text/reasoning as pressure increases.
+Calls and unrelated parts survive category removal. Truncation preserves result
+correlation, outcome and retained block fields, and reports removed characters.
+Backend usage takes priority; after an actual rewrite the fallback counts only
+legacy content characters divided by four: newline-joined visible text per
+message, reasoning text, and newline-joined text per result. Arguments, schemas
+and extras do not contribute, and reasoning replay does not filter accounting.
+
 Native `WorkflowRunner`/`ContextManager` integrations can automatically manage the context window. This section does not describe Proxy, which is always no-compaction. When a native conversation approaches the budget limit, tiered compaction fires:
 
-- **Phase 1** — Summarize older tool results, keep recent messages intact.
-- **Phase 2** — Compress mid-conversation exchanges, preserve system prompt and recent context.
-- **Phase 3** — Aggressive compression, retain only system prompt and last few exchanges.
+- **Phase 1** — Drop old corrections and truncate old results to 200 text characters plus a notice.
+- **Phase 2** — Drop old results while preserving assistant text, reasoning and calls.
+- **Phase 3** — Also drop old assistant text and reasoning, retaining calls and protected history.
 
 You can configure this via the `ContextManager`:
 
 ```python
 from forge.context import ContextManager, TieredCompact, NoCompact
 
-# Default: tiered compaction with 2 recent messages preserved
+# Default: tiered compaction with 2 recent iterations preserved
 ctx = ContextManager(strategy=TieredCompact(keep_recent=2), budget_tokens=8192)
 
 # No compaction (for short workflows that won't hit the limit)

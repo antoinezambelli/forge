@@ -54,6 +54,8 @@ from forge.context import (
     ContextSession,
     HardwareProfile,
     NoCompact,
+    SlidingWindowCompact,
+    TieredCompact,
     default_context_warning,
     detect_hardware,
 )
@@ -142,6 +144,8 @@ __all__ = [
     "default_context_warning",
     "HardwareProfile",
     "NoCompact",
+    "SlidingWindowCompact",
+    "TieredCompact",
     "detect_hardware",
     # Prompts
     "build_tool_prompt",

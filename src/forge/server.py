@@ -1175,7 +1175,7 @@ async def setup_backend(
         (ServerManager, ContextManager) tuple. Caller is responsible
         for calling ``server.stop()`` when done.
     """
-    from forge.context.phase_strategies import TieredCompact
+    from forge.context.strategies import TieredCompact
 
     managed_setup = await _setup_managed_backend(
         backend=backend,

@@ -1,11 +1,14 @@
 """Tests for forge.context.manager — ContextManager and CompactEvent."""
 
+from copy import deepcopy
 from dataclasses import FrozenInstanceError
 from datetime import datetime, timezone
 
 import pytest
 
-from forge.core.messages import Message, MessageMeta, MessageRole, MessageType
+from forge.core.messages import ConversationState, RichMessage, MessageRole, TextPart, ToolResultPart
+from forge.core.messages import ReasoningPart, ToolCallPart, ValidArguments
+from forge.context.accounting import estimate_content_tokens
 from forge.context.manager import CompactEvent, ContextManager
 from forge.context.observations import ContextSession, ContextUsage
 from forge.context.strategies import NoCompact, SlidingWindowCompact, TieredCompact
@@ -14,50 +17,25 @@ from forge.context.strategies import NoCompact, SlidingWindowCompact, TieredComp
 # ── Helpers ──────────────────────────────────────────────────────
 
 
-def _msg(content: str, msg_type: MessageType = MessageType.TOOL_RESULT) -> Message:
-    return Message(
-        role=MessageRole.USER,
-        content=content,
-        metadata=MessageMeta(type=msg_type),
-    )
+def _msg(content: str) -> RichMessage:
+    return RichMessage(MessageRole.USER, [ToolResultPart("call", [TextPart(content)])])
 
 
-def _build_messages(total_chars: int, count: int = 5) -> list[Message]:
-    """Build messages with approximately total_chars of content.
-
-    Messages after the header (index 0, 1) get sequential step_index values
-    so that _find_eligible_end() can identify iteration boundaries.
-    """
+def _build_messages(total_chars: int, count: int = 5) -> ConversationState:
+    """Same content sizes and sequential post-header steps as the old fixture."""
     per_msg = total_chars // count
-    msgs: list[Message] = []
-    step = 0
-    for i in range(count):
-        if i == 0:
-            msgs.append(Message(
-                role=MessageRole.SYSTEM,
-                content="x" * per_msg,
-                metadata=MessageMeta(type=MessageType.SYSTEM_PROMPT),
-            ))
-        elif i == 1:
-            msgs.append(Message(
-                role=MessageRole.USER,
-                content="x" * per_msg,
-                metadata=MessageMeta(type=MessageType.USER_INPUT),
-            ))
-        else:
-            msgs.append(Message(
-                role=MessageRole.ASSISTANT,
-                content="x" * per_msg,
-                metadata=MessageMeta(type=MessageType.TOOL_CALL, step_index=step),
-            ))
-            step += 1
-    return msgs
+    return ConversationState([
+        RichMessage(
+            MessageRole.SYSTEM if i == 0 else MessageRole.USER if i == 1 else MessageRole.ASSISTANT,
+            [TextPart("x" * per_msg)], step_index=i - 2 if i >= 2 else None,
+        ) for i in range(count)
+    ])
 
 
 class TestUnavailableBudget:
     def test_no_compact_without_budget_returns_original_messages(self) -> None:
         mgr = ContextManager(NoCompact(), budget_tokens=None)
-        messages = [_msg("x" * 100_000)]
+        messages = ConversationState([_msg("x" * 100_000)])
 
         assert mgr.check_thresholds(messages) is None
         assert mgr.maybe_compact(messages) is messages
@@ -90,6 +68,23 @@ class TestUnavailableBudget:
 
 
 class TestEstimateTokens:
+    def test_mixed_multiblock_accounting_counts_only_legacy_content(self):
+        state = ConversationState([RichMessage(MessageRole.ASSISTANT, [
+            TextPart("ab", {"ignored": "x" * 1000}),
+            ToolCallPart("read", ValidArguments({"huge": "x" * 10000}), "call"),
+            TextPart("cde"), ReasoningPart("reason", field_name="reasoning_content"),
+            ToolResultPart("call", [TextPart("fghi"), TextPart("jklmn")],
+                           extra_fields={"ignored": "x" * 1000}),
+            ToolResultPart("other", [TextPart("op")]),
+        ], extra_fields={"schema": "x" * 10000})])
+        before = deepcopy(state)
+        manager = ContextManager(NoCompact(), 100)
+        # Top-level text 2+1+3, reasoning 6, result 4+1+5, result 2.
+        assert manager.estimate_tokens(state) == (6 + 6 + 10 + 2) // 4 == 6
+        assert state == before
+        manager.update_token_count(0)
+        assert manager.estimate_tokens(state) == 0
+
     def test_uses_total_character_count_divided_by_four(self) -> None:
         cases = [
             ("multiple messages", [_msg("a" * 100), _msg("b" * 200)], 75),
@@ -98,11 +93,11 @@ class TestEstimateTokens:
         ]
         for label, messages, expected in cases:
             mgr = ContextManager(NoCompact(), budget_tokens=1000)
-            assert mgr.estimate_tokens(messages) == expected, label
+            assert mgr.estimate_tokens(ConversationState(messages)) == expected, label
 
     def test_prefers_observed_usage_including_zero(self) -> None:
         mgr = ContextManager(NoCompact(), budget_tokens=1000)
-        msgs = [_msg("a" * 400)]
+        msgs = ConversationState([_msg("a" * 400)])
         mgr.update_token_count(0)
         assert mgr.estimate_tokens(msgs) == 0
 
@@ -111,7 +106,7 @@ class TestEstimateTokens:
         mgr.update_token_count(25)
         mgr.update_token_count(-1)
         assert mgr.usage is None
-        assert mgr.estimate_tokens([_msg("a" * 40)]) == 10
+        assert mgr.estimate_tokens(ConversationState([_msg("a" * 40)])) == 10
 
 
 class TestContextUsage:
@@ -191,7 +186,7 @@ class TestMaybeCompactUnderThreshold:
     def test_returns_messages_unchanged_without_emitting_event(self) -> None:
         events: list[CompactEvent] = []
         mgr = ContextManager(NoCompact(), budget_tokens=10000, on_compact=events.append)
-        msgs = [_msg("short")]
+        msgs = ConversationState([_msg("short")])
         result = mgr.maybe_compact(msgs)
         assert result is msgs  # Same object — not compacted
         assert events == []
@@ -201,6 +196,32 @@ class TestMaybeCompactUnderThreshold:
 
 
 class TestMaybeCompactOverThreshold:
+    def test_tiered_rewrite_invalidates_and_resets_warning_threshold(self):
+        events = []
+        manager = ContextManager(
+            TieredCompact(1, phase_thresholds=(0.5, 0.7, 0.9)), 1000,
+            on_compact=events.append, context_thresholds=[0.5],
+            on_context_threshold=lambda *_: "warning",
+        )
+        state = ConversationState([
+            RichMessage(MessageRole.SYSTEM, [TextPart("sys")]),
+            RichMessage(MessageRole.USER, [TextPart("user")]),
+            RichMessage(MessageRole.TOOL, [ToolResultPart("old", [TextPart("x" * 450)])], 0),
+            RichMessage(MessageRole.ASSISTANT, [TextPart("recent")], 1),
+        ])
+        manager.update_token_count(800)
+        assert manager.check_thresholds(state) == "warning"
+        compacted = manager.maybe_compact(state, step_index=7, step_hint="hint")
+        assert state.messages[2].parts[0].content[0].text == "x" * 450
+        assert manager.usage is None
+        assert events[0].phase_reached == 1
+        assert events[0].tokens_before == 800
+        assert events[0].tokens_after == estimate_content_tokens(compacted)
+        assert events[0].step_index == 7
+        assert manager.check_thresholds(compacted) is None
+        manager.update_token_count(800)
+        assert manager.check_thresholds(compacted) == "warning"
+
     def test_returns_compacted_messages(self) -> None:
         # Budget=100, threshold=0.75 -> trigger at 75 tokens = 300 chars
         # Build messages with ~400 chars total
@@ -210,7 +231,7 @@ class TestMaybeCompactOverThreshold:
             budget_tokens=100,
         )
         result = mgr.maybe_compact(msgs)
-        assert len(result) < len(msgs)
+        assert len(result.messages) < len(msgs.messages)
 
     def test_on_compact_called_with_event(self) -> None:
         events: list[CompactEvent] = []
@@ -244,7 +265,7 @@ class TestMaybeCompactOverThreshold:
         assert result != msgs
         assert mgr.usage is None
         assert events[0].tokens_before == 600
-        assert events[0].tokens_after == sum(len(m.content) for m in result) // 4
+        assert events[0].tokens_after == estimate_content_tokens(result)
 
     def test_value_equal_phase_retains_usage(self) -> None:
         events: list[CompactEvent] = []
@@ -273,7 +294,7 @@ class TestCompactEvent:
         """Per-phase thresholds on TieredCompact flow through ContextManager."""
         events: list[CompactEvent] = []
         msgs = _build_messages(total_chars=800, count=8)
-        tokens = sum(len(m.content) for m in msgs) // 4  # ~200
+        tokens = estimate_content_tokens(msgs)  # ~200
         # Set Phase 2 trigger above the token count so Phase 1 result
         # is always "under threshold" and escalation stops.
         # Phase 1 trigger: 0.0 * budget = 0 (fires)

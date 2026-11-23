@@ -1562,7 +1562,7 @@ async def run_batch(
 
                 strategy_overrides = {}
                 if "compaction" in scenario.tags:
-                    from forge.context.phase_strategies import TieredCompact
+                    from forge.context.strategies import TieredCompact
                     strategy_overrides["compaction"] = TieredCompact(keep_recent=2)
 
                 eval_config = EvalConfig(

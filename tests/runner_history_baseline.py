@@ -126,7 +126,7 @@ async def runner_case(kind):
         prerequisites={"use": [{"tool": "read", "match_arg": "path"}]},
     )
     if kind == "compaction":
-        from forge.context.phase_strategies import TieredCompact
+        from forge.context.strategies import TieredCompact
         context = RecordingContext(TieredCompact(keep_recent=1, compact_threshold=.4), 160)
     else:
         context = RecordingContext()
@@ -161,26 +161,34 @@ async def main():
     observations, comparisons = [], []
     for kind in ("success", "seeded-history", "execution-retry", "step", "prerequisite", "rescue", "stream", "compaction"):
         identity = "R-" + kind
-        try:
-            after = await runner_case(kind)
-        except ImportError as exc:
-            if kind != "compaction":
-                raise
-            comparisons.append({"id": identity, "classification": "pending context ticket", "error": str(exc)})
-            continue
+        after = await runner_case(kind)
         observations.append({"id": identity, "observation": after})
         prior = before[identity]["observation"]
         stable = [key for key in ("return_value", "executions") if prior[key] == after[key]]
         assert len(stable) == 2, identity
         assert len(prior["requests"]) == len(after["requests"]), identity
-        assert [r["messages"] for r in prior["requests"]] == [r["messages"] for r in after["requests"]], identity
+        expected_messages = copy.deepcopy([r["messages"] for r in prior["requests"]])
+        if kind == "compaction":
+            # CP-06: reasoning is a typed sibling field, no longer visible text.
+            assert expected_messages[1][2]["content"] == "old reasoning"
+            expected_messages[1][2]["reasoning_content"] = expected_messages[1][2]["content"]
+            expected_messages[1][2]["content"] = ""
+            # One assistant reply now holds reasoning and calls. The policies
+            # and accounting still reach the same phases/token observations.
+            expected_events = copy.deepcopy(prior["compaction_events"])
+            assert [(e["messages_before"], e["messages_after"]) for e in expected_events] == [(5, 5), (7, 5)]
+            expected_events[0].update(messages_before=4, messages_after=4)
+            expected_events[1].update(messages_before=6)
+            assert after["compaction_events"] == expected_events
+        assert expected_messages == [r["messages"] for r in after["requests"]], identity
         assert [row["executed_so_far"] for row in prior["stream_chunks"]] == [row["executed_so_far"] for row in after["stream_chunks"]], identity
         old_ids = [m["tool_call_id"] for m in prior["history_after"] if m.get("tool_call_id")]
         new_ids = [p["call_id"] for m in after["history_after"] for p in m["parts"] if "outcome" in p]
         assert old_ids == new_ids, (identity, old_ids, new_ids)
         old_steps = [m["metadata"]["step_index"] for m in prior["history_after"]]
         assert old_steps == [m["step_index"] for m in after["history_after"]], identity
-        comparisons.append({"id": identity, "classification": "unchanged behavior; approved rich API/history migration", "unchanged": stable + ["request count", "wire messages", "stream execution ordering", "result call IDs", "step grouping"]})
+        comparisons.append({"id": identity, "classification": "unchanged behavior; approved rich API/history migration", "unchanged": stable + ["request count", "wire messages except typed reasoning sibling" if kind == "compaction" else "wire messages", "stream execution ordering", "result call IDs", "step grouping"],
+                            **({"approved_changes": ["typed reasoning sibling rendering (CP-06)", "one assistant aggregate changes event message counts"], "unchanged_context": ["phase 3", "tokens 132->132 and 252->129", "protected recent iteration", "call skeletons"]} if kind == "compaction" else {})})
     (args.output / "observations.json").write_text(json.dumps(observations, indent=2), encoding="utf-8")
     result = {"original_source_sha256": hashlib.sha256((BASELINE / "supplement_cases.py").read_bytes()).hexdigest(), "capture_revision": "29b1370db67e2f7ceab3b25e978913e7841009e5", "comparisons": comparisons}
     (args.output / "comparison.json").write_text(json.dumps(result, indent=2), encoding="utf-8")

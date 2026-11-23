@@ -672,7 +672,7 @@ async def main() -> None:
 
     # Resolve compaction strategy
     if args.compact_strategy != "none":
-        from forge.context.phase_strategies import SlidingWindowCompact, TieredCompact
+        from forge.context.strategies import SlidingWindowCompact, TieredCompact
     if args.compact_strategy == "tiered":
         cli_strategy = TieredCompact(keep_recent=2)
     elif args.compact_strategy == "sliding":

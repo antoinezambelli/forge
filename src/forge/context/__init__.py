@@ -13,6 +13,8 @@ from forge.context.observations import ContextSession, ContextUsage
 from forge.context.strategies import (
     CompactStrategy,
     NoCompact,
+    SlidingWindowCompact,
+    TieredCompact,
 )
 
 __all__ = [
@@ -24,5 +26,7 @@ __all__ = [
     "default_context_warning",
     "HardwareProfile",
     "NoCompact",
+    "SlidingWindowCompact",
+    "TieredCompact",
     "detect_hardware",
 ]

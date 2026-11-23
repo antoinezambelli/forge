@@ -89,7 +89,7 @@ class TestBudgetOverride:
             assistant(call("submit_treatment_plan", {"summary": "MRN-84201 HbA1c 9.2% cortical thinning Patel metformin"})),
         ])
 
-        from forge.context.phase_strategies import TieredCompact
+        from forge.context.strategies import TieredCompact
 
         config = EvalConfig(
             runs_per_scenario=1,
