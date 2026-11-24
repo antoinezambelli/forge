@@ -5,7 +5,7 @@ def native_messages(messages):
     return render_openai(openai_state(messages).messages, ollama=True)
 
 
-from forge.core.messages import RichMessage, ReasoningPart
+from forge.core.messages import ConversationState, RichMessage, ReasoningPart
 from forge.core.codecs import argument_value
 from tests.canonical import send, send_stream, calls as reply_calls, visible, reasoning
 
@@ -17,7 +17,7 @@ import pytest
 from unittest.mock import AsyncMock, MagicMock
 from forge.clients.ollama import OllamaClient
 from forge.core.workflow import ToolDefinition
-from forge.clients.base import ChunkType
+from forge.clients.base import ChunkType, RequestMetadata
 from forge.errors import BackendError, ThinkingNotSupportedError
 
 pytestmark = pytest.mark.usefixtures("mock_httpx_client_constructor")
@@ -762,6 +762,18 @@ class TestOllamaSendStream:
         assert isinstance(final.response, RichMessage)
         assert visible(final.response) == "Hello there."
         assert reasoning(final.response) == "pondering"
+
+        state = openai_state([{"role": "user", "content": "test"}])
+        state.messages.append(final.response)
+        state.messages.extend(openai_state([{"role": "user", "content": "retry"}]).messages)
+        client._http.post.return_value = _mock_response({"message": {"content": "ok"}})
+        await client.send(client.render_request(
+            state, None, RequestMetadata(reasoning_replay="full")
+        ))
+        history = client._http.post.call_args.kwargs["json"]["messages"]
+        assert history[1] == {
+            "role": "assistant", "content": "Hello there.", "thinking": "pondering"
+        }
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(

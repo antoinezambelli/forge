@@ -838,13 +838,15 @@ async def guardrail_modes() -> None:
     ) as (backend, proxy):
         body = _chat_body(tools=True)
         body["messages"] = [
-            {"role": "assistant", "content": None, "reasoning_content": "old", "tool_calls": []},
-            {"role": "assistant", "content": None, "reasoning_content": "latest", "tool_calls": []},
+            {"role": "user", "content": "first question"},
+            {"role": "assistant", "content": "first answer", "reasoning_content": "old", "tool_calls": []},
+            {"role": "user", "content": "next question"},
+            {"role": "assistant", "content": "next answer", "reasoning_content": "latest", "tool_calls": []},
         ]
         await _request(proxy, "POST", "/v1/chat/completions", body=body)
         sent = backend.journal[-1].json_body["messages"]
-        assert "reasoning_content" not in sent[0]
-        assert sent[1]["reasoning_content"] == "latest"
+        assert "reasoning_content" not in sent[1]
+        assert sent[3]["reasoning_content"] == "latest"
 
 
 async def anthropic_inbound_conversion() -> None:

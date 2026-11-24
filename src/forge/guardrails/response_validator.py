@@ -21,7 +21,7 @@ class ValidationResult:
 
     @property
     def tool_calls(self) -> list[ToolCallPart]:
-        return [p for p in self.reply.parts if isinstance(p, ToolCallPart)]
+        return self.reply.tool_calls
 
 
 class ResponseValidator:
@@ -36,7 +36,7 @@ class ResponseValidator:
         self._retry_nudge_fn = retry_nudge_fn or retry_nudge
 
     def validate(self, response: RichMessage) -> ValidationResult:
-        calls = [p for p in response.parts if isinstance(p, ToolCallPart)]
+        calls = response.tool_calls
         if not calls:
             text = "\n".join(p.text for p in response.parts if isinstance(p, TextPart))
             calls = (

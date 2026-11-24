@@ -75,7 +75,13 @@ class RichMessage:
     forge_purpose: str | None = None
     extra_fields: dict[str, Any] = field(default_factory=dict)
     content_shape: Literal["string", "blocks", "null"] = "string"
+    # Preserve an explicit whole-message empty field; never denotes an invocation.
     empty_tool_calls: bool = False
+
+    @property
+    def tool_calls(self) -> list[ToolCallPart]:
+        """Return invocation parts in order; add or remove calls through parts."""
+        return [part for part in self.parts if isinstance(part, ToolCallPart)]
 
 
 @dataclass

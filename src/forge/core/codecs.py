@@ -214,8 +214,7 @@ def render_openai(messages: list[RichMessage], *, ollama: bool = False) -> list[
     names = {
         p.call_id: p.name
         for m in messages
-        for p in m.parts
-        if isinstance(p, ToolCallPart)
+        for p in m.tool_calls
     }
     for message in messages:
         text = [p for p in message.parts if isinstance(p, TextPart)]

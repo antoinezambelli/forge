@@ -9,7 +9,6 @@ from forge.core.messages import (
     RichMessage,
     TextPart,
     ReasoningPart,
-    ToolCallPart,
 )
 from forge.core.codecs import openai_state, argument_value
 from forge.core.reasoning import (
@@ -133,7 +132,7 @@ def reply_to_openai(
     reasoning = "\n".join(p.text for p in reply.parts if isinstance(p, ReasoningPart))
     response = text_response_to_openai(text, model, usage)
     message = response["choices"][0]["message"]
-    calls = [p for p in reply.parts if isinstance(p, ToolCallPart)]
+    calls = reply.tool_calls
     if calls:
         message["content"] = text or None
         message["tool_calls"] = [

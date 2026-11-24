@@ -466,7 +466,7 @@ async def handle_chat_completions(
         return _emit_text("", model_name, protocol, is_stream)
 
     reply = result.response
-    tool_calls = [p for p in reply.parts if isinstance(p, ToolCallPart)]
+    tool_calls = reply.tool_calls
     usage = result.usage
     request_facts.usage = usage
     request_facts.completed = True

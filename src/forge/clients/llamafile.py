@@ -227,8 +227,9 @@ def _merge_consecutive(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Ensure strict user/assistant alternation for Jinja parity checker.
 
     llama-server's Mistral Jinja template counts only plain user and plain
-    assistant messages (no tool_calls). Messages with tool_calls or role="tool"
-    are invisible to the checker. When two plain messages of the same role
+    assistant messages (absent, null, or empty tool_calls). Messages with
+    nonempty tool_calls or role="tool" are invisible to the checker.
+    When two plain messages of the same role
     would appear at consecutive visible positions, merge them to avoid a 500.
 
     This handles:
@@ -242,14 +243,14 @@ def _merge_consecutive(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
     result: list[dict[str, Any]] = [messages[0]]
     for m in messages[1:]:
         role = m.get("role")
-        is_plain = role in ("user", "assistant") and "tool_calls" not in m
+        is_plain = role in ("user", "assistant") and not m.get("tool_calls")
 
         if is_plain:
             # Find the last visible (plain user/assistant) message in result
             last_visible_idx = None
             for i in range(len(result) - 1, -1, -1):
                 r = result[i]
-                if r.get("role") in ("user", "assistant") and "tool_calls" not in r:
+                if r.get("role") in ("user", "assistant") and not r.get("tool_calls"):
                     last_visible_idx = i
                     break
 
@@ -314,7 +315,7 @@ def _downgrade_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
     for m in messages:
         if m.get("role") == "tool":
             result.append({**m, "role": "user"})
-        elif "tool_calls" in m:
+        elif m.get("tool_calls"):
             parts: list[str] = []
             for tc_entry in m["tool_calls"]:
                 tc = tc_entry["function"]
@@ -595,7 +596,7 @@ class LlamafileClient:
         if (
             self.mode == "prompt"
             and request.tool_names
-            and not any(isinstance(p, ToolCallPart) for p in reply.parts)
+            and not reply.tool_calls
         ):
             calls = extract_tool_call(
                 "\n".join(p.text for p in reply.parts if isinstance(p, TextPart)),

@@ -18,7 +18,6 @@ from forge.core.messages import (
     RichMessage,
     MessageRole,
     TextPart,
-    ToolCallPart,
     ToolResultPart,
 )
 from forge.core.codecs import argument_value
@@ -108,7 +107,7 @@ async def run_inference(
         _sync_token_count(usage, context_manager)
         validation = validator.validate(response)
         response.step_index = step_index
-        calls = [p for p in response.parts if isinstance(p, ToolCallPart)]
+        calls = response.tool_calls
         for call in calls:
             call.call_id = f"call_{tool_call_counter:09d}"
             tool_call_counter += 1

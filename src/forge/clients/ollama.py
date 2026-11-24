@@ -283,8 +283,11 @@ class OllamaClient:
                     calls = msg["tool_calls"]
                 if data.get("done"):
                     self._record_usage(data)
+                    message = {"content": content, "thinking": thinking}
+                    if calls:
+                        message["tool_calls"] = calls
                     reply = openai_reply(
-                        {"content": content, "thinking": thinking, "tool_calls": calls},
+                        message,
                         capture_reasoning=self._think is not False,
                         ollama=True,
                     )

@@ -1167,12 +1167,13 @@ class TestMergeConsecutive:
         assert result[1]["role"] == "user"
         assert result[1]["content"] == "hello\n\nretry nudge"
 
-    def test_merges_consecutive_assistant_messages(self) -> None:
+    @pytest.mark.parametrize("fields", [{}, {"tool_calls": []}])
+    def test_merges_consecutive_assistant_messages(self, fields) -> None:
         messages = [
             {"role": "system", "content": "sys"},
             {"role": "user", "content": "go"},
-            {"role": "assistant", "content": "I should check pricing."},
-            {"role": "assistant", "content": "[tool_call] get_pricing({})"},
+            {"role": "assistant", "content": "I should check pricing.", **fields},
+            {"role": "assistant", "content": "[tool_call] get_pricing({})", **fields},
         ]
         result = _merge_consecutive(messages)
         assert len(result) == 3

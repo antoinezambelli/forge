@@ -226,7 +226,7 @@ class WorkflowRunner:
             result.response.step_index = iteration
             _notify(result.new_messages)
             tool_call_counter = result.tool_call_counter
-            tool_calls = [part for part in result.response.parts if isinstance(part, ToolCallPart)]
+            tool_calls = result.response.tool_calls
             if not tool_calls:
                 continue
 

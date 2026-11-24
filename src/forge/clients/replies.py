@@ -109,12 +109,8 @@ async def openai_stream(
                             else json.dumps(fn["arguments"])
                         ),
                     )
-    reply = openai_reply(
-        {
-            "content": content,
-            **reasoning,
-            "tool_calls": [calls[k] for k in sorted(calls)],
-        },
-        capture_reasoning=capture_reasoning,
-    )
+    message = {"content": content, **reasoning}
+    if calls:
+        message["tool_calls"] = [calls[k] for k in sorted(calls)]
+    reply = openai_reply(message, capture_reasoning=capture_reasoning)
     yield StreamChunk(ChunkType.FINAL, response=reply)

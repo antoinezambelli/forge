@@ -15,6 +15,38 @@ from forge.core.codecs import (
 )
 
 
+@pytest.mark.parametrize("count", [0, 1, 2])
+def test_tool_calls_exposes_invocations_in_part_order(count):
+    calls = [ToolCallPart(f"tool_{i}", ValidArguments({})) for i in range(count)]
+    parts = [TextPart("before"), ReasoningPart("thinking")]
+    for call in calls:
+        parts.extend([call, TextPart("between")])
+    message = RichMessage(MessageRole.ASSISTANT, list(parts))
+
+    assert message.tool_calls == calls
+    assert all(actual is expected for actual, expected in zip(message.tool_calls, calls))
+    assert message.parts == parts
+
+
+def test_tool_calls_is_derived_from_current_parts_not_a_separate_collection():
+    message = RichMessage(
+        MessageRole.ASSISTANT, [TextPart("plain")], empty_tool_calls=True
+    )
+    assert message.tool_calls == []
+
+    call = ToolCallPart("search", ValidArguments({}))
+    message.parts.append(call)
+    message.tool_calls[0].call_id = "assigned"
+    assert call.call_id == "assigned"
+
+    returned_calls = message.tool_calls
+    returned_calls.clear()
+    assert message.tool_calls == [call]
+
+    message.parts = [TextPart("replacement")]
+    assert message.tool_calls == []
+
+
 @pytest.mark.parametrize(
     "value", [{}, {"nested": [1, False]}, [], None, False, 0, 0.0, "", "broken{"]
 )

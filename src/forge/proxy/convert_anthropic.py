@@ -155,7 +155,7 @@ def reply_to_anthropic(
                 }
             )
     response["content"] = blocks
-    if any(isinstance(p, ToolCallPart) for p in reply.parts):
+    if reply.tool_calls:
         response["stop_reason"] = "tool_use"
     return response
 
