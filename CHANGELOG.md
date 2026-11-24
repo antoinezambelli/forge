@@ -2,6 +2,61 @@
 
 All notable changes to forge are documented here.
 
+## [0.11.0] — 2026-11-24
+
+Canonical conversation primitives for the Python library and standalone Forge
+Proxy. **Proxy users do not need setup changes** for existing supported HTTP
+integrations, CLI configuration, or profiles. Python library integrations must
+follow the [migration guide](docs/MIGRATING_CANONICAL_PRIMITIVES.md).
+
+### Breaking Python API changes
+
+- `RichMessage` and ordered content parts replace the legacy message and
+  text/tool-response types. Callbacks, seeded history, middleware replies, and
+  streamed FINAL responses use the rich representation.
+- `ToolDefinition` carries complete JSON Schema dictionaries. `Workflow` owns
+  separate handler and prerequisite mappings; `ToolSpec` and `ToolDef` are
+  removed. Application-side Pydantic schema authoring remains possible.
+- Direct clients render `ConversationState`, tool definitions, and per-request
+  `RequestMetadata` into an `InferenceRequest` before sending. Shared inference
+  and custom compaction interfaces use canonical conversation state.
+- Old primitives, serialization helpers, and respond-tool wrappers are removed
+  without legacy aliases or input adapters. See the migration guide for the
+  old/new API mapping and examples.
+
+### Changed
+
+- One authoritative rich history follows the same backend-rendering path on
+  initial attempts and retries. Supported visible text, reasoning, tool calls,
+  results, complete schemas, and applicable fields are retained without the
+  former raw-history sidecar or lossy reconstruction path.
+- Reply recording, rescue, rejection/exhaustion history, and tool-result
+  correlation are shared by Runner and Proxy. Workflow execution, enforcement,
+  and compaction remain Runner-only; Proxy does not compact caller history.
+- Malformed or unsupported function-tool definitions and duplicate names fail
+  clearly rather than being silently skipped or deduplicated.
+- Native Ollama no longer guesses reasoning settings from model names. With
+  `think` unset, generation follows backend defaults and supported returned
+  reasoning is retained. Replay still defaults to `none`; `keep-last` selects
+  all reasoning in the last reasoning-bearing assistant turn.
+- Anthropic-bound requests retain native thinking fields/signatures when
+  selected for replay. OpenAI-origin reasoning is omitted rather than encoded
+  as unsigned thinking or ordinary assistant text.
+- Direct provider-stream callbacks may deliver visible text before tool-call
+  fragments in a mixed reply. Runner execution still waits for FINAL.
+
+### Removed
+
+- New eval rows no longer include `reasoning_wire` or `reasoning_wire_total`.
+  Existing result files are unchanged; no migration machinery is introduced.
+
+### Documentation and standalone Proxy
+
+- Added a dedicated Python migration guide and refreshed active user,
+  architecture, backend, workflow, and contributor instructions.
+- Standalone Windows x64, Linux x64/glibc, and macOS ARM64 bundles include the
+  canonical inference and rich-history changes under the same 0.11.0 version.
+
 ## [0.10.2] — 2026-11-20
 
 Consistent backend HTTP error handling for the Python library and standalone
