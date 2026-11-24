@@ -45,20 +45,10 @@ class TestResolveRequestHeaders:
             ("static with no extra", True, None, None),
             ("no static with no extra", False, None, None),
             ("empty extra", True, {}, None),
-            (
-                "per-call auth",
-                False,
-                {"Authorization": "Bearer x"},
-                {"Authorization": "Bearer x"},
-            ),
+            ("per-call auth", False, {"Authorization": "Bearer x"}, {"Authorization": "Bearer x"}),
             ("static plus trace", True, {"X-Trace-Id": "1"}, {"X-Trace-Id": "1"}),
             ("blank auth", True, {"Authorization": ""}, {"Authorization": ""}),
-            (
-                "scheme-only auth",
-                True,
-                {"Authorization": "Bearer "},
-                {"Authorization": "Bearer "},
-            ),
+            ("scheme-only auth", True, {"Authorization": "Bearer "}, {"Authorization": "Bearer "}),
         ]
         for case, static, extra, expected in cases:
             out = resolve_request_headers(static, extra)
@@ -72,9 +62,7 @@ class TestResolveRequestHeaders:
         with pytest.raises(MultipleCredentialsError):
             resolve_request_headers(True, {"Authorization": "Bearer k"})
         with pytest.raises(MultipleCredentialsError):
-            resolve_request_headers(
-                True, {"Authorization": "Bearer k", "X-Api-Key": "k"}
-            )
+            resolve_request_headers(True, {"Authorization": "Bearer k", "X-Api-Key": "k"})
 
     def test_matching_per_call_pair_is_preserved(self) -> None:
         pair = {"Authorization": "Bearer TOKEN", "X-Api-Key": "TOKEN"}
@@ -85,9 +73,7 @@ class TestResolveRequestHeaders:
 
     def test_nonmatching_per_call_pair_raises(self) -> None:
         with pytest.raises(MultipleCredentialsError):
-            resolve_request_headers(
-                False, {"Authorization": "Bearer A", "x-api-key": "B"}
-            )
+            resolve_request_headers(False, {"Authorization": "Bearer A", "x-api-key": "B"})
 
     def test_case_variant_same_name_pair_raises(self) -> None:
         with pytest.raises(MultipleCredentialsError):
@@ -160,16 +146,12 @@ class TestRedactAuthHeaders:
             assert redact_auth_headers(headers) == expected, case
 
 
-def _capturing_http(
-    construction_headers: httpx.Headers, captured: dict
-) -> httpx.AsyncClient:
+def _capturing_http(construction_headers: httpx.Headers, captured: dict) -> httpx.AsyncClient:
     def handler(request: httpx.Request) -> httpx.Response:
         captured["request"] = request
         return httpx.Response(200, json=_OPENAI_OK)
 
-    return httpx.AsyncClient(
-        headers=construction_headers, transport=httpx.MockTransport(handler)
-    )
+    return httpx.AsyncClient(headers=construction_headers, transport=httpx.MockTransport(handler))
 
 
 def _swap_transport(client, handler) -> None:
@@ -193,13 +175,9 @@ def _wire(build):
     return factory
 
 
-_openai = _wire(
-    lambda **kw: OpenAICompatClient(base_url="https://b/v1", model="m", **kw)
-)
+_openai = _wire(lambda **kw: OpenAICompatClient(base_url="https://b/v1", model="m", **kw))
 _ollama = _wire(lambda **kw: OllamaClient(model="m", base_url="https://b", **kw))
-_llamafile = _wire(
-    lambda **kw: LlamafileClient(gguf_path="m.gguf", base_url="https://b/v1", **kw)
-)
+_llamafile = _wire(lambda **kw: LlamafileClient(gguf_path="m.gguf", base_url="https://b/v1", **kw))
 _vllm = _wire(lambda **kw: VLLMClient(model_path="m", base_url="https://b/v1", **kw))
 _FACTORIES = [
     pytest.param(_openai, id="openai_compat"),
@@ -228,15 +206,9 @@ async def test_per_call_extra_headers_reach_the_wire(factory) -> None:
 @pytest.mark.asyncio
 @pytest.mark.parametrize("factory", _FACTORIES)
 async def test_per_call_header_overrides_default_without_leaking(factory) -> None:
-    client, cap = factory(
-        extra_headers={"X-Request-ID": "default", "X-Client": "shared"}
-    )
+    client, cap = factory(extra_headers={"X-Request-ID": "default", "X-Client": "shared"})
     try:
-        await send(
-            client,
-            _USER_MSG,
-            extra_headers={"X-Request-ID": "this-call", "X-Call": "one"},
-        )
+        await send(client, _USER_MSG, extra_headers={"X-Request-ID": "this-call", "X-Call": "one"})
         wire = cap["request"].headers
         assert wire.get_list("x-request-id") == ["this-call"]
         assert wire["x-client"] == "shared"
@@ -255,9 +227,7 @@ async def test_per_call_header_overrides_default_without_leaking(factory) -> Non
 async def test_matching_pair_reaches_openai_wire() -> None:
     client, cap = _openai(api_key="")
     await send(
-        client,
-        _USER_MSG,
-        extra_headers={"Authorization": "Bearer INBOUND", "X-Api-Key": "INBOUND"},
+        client, _USER_MSG, extra_headers={"Authorization": "Bearer INBOUND", "X-Api-Key": "INBOUND"}
     )
     wire = cap["request"].headers
     assert wire["authorization"] == "Bearer INBOUND"
@@ -354,18 +324,10 @@ class TestPrepareAnthropicHeaders:
     def test_normalizes_every_supported_header_shape(self) -> None:
         cases = [
             ("api key", {"x-api-key": "k"}, {"x-api-key": "k"}),
-            (
-                "authorization",
-                {"authorization": "Bearer k"},
-                {"authorization": "Bearer k"},
-            ),
+            ("authorization", {"authorization": "Bearer k"}, {"authorization": "Bearer k"}),
             (
                 "version retained and beta excluded",
-                {
-                    "x-api-key": "k",
-                    "anthropic-version": "2023-06-01",
-                    "anthropic-beta": "x",
-                },
+                {"x-api-key": "k", "anthropic-version": "2023-06-01", "anthropic-beta": "x"},
                 {"x-api-key": "k", "anthropic-version": "2023-06-01"},
             ),
             ("unknown", {"X-Trace": "1"}, {"x-trace": "1"}),
@@ -397,9 +359,7 @@ def _anthropic_capturing(client: AnthropicClient, captured: dict) -> None:
         )
 
     client._http = httpx.AsyncClient(
-        headers=client._http.headers,
-        base_url="https://b",
-        transport=httpx.MockTransport(handler),
+        headers=client._http.headers, base_url="https://b", transport=httpx.MockTransport(handler)
     )
 
 
@@ -450,9 +410,7 @@ async def test_anthropic_matching_pair_reaches_wire() -> None:
     cap: dict = {}
     _anthropic_capturing(client, cap)
     await send(
-        client,
-        _USER_MSG,
-        extra_headers={"authorization": "Bearer INBOUND", "x-api-key": "INBOUND"},
+        client, _USER_MSG, extra_headers={"authorization": "Bearer INBOUND", "x-api-key": "INBOUND"}
     )
     wire = cap["request"].headers
     assert wire["authorization"] == "Bearer INBOUND"
@@ -469,15 +427,11 @@ async def test_anthropic_static_plus_per_call_auth_raises() -> None:
 
 def test_anthropic_construction_api_key_plus_default_header_raises() -> None:
     with pytest.raises(MultipleCredentialsError):
-        AnthropicClient(
-            model="claude", api_key="STATIC", default_headers={"x-api-key": "OTHER"}
-        )
+        AnthropicClient(model="claude", api_key="STATIC", default_headers={"x-api-key": "OTHER"})
 
 
 def test_anthropic_construction_default_headers_reach_http() -> None:
-    client = AnthropicClient(
-        model="claude", api_key="", default_headers={"x-api-key": "STATICKEY"}
-    )
+    client = AnthropicClient(model="claude", api_key="", default_headers={"x-api-key": "STATICKEY"})
     assert client._static_auth is True
     stored = dict(client._http.headers)
     assert stored.get("x-api-key") == "STATICKEY"
@@ -529,16 +483,9 @@ async def test_anthropic_stream_installs_credential() -> None:
         )
 
     client._http = httpx.AsyncClient(
-        base_url="https://b",
-        transport=httpx.MockTransport(handler),
-        headers=client._http.headers,
+        base_url="https://b", transport=httpx.MockTransport(handler), headers=client._http.headers
     )
-    _ = [
-        c
-        async for c in send_stream(
-            client, _USER_MSG, extra_headers={"x-api-key": "REALKEY"}
-        )
-    ]
+    _ = [c async for c in send_stream(client, _USER_MSG, extra_headers={"x-api-key": "REALKEY"})]
     assert captured["request"].headers.get_list("x-api-key") == ["REALKEY"]
 
 

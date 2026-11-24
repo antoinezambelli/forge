@@ -29,9 +29,7 @@ def test_tool_calls_exposes_invocations_in_part_order(count):
 
 
 def test_tool_calls_is_derived_from_current_parts_not_a_separate_collection():
-    message = RichMessage(
-        MessageRole.ASSISTANT, [TextPart("plain")], empty_tool_calls=True
-    )
+    message = RichMessage(MessageRole.ASSISTANT, [TextPart("plain")], empty_tool_calls=True)
     assert message.tool_calls == []
 
     call = ToolCallPart("search", ValidArguments({}))
@@ -52,9 +50,7 @@ def test_tool_calls_is_derived_from_current_parts_not_a_separate_collection():
 )
 def test_argument_variants_are_immutable_and_retain_received_values(value):
     wrapped = decode_arguments(json.dumps(value))
-    assert isinstance(
-        wrapped, ValidArguments if isinstance(value, dict) else InvalidArguments
-    )
+    assert isinstance(wrapped, ValidArguments if isinstance(value, dict) else InvalidArguments)
     part = ToolCallPart("f", wrapped)
     assert argument_value(part) == value
     with pytest.raises(FrozenInstanceError):
@@ -62,15 +58,13 @@ def test_argument_variants_are_immutable_and_retain_received_values(value):
     wire = render_openai([RichMessage(MessageRole.ASSISTANT, [part])])[0]
     assert json.loads(wire["tool_calls"][0]["function"]["arguments"]) == value
     assert (
-        render_anthropic([RichMessage(MessageRole.ASSISTANT, [part])])[1][0]["content"][
-            0
-        ]["input"]
+        render_anthropic([RichMessage(MessageRole.ASSISTANT, [part])])[1][0]["content"][0]["input"]
         == value
     )
     assert (
-        render_openai([RichMessage(MessageRole.ASSISTANT, [part])], ollama=True)[0][
-            "tool_calls"
-        ][0]["function"]["arguments"]
+        render_openai([RichMessage(MessageRole.ASSISTANT, [part])], ollama=True)[0]["tool_calls"][
+            0
+        ]["function"]["arguments"]
         == value
     )
 
@@ -138,10 +132,7 @@ def test_anthropic_grouping_order_system_and_multipart_results_round_trip():
             "tool_use_id": "",
             "is_error": True,
             "x": 4,
-            "content": [
-                {"type": "text", "text": "one", "x": 1},
-                {"type": "text", "text": "two"},
-            ],
+            "content": [{"type": "text", "text": "one", "x": 1}, {"type": "text", "text": "two"}],
         },
         {"type": "text", "text": "after"},
     ]
@@ -157,9 +148,7 @@ def test_anthropic_grouping_order_system_and_multipart_results_round_trip():
             ],
         },
     ]
-    system = [
-        {"type": "text", "text": "system", "cache_control": {"type": "ephemeral"}}
-    ]
+    system = [{"type": "text", "text": "system", "cache_control": {"type": "ephemeral"}}]
     state = anthropic_state(raw, system)
     assert len(state.messages) == 3
     assert len(state.messages[1].parts) == 3
@@ -177,9 +166,7 @@ def test_unknown_structural_blocks_fail_clearly(protocol):
 
 
 def test_forge_fields_are_direct_and_never_rendered():
-    message = RichMessage(
-        MessageRole.USER, [TextPart("x")], step_index=4, forge_purpose="retry"
-    )
+    message = RichMessage(MessageRole.USER, [TextPart("x")], step_index=4, forge_purpose="retry")
     assert render_openai([message]) == [{"role": "user", "content": "x"}]
     assert not hasattr(message, "metadata")
 

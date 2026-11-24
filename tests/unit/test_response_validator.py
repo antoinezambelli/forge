@@ -9,10 +9,7 @@ from forge.guardrails import Nudge, ResponseValidator
 
 
 def _validator(*, rescue_enabled: bool = True) -> ResponseValidator:
-    return ResponseValidator(
-        tool_names=["search", "answer"],
-        rescue_enabled=rescue_enabled,
-    )
+    return ResponseValidator(tool_names=["search", "answer"], rescue_enabled=rescue_enabled)
 
 
 def test_nudge_is_immutable() -> None:
@@ -23,9 +20,7 @@ def test_nudge_is_immutable() -> None:
 
 
 def test_text_response_rescue_hands_calls_to_validation_result() -> None:
-    result = _validator().validate(
-        text_reply('{"tool": "search", "args": {"q": "hello"}}')
-    )
+    result = _validator().validate(text_reply('{"tool": "search", "args": {"q": "hello"}}'))
 
     assert result.needs_retry is False
     assert result.nudge is None
@@ -40,11 +35,7 @@ def test_unrescued_text_uses_retry_channel_and_content() -> None:
             _validator(rescue_enabled=False),
             '{"tool": "search", "args": {"q": "hello"}}',
         ),
-        (
-            "unknown rescued tool",
-            _validator(),
-            '{"tool": "nonexistent", "args": {}}',
-        ),
+        ("unknown rescued tool", _validator(), '{"tool": "nonexistent", "args": {}}'),
     ]
 
     for label, validator, content in cases:
@@ -59,10 +50,7 @@ def test_unrescued_text_uses_retry_channel_and_content() -> None:
 def test_valid_tool_call_batches_pass_through() -> None:
     batches = [
         [call(name="search", arguments={"q": "hi"})],
-        [
-            call(name="search", arguments={"q": "a"}),
-            call(name="answer", arguments={"text": "b"}),
-        ],
+        [call(name="search", arguments={"q": "a"}), call(name="answer", arguments={"text": "b"})],
     ]
 
     for calls in batches:
@@ -75,10 +63,7 @@ def test_valid_tool_call_batches_pass_through() -> None:
 def test_unknown_tool_batches_use_tool_channel() -> None:
     batches = [
         [call(name="nonexistent", arguments={})],
-        [
-            call(name="search", arguments={"q": "hi"}),
-            call(name="bad_tool", arguments={}),
-        ],
+        [call(name="search", arguments={"q": "hi"}), call(name="bad_tool", arguments={})],
     ]
 
     for calls in batches:
@@ -99,10 +84,7 @@ def test_invalid_argument_shapes_use_tool_error_channel() -> None:
         ("integer", [call(name="search", arguments=42)]),
         (
             "mixed batch",
-            [
-                call(name="search", arguments={"q": "hi"}),
-                call(name="answer", arguments=""),
-            ],
+            [call(name="search", arguments={"q": "hi"}), call(name="answer", arguments="")],
         ),
     ]
 

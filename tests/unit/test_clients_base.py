@@ -1,9 +1,11 @@
-"""Unit tests for shared client helpers in forge.clients.base."""
+"""Shared argument decoding, reply parsing, and tool rendering behavior."""
 
 from __future__ import annotations
 
-from forge.core.codecs import decode_arguments
+from forge.clients.replies import openai_reply
+from forge.core.codecs import decode_arguments, argument_value
 from forge.core.messages import ValidArguments, InvalidArguments
+from tests.canonical import reasoning
 
 
 class TestDecodeToolArgs:
@@ -66,9 +68,7 @@ def test_canonical_tool_fields_win_without_mutating_definitions():
     openai = format_tool(definition)
     anthropic = AnthropicClient._convert_tools([definition])[0]
     assert openai["function"]["name"] == anthropic["name"] == "correct"
-    assert (
-        openai["function"]["description"] == anthropic["description"] == "Description"
-    )
+    assert openai["function"]["description"] == anthropic["description"] == "Description"
     assert openai["function"]["parameters"] == anthropic["input_schema"] == schema
     assert openai["function"]["strict"] is anthropic["strict"] is True
     assert definition == before
@@ -79,3 +79,23 @@ def test_empty_wire_arguments_are_distinct_from_decoded_empty_string():
     assert decode_arguments("") == ValidArguments({})
     assert decode_arguments('""') == InvalidArguments("")
     assert decode_arguments("", json_encoded=False) == InvalidArguments("")
+
+
+def test_missing_function_retains_existing_fallback():
+    reply = openai_reply({"tool_calls": [{}]})
+    assert reply.tool_calls[0].name == ""
+    assert argument_value(reply.tool_calls[0]) == {}
+
+
+def test_reasoning_belongs_to_message_beside_all_calls():
+    reply = openai_reply(
+        {
+            "reasoning": "because",
+            "tool_calls": [
+                {"function": {"name": "a", "arguments": "{}"}},
+                {"function": {"name": "b", "arguments": "{}"}},
+            ],
+        }
+    )
+    assert [part.name for part in reply.tool_calls] == ["a", "b"]
+    assert reasoning(reply) == "because"

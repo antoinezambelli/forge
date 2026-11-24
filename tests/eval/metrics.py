@@ -5,16 +5,13 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
-from forge.core.codecs import replay_messages
 from forge.core.messages import (
-    ConversationState,
     RichMessage,
     MessageRole,
     ReasoningPart,
     ToolCallPart,
     ToolResultPart,
 )
-from forge.core.reasoning import ReasoningReplay
 
 if TYPE_CHECKING:
     from tests.eval.eval_runner import RunResult
@@ -58,26 +55,6 @@ def analyze_history(messages: list[RichMessage]) -> HistoryStats:
                 if any("[ToolError]" in text.text for text in part.content):
                     stats.tool_errors += 1
     return stats
-
-
-def count_wire_reasoning(
-    messages: list[RichMessage],
-    reasoning_replay: ReasoningReplay,
-    api_format: str = "openai",
-) -> tuple[int, int]:
-    """Count reasoning parts retained by the real shared replay policy.
-
-    keep-last includes every reasoning part in the final reasoning-bearing
-    assistant turn. Counts describe the final snapshot, not cumulative sends.
-    Replay policy is the same for every backend format.
-    """
-    def count(view: list[RichMessage]) -> int:
-        return sum(
-            1 for message in view if message.role == MessageRole.ASSISTANT
-            for part in message.parts if isinstance(part, ReasoningPart) and part.text
-        )
-    replayed = replay_messages(ConversationState(messages), reasoning_replay)
-    return count(replayed), count(messages)
 
 
 @dataclass

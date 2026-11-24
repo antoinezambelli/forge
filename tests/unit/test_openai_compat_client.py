@@ -14,9 +14,7 @@ from forge.errors import BackendError, MultipleCredentialsError
 
 pytestmark = pytest.mark.usefixtures("mock_httpx_client_constructor")
 PART_SCHEMA = {
-    "properties": {
-        "part": {"description": "Part number", "title": "Part", "type": "string"}
-    },
+    "properties": {"part": {"description": "Part number", "title": "Part", "type": "string"}},
     "required": ["part"],
     "title": "PartParams",
     "type": "object",
@@ -24,15 +22,11 @@ PART_SCHEMA = {
 
 
 def _make_spec(name: str = "get_pricing") -> ToolDefinition:
-    return ToolDefinition(
-        name=name, description=f"Get {name}", input_schema=PART_SCHEMA
-    )
+    return ToolDefinition(name=name, description=f"Get {name}", input_schema=PART_SCHEMA)
 
 
 def _make_client(model: str = "test-model", api_key: str = "tok") -> OpenAICompatClient:
-    return OpenAICompatClient(
-        base_url="https://api.example.com/v1", model=model, api_key=api_key
-    )
+    return OpenAICompatClient(base_url="https://api.example.com/v1", model=model, api_key=api_key)
 
 
 def _mock_response(data: dict, status_code: int = 200) -> MagicMock:
@@ -90,9 +84,7 @@ class TestSend:
                 ]
             }
         )
-        result = await send(
-            client, [{"role": "user", "content": "test"}], tools=[_make_spec()]
-        )
+        result = await send(client, [{"role": "user", "content": "test"}], tools=[_make_spec()])
         assert isinstance(result, RichMessage)
         assert len(reply_calls(result)) == 1
         assert reply_calls(result)[0].name == "get_pricing"
@@ -102,11 +94,7 @@ class TestSend:
     async def test_returns_text_response(self) -> None:
         client = _make_client()
         client._http.post.return_value = _mock_response(
-            {
-                "choices": [
-                    {"message": {"role": "assistant", "content": "I need more info"}}
-                ]
-            }
+            {"choices": [{"message": {"role": "assistant", "content": "I need more info"}}]}
         )
         result = await send(client, [{"role": "user", "content": "test"}])
         assert isinstance(result, RichMessage)
@@ -139,12 +127,7 @@ class TestSend:
                         "message": {
                             "role": "assistant",
                             "tool_calls": [
-                                {
-                                    "function": {
-                                        "name": "get_pricing",
-                                        "arguments": "{not json",
-                                    }
-                                }
+                                {"function": {"name": "get_pricing", "arguments": "{not json"}}
                             ],
                         }
                     }
@@ -167,12 +150,7 @@ class TestSend:
                             "role": "assistant",
                             "content": "Let me look that up.",
                             "tool_calls": [
-                                {
-                                    "function": {
-                                        "name": "get_pricing",
-                                        "arguments": "{not json",
-                                    }
-                                }
+                                {"function": {"name": "get_pricing", "arguments": "{not json"}}
                             ],
                         }
                     }
@@ -193,18 +171,8 @@ class TestSend:
                         "message": {
                             "role": "assistant",
                             "tool_calls": [
-                                {
-                                    "function": {
-                                        "name": "get_pricing",
-                                        "arguments": '{"part": "A"}',
-                                    }
-                                },
-                                {
-                                    "function": {
-                                        "name": "get_pricing",
-                                        "arguments": "{broken",
-                                    }
-                                },
+                                {"function": {"name": "get_pricing", "arguments": '{"part": "A"}'}},
+                                {"function": {"name": "get_pricing", "arguments": "{broken"}},
                             ],
                         }
                     }
@@ -226,12 +194,7 @@ class TestSend:
                         "message": {
                             "role": "assistant",
                             "tool_calls": [
-                                {
-                                    "function": {
-                                        "name": "get_pricing",
-                                        "arguments": {"part": "X123"},
-                                    }
-                                }
+                                {"function": {"name": "get_pricing", "arguments": {"part": "X123"}}}
                             ],
                         }
                     }
@@ -285,26 +248,20 @@ class TestSend:
         client._http.post.return_value = _mock_response(
             {"choices": [{"message": {"role": "assistant", "content": "ok"}}]}
         )
-        await send(
-            client, [{"role": "user", "content": "hi"}], sampling={"temperature": 0.2}
-        )
+        await send(client, [{"role": "user", "content": "hi"}], sampling={"temperature": 0.2})
         body = client._http.post.call_args.kwargs["json"]
         assert body["temperature"] == 0.2
 
     @pytest.mark.asyncio
     async def test_http_error_raises_backend_error(self) -> None:
         client = _make_client()
-        client._http.post.return_value = _mock_response(
-            {"error": "bad"}, status_code=401
-        )
+        client._http.post.return_value = _mock_response({"error": "bad"}, status_code=401)
         with pytest.raises(BackendError) as exc:
             await send(client, [{"role": "user", "content": "test"}])
         assert exc.value.status_code == 401
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize(
-        "field", ["reasoning_content", "reasoning", "reasoning_text"]
-    )
+    @pytest.mark.parametrize("field", ["reasoning_content", "reasoning", "reasoning_text"])
     async def test_structured_reasoning_field_captured(self, field) -> None:
         client = _make_client()
         client._http.post.return_value = _mock_response(
@@ -316,21 +273,14 @@ class TestSend:
                             "content": None,
                             field: "I should check the price first.",
                             "tool_calls": [
-                                {
-                                    "function": {
-                                        "name": "get_pricing",
-                                        "arguments": '{"part": "X"}',
-                                    }
-                                }
+                                {"function": {"name": "get_pricing", "arguments": '{"part": "X"}'}}
                             ],
                         }
                     }
                 ]
             }
         )
-        result = await send(
-            client, [{"role": "user", "content": "test"}], tools=[_make_spec()]
-        )
+        result = await send(client, [{"role": "user", "content": "test"}], tools=[_make_spec()])
         assert isinstance(result, RichMessage)
         assert reasoning(result) == "I should check the price first."
 
@@ -345,21 +295,14 @@ class TestSend:
                             "role": "assistant",
                             "content": "<think>plan</think>",
                             "tool_calls": [
-                                {
-                                    "function": {
-                                        "name": "get_pricing",
-                                        "arguments": '{"part": "X"}',
-                                    }
-                                }
+                                {"function": {"name": "get_pricing", "arguments": '{"part": "X"}'}}
                             ],
                         }
                     }
                 ]
             }
         )
-        result = await send(
-            client, [{"role": "user", "content": "test"}], tools=[_make_spec()]
-        )
+        result = await send(client, [{"role": "user", "content": "test"}], tools=[_make_spec()])
         assert isinstance(result, RichMessage)
         assert reasoning(result) == "plan"
 
@@ -375,21 +318,14 @@ class TestSend:
                             "content": "<think>inline</think>",
                             "reasoning": "structured",
                             "tool_calls": [
-                                {
-                                    "function": {
-                                        "name": "get_pricing",
-                                        "arguments": '{"part": "X"}',
-                                    }
-                                }
+                                {"function": {"name": "get_pricing", "arguments": '{"part": "X"}'}}
                             ],
                         }
                     }
                 ]
             }
         )
-        result = await send(
-            client, [{"role": "user", "content": "test"}], tools=[_make_spec()]
-        )
+        result = await send(client, [{"role": "user", "content": "test"}], tools=[_make_spec()])
         assert reasoning(result) == "structured"
 
     @pytest.mark.asyncio
@@ -403,21 +339,14 @@ class TestSend:
                             "role": "assistant",
                             "content": "Let me look that up.",
                             "tool_calls": [
-                                {
-                                    "function": {
-                                        "name": "get_pricing",
-                                        "arguments": '{"part": "X"}',
-                                    }
-                                }
+                                {"function": {"name": "get_pricing", "arguments": '{"part": "X"}'}}
                             ],
                         }
                     }
                 ]
             }
         )
-        result = await send(
-            client, [{"role": "user", "content": "test"}], tools=[_make_spec()]
-        )
+        result = await send(client, [{"role": "user", "content": "test"}], tools=[_make_spec()])
         assert isinstance(result, RichMessage)
         assert reasoning(result) == ""
 
@@ -444,16 +373,7 @@ class TestSend:
     async def test_plain_preamble_text_response_survives(self) -> None:
         client = _make_client()
         client._http.post.return_value = _mock_response(
-            {
-                "choices": [
-                    {
-                        "message": {
-                            "role": "assistant",
-                            "content": "Let me look that up.",
-                        }
-                    }
-                ]
-            }
+            {"choices": [{"message": {"role": "assistant", "content": "Let me look that up."}}]}
         )
         result = await send(client, [{"role": "user", "content": "test"}])
         assert isinstance(result, RichMessage)
@@ -470,27 +390,15 @@ class TestSend:
                             "role": "assistant",
                             "reasoning": "because",
                             "tool_calls": [
-                                {
-                                    "function": {
-                                        "name": "get_pricing",
-                                        "arguments": '{"part": "A"}',
-                                    }
-                                },
-                                {
-                                    "function": {
-                                        "name": "get_pricing",
-                                        "arguments": '{"part": "B"}',
-                                    }
-                                },
+                                {"function": {"name": "get_pricing", "arguments": '{"part": "A"}'}},
+                                {"function": {"name": "get_pricing", "arguments": '{"part": "B"}'}},
                             ],
                         }
                     }
                 ]
             }
         )
-        result = await send(
-            client, [{"role": "user", "content": "test"}], tools=[_make_spec()]
-        )
+        result = await send(client, [{"role": "user", "content": "test"}], tools=[_make_spec()])
         assert isinstance(result, RichMessage)
         assert reasoning(result) == "because"
         assert len([p for p in result.parts if isinstance(p, ReasoningPart)]) == 1
@@ -507,21 +415,14 @@ class TestSend:
                             "reasoning": "",
                             "content": "<think>plan</think>",
                             "tool_calls": [
-                                {
-                                    "function": {
-                                        "name": "get_pricing",
-                                        "arguments": '{"part": "X"}',
-                                    }
-                                }
+                                {"function": {"name": "get_pricing", "arguments": '{"part": "X"}'}}
                             ],
                         }
                     }
                 ]
             }
         )
-        result = await send(
-            client, [{"role": "user", "content": "test"}], tools=[_make_spec()]
-        )
+        result = await send(client, [{"role": "user", "content": "test"}], tools=[_make_spec()])
         assert isinstance(result, RichMessage)
         assert reasoning(result) == "plan"
 
@@ -536,12 +437,7 @@ class TestSend:
                             "role": "assistant",
                             "reasoning": [{"type": "text", "text": "block"}],
                             "tool_calls": [
-                                {
-                                    "function": {
-                                        "name": "get_pricing",
-                                        "arguments": '{"part": "X"}',
-                                    }
-                                }
+                                {"function": {"name": "get_pricing", "arguments": '{"part": "X"}'}}
                             ],
                         }
                     }
@@ -549,9 +445,7 @@ class TestSend:
             }
         )
         with pytest.raises(BackendError, match="not a string"):
-            await send(
-                client, [{"role": "user", "content": "test"}], tools=[_make_spec()]
-            )
+            await send(client, [{"role": "user", "content": "test"}], tools=[_make_spec()])
 
     @pytest.mark.asyncio
     async def test_records_usage(self) -> None:
@@ -559,11 +453,7 @@ class TestSend:
         client._http.post.return_value = _mock_response(
             {
                 "choices": [{"message": {"role": "assistant", "content": "ok"}}],
-                "usage": {
-                    "prompt_tokens": 10,
-                    "completion_tokens": 5,
-                    "total_tokens": 15,
-                },
+                "usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15},
             }
         )
         await send(client, [{"role": "user", "content": "test"}])
@@ -574,9 +464,7 @@ class TestSend:
 
 class TestAuth:
     def test_bearer_header_set_when_key_provided(self) -> None:
-        client = OpenAICompatClient(
-            base_url="https://x/v1", model="m", api_key="secret"
-        )
+        client = OpenAICompatClient(base_url="https://x/v1", model="m", api_key="secret")
         assert client._http.headers["Authorization"] == "Bearer secret"
 
     def test_no_auth_header_when_no_key(self) -> None:
@@ -593,19 +481,14 @@ class TestSendStream:
     async def test_read_timeout_during_stream_raises_backend_error(self) -> None:
         class _TimeoutStreamResponse(_MockStreamResponse):
             async def aiter_lines(self):
-                yield (
-                    "data: "
-                    + json.dumps({"choices": [{"delta": {"content": "partial"}}]})
-                )
+                yield ("data: " + json.dumps({"choices": [{"delta": {"content": "partial"}}]}))
                 raise httpx.ReadTimeout("timed out")
 
         client = _make_client()
         client._http.stream.return_value = _TimeoutStreamResponse([])
         chunks = []
         with pytest.raises(BackendError) as exc_info:
-            async for chunk in send_stream(
-                client, [{"role": "user", "content": "test"}]
-            ):
+            async for chunk in send_stream(client, [{"role": "user", "content": "test"}]):
                 chunks.append(chunk)
         assert [chunk.content for chunk in chunks] == ["partial"]
         assert exc_info.value.status_code == 408
@@ -621,8 +504,11 @@ class TestSendStream:
         ]
         client._http.stream.return_value = _MockStreamResponse(lines)
         chunks = []
-        async for chunk in send_stream(client, [{"role": "user", "content": "hi"}]):
+        async for chunk in send_stream(
+            client, [{"role": "user", "content": "hi"}], passthrough={"max_tokens": 64}
+        ):
             chunks.append(chunk)
+        assert client._http.stream.call_args.kwargs["json"]["max_tokens"] == 64
         text_deltas = [c for c in chunks if c.type == ChunkType.TEXT_DELTA]
         assert [c.content for c in text_deltas] == ["Hello", " world"]
         finals = [c for c in chunks if c.type == ChunkType.FINAL]
@@ -644,10 +530,7 @@ class TestSendStream:
                                     {
                                         "index": 0,
                                         "id": "c1",
-                                        "function": {
-                                            "name": "get_pricing",
-                                            "arguments": "",
-                                        },
+                                        "function": {"name": "get_pricing", "arguments": ""},
                                     }
                                 ]
                             }
@@ -661,9 +544,7 @@ class TestSendStream:
                     "choices": [
                         {
                             "delta": {
-                                "tool_calls": [
-                                    {"index": 0, "function": {"arguments": '{"part": '}}
-                                ]
+                                "tool_calls": [{"index": 0, "function": {"arguments": '{"part": '}}]
                             }
                         }
                     ]
@@ -673,13 +554,7 @@ class TestSendStream:
             + json.dumps(
                 {
                     "choices": [
-                        {
-                            "delta": {
-                                "tool_calls": [
-                                    {"index": 0, "function": {"arguments": '"X"}'}}
-                                ]
-                            }
-                        }
+                        {"delta": {"tool_calls": [{"index": 0, "function": {"arguments": '"X"}'}}]}}
                     ]
                 }
             ),
@@ -710,10 +585,7 @@ class TestSendStream:
                                 "tool_calls": [
                                     {
                                         "index": 0,
-                                        "function": {
-                                            "name": "get_pricing",
-                                            "arguments": "{not",
-                                        },
+                                        "function": {"name": "get_pricing", "arguments": "{not"},
                                     }
                                 ]
                             }
@@ -727,9 +599,7 @@ class TestSendStream:
                     "choices": [
                         {
                             "delta": {
-                                "tool_calls": [
-                                    {"index": 0, "function": {"arguments": " json"}}
-                                ]
+                                "tool_calls": [{"index": 0, "function": {"arguments": " json"}}]
                             }
                         }
                     ]
@@ -834,10 +704,8 @@ class TestSendStream:
     async def test_stream_extracts_think_tags_from_content_with_tool_call(self) -> None:
         client = _make_client()
         lines = [
-            "data: "
-            + json.dumps({"choices": [{"delta": {"content": "<think>inline "}}]}),
-            "data: "
-            + json.dumps({"choices": [{"delta": {"content": "plan</think>"}}]}),
+            "data: " + json.dumps({"choices": [{"delta": {"content": "<think>inline "}}]}),
+            "data: " + json.dumps({"choices": [{"delta": {"content": "plan</think>"}}]}),
             "data: "
             + json.dumps(
                 {
@@ -878,8 +746,7 @@ class TestSendStream:
         client = _make_client()
         lines = [
             "data: " + json.dumps({"choices": [{"delta": {"content": "Let me "}}]}),
-            "data: "
-            + json.dumps({"choices": [{"delta": {"content": "look that up."}}]}),
+            "data: " + json.dumps({"choices": [{"delta": {"content": "look that up."}}]}),
             "data: "
             + json.dumps(
                 {
@@ -919,16 +786,12 @@ class TestSendStream:
     async def test_stream_strips_think_tags_from_text_response(self) -> None:
         client = _make_client()
         lines = [
-            "data: "
-            + json.dumps({"choices": [{"delta": {"content": "<think>x</think>"}}]}),
-            "data: "
-            + json.dumps({"choices": [{"delta": {"content": "The answer is 42."}}]}),
+            "data: " + json.dumps({"choices": [{"delta": {"content": "<think>x</think>"}}]}),
+            "data: " + json.dumps({"choices": [{"delta": {"content": "The answer is 42."}}]}),
             "data: [DONE]",
         ]
         client._http.stream.return_value = _MockStreamResponse(lines)
-        chunks = [
-            c async for c in send_stream(client, [{"role": "user", "content": "test"}])
-        ]
+        chunks = [c async for c in send_stream(client, [{"role": "user", "content": "test"}])]
         finals = [c for c in chunks if c.type == ChunkType.FINAL]
         assert len(finals) == 1
         assert isinstance(finals[0].response, RichMessage)
@@ -978,12 +841,8 @@ class TestSendStream:
     async def test_stream_structured_preferred_over_content_tags(self) -> None:
         client = _make_client()
         lines = [
-            "data: "
-            + json.dumps({"choices": [{"delta": {"reasoning": "structured"}}]}),
-            "data: "
-            + json.dumps(
-                {"choices": [{"delta": {"content": "<think>inline</think>"}}]}
-            ),
+            "data: " + json.dumps({"choices": [{"delta": {"reasoning": "structured"}}]}),
+            "data: " + json.dumps({"choices": [{"delta": {"content": "<think>inline</think>"}}]}),
             "data: "
             + json.dumps(
                 {
@@ -1061,10 +920,7 @@ class TestSendStream:
         finals = [c for c in chunks if c.type == ChunkType.FINAL]
         assert isinstance(finals[0].response, RichMessage)
         assert reasoning(finals[0].response) == "because"
-        assert (
-            len([p for p in finals[0].response.parts if isinstance(p, ReasoningPart)])
-            <= 1
-        )
+        assert len([p for p in finals[0].response.parts if isinstance(p, ReasoningPart)]) <= 1
 
     @pytest.mark.asyncio
     async def test_stream_non_string_reasoning_raises(self) -> None:
@@ -1072,11 +928,7 @@ class TestSendStream:
         lines = [
             "data: "
             + json.dumps(
-                {
-                    "choices": [
-                        {"delta": {"reasoning": [{"type": "text", "text": "block"}]}}
-                    ]
-                }
+                {"choices": [{"delta": {"reasoning": [{"type": "text", "text": "block"}]}}]}
             ),
             "data: [DONE]",
         ]
@@ -1106,9 +958,7 @@ class TestSendStream:
             "data: [DONE]",
         ]
         client._http.stream.return_value = _MockStreamResponse(lines)
-        chunks = [
-            c async for c in send_stream(client, [{"role": "user", "content": "x"}])
-        ]
+        chunks = [c async for c in send_stream(client, [{"role": "user", "content": "x"}])]
         finals = [c for c in chunks if c.type == ChunkType.FINAL]
         assert visible(finals[0].response) == "hi"
 
@@ -1166,9 +1016,7 @@ class TestConstructor:
         assert client.chat_template_kwargs == {"enable_thinking": True}
 
     def test_recommended_sampling_off_is_silent_for_unknown_model(self) -> None:
-        client = OpenAICompatClient(
-            model="definitely-not-in-registry-zzz", base_url="https://x/v1"
-        )
+        client = OpenAICompatClient(model="definitely-not-in-registry-zzz", base_url="https://x/v1")
         assert client.temperature is None
         assert client.top_p is None
         assert client.top_k is None
@@ -1248,38 +1096,6 @@ class TestPassthrough:
         assert body["messages"] == [{"role": "user", "content": "hi"}]
         assert body["stream"] is False
 
-    @pytest.mark.asyncio
-    async def test_inbound_anthropic_body_accepted_and_ignored(self) -> None:
-        client = _make_client()
-        client._http.post.return_value = _mock_response(
-            {"choices": [{"message": {"role": "assistant", "content": "ok"}}]}
-        )
-        await send(client, [{"role": "user", "content": "hi"}])
-        import inspect
-
-        assert list(inspect.signature(client.send).parameters) == ["request"]
-        body = client._http.post.call_args.kwargs["json"]
-        assert "some_anthropic_field" not in body
-        assert "shape" not in body
-
-    @pytest.mark.asyncio
-    async def test_send_stream_accepts_passthrough_and_inbound(self) -> None:
-        client = _make_client()
-        lines = [
-            "data: " + json.dumps({"choices": [{"delta": {"content": "ok"}}]}),
-            "data: [DONE]",
-        ]
-        client._http.stream.return_value = _MockStreamResponse(lines)
-        chunks = [
-            c
-            async for c in send_stream(
-                client,
-                [{"role": "user", "content": "x"}],
-                passthrough={"max_tokens": 64},
-            )
-        ]
-        assert any((c.type == ChunkType.FINAL for c in chunks))
-
 
 class TestAclose:
     @pytest.mark.asyncio
@@ -1290,46 +1106,26 @@ class TestAclose:
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("backend", ["openai", "llamafile", "vllm"])
 @pytest.mark.parametrize("field", ["reasoning_content", "reasoning", "reasoning_text"])
 @pytest.mark.parametrize("stream", [False, True])
 @pytest.mark.parametrize("with_calls", [False, True])
-async def test_nullable_reasoning_preserves_text_and_calls(
-    backend, field, stream, with_calls
-):
-    from forge.clients.llamafile import LlamafileClient
-    from forge.clients.vllm import VLLMClient
+async def test_nullable_reasoning_preserves_text_and_calls(field, stream, with_calls):
     from forge.core.messages import ValidArguments
 
-    if backend == "openai":
-        client = _make_client()
-    elif backend == "llamafile":
-        client = LlamafileClient("model.gguf", base_url="http://test/v1")
-    else:
-        client = VLLMClient("model", base_url="http://test/v1")
+    client = _make_client()
     message = {"content": "visible answer", field: None}
     if with_calls:
-        message["tool_calls"] = [
-            {"index": 0, "function": {"name": "noop", "arguments": "{}"}}
-        ]
+        message["tool_calls"] = [{"index": 0, "function": {"name": "noop", "arguments": "{}"}}]
     if stream:
         client._http.stream.return_value = _MockStreamResponse(
-            [
-                "data: " + json.dumps({"choices": [{"delta": message}]}),
-                "data: [DONE]",
-            ]
+            ["data: " + json.dumps({"choices": [{"delta": message}]}), "data: [DONE]"]
         )
-        chunks = [
-            chunk
-            async for chunk in send_stream(client, [{"role": "user", "content": "hi"}])
-        ]
+        chunks = [chunk async for chunk in send_stream(client, [{"role": "user", "content": "hi"}])]
         assert chunks[-1].type == ChunkType.FINAL
         assert sum(chunk.type == ChunkType.FINAL for chunk in chunks) == 1
         reply = chunks[-1].response
     else:
-        client._http.post.return_value = _mock_response(
-            {"choices": [{"message": message}]}
-        )
+        client._http.post.return_value = _mock_response({"choices": [{"message": message}]})
         reply = await send(client, [{"role": "user", "content": "hi"}])
     assert visible(reply) == "visible answer"
     assert reasoning(reply) == ""

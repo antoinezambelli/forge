@@ -154,7 +154,7 @@ def test_rich_history_counts_parallel_calls_all_reasoning_and_distinct_errors(ca
     from forge import MessageRole, RichMessage, TextPart, ReasoningPart, ToolResultPart
     from tests.canonical import assistant, call
     from tests.eval.eval_runner import _verbose_printer
-    from tests.eval.metrics import analyze_history, count_wire_reasoning
+    from tests.eval.metrics import analyze_history
 
     history = [
         assistant(ReasoningPart("earlier"), call("fetch", {})),
@@ -175,10 +175,6 @@ def test_rich_history_counts_parallel_calls_all_reasoning_and_distinct_errors(ca
     assert stats.reasoning_messages == 3
     assert stats.retry_nudges == 3
     assert stats.step_nudges == stats.tool_errors == 1
-    for api_format in ("openai", "anthropic", "ollama"):
-        assert count_wire_reasoning(history, "none", api_format) == (0, 3)
-        assert count_wire_reasoning(history, "keep-last", api_format) == (2, 3)
-        assert count_wire_reasoning(history, "full", api_format) == (3, 3)
     _verbose_printer(history[1])
     output = capsys.readouterr().out
     assert "PARALLEL 2" in output

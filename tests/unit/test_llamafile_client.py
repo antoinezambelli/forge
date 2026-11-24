@@ -15,20 +15,14 @@ from forge.clients.base import ChunkType
 
 pytestmark = pytest.mark.usefixtures("mock_httpx_client_constructor")
 PART_SCHEMA = {
-    "properties": {
-        "part": {"description": "Part number", "title": "Part", "type": "string"}
-    },
+    "properties": {"part": {"description": "Part number", "title": "Part", "type": "string"}},
     "required": ["part"],
     "title": "PartParams",
     "type": "object",
 }
 WRITE_SCHEMA = {
     "properties": {
-        "file_path": {
-            "description": "Target path",
-            "title": "File Path",
-            "type": "string",
-        },
+        "file_path": {"description": "Target path", "title": "File Path", "type": "string"},
         "content": {"description": "File body", "title": "Content", "type": "string"},
     },
     "required": ["file_path", "content"],
@@ -50,9 +44,7 @@ NO_REQUIRED_SCHEMA = {
 
 
 def _make_write_spec() -> ToolDefinition:
-    return ToolDefinition(
-        name="write", description="Write a file", input_schema=WRITE_SCHEMA
-    )
+    return ToolDefinition(name="write", description="Write a file", input_schema=WRITE_SCHEMA)
 
 
 def _malformed_500_body(raw_input: str) -> str:
@@ -104,9 +96,7 @@ _COMPLETE_BLOCK = "<tool_call>\n<function=write>\n<parameter=file_path>\ntests/t
 
 
 def _make_spec(name: str = "get_pricing") -> ToolDefinition:
-    return ToolDefinition(
-        name=name, description=f"Get {name}", input_schema=PART_SCHEMA
-    )
+    return ToolDefinition(name=name, description=f"Get {name}", input_schema=PART_SCHEMA)
 
 
 def _make_client(mode: str = "native", think: bool | None = None) -> LlamafileClient:
@@ -130,9 +120,7 @@ def _mock_response(data: dict, status_code: int = 200) -> MagicMock:
     return resp
 
 
-def _openai_tool_call_response(
-    tool_name: str = "get_pricing", args: str = '{"part": "X"}'
-) -> dict:
+def _openai_tool_call_response(tool_name: str = "get_pricing", args: str = '{"part": "X"}') -> dict:
     return {
         "choices": [
             {
@@ -179,13 +167,8 @@ class TestLlamafileNativeSend:
         client._http.post.return_value = _mock_response(
             _openai_tool_call_response("get_pricing", '{"part": "X123"}')
         )
-        result = await send(
-            client, [{"role": "user", "content": "test"}], tools=[_make_spec()]
-        )
-        assert (
-            client._http.post.await_args.args[0]
-            == "http://test:8080/v1/chat/completions"
-        )
+        result = await send(client, [{"role": "user", "content": "test"}], tools=[_make_spec()])
+        assert client._http.post.await_args.args[0] == "http://test:8080/v1/chat/completions"
         assert isinstance(result, RichMessage)
         assert reply_calls(result)[0].name == "get_pricing"
         assert argument_value(reply_calls(result)[0]) == {"part": "X123"}
@@ -193,9 +176,7 @@ class TestLlamafileNativeSend:
     @pytest.mark.asyncio
     async def test_returns_text_response(self) -> None:
         client = _make_client("native")
-        client._http.post.return_value = _mock_response(
-            _openai_text_response("I need more info")
-        )
+        client._http.post.return_value = _mock_response(_openai_text_response("I need more info"))
         result = await send(client, [{"role": "user", "content": "test"}])
         assert isinstance(result, RichMessage)
         assert visible(result) == "I need more info"
@@ -207,9 +188,7 @@ class TestLlamafileNativeSend:
         resp.status_code = 500
         resp.text = '{"error":{"code":500,"message":"Failed to parse input at pos 84: <tool_call>\\n<function=write>\\n<parameter=file_path>\\nx.py\\n</parameter>\\n</function>\\n</tool_call>","type":"server_error"}}'
         client._http.post.return_value = resp
-        result = await send(
-            client, [{"role": "user", "content": "test"}], tools=[_make_spec()]
-        )
+        result = await send(client, [{"role": "user", "content": "test"}], tools=[_make_spec()])
         assert isinstance(result, RichMessage)
         assert "malformed" in visible(result).lower()
         assert "Failed to parse input" not in visible(result)
@@ -228,9 +207,7 @@ class TestLlamafileNativeSend:
         assert len(reply_calls(result)) == 1
         assert reply_calls(result)[0].name == "write"
         assert argument_value(reply_calls(result)[0])["file_path"] == "tests/test_x.py"
-        assert argument_value(reply_calls(result)[0])["content"].startswith(
-            "import unittest"
-        )
+        assert argument_value(reply_calls(result)[0])["content"].startswith("import unittest")
         assert argument_value(reply_calls(result)[0])["content"].endswith("    pass")
         assert client.rescued_tool_calls == 1
 
@@ -248,9 +225,7 @@ class TestLlamafileNativeSend:
         )
         assert isinstance(result, RichMessage)
         assert len(reply_calls(result)) == 1
-        assert argument_value(reply_calls(result)[0])["content"].startswith(
-            "import unittest"
-        )
+        assert argument_value(reply_calls(result)[0])["content"].startswith("import unittest")
         assert client.rescued_tool_calls == 1
 
     @pytest.mark.asyncio
@@ -276,13 +251,9 @@ class TestLlamafileNativeSend:
         no_req_spec = ToolDefinition(
             name="ping", description="ping", input_schema=NO_REQUIRED_SCHEMA
         )
-        resp.text = _malformed_500_body(
-            "<tool_call>\n<function=ping>\n</function>\n</tool_call>"
-        )
+        resp.text = _malformed_500_body("<tool_call>\n<function=ping>\n</function>\n</tool_call>")
         client._http.post.return_value = resp
-        result = await send(
-            client, [{"role": "user", "content": "test"}], tools=[no_req_spec]
-        )
+        result = await send(client, [{"role": "user", "content": "test"}], tools=[no_req_spec])
         assert isinstance(result, RichMessage)
         assert len(reply_calls(result)) == 1
         assert reply_calls(result)[0].name == "ping"
@@ -319,9 +290,7 @@ class TestLlamafileNativeSend:
             client, [{"role": "user", "content": "test"}], tools=[_make_write_spec()]
         )
         assert isinstance(result, RichMessage)
-        assert "Re-emitting a single, complete, well-formed tool call" in visible(
-            result
-        )
+        assert "Re-emitting a single, complete, well-formed tool call" in visible(result)
         assert "ONE complete" not in visible(result)
 
     @pytest.mark.asyncio
@@ -347,9 +316,7 @@ class TestLlamafileNativeSend:
         resp.text = '{"error":{"message":"CUDA out of memory","type":"server_error"}}'
         client._http.post.return_value = resp
         with pytest.raises(BackendError) as excinfo:
-            await send(
-                client, [{"role": "user", "content": "test"}], tools=[_make_spec()]
-            )
+            await send(client, [{"role": "user", "content": "test"}], tools=[_make_spec()])
         assert "CUDA out of memory" not in str(excinfo.value)
         assert "CUDA out of memory" in excinfo.value.body
 
@@ -366,9 +333,7 @@ class TestLlamafileNativeSend:
         )
         assert isinstance(result, RichMessage)
         assert len(reply_calls(result)) == 1
-        assert argument_value(reply_calls(result)[0])["content"].startswith(
-            "import unittest"
-        )
+        assert argument_value(reply_calls(result)[0])["content"].startswith("import unittest")
         assert client.rescued_tool_calls == 1
 
     @pytest.mark.asyncio
@@ -400,11 +365,7 @@ class TestLlamafileNativeSend:
         )
         client._http.post.return_value = resp
         with pytest.raises(BackendError):
-            await send(
-                client,
-                [{"role": "user", "content": "test"}],
-                tools=[_make_write_spec()],
-            )
+            await send(client, [{"role": "user", "content": "test"}], tools=[_make_write_spec()])
 
     @pytest.mark.asyncio
     async def test_truncated_open_tag_500_returns_generic_nudge(self) -> None:
@@ -436,11 +397,7 @@ class TestLlamafileNativeSend:
         resp.text = _b9656_generic_parse_500_body()
         client._http.post.return_value = resp
         with pytest.raises(BackendError):
-            await send(
-                client,
-                [{"role": "user", "content": "test"}],
-                tools=[_make_write_spec()],
-            )
+            await send(client, [{"role": "user", "content": "test"}], tools=[_make_write_spec()])
         assert client.rescued_tool_calls == 0
 
     @pytest.mark.asyncio
@@ -457,9 +414,7 @@ class TestLlamafileNativeSend:
         client._http.post.return_value = _mock_response(
             _openai_tool_call_response("get_pricing", '{"part": "X", "qty": 100}')
         )
-        result = await send(
-            client, [{"role": "user", "content": "test"}], tools=[_make_spec()]
-        )
+        result = await send(client, [{"role": "user", "content": "test"}], tools=[_make_spec()])
         assert isinstance(result, RichMessage)
         assert argument_value(reply_calls(result)[0]) == {"part": "X", "qty": 100}
 
@@ -472,9 +427,7 @@ class TestLlamafileNativeSend:
         client._http.post.return_value = _mock_response(
             _openai_tool_call_response("get_pricing", "{not json")
         )
-        result = await send(
-            client, [{"role": "user", "content": "test"}], tools=[_make_spec()]
-        )
+        result = await send(client, [{"role": "user", "content": "test"}], tools=[_make_spec()])
         assert isinstance(result, RichMessage)
         assert reply_calls(result)[0].name == "get_pricing"
         assert argument_value(reply_calls(result)[0]) == "{not json"
@@ -493,10 +446,7 @@ class TestLlamafileNativeSend:
                             {
                                 "id": "call_1",
                                 "type": "function",
-                                "function": {
-                                    "name": "get_pricing",
-                                    "arguments": '{"part": "X"}',
-                                },
+                                "function": {"name": "get_pricing", "arguments": '{"part": "X"}'},
                             }
                         ],
                     }
@@ -504,9 +454,7 @@ class TestLlamafileNativeSend:
             ]
         }
         client._http.post.return_value = _mock_response(response_data)
-        result = await send(
-            client, [{"role": "user", "content": "test"}], tools=[_make_spec()]
-        )
+        result = await send(client, [{"role": "user", "content": "test"}], tools=[_make_spec()])
         assert isinstance(result, RichMessage)
         assert visible(result) == "I should check the pricing."
 
@@ -525,10 +473,7 @@ class TestLlamafileNativeSend:
                             {
                                 "id": "call_1",
                                 "type": "function",
-                                "function": {
-                                    "name": "get_pricing",
-                                    "arguments": '{"part": "X"}',
-                                },
+                                "function": {"name": "get_pricing", "arguments": '{"part": "X"}'},
                             }
                         ],
                     }
@@ -536,9 +481,7 @@ class TestLlamafileNativeSend:
             ]
         }
         client._http.post.return_value = _mock_response(response_data)
-        result = await send(
-            client, [{"role": "user", "content": "test"}], tools=[_make_spec()]
-        )
+        result = await send(client, [{"role": "user", "content": "test"}], tools=[_make_spec()])
         assert isinstance(result, RichMessage)
         assert reasoning(result) == "I need to think about this carefully..."
 
@@ -556,10 +499,7 @@ class TestLlamafileNativeSend:
                             {
                                 "id": "call_1",
                                 "type": "function",
-                                "function": {
-                                    "name": "get_pricing",
-                                    "arguments": '{"part": "X"}',
-                                },
+                                "function": {"name": "get_pricing", "arguments": '{"part": "X"}'},
                             }
                         ],
                     }
@@ -567,9 +507,7 @@ class TestLlamafileNativeSend:
             ]
         }
         client._http.post.return_value = _mock_response(response_data)
-        result = await send(
-            client, [{"role": "user", "content": "test"}], tools=[_make_spec()]
-        )
+        result = await send(client, [{"role": "user", "content": "test"}], tools=[_make_spec()])
         assert isinstance(result, RichMessage)
         assert visible(result) == "Let me check."
 
@@ -578,9 +516,7 @@ class TestLlamafileNativeSend:
         """None/null content alongside tool_calls → reasoning is None."""
         client = _make_client("native")
         client._http.post.return_value = _mock_response(_openai_tool_call_response())
-        result = await send(
-            client, [{"role": "user", "content": "test"}], tools=[_make_spec()]
-        )
+        result = await send(client, [{"role": "user", "content": "test"}], tools=[_make_spec()])
         assert isinstance(result, RichMessage)
         assert reasoning(result) == ""
 
@@ -598,10 +534,7 @@ class TestLlamafileNativeSend:
                             {
                                 "id": "call_1",
                                 "type": "function",
-                                "function": {
-                                    "name": "get_pricing",
-                                    "arguments": '{"part": "X"}',
-                                },
+                                "function": {"name": "get_pricing", "arguments": '{"part": "X"}'},
                             }
                         ],
                     }
@@ -609,9 +542,7 @@ class TestLlamafileNativeSend:
             ]
         }
         client._http.post.return_value = _mock_response(response_data)
-        result = await send(
-            client, [{"role": "user", "content": "test"}], tools=[_make_spec()]
-        )
+        result = await send(client, [{"role": "user", "content": "test"}], tools=[_make_spec()])
         assert isinstance(result, RichMessage)
         assert reasoning(result) == ""
 
@@ -672,9 +603,7 @@ class TestLlamafilePromptSend:
     @pytest.mark.asyncio
     async def test_injects_tool_prompt_into_system_message(self) -> None:
         client = _make_client("prompt")
-        client._http.post.return_value = _mock_response(
-            _openai_text_response("no tool call")
-        )
+        client._http.post.return_value = _mock_response(_openai_text_response("no tool call"))
         messages = [
             {"role": "system", "content": "You are helpful."},
             {"role": "user", "content": "test"},
@@ -704,9 +633,7 @@ class TestLlamafilePromptSend:
     async def test_tool_role_downgraded_in_prompt_mode(self) -> None:
         """Prompt mode also downgrades role='tool' to role='user'."""
         client = _make_client("prompt")
-        client._http.post.return_value = _mock_response(
-            _openai_text_response("no tool call")
-        )
+        client._http.post.return_value = _mock_response(_openai_text_response("no tool call"))
         messages = [
             {"role": "system", "content": "sys"},
             {"role": "user", "content": "go"},
@@ -932,9 +859,7 @@ class TestLlamafileSendStream:
         chunks = [
             c
             async for c in send_stream(
-                client,
-                [{"role": "user", "content": "test"}],
-                tools=[_make_write_spec()],
+                client, [{"role": "user", "content": "test"}], tools=[_make_write_spec()]
             )
         ]
         finals = [c for c in chunks if c.type == ChunkType.FINAL]
@@ -950,15 +875,11 @@ class TestLlamafileSendStream:
     @pytest.mark.asyncio
     async def test_stream_malformed_500_skeleton_only_returns_nudge(self) -> None:
         client = _make_client("native")
-        client._http.stream.return_value = _MockSSE500Response(
-            _malformed_500_body(_SKELETON_BLOCK)
-        )
+        client._http.stream.return_value = _MockSSE500Response(_malformed_500_body(_SKELETON_BLOCK))
         chunks = [
             c
             async for c in send_stream(
-                client,
-                [{"role": "user", "content": "test"}],
-                tools=[_make_write_spec()],
+                client, [{"role": "user", "content": "test"}], tools=[_make_write_spec()]
             )
         ]
         finals = [c for c in chunks if c.type == ChunkType.FINAL]
@@ -977,9 +898,7 @@ class TestLlamafileSendStream:
         chunks = [
             c
             async for c in send_stream(
-                client,
-                [{"role": "user", "content": "test"}],
-                tools=[_make_write_spec()],
+                client, [{"role": "user", "content": "test"}], tools=[_make_write_spec()]
             )
         ]
         finals = [c for c in chunks if c.type == ChunkType.FINAL]
@@ -1024,9 +943,7 @@ class TestLlamafileNon200:
         )
         chunks = []
         with pytest.raises(BackendError) as excinfo:
-            async for chunk in send_stream(
-                client, [{"role": "user", "content": "test"}]
-            ):
+            async for chunk in send_stream(client, [{"role": "user", "content": "test"}]):
                 chunks.append(chunk)
         assert excinfo.value.status_code == 503
         assert excinfo.value.body == "<html>backend restarting</html>"
@@ -1040,9 +957,7 @@ class TestLlamafileNon200:
         )
         chunks = []
         with pytest.raises(BackendError) as excinfo:
-            async for chunk in send_stream(
-                client, [{"role": "user", "content": "test"}]
-            ):
+            async for chunk in send_stream(client, [{"role": "user", "content": "test"}]):
                 chunks.append(chunk)
         assert excinfo.value.status_code == 429
         assert excinfo.value.body == '{"error":{"message":"rate limited"}}'
@@ -1071,10 +986,7 @@ class TestLlamafileNon200:
         with pytest.raises(BackendError) as excinfo:
             await send(
                 client,
-                [
-                    {"role": "system", "content": "sys"},
-                    {"role": "user", "content": "test"},
-                ],
+                [{"role": "system", "content": "sys"}, {"role": "user", "content": "test"}],
                 tools=[_make_spec()],
             )
         assert not isinstance(excinfo.value, httpx.HTTPStatusError)
@@ -1133,9 +1045,7 @@ class TestApplySampling:
         "mode_kwargs", [{}, {"mode": "prompt"}], ids=["native-default", "prompt"]
     )
     @pytest.mark.asyncio
-    async def test_default_sampling_absent_on_wire(
-        self, mode_kwargs: dict[str, str]
-    ) -> None:
+    async def test_default_sampling_absent_on_wire(self, mode_kwargs: dict[str, str]) -> None:
         client = LlamafileClient(
             base_url="http://test:8080/v1", gguf_path="test-model", **mode_kwargs
         )
@@ -1143,14 +1053,7 @@ class TestApplySampling:
         await send(client, [{"role": "user", "content": "hi"}])
         body = client._http.post.await_args.kwargs["json"]
         assert (
-            not {
-                "temperature",
-                "top_p",
-                "top_k",
-                "min_p",
-                "repeat_penalty",
-                "presence_penalty",
-            }
+            not {"temperature", "top_p", "top_k", "min_p", "repeat_penalty", "presence_penalty"}
             & body.keys()
         )
 
@@ -1195,10 +1098,7 @@ class TestMergeConsecutive:
         assert "tool_calls" in result[1]
 
     def test_does_not_merge_tool_role(self) -> None:
-        messages = [
-            {"role": "tool", "content": "result1"},
-            {"role": "tool", "content": "result2"},
-        ]
+        messages = [{"role": "tool", "content": "result1"}, {"role": "tool", "content": "result2"}]
         assert len(_merge_consecutive(messages)) == 2
 
     def test_preserves_correct_alternation(self) -> None:
@@ -1249,10 +1149,7 @@ class TestMergeConsecutive:
 
     def test_merges_list_content_into_string_message(self) -> None:
         messages = [
-            {
-                "role": "assistant",
-                "content": [{"type": "text", "text": "kept reasoning"}],
-            },
+            {"role": "assistant", "content": [{"type": "text", "text": "kept reasoning"}]},
             {"role": "assistant", "content": "final answer"},
         ]
         result = _merge_consecutive(messages)
@@ -1312,10 +1209,7 @@ class TestThinkFlagSync:
                             {
                                 "id": "call_1",
                                 "type": "function",
-                                "function": {
-                                    "name": "get_pricing",
-                                    "arguments": '{"part": "X"}',
-                                },
+                                "function": {"name": "get_pricing", "arguments": '{"part": "X"}'},
                             }
                         ],
                     }
@@ -1323,9 +1217,7 @@ class TestThinkFlagSync:
             ]
         }
         client._http.post.return_value = _mock_response(response_data)
-        result = await send(
-            client, [{"role": "user", "content": "test"}], tools=[_make_spec()]
-        )
+        result = await send(client, [{"role": "user", "content": "test"}], tools=[_make_spec()])
         assert isinstance(result, RichMessage)
         assert reasoning(result) == "I should check pricing."
 
@@ -1344,10 +1236,7 @@ class TestThinkFlagSync:
                             {
                                 "id": "call_1",
                                 "type": "function",
-                                "function": {
-                                    "name": "get_pricing",
-                                    "arguments": '{"part": "X"}',
-                                },
+                                "function": {"name": "get_pricing", "arguments": '{"part": "X"}'},
                             }
                         ],
                     }
@@ -1355,9 +1244,7 @@ class TestThinkFlagSync:
             ]
         }
         client._http.post.return_value = _mock_response(response_data)
-        result = await send(
-            client, [{"role": "user", "content": "test"}], tools=[_make_spec()]
-        )
+        result = await send(client, [{"role": "user", "content": "test"}], tools=[_make_spec()])
         assert isinstance(result, RichMessage)
         assert reasoning(result) == ""
 
@@ -1375,10 +1262,7 @@ class TestThinkFlagSync:
                             {
                                 "id": "call_1",
                                 "type": "function",
-                                "function": {
-                                    "name": "get_pricing",
-                                    "arguments": '{"part": "X"}',
-                                },
+                                "function": {"name": "get_pricing", "arguments": '{"part": "X"}'},
                             }
                         ],
                     }
@@ -1386,9 +1270,7 @@ class TestThinkFlagSync:
             ]
         }
         client._http.post.return_value = _mock_response(response_data)
-        result = await send(
-            client, [{"role": "user", "content": "test"}], tools=[_make_spec()]
-        )
+        result = await send(client, [{"role": "user", "content": "test"}], tools=[_make_spec()])
         assert isinstance(result, RichMessage)
         assert reasoning(result) == ""
 
@@ -1407,10 +1289,7 @@ class TestThinkFlagSync:
                             {
                                 "id": "call_1",
                                 "type": "function",
-                                "function": {
-                                    "name": "get_pricing",
-                                    "arguments": '{"part": "X"}',
-                                },
+                                "function": {"name": "get_pricing", "arguments": '{"part": "X"}'},
                             }
                         ],
                     }
@@ -1418,9 +1297,7 @@ class TestThinkFlagSync:
             ]
         }
         client._http.post.return_value = _mock_response(response_data)
-        result = await send(
-            client, [{"role": "user", "content": "test"}], tools=[_make_spec()]
-        )
+        result = await send(client, [{"role": "user", "content": "test"}], tools=[_make_spec()])
         assert isinstance(result, RichMessage)
         assert reasoning(result) == "Server-parsed reasoning"
 
@@ -1438,10 +1315,7 @@ class TestThinkFlagSync:
                             {
                                 "id": "call_1",
                                 "type": "function",
-                                "function": {
-                                    "name": "get_pricing",
-                                    "arguments": '{"part": "X"}',
-                                },
+                                "function": {"name": "get_pricing", "arguments": '{"part": "X"}'},
                             }
                         ],
                     }
@@ -1449,9 +1323,7 @@ class TestThinkFlagSync:
             ]
         }
         client._http.post.return_value = _mock_response(response_data)
-        result = await send(
-            client, [{"role": "user", "content": "test"}], tools=[_make_spec()]
-        )
+        result = await send(client, [{"role": "user", "content": "test"}], tools=[_make_spec()])
         assert isinstance(result, RichMessage)
         assert reasoning(result) == "Auto-captured reasoning"
 
@@ -1489,10 +1361,7 @@ class TestThinkFlagSync:
                             {
                                 "id": "call_1",
                                 "type": "function",
-                                "function": {
-                                    "name": "get_pricing",
-                                    "arguments": '{"part": "X"}',
-                                },
+                                "function": {"name": "get_pricing", "arguments": '{"part": "X"}'},
                             }
                         ],
                     }
@@ -1500,9 +1369,7 @@ class TestThinkFlagSync:
             ]
         }
         client._http.post.return_value = _mock_response(response_data)
-        result = await send(
-            client, [{"role": "user", "content": "test"}], tools=[_make_spec()]
-        )
+        result = await send(client, [{"role": "user", "content": "test"}], tools=[_make_spec()])
         assert isinstance(result, RichMessage)
         assert visible(result) == "Let me check the pricing."
 
@@ -1598,20 +1465,14 @@ class TestIdSlot:
     @pytest.mark.asyncio
     async def test_native_send_id_slot_on_wire(self, id_slot: int | None) -> None:
         client = LlamafileClient(
-            base_url="http://test:8080/v1",
-            gguf_path="test",
-            mode="native",
-            id_slot=id_slot,
+            base_url="http://test:8080/v1", gguf_path="test", mode="native", id_slot=id_slot
         )
         mock_http = AsyncMock()
         mock_http.headers = {}
         client._http = mock_http
         tool_call_data = {
             "choices": [
-                {
-                    "message": {"content": "hello", "tool_calls": None},
-                    "finish_reason": "stop",
-                }
+                {"message": {"content": "hello", "tool_calls": None}, "finish_reason": "stop"}
             ]
         }
         mock_http.post.return_value = _mock_response(tool_call_data)
@@ -1657,18 +1518,13 @@ class TestRecommendedSampling:
 
         with pytest.raises(UnsupportedModelError):
             LlamafileClient(
-                gguf_path="nonexistent-model:1b",
-                mode="native",
-                recommended_sampling=True,
+                gguf_path="nonexistent-model:1b", mode="native", recommended_sampling=True
             )
 
     def test_explicit_kwarg_wins_over_map(self) -> None:
         """Caller's explicit kwarg overrides the map entry field-by-field."""
         client = LlamafileClient(
-            gguf_path="qwen3:8b-q4_K_M",
-            mode="native",
-            recommended_sampling=True,
-            temperature=0.99,
+            gguf_path="qwen3:8b-q4_K_M", mode="native", recommended_sampling=True, temperature=0.99
         )
         assert client.temperature == 0.99
         assert client.top_p == 0.95
@@ -1702,10 +1558,7 @@ class TestPerCallSampling:
         client._http.post.return_value = _mock_response(
             {
                 "choices": [
-                    {
-                        "message": {"content": "ok", "tool_calls": None},
-                        "finish_reason": "stop",
-                    }
+                    {"message": {"content": "ok", "tool_calls": None}, "finish_reason": "stop"}
                 ]
             }
         )
@@ -1726,10 +1579,7 @@ class TestPerCallSampling:
     async def test_per_call_sampling_none_uses_instance(self) -> None:
         """sampling=None: only instance fields go on the wire."""
         client = LlamafileClient(
-            base_url="http://test:8080/v1",
-            gguf_path="test-model",
-            mode="native",
-            temperature=0.5,
+            base_url="http://test:8080/v1", gguf_path="test-model", mode="native", temperature=0.5
         )
         mock_http = AsyncMock()
         mock_http.headers = {}
@@ -1738,16 +1588,11 @@ class TestPerCallSampling:
         client._http.post.return_value = _mock_response(
             {
                 "choices": [
-                    {
-                        "message": {"content": "ok", "tool_calls": None},
-                        "finish_reason": "stop",
-                    }
+                    {"message": {"content": "ok", "tool_calls": None}, "finish_reason": "stop"}
                 ]
             }
         )
-        await send(
-            client, [{"role": "user", "content": "hi"}], tools=None, sampling=None
-        )
+        await send(client, [{"role": "user", "content": "hi"}], tools=None, sampling=None)
         body = client._http.post.call_args.kwargs["json"]
         assert body["temperature"] == 0.5
         assert "seed" not in body
@@ -1788,20 +1633,12 @@ def test_native_merge_preserves_fields_first_message_extras_and_history():
                 "name": "first",
                 "first": True,
                 "reasoning_content": "first user extension",
-                "content": [
-                    {
-                        "type": "text",
-                        "text": "a",
-                        "cache_control": {"type": "ephemeral"},
-                    }
-                ],
+                "content": [{"type": "text", "text": "a", "cache_control": {"type": "ephemeral"}}],
             },
             {
                 "role": "assistant",
                 "content": None,
-                "tool_calls": [
-                    {"id": "c", "function": {"name": "get_pricing", "arguments": "{}"}}
-                ],
+                "tool_calls": [{"id": "c", "function": {"name": "get_pricing", "arguments": "{}"}}],
             },
             {"role": "tool", "content": "result", "tool_call_id": "c"},
             {
@@ -1821,9 +1658,7 @@ def test_native_merge_preserves_fields_first_message_extras_and_history():
         {"type": "text", "text": "\n\n"},
         {"type": "text", "text": "b", "x": 2},
     ]
-    assert (
-        merged["name"] == "first" and merged["first"] is True and "later" not in merged
-    )
+    assert merged["name"] == "first" and merged["first"] is True and "later" not in merged
     assert merged["reasoning_content"] == "first user extension"
     assert state == before
 
@@ -1835,11 +1670,7 @@ def test_native_merge_preserves_fields_first_message_extras_and_history():
         ("keep-last", {"reasoning_content": "last", "reasoning_text": ""}),
         (
             "full",
-            {
-                "reasoning_content": "old\nlast",
-                "reasoning": "old detail",
-                "reasoning_text": "",
-            },
+            {"reasoning_content": "old\nlast", "reasoning": "old detail", "reasoning_text": ""},
         ),
     ],
 )
@@ -1863,9 +1694,7 @@ def test_native_merge_retains_selected_reasoning_fields(mode, expected):
                 "role": "assistant",
                 "content": None,
                 "reasoning_content": "tool reasoning",
-                "tool_calls": [
-                    {"id": "c", "function": {"name": "get_pricing", "arguments": "{}"}}
-                ],
+                "tool_calls": [{"id": "c", "function": {"name": "get_pricing", "arguments": "{}"}}],
             },
             {"role": "tool", "content": "result", "tool_call_id": "c"},
             {
@@ -1879,21 +1708,15 @@ def test_native_merge_retains_selected_reasoning_fields(mode, expected):
         ]
     )
     before = deepcopy(state)
-    request = _make_client().render_request(
-        state, None, RequestMetadata(reasoning_replay=mode)
-    )
+    request = _make_client().render_request(state, None, RequestMetadata(reasoning_replay=mode))
     messages = request.payload["messages"]
     merged = messages[1]
     assert merged["content"] == "first\n\nsecond"
-    assert {
-        key: merged[key] for key in REASONING_MESSAGE_FIELDS if key in merged
-    } == expected
+    assert {key: merged[key] for key in REASONING_MESSAGE_FIELDS if key in merged} == expected
     assert merged["name"] == "first" and "later" not in merged
     assert len(messages) == 4
     assert messages[2]["tool_calls"][0]["id"] == messages[3]["tool_call_id"] == "c"
-    assert messages[2].get("reasoning_content") == (
-        "tool reasoning" if mode == "full" else None
-    )
+    assert messages[2].get("reasoning_content") == ("tool reasoning" if mode == "full" else None)
     assert state == before
 
 
@@ -1924,9 +1747,7 @@ def test_native_merge_retains_multiple_block_origin_reasoning_parts():
         ]
     )
     before = deepcopy(state)
-    request = _make_client().render_request(
-        state, None, RequestMetadata(reasoning_replay="full")
-    )
+    request = _make_client().render_request(state, None, RequestMetadata(reasoning_replay="full"))
     merged = request.payload["messages"][1]
     assert merged["reasoning_content"] == "old one\nold two\nlast one\nlast two"
     assert merged["content"] == [

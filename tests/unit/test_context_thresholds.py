@@ -41,32 +41,20 @@ class TestDefaultContextWarning:
 class TestCheckThresholds:
     def test_inactive_configurations_return_none(self) -> None:
         cases = [
-            (
-                "no callback",
-                8000,
-                {"context_thresholds": [0.5], "on_context_threshold": None},
-            ),
+            ("no callback", 8000, {"context_thresholds": [0.5], "on_context_threshold": None}),
             (
                 "no thresholds",
                 8000,
-                {
-                    "context_thresholds": None,
-                    "on_context_threshold": default_context_warning,
-                },
+                {"context_thresholds": None, "on_context_threshold": default_context_warning},
             ),
             (
                 "zero budget",
                 0,
-                {
-                    "context_thresholds": [0.5],
-                    "on_context_threshold": default_context_warning,
-                },
+                {"context_thresholds": [0.5], "on_context_threshold": default_context_warning},
             ),
         ]
         for label, budget, kwargs in cases:
-            ctx = ContextManager(
-                strategy=NoCompact(), budget_tokens=budget, **kwargs
-            )
+            ctx = ContextManager(strategy=NoCompact(), budget_tokens=budget, **kwargs)
             msgs = _make_messages_at_pct(8000, 0.6)
             assert ctx.check_thresholds(msgs) is None, label
 
@@ -158,6 +146,7 @@ class TestCheckThresholds:
 
     def test_importable_from_forge(self) -> None:
         from forge import default_context_warning
+
         assert callable(default_context_warning)
 
     def test_observed_usage_drives_threshold_callback(self) -> None:
@@ -166,9 +155,8 @@ class TestCheckThresholds:
             strategy=NoCompact(),
             budget_tokens=100,
             context_thresholds=[0.5],
-            on_context_threshold=lambda tokens, budget, pct: calls.append(
-                (tokens, budget, pct)
-            ) or "observed",
+            on_context_threshold=lambda tokens, budget, pct: calls.append((tokens, budget, pct))
+            or "observed",
         )
         ctx.update_token_count(60)
 
@@ -189,19 +177,30 @@ class TestInferenceInjection:
         from tests.canonical import assistant, call
 
         ctx = ContextManager(
-            NoCompact(), 100, context_thresholds=[0.3] if enabled else None,
+            NoCompact(),
+            100,
+            context_thresholds=[0.3] if enabled else None,
             on_context_threshold=default_context_warning if enabled else None,
         )
         state = ConversationState([_msg("system"), _msg("x" * 200)])
         client = MockClient([assistant(call("done"))])
         result = await run_inference(
-            state, client, ctx, ResponseValidator(["done"], rescue_enabled=False),
-            ErrorTracker(max_retries=1), [],
+            state,
+            client,
+            ctx,
+            ResponseValidator(["done"], rescue_enabled=False),
+            ErrorTracker(max_retries=1),
+            [],
         )
-        warnings = [m for m in client.send_calls[0].payload["messages"]
-                    if "Context usage" in m.get("content", "")]
+        warnings = [
+            m
+            for m in client.send_calls[0].payload["messages"]
+            if "Context usage" in m.get("content", "")
+        ]
         assert len(warnings) == int(enabled)
         if enabled:
             assert warnings[0]["role"] == "user"
         assert not any(m.forge_purpose == "context_warning" for m in state.messages)
-        assert sum(m.forge_purpose == "context_warning" for m in result.new_messages) == int(enabled)
+        assert sum(m.forge_purpose == "context_warning" for m in result.new_messages) == int(
+            enabled
+        )

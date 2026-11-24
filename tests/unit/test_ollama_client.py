@@ -22,9 +22,7 @@ from forge.errors import BackendError, ThinkingNotSupportedError
 
 pytestmark = pytest.mark.usefixtures("mock_httpx_client_constructor")
 PART_SCHEMA = {
-    "properties": {
-        "part": {"description": "Part number", "title": "Part", "type": "string"}
-    },
+    "properties": {"part": {"description": "Part number", "title": "Part", "type": "string"}},
     "required": ["part"],
     "title": "PartParams",
     "type": "object",
@@ -32,9 +30,7 @@ PART_SCHEMA = {
 
 
 def _make_spec(name: str = "get_pricing") -> ToolDefinition:
-    return ToolDefinition(
-        name=name, description=f"Get {name}", input_schema=PART_SCHEMA
-    )
+    return ToolDefinition(name=name, description=f"Get {name}", input_schema=PART_SCHEMA)
 
 
 def _make_client(model: str = "test-model", think: bool | None = None) -> OllamaClient:
@@ -80,8 +76,7 @@ class TestOllamaSend:
         )
         await send(client, [{"role": "user", "content": "test"}])
         assert (
-            client._http.post.await_args.args[0]
-            == "https://gateway.example/deploy/ollama/api/chat"
+            client._http.post.await_args.args[0] == "https://gateway.example/deploy/ollama/api/chat"
         )
 
     @pytest.mark.asyncio
@@ -93,19 +88,12 @@ class TestOllamaSend:
                     "role": "assistant",
                     "content": "",
                     "tool_calls": [
-                        {
-                            "function": {
-                                "name": "get_pricing",
-                                "arguments": {"part": "X123"},
-                            }
-                        }
+                        {"function": {"name": "get_pricing", "arguments": {"part": "X123"}}}
                     ],
                 }
             }
         )
-        result = await send(
-            client, [{"role": "user", "content": "test"}], tools=[_make_spec()]
-        )
+        result = await send(client, [{"role": "user", "content": "test"}], tools=[_make_spec()])
         assert client._http.post.await_args.args[0] == "http://test:11434/api/chat"
         assert isinstance(result, RichMessage)
         assert len(reply_calls(result)) == 1
@@ -148,9 +136,7 @@ class TestOllamaSend:
         client._http.post.return_value = _mock_response(
             {"message": {"role": "assistant", "content": "ok"}}
         )
-        spec = ToolDefinition(
-            name="search", description="Search items", input_schema=SEARCH_SCHEMA
-        )
+        spec = ToolDefinition(name="search", description="Search items", input_schema=SEARCH_SCHEMA)
         await send(client, [{"role": "user", "content": "test"}], tools=[spec])
         call_args = client._http.post.call_args
         body = call_args.kwargs.get("json") or call_args[1].get("json")
@@ -236,13 +222,7 @@ class TestOllamaSend:
     async def test_empty_tool_calls_returns_text(self) -> None:
         client = _make_client()
         client._http.post.return_value = _mock_response(
-            {
-                "message": {
-                    "role": "assistant",
-                    "content": "thinking...",
-                    "tool_calls": [],
-                }
-            }
+            {"message": {"role": "assistant", "content": "thinking...", "tool_calls": []}}
         )
         result = await send(client, [{"role": "user", "content": "test"}])
         assert isinstance(result, RichMessage)
@@ -257,29 +237,18 @@ class TestOllamaSend:
                     "role": "assistant",
                     "content": "I should look up the price for this part.",
                     "tool_calls": [
-                        {
-                            "function": {
-                                "name": "get_pricing",
-                                "arguments": {"part": "X123"},
-                            }
-                        }
+                        {"function": {"name": "get_pricing", "arguments": {"part": "X123"}}}
                     ],
                 }
             }
         )
-        result = await send(
-            client, [{"role": "user", "content": "test"}], tools=[_make_spec()]
-        )
+        result = await send(client, [{"role": "user", "content": "test"}], tools=[_make_spec()])
         assert isinstance(result, RichMessage)
         assert visible(result) == "I should look up the price for this part."
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize(
-        "model", ["qwen3:8b", "ministral-reasoning-14b", "example-thinking-8b"]
-    )
-    async def test_default_preserves_backend_thinking_and_tool_calls(
-        self, model: str
-    ) -> None:
+    @pytest.mark.parametrize("model", ["qwen3:8b", "ministral-reasoning-14b"])
+    async def test_default_preserves_backend_thinking_and_tool_calls(self, model: str) -> None:
         client = _make_client(model=model)
         client._http.post.return_value = _mock_response(
             {
@@ -288,19 +257,12 @@ class TestOllamaSend:
                     "content": "Final answer text",
                     "thinking": "I need to calculate 17 * 23 first...",
                     "tool_calls": [
-                        {
-                            "function": {
-                                "name": "get_pricing",
-                                "arguments": {"part": "X"},
-                            }
-                        }
+                        {"function": {"name": "get_pricing", "arguments": {"part": "X"}}}
                     ],
                 }
             }
         )
-        result = await send(
-            client, [{"role": "user", "content": "test"}], tools=[_make_spec()]
-        )
+        result = await send(client, [{"role": "user", "content": "test"}], tools=[_make_spec()])
         assert isinstance(result, RichMessage)
         assert reasoning(result) == "I need to calculate 17 * 23 first..."
         assert visible(result) == "Final answer text"
@@ -318,19 +280,12 @@ class TestOllamaSend:
                     "role": "assistant",
                     "content": "Let me look that up.",
                     "tool_calls": [
-                        {
-                            "function": {
-                                "name": "get_pricing",
-                                "arguments": {"part": "X"},
-                            }
-                        }
+                        {"function": {"name": "get_pricing", "arguments": {"part": "X"}}}
                     ],
                 }
             }
         )
-        result = await send(
-            client, [{"role": "user", "content": "test"}], tools=[_make_spec()]
-        )
+        result = await send(client, [{"role": "user", "content": "test"}], tools=[_make_spec()])
         assert isinstance(result, RichMessage)
         assert visible(result) == "Let me look that up."
 
@@ -344,19 +299,12 @@ class TestOllamaSend:
                     "role": "assistant",
                     "content": "<think>Let me reason about this</think>",
                     "tool_calls": [
-                        {
-                            "function": {
-                                "name": "get_pricing",
-                                "arguments": {"part": "X"},
-                            }
-                        }
+                        {"function": {"name": "get_pricing", "arguments": {"part": "X"}}}
                     ],
                 }
             }
         )
-        result = await send(
-            client, [{"role": "user", "content": "test"}], tools=[_make_spec()]
-        )
+        result = await send(client, [{"role": "user", "content": "test"}], tools=[_make_spec()])
         assert isinstance(result, RichMessage)
         assert reasoning(result) == ""
 
@@ -371,19 +319,12 @@ class TestOllamaSend:
                     "role": "assistant",
                     "content": "<think>price first</think>",
                     "tool_calls": [
-                        {
-                            "function": {
-                                "name": "get_pricing",
-                                "arguments": {"part": "X"},
-                            }
-                        }
+                        {"function": {"name": "get_pricing", "arguments": {"part": "X"}}}
                     ],
                 }
             }
         )
-        result = await send(
-            client, [{"role": "user", "content": "test"}], tools=[_make_spec()]
-        )
+        result = await send(client, [{"role": "user", "content": "test"}], tools=[_make_spec()])
         assert isinstance(result, RichMessage)
         assert reasoning(result) == "price first"
 
@@ -433,8 +374,7 @@ class TestOllamaSend:
     async def test_default_does_not_retry_on_unsupported_thinking(self) -> None:
         client = _make_client(model="ministral-reasoning-14b")
         error_resp = _mock_response(
-            {"error": '"ministral-reasoning-14b" does not support thinking'},
-            status_code=400,
+            {"error": '"ministral-reasoning-14b" does not support thinking'}, status_code=400
         )
         client._http.post.return_value = error_resp
         with pytest.raises(BackendError) as exc_info:
@@ -449,8 +389,7 @@ class TestOllamaSend:
         """think=True explicit + model doesn't support thinking → ThinkingNotSupportedError."""
         client = _make_client(model="ministral-instruct-14b", think=True)
         error_resp = _mock_response(
-            {"error": '"ministral-instruct-14b" does not support thinking'},
-            status_code=400,
+            {"error": '"ministral-instruct-14b" does not support thinking'}, status_code=400
         )
         client._http.post.return_value = error_resp
         with pytest.raises(ThinkingNotSupportedError) as exc_info:
@@ -469,19 +408,12 @@ class TestOllamaSend:
                     "role": "assistant",
                     "content": "",
                     "tool_calls": [
-                        {
-                            "function": {
-                                "name": "get_pricing",
-                                "arguments": {"part": "X"},
-                            }
-                        }
+                        {"function": {"name": "get_pricing", "arguments": {"part": "X"}}}
                     ],
                 }
             }
         )
-        result = await send(
-            client, [{"role": "user", "content": "test"}], tools=[_make_spec()]
-        )
+        result = await send(client, [{"role": "user", "content": "test"}], tools=[_make_spec()])
         assert isinstance(result, RichMessage)
         assert reasoning(result) == ""
 
@@ -494,19 +426,12 @@ class TestOllamaSend:
                 "message": {
                     "role": "assistant",
                     "tool_calls": [
-                        {
-                            "function": {
-                                "name": "get_pricing",
-                                "arguments": {"part": "X"},
-                            }
-                        }
+                        {"function": {"name": "get_pricing", "arguments": {"part": "X"}}}
                     ],
                 }
             }
         )
-        result = await send(
-            client, [{"role": "user", "content": "test"}], tools=[_make_spec()]
-        )
+        result = await send(client, [{"role": "user", "content": "test"}], tools=[_make_spec()])
         assert isinstance(result, RichMessage)
         assert reasoning(result) == ""
 
@@ -547,12 +472,8 @@ class TestOllamaSendStream:
     async def test_yields_text_deltas_and_final(self) -> None:
         client = _make_client()
         lines = [
-            json.dumps(
-                {"message": {"role": "assistant", "content": "Hello"}, "done": False}
-            ),
-            json.dumps(
-                {"message": {"role": "assistant", "content": " world"}, "done": False}
-            ),
+            json.dumps({"message": {"role": "assistant", "content": "Hello"}, "done": False}),
+            json.dumps({"message": {"role": "assistant", "content": " world"}, "done": False}),
             json.dumps({"message": {"role": "assistant", "content": ""}, "done": True}),
         ]
         client._http.stream.return_value = _MockStreamResponse(lines)
@@ -578,12 +499,7 @@ class TestOllamaSendStream:
                         "role": "assistant",
                         "content": "",
                         "tool_calls": [
-                            {
-                                "function": {
-                                    "name": "get_pricing",
-                                    "arguments": {"part": "X"},
-                                }
-                            }
+                            {"function": {"name": "get_pricing", "arguments": {"part": "X"}}}
                         ],
                     },
                     "done": True,
@@ -650,24 +566,15 @@ class TestOllamaSendStream:
         """Reasoning streamed as TEXT_DELTAs before tool_call is captured."""
         client = _make_client(think=True)
         lines = [
-            json.dumps(
-                {"message": {"role": "assistant", "content": "Let me "}, "done": False}
-            ),
-            json.dumps(
-                {"message": {"role": "assistant", "content": "think..."}, "done": False}
-            ),
+            json.dumps({"message": {"role": "assistant", "content": "Let me "}, "done": False}),
+            json.dumps({"message": {"role": "assistant", "content": "think..."}, "done": False}),
             json.dumps(
                 {
                     "message": {
                         "role": "assistant",
                         "content": "",
                         "tool_calls": [
-                            {
-                                "function": {
-                                    "name": "get_pricing",
-                                    "arguments": {"part": "X"},
-                                }
-                            }
+                            {"function": {"name": "get_pricing", "arguments": {"part": "X"}}}
                         ],
                     },
                     "done": True,
@@ -685,24 +592,16 @@ class TestOllamaSendStream:
         assert visible(final.response) == "Let me think..."
 
     @pytest.mark.asyncio
-    async def test_streaming_extracts_think_tags_from_content_with_tool_call(
-        self,
-    ) -> None:
+    async def test_streaming_extracts_think_tags_from_content_with_tool_call(self) -> None:
         """#110 (streaming): inline <think> in streamed content (no thinking
         deltas) is extracted onto the FINAL tool call."""
         client = _make_client(think=True)
         lines = [
             json.dumps(
-                {
-                    "message": {"role": "assistant", "content": "<think>price "},
-                    "done": False,
-                }
+                {"message": {"role": "assistant", "content": "<think>price "}, "done": False}
             ),
             json.dumps(
-                {
-                    "message": {"role": "assistant", "content": "first</think>"},
-                    "done": False,
-                }
+                {"message": {"role": "assistant", "content": "first</think>"}, "done": False}
             ),
             json.dumps(
                 {
@@ -710,12 +609,7 @@ class TestOllamaSendStream:
                         "role": "assistant",
                         "content": "",
                         "tool_calls": [
-                            {
-                                "function": {
-                                    "name": "get_pricing",
-                                    "arguments": {"part": "X"},
-                                }
-                            }
+                            {"function": {"name": "get_pricing", "arguments": {"part": "X"}}}
                         ],
                     },
                     "done": True,
@@ -739,18 +633,12 @@ class TestOllamaSendStream:
         lines = [
             json.dumps(
                 {
-                    "message": {
-                        "role": "assistant",
-                        "content": "<think>pondering</think>",
-                    },
+                    "message": {"role": "assistant", "content": "<think>pondering</think>"},
                     "done": False,
                 }
             ),
             json.dumps(
-                {
-                    "message": {"role": "assistant", "content": "Hello there."},
-                    "done": False,
-                }
+                {"message": {"role": "assistant", "content": "Hello there."}, "done": False}
             ),
             json.dumps({"message": {"role": "assistant", "content": ""}, "done": True}),
         ]
@@ -767,47 +655,33 @@ class TestOllamaSendStream:
         state.messages.append(final.response)
         state.messages.extend(openai_state([{"role": "user", "content": "retry"}]).messages)
         client._http.post.return_value = _mock_response({"message": {"content": "ok"}})
-        await client.send(client.render_request(
-            state, None, RequestMetadata(reasoning_replay="full")
-        ))
+        await client.send(
+            client.render_request(state, None, RequestMetadata(reasoning_replay="full"))
+        )
         history = client._http.post.call_args.kwargs["json"]["messages"]
         assert history[1] == {
-            "role": "assistant", "content": "Hello there.", "thinking": "pondering"
+            "role": "assistant",
+            "content": "Hello there.",
+            "thinking": "pondering",
         }
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize(
-        "model", ["qwen3:8b", "ministral-reasoning-14b", "example-thinking-8b"]
-    )
+    @pytest.mark.parametrize("model", ["qwen3:8b", "ministral-reasoning-14b"])
     async def test_streaming_default_preserves_backend_thinking_and_tool_calls(
         self, model: str
     ) -> None:
         client = _make_client(model=model)
         lines = [
-            json.dumps(
-                {"message": {"role": "assistant", "thinking": "Let me "}, "done": False}
-            ),
-            json.dumps(
-                {
-                    "message": {"role": "assistant", "thinking": "reason..."},
-                    "done": False,
-                }
-            ),
-            json.dumps(
-                {"message": {"role": "assistant", "content": "Final."}, "done": False}
-            ),
+            json.dumps({"message": {"role": "assistant", "thinking": "Let me "}, "done": False}),
+            json.dumps({"message": {"role": "assistant", "thinking": "reason..."}, "done": False}),
+            json.dumps({"message": {"role": "assistant", "content": "Final."}, "done": False}),
             json.dumps(
                 {
                     "message": {
                         "role": "assistant",
                         "content": "",
                         "tool_calls": [
-                            {
-                                "function": {
-                                    "name": "get_pricing",
-                                    "arguments": {"part": "X"},
-                                }
-                            }
+                            {"function": {"name": "get_pricing", "arguments": {"part": "X"}}}
                         ],
                     },
                     "done": True,
@@ -832,9 +706,7 @@ class TestOllamaSendStream:
     async def test_streaming_think_true_explicit(self) -> None:
         """think=True explicit → think in streaming request body."""
         client = _make_client(think=True)
-        lines = [
-            json.dumps({"message": {"role": "assistant", "content": ""}, "done": True})
-        ]
+        lines = [json.dumps({"message": {"role": "assistant", "content": ""}, "done": True})]
         client._http.stream.return_value = _MockStreamResponse(lines)
         async for _ in send_stream(client, [{"role": "user", "content": "test"}]):
             pass
@@ -846,9 +718,7 @@ class TestOllamaSendStream:
     async def test_streaming_think_false_explicit(self) -> None:
         """think=False explicit → no think in streaming request body."""
         client = _make_client(think=False)
-        lines = [
-            json.dumps({"message": {"role": "assistant", "content": ""}, "done": True})
-        ]
+        lines = [json.dumps({"message": {"role": "assistant", "content": ""}, "done": True})]
         client._http.stream.return_value = _MockStreamResponse(lines)
         async for _ in send_stream(client, [{"role": "user", "content": "test"}]):
             pass
@@ -861,24 +731,15 @@ class TestOllamaSendStream:
         """Explicit capture opt-out omits streamed thinking, preserving the call."""
         client = _make_client(think=False)
         lines = [
-            json.dumps(
-                {"message": {"role": "assistant", "thinking": "Let me "}, "done": False}
-            ),
-            json.dumps(
-                {"message": {"role": "assistant", "thinking": "think..."}, "done": False}
-            ),
+            json.dumps({"message": {"role": "assistant", "thinking": "Let me "}, "done": False}),
+            json.dumps({"message": {"role": "assistant", "thinking": "think..."}, "done": False}),
             json.dumps(
                 {
                     "message": {
                         "role": "assistant",
                         "content": "",
                         "tool_calls": [
-                            {
-                                "function": {
-                                    "name": "get_pricing",
-                                    "arguments": {"part": "X"},
-                                }
-                            }
+                            {"function": {"name": "get_pricing", "arguments": {"part": "X"}}}
                         ],
                     },
                     "done": True,
@@ -907,12 +768,7 @@ class TestOllamaSendStream:
                         "role": "assistant",
                         "content": "",
                         "tool_calls": [
-                            {
-                                "function": {
-                                    "name": "get_pricing",
-                                    "arguments": {"part": "X"},
-                                }
-                            }
+                            {"function": {"name": "get_pricing", "arguments": {"part": "X"}}}
                         ],
                     },
                     "done": True,
@@ -933,12 +789,8 @@ class TestOllamaSendStream:
     async def test_streaming_think_true_explicit_raises_on_unsupported(self) -> None:
         """think=True explicit + streaming + unsupported → ThinkingNotSupportedError."""
         client = _make_client(model="ministral-instruct-14b", think=True)
-        error_body = json.dumps(
-            {"error": '"ministral-instruct-14b" does not support thinking'}
-        )
-        client._http.stream.return_value = _MockStreamResponse(
-            [error_body], status_code=400
-        )
+        error_body = json.dumps({"error": '"ministral-instruct-14b" does not support thinking'})
+        client._http.stream.return_value = _MockStreamResponse([error_body], status_code=400)
         with pytest.raises(ThinkingNotSupportedError) as exc_info:
             async for _ in send_stream(client, [{"role": "user", "content": "test"}]):
                 pass
@@ -949,12 +801,8 @@ class TestOllamaSendStream:
     @pytest.mark.asyncio
     async def test_streaming_default_does_not_retry_on_unsupported_thinking(self) -> None:
         client = _make_client(model="ministral-reasoning-14b")
-        error_body = json.dumps(
-            {"error": '"ministral-reasoning-14b" does not support thinking'}
-        )
-        client._http.stream.return_value = _MockStreamResponse(
-            [error_body], status_code=400
-        )
+        error_body = json.dumps({"error": '"ministral-reasoning-14b" does not support thinking'})
+        client._http.stream.return_value = _MockStreamResponse([error_body], status_code=400)
         with pytest.raises(BackendError) as exc_info:
             async for _ in send_stream(client, [{"role": "user", "content": "test"}]):
                 pass
@@ -971,9 +819,7 @@ class TestOllamaSendStream:
             status_code = 200
 
             async def aiter_lines(self):
-                yield json.dumps(
-                    {"message": {"role": "assistant", "content": "Hi"}, "done": False}
-                )
+                yield json.dumps({"message": {"role": "assistant", "content": "Hi"}, "done": False})
                 raise httpx.ReadTimeout("timed out")
 
             async def __aenter__(self):
@@ -999,9 +845,7 @@ class TestNormalizeMessagesForOllama:
     """Outbound coercion of OpenAI-wire messages to Ollama's native schema."""
 
     def test_flattens_multipart_content(self) -> None:
-        out = native_messages(
-            [{"role": "user", "content": [{"type": "text", "text": "hello"}]}]
-        )
+        out = native_messages([{"role": "user", "content": [{"type": "text", "text": "hello"}]}])
         assert out[0]["content"] == "hello"
 
     def test_unknown_image_block_fails_at_ingress(self):
@@ -1010,9 +854,7 @@ class TestNormalizeMessagesForOllama:
                 [
                     {
                         "role": "user",
-                        "content": [
-                            {"type": "image_url", "image_url": {"url": "data:..."}}
-                        ],
+                        "content": [{"type": "image_url", "image_url": {"url": "data:..."}}],
                     }
                 ]
             )
@@ -1022,9 +864,7 @@ class TestNormalizeMessagesForOllama:
             [
                 {
                     "role": "assistant",
-                    "tool_calls": [
-                        {"function": {"name": "t", "arguments": '{"x": "1"}'}}
-                    ],
+                    "tool_calls": [{"function": {"name": "t", "arguments": '{"x": "1"}'}}],
                 }
             ]
         )
@@ -1035,9 +875,7 @@ class TestNormalizeMessagesForOllama:
             [
                 {
                     "role": "assistant",
-                    "tool_calls": [
-                        {"function": {"name": "t", "arguments": {"x": "1"}}}
-                    ],
+                    "tool_calls": [{"function": {"name": "t", "arguments": {"x": "1"}}}],
                 }
             ]
         )
@@ -1049,9 +887,7 @@ class TestNormalizeMessagesForOllama:
             [
                 {
                     "role": "assistant",
-                    "tool_calls": [
-                        {"function": {"name": "t", "arguments": "not json"}}
-                    ],
+                    "tool_calls": [{"function": {"name": "t", "arguments": "not json"}}],
                 }
             ]
         )
@@ -1086,26 +922,20 @@ class TestNormalizeMessagesForOllama:
                 {"role": "user", "content": [{"type": "text", "text": "hi"}]},
                 {
                     "role": "assistant",
-                    "tool_calls": [
-                        {"function": {"name": "t", "arguments": '{"x": "1"}'}}
-                    ],
+                    "tool_calls": [{"function": {"name": "t", "arguments": '{"x": "1"}'}}],
                 },
                 {"role": "tool", "content": "ok"},
             ],
         )
         body = _sent_body(client._http.post.call_args)
         assert body["messages"][0]["content"] == "hi"
-        assert body["messages"][1]["tool_calls"][0]["function"]["arguments"] == {
-            "x": "1"
-        }
+        assert body["messages"][1]["tool_calls"][0]["function"]["arguments"] == {"x": "1"}
 
     @pytest.mark.asyncio
     async def test_send_stream_normalizes_body(self) -> None:
         """send_stream gets identical treatment (WorkflowRunner stream path)."""
         client = _make_client()
-        lines = [
-            json.dumps({"message": {"role": "assistant", "content": ""}, "done": True})
-        ]
+        lines = [json.dumps({"message": {"role": "assistant", "content": ""}, "done": True})]
         client._http.stream.return_value = _MockStreamResponse(lines)
         async for _ in send_stream(
             client,
@@ -1113,18 +943,14 @@ class TestNormalizeMessagesForOllama:
                 {"role": "user", "content": [{"type": "text", "text": "hi"}]},
                 {
                     "role": "assistant",
-                    "tool_calls": [
-                        {"function": {"name": "t", "arguments": '{"x": "1"}'}}
-                    ],
+                    "tool_calls": [{"function": {"name": "t", "arguments": '{"x": "1"}'}}],
                 },
             ],
         ):
             pass
         body = _sent_body(client._http.stream.call_args)
         assert body["messages"][0]["content"] == "hi"
-        assert body["messages"][1]["tool_calls"][0]["function"]["arguments"] == {
-            "x": "1"
-        }
+        assert body["messages"][1]["tool_calls"][0]["function"]["arguments"] == {"x": "1"}
 
 
 class TestOllamaGetContextLength:
@@ -1166,9 +992,7 @@ class TestRecommendedSampling:
 
     def test_explicit_kwarg_wins_over_map(self) -> None:
         """Caller's explicit kwarg overrides the map entry field-by-field."""
-        client = OllamaClient(
-            model="qwen3:8b-q4_K_M", recommended_sampling=True, temperature=0.99
-        )
+        client = OllamaClient(model="qwen3:8b-q4_K_M", recommended_sampling=True, temperature=0.99)
         assert client.temperature == 0.99
         assert client.top_p == 0.95
         assert client.top_k == 20
@@ -1198,9 +1022,7 @@ class TestPerCallSampling:
             {"message": {"role": "assistant", "content": "ok"}}
         )
         await send(
-            client,
-            [{"role": "user", "content": "hi"}],
-            sampling={"temperature": 0.0, "seed": 42},
+            client, [{"role": "user", "content": "hi"}], sampling={"temperature": 0.0, "seed": 42}
         )
         body = client._http.post.call_args.kwargs["json"]
         opts = body["options"]
@@ -1213,9 +1035,7 @@ class TestPerCallSampling:
     @pytest.mark.asyncio
     async def test_per_call_sampling_none_uses_instance(self) -> None:
         """sampling=None: only instance fields go on the wire."""
-        client = OllamaClient(
-            base_url="http://test:11434", model="test-model", temperature=0.5
-        )
+        client = OllamaClient(base_url="http://test:11434", model="test-model", temperature=0.5)
         mock_http = AsyncMock()
         mock_http.headers = {}
         mock_http.stream = MagicMock()

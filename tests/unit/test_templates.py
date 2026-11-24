@@ -4,20 +4,12 @@ from forge.core.workflow import ToolDefinition
 from tests.canonical import call
 from forge.core.messages import ToolCallPart
 from forge.core.codecs import argument_value
-from forge.prompts.templates import (
-    build_tool_prompt,
-    extract_tool_call,
-    rescue_tool_call,
-)
+from forge.prompts.templates import build_tool_prompt, extract_tool_call, rescue_tool_call
 
 
 GET_PRICING_SCHEMA = {
     "properties": {
-        "part_number": {
-            "description": "The part number",
-            "title": "Part Number",
-            "type": "string",
-        }
+        "part_number": {"description": "The part number", "title": "Part Number", "type": "string"}
     },
     "required": ["part_number"],
     "title": "GetPricingParams",
@@ -38,12 +30,7 @@ def _signatures(calls: list[ToolCallPart]) -> list[tuple[str, object]]:
 
 
 def test_build_tool_prompt_describes_tools_and_call_format() -> None:
-    prompt = build_tool_prompt(
-        [
-            _make_spec(),
-            _make_spec("get_history", "Get history"),
-        ]
-    )
+    prompt = build_tool_prompt([_make_spec(), _make_spec("get_history", "Get history")])
 
     for expected in (
         "get_pricing",
@@ -61,11 +48,7 @@ def test_build_tool_prompt_describes_tools_and_call_format() -> None:
 def test_build_tool_prompt_marks_parameter_styles() -> None:
     QUERY_SCHEMA = {
         "properties": {
-            "query": {
-                "description": "Search query",
-                "title": "Query",
-                "type": "string",
-            },
+            "query": {"description": "Search query", "title": "Query", "type": "string"},
             "limit": {
                 "anyOf": [{"type": "integer"}, {"type": "null"}],
                 "default": None,
@@ -130,21 +113,12 @@ def test_extract_tool_call_positive_matrix() -> None:
             ["get_pricing"],
             [("get_pricing", {"part": "X"})],
         ),
-        (
-            "missing args",
-            '{"tool": "get_pricing"}',
-            ["get_pricing"],
-            [("get_pricing", {})],
-        ),
+        ("missing args", '{"tool": "get_pricing"}', ["get_pricing"], [("get_pricing", {})]),
         (
             "multiple calls",
-            '{"tool": "get_pricing", "args": {"part": "A"}} '
-            '{"tool": "search", "args": {"q": "B"}}',
+            '{"tool": "get_pricing", "args": {"part": "A"}} {"tool": "search", "args": {"q": "B"}}',
             ["get_pricing", "search"],
-            [
-                ("get_pricing", {"part": "A"}),
-                ("search", {"q": "B"}),
-            ],
+            [("get_pricing", {"part": "A"}), ("search", {"q": "B"})],
         ),
     ]
 
@@ -154,22 +128,10 @@ def test_extract_tool_call_positive_matrix() -> None:
 
 def test_extract_tool_call_negative_matrix() -> None:
     cases = [
-        (
-            "unknown tool",
-            '{"tool": "delete_everything", "args": {}}',
-            ["get_pricing"],
-        ),
+        ("unknown tool", '{"tool": "delete_everything", "args": {}}', ["get_pricing"]),
         ("plain text", "We should inspect pricing first.", ["get_pricing"]),
-        (
-            "malformed JSON",
-            '{"tool": "get_pricing", "args": {bad json}',
-            ["get_pricing"],
-        ),
-        (
-            "unsupported keys",
-            '{"function": "get_pricing", "params": {}}',
-            ["get_pricing"],
-        ),
+        ("malformed JSON", '{"tool": "get_pricing", "args": {bad json}', ["get_pricing"]),
+        ("unsupported keys", '{"function": "get_pricing", "params": {}}', ["get_pricing"]),
     ]
 
     for label, text, available in cases:
@@ -212,8 +174,7 @@ def test_rescue_tool_call_style_matrix() -> None:
         ),
         (
             "Qwen multiline parameter",
-            "<function=bash>\n<parameter=command>\n"
-            f"{multiline_command}\n</parameter>\n</function>",
+            f"<function=bash>\n<parameter=command>\n{multiline_command}\n</parameter>\n</function>",
             ["bash", "edit"],
             [("bash", {"command": multiline_command})],
         ),
@@ -274,18 +235,13 @@ def test_rescue_tool_call_style_matrix() -> None:
         ),
         (
             "multiple Mistral calls",
-            '[TOOL_CALLS]read{"file_path": "a.py"}\n'
-            '[TOOL_CALLS]read{"file_path": "b.py"}',
+            '[TOOL_CALLS]read{"file_path": "a.py"}\n[TOOL_CALLS]read{"file_path": "b.py"}',
             ["read", "edit"],
-            [
-                ("read", {"file_path": "a.py"}),
-                ("read", {"file_path": "b.py"}),
-            ],
+            [("read", {"file_path": "a.py"}), ("read", {"file_path": "b.py"})],
         ),
         (
             "Mistral after apology and thinking",
-            "I apologize.\n<think>read first</think>\n"
-            '[TOOL_CALLS]read{"file_path": "x.py"}',
+            'I apologize.\n<think>read first</think>\n[TOOL_CALLS]read{"file_path": "x.py"}',
             ["read", "edit"],
             [("read", {"file_path": "x.py"})],
         ),
@@ -316,8 +272,7 @@ def test_rescue_tool_call_precedence_matrix() -> None:
     cases = [
         (
             "rehearsal",
-            '{"tool": "fetch", "args": {"source": "json"}} '
-            'submit[ARGS]{"source": "rehearsal"}',
+            '{"tool": "fetch", "args": {"source": "json"}} submit[ARGS]{"source": "rehearsal"}',
         ),
         (
             "Qwen",
@@ -326,8 +281,7 @@ def test_rescue_tool_call_precedence_matrix() -> None:
         ),
         (
             "Mistral",
-            '{"tool": "fetch", "args": {"source": "json"}} '
-            '[TOOL_CALLS]submit{"source": "mistral"}',
+            '{"tool": "fetch", "args": {"source": "json"}} [TOOL_CALLS]submit{"source": "mistral"}',
         ),
     ]
 
@@ -344,17 +298,11 @@ def test_prompt_keeps_complete_schema_extras_and_boolean_properties():
     schema = {
         "$defs": {"thing": {"oneOf": [{"type": "string"}, {"type": "integer"}]}},
         "type": "object",
-        "properties": {
-            "any": True,
-            "never": False,
-            "nested": {"$ref": "#/$defs/thing"},
-        },
+        "properties": {"any": True, "never": False, "nested": {"$ref": "#/$defs/thing"}},
         "additionalProperties": False,
         "x-keyword": {"kept": [1, 2]},
     }
-    definition = ToolDefinition(
-        "first", input_schema=schema, extra_fields={"x-extra": [1, 2]}
-    )
+    definition = ToolDefinition("first", input_schema=schema, extra_fields={"x-extra": [1, 2]})
     before = deepcopy(definition)
     prompt = build_tool_prompt([definition, ToolDefinition("second")])
     assert "Input schema: " + json.dumps(schema) in prompt

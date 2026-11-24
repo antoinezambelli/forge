@@ -72,7 +72,9 @@ class TestLambdaTools:
     def test_get_transactions_canonical(self) -> None:
         out = self._call(
             "legacy_get_transactions",
-            account_id="ACC-12345", since="2024-10-01", until="2024-12-31",
+            account_id="ACC-12345",
+            since="2024-10-01",
+            until="2024-12-31",
         )
         assert "TXN/00042" in out
         assert "TXN/00043" in out
@@ -84,15 +86,16 @@ class TestLambdaTools:
         # Pattern-match trap: model reuses the unix ts from get_balance.
         out = self._call(
             "legacy_get_transactions",
-            account_id="ACC-12345", since="1696000000", until="1704000000",
+            account_id="ACC-12345",
+            since="1696000000",
+            until="1704000000",
         )
         assert "ERROR" in out
         assert "ISO date" in out
 
     def test_get_transactions_missing_prefix(self) -> None:
         out = self._call(
-            "legacy_get_transactions",
-            account_id="12345", since="2024-10-01", until="2024-12-31",
+            "legacy_get_transactions", account_id="12345", since="2024-10-01", until="2024-12-31"
         )
         assert "ERROR" in out
         assert "ACC-" in out
@@ -100,77 +103,57 @@ class TestLambdaTools:
     # legacy_categorize_spend -------------------------------------
 
     def test_categorize_canonical(self) -> None:
-        out = self._call(
-            "legacy_categorize_spend", txn_id=42, category="SVCS",
-        )
+        out = self._call("legacy_categorize_spend", txn_id=42, category="SVCS")
         assert "TXN/00042" in out
         assert "SVCS" in out
         assert "5000.00" in out  # cents->dollars conversion
 
     def test_categorize_full_string_id_rejected(self) -> None:
         # Pattern-match trap: pass the full TXN/00042 string.
-        out = self._call(
-            "legacy_categorize_spend", txn_id="TXN/00042", category="SVCS",
-        )
+        out = self._call("legacy_categorize_spend", txn_id="TXN/00042", category="SVCS")
         assert "ERROR" in out
         assert "numeric" in out
 
     def test_categorize_lowercase_category_rejected(self) -> None:
         # Pattern-match trap: pass the lowercase category from
         # get_transactions.
-        out = self._call(
-            "legacy_categorize_spend", txn_id=42, category="services",
-        )
+        out = self._call("legacy_categorize_spend", txn_id=42, category="services")
         assert "ERROR" in out
         assert "uppercase" in out
 
     def test_categorize_unknown_code_rejected(self) -> None:
-        out = self._call(
-            "legacy_categorize_spend", txn_id=42, category="FOOD",
-        )
+        out = self._call("legacy_categorize_spend", txn_id=42, category="FOOD")
         assert "ERROR" in out
 
     # legacy_check_compliance -------------------------------------
 
     def test_compliance_canonical(self) -> None:
-        out = self._call(
-            "legacy_check_compliance", region="us", period="2024-Q4",
-        )
+        out = self._call("legacy_check_compliance", region="us", period="2024-Q4")
         assert "PASS" in out
         assert "us" in out
         assert "2024-Q4" in out
 
     def test_compliance_uppercase_region_rejected(self) -> None:
         # Pattern-match trap: model just learned UPPERCASE codes.
-        out = self._call(
-            "legacy_check_compliance", region="US", period="2024-Q4",
-        )
+        out = self._call("legacy_check_compliance", region="US", period="2024-Q4")
         assert "ERROR" in out
         assert "lowercase" in out
 
     def test_compliance_iso_date_rejected(self) -> None:
         # Pattern-match trap: model uses ISO date instead of quarter.
-        out = self._call(
-            "legacy_check_compliance", region="us", period="2024-12-31",
-        )
+        out = self._call("legacy_check_compliance", region="us", period="2024-12-31")
         assert "ERROR" in out
         assert "quarter" in out
 
     # legacy_aggregate_subtotal -----------------------------------
 
     def test_aggregate_canonical(self) -> None:
-        out = self._call(
-            "legacy_aggregate_subtotal",
-            amounts="5000.00|12500.00|8000.00",
-        )
+        out = self._call("legacy_aggregate_subtotal", amounts="5000.00|12500.00|8000.00")
         assert "25500.00" in out
         assert "3 amounts" in out
 
     def test_aggregate_comma_separated_rejected(self) -> None:
-        out = self._call(
-            "legacy_aggregate_subtotal",
-            amounts="5000.00,12500.00,8000.00",
-        )
+        out = self._call("legacy_aggregate_subtotal", amounts="5000.00,12500.00,8000.00")
         assert "ERROR" in out
         assert "pipe-separated" in out
 
@@ -179,9 +162,7 @@ class TestLambdaTools:
         assert "ERROR" in out
 
     def test_aggregate_non_numeric_rejected(self) -> None:
-        out = self._call(
-            "legacy_aggregate_subtotal", amounts="abc|def",
-        )
+        out = self._call("legacy_aggregate_subtotal", amounts="abc|def")
         assert "ERROR" in out
         assert "non-numeric" in out
 
@@ -233,10 +214,12 @@ class TestValidator:
 
     def test_total_with_comma_passes(self) -> None:
         # _check strips commas; matcher is substring-AND on lowercased text.
-        args = {"report": (
-            '{"flagged_count": 0, "total_usd": "25,500.00", '
-            '"compliance_status": "PASS", "txn_count": 3}'
-        )}
+        args = {
+            "report": (
+                '{"flagged_count": 0, "total_usd": "25,500.00", '
+                '"compliance_status": "PASS", "txn_count": 3}'
+            )
+        }
         assert _validate_inconsistent_api_recovery(args) is True
 
 
@@ -329,12 +312,14 @@ class TestStatefulBackend:
 
 class TestStatefulValidateState:
     def _canonical_report(self) -> str:
-        return json.dumps({
-            "flagged_count": 0,
-            "total_usd": "25500.00",
-            "compliance_status": "PASS",
-            "txn_count": 3,
-        })
+        return json.dumps(
+            {
+                "flagged_count": 0,
+                "total_usd": "25500.00",
+                "compliance_status": "PASS",
+                "txn_count": 3,
+            }
+        )
 
     def _drive_tools(
         self,
@@ -348,17 +333,13 @@ class TestStatefulValidateState:
         tools["legacy_list_accounts"](page=1, page_size=10)
         tools["legacy_get_balance"](account_id="ACC-12345")
         tools["legacy_get_transactions"](
-            account_id="ACC-12345", since="2024-10-01", until="2024-12-31",
+            account_id="ACC-12345", since="2024-10-01", until="2024-12-31"
         )
         if categorize:
             tools["legacy_categorize_spend"](txn_id=42, category="SVCS")
-        tools["legacy_check_compliance"](
-            region=region, period="2024-Q4",
-        )
+        tools["legacy_check_compliance"](region=region, period="2024-Q4")
         tools["legacy_aggregate_subtotal"](amounts=amounts)
-        tools["legacy_submit_audit"](
-            report=self._canonical_report() if report is None else report,
-        )
+        tools["legacy_submit_audit"](report=self._canonical_report() if report is None else report)
 
     def test_canonical_path_passes(self) -> None:
         workflow, validate_state = _build_inconsistent_api_recovery_stateful()
@@ -374,9 +355,8 @@ class TestStatefulValidateState:
                 "missing report field",
                 {
                     "report": (
-                        '{"flagged_count": 0, "total_usd": "25500", '
-                        '"compliance_status": "PASS"}'
-                    ),
+                        '{"flagged_count": 0, "total_usd": "25500", "compliance_status": "PASS"}'
+                    )
                 },
             ),
         )

@@ -3,8 +3,14 @@
 from copy import deepcopy
 import pytest
 from forge.core.messages import (
-    ConversationState, RichMessage, MessageRole, TextPart, ReasoningPart,
-    ToolCallPart, ToolResultPart, ValidArguments,
+    ConversationState,
+    RichMessage,
+    MessageRole,
+    TextPart,
+    ReasoningPart,
+    ToolCallPart,
+    ToolResultPart,
+    ValidArguments,
 )
 from forge.context.accounting import estimate_content_tokens
 from forge.context.strategies import CompactStrategy, NoCompact, SlidingWindowCompact, TieredCompact
@@ -19,13 +25,20 @@ def _user_input(content="Generate a quote for part X."):
 
 
 def _tool_call(content='get_pricing({"part": "X"})', step=0):
-    return RichMessage(MessageRole.ASSISTANT, [
-        TextPart(content), ToolCallPart("get_pricing", ValidArguments({"part": "X"}), f"call-{step}"),
-    ], step_index=step)
+    return RichMessage(
+        MessageRole.ASSISTANT,
+        [
+            TextPart(content),
+            ToolCallPart("get_pricing", ValidArguments({"part": "X"}), f"call-{step}"),
+        ],
+        step_index=step,
+    )
 
 
 def _tool_result(content="Price: $10.69\nMOQ: 100\nLead time: 2 weeks", step=0):
-    return RichMessage(MessageRole.USER, [ToolResultPart(f"call-{step}", [TextPart(content)])], step_index=step)
+    return RichMessage(
+        MessageRole.USER, [ToolResultPart(f"call-{step}", [TextPart(content)])], step_index=step
+    )
 
 
 def _reasoning(content="The price is $10.69 at MOQ 100. Historical average was $9.50.", step=0):
@@ -44,8 +57,15 @@ def _text_response(content="Based on the data, the price looks reasonable.", ste
     return RichMessage(MessageRole.ASSISTANT, [TextPart(content)], step_index=step)
 
 
-def _build_history(num_pairs, *, include_nudges=False, include_reasoning=False,
-                   include_text_response=False, long_results=False, long_calls=False):
+def _build_history(
+    num_pairs,
+    *,
+    include_nudges=False,
+    include_reasoning=False,
+    include_text_response=False,
+    long_results=False,
+    long_calls=False,
+):
     # Original fixture content/steps retained through the canonical bindings.
     msgs = [_sys(), _user_input()]
     for i in range(num_pairs):
@@ -71,14 +91,18 @@ def _build_history(num_pairs, *, include_nudges=False, include_reasoning=False,
 # phase_thresholds=(0.0, 0.0, 1.0) → Phase 1 and 2 fire, 3 never.
 # compact_threshold=0.0             → All phases fire (uniform 0.0).
 
+
 def _p1_only(keep_recent: int = 2) -> TieredCompact:
     return TieredCompact(keep_recent=keep_recent, phase_thresholds=(0.0, 1.0, 1.0))
+
 
 def _p1_p2_only(keep_recent: int = 2) -> TieredCompact:
     return TieredCompact(keep_recent=keep_recent, phase_thresholds=(0.0, 0.0, 1.0))
 
+
 def _all_phases(keep_recent: int = 2) -> TieredCompact:
     return TieredCompact(keep_recent=keep_recent, compact_threshold=0.0)
+
 
 # Budget large enough that content is always "over threshold" when
 # compact_threshold or phase_thresholds are 0.0.
@@ -92,11 +116,7 @@ class MinimalCustomStrategy(CompactStrategy):
         self.calls = 0
 
     def compact(
-        self,
-        messages: ConversationState,
-        budget_tokens: int,
-        *,
-        step_hint: str = "",
+        self, messages: ConversationState, budget_tokens: int, *, step_hint: str = ""
     ) -> tuple[ConversationState, int]:
         self.calls += 1
         return ConversationState(list(messages.messages)), 0
@@ -107,10 +127,7 @@ class MinimalCustomStrategy(CompactStrategy):
 
 class TestNoCompact:
     def test_returns_same_state_without_compaction(self) -> None:
-        for label, msgs in [
-            ("history", _build_history(3)),
-            ("minimal", [_sys(), _user_input()]),
-        ]:
+        for label, msgs in [("history", _build_history(3)), ("minimal", [_sys(), _user_input()])]:
             state = ConversationState(msgs)
             before = deepcopy(state)
             result, phase = NoCompact().compact(state, budget_tokens=BIG)
@@ -135,7 +152,9 @@ class TestNoCompact:
 class TestSlidingWindowCompact:
     def test_keeps_only_last_n_pairs(self) -> None:
         msgs = _build_history(6)  # 2 + 12 = 14 messages
-        result, phase = SlidingWindowCompact(keep_recent=2, compact_threshold=0.0).compact(ConversationState(msgs), budget_tokens=BIG)
+        result, phase = SlidingWindowCompact(keep_recent=2, compact_threshold=0.0).compact(
+            ConversationState(msgs), budget_tokens=BIG
+        )
         result = result.messages
         # system + user + last 4 messages = 6
         assert len(result) == 6
@@ -146,26 +165,29 @@ class TestSlidingWindowCompact:
         assert result[-1] is msgs[-1]
         assert phase == 1
 
-
     def test_histories_within_window_return_everything(self) -> None:
         for pairs in [2, 3]:
             msgs = _build_history(pairs)
-            result, phase = SlidingWindowCompact(
-                keep_recent=3, compact_threshold=0.0
-            ).compact(ConversationState(msgs), budget_tokens=BIG)
+            result, phase = SlidingWindowCompact(keep_recent=3, compact_threshold=0.0).compact(
+                ConversationState(msgs), budget_tokens=BIG
+            )
             assert result.messages == msgs, f"pairs={pairs}"
             assert phase == 1, f"pairs={pairs}"
 
     def test_returns_new_list(self) -> None:
         msgs = _build_history(4)
-        result, _ = SlidingWindowCompact(keep_recent=2, compact_threshold=0.0).compact(ConversationState(msgs), budget_tokens=BIG)
+        result, _ = SlidingWindowCompact(keep_recent=2, compact_threshold=0.0).compact(
+            ConversationState(msgs), budget_tokens=BIG
+        )
         result = result.messages
         assert result is not msgs
 
     def test_no_compact_when_under_threshold(self) -> None:
         msgs = _build_history(3)
         # threshold=0.99 with huge budget — will never trigger
-        result, phase = SlidingWindowCompact(keep_recent=1, compact_threshold=0.99).compact(ConversationState(msgs), budget_tokens=BIG)
+        result, phase = SlidingWindowCompact(keep_recent=1, compact_threshold=0.99).compact(
+            ConversationState(msgs), budget_tokens=BIG
+        )
         result = result.messages
         assert phase == 0
         assert len(result) == len(msgs)
@@ -176,9 +198,7 @@ class TestSlidingWindowCompact:
 
 class TestTieredPhase1:
     def test_applies_phase_one_rewrites_only_to_eligible_history(self) -> None:
-        msgs = _build_history(
-            6, include_nudges=True, include_text_response=True, long_results=True
-        )
+        msgs = _build_history(6, include_nudges=True, include_text_response=True, long_results=True)
         eligible_end = TieredCompact._find_eligible_end(msgs, 2)
         result, phase = _p1_only().compact(ConversationState(msgs), budget_tokens=BIG)
         result = result.messages
@@ -187,15 +207,24 @@ class TestTieredPhase1:
             if msg.forge_purpose in nudge_types:
                 assert msg in msgs[eligible_end:]
         for msg in result:
-            if (
-                isinstance(msg.parts[0], ToolResultPart)
-                and msg not in msgs[eligible_end:]
-            ):
+            if isinstance(msg.parts[0], ToolResultPart) and msg not in msgs[eligible_end:]:
                 assert "[Truncated —" in msg.parts[0].content[0].text
                 before_marker = msg.parts[0].content[0].text.split("\n[Truncated —")[0]
                 assert len(before_marker) == TieredCompact.TRUNCATE_CHARS
-        original_text = [m for m in msgs if len(m.parts) == 1 and isinstance(m.parts[0], TextPart) and m.role == MessageRole.ASSISTANT]
-        result_text = [m for m in result if len(m.parts) == 1 and isinstance(m.parts[0], TextPart) and m.role == MessageRole.ASSISTANT]
+        original_text = [
+            m
+            for m in msgs
+            if len(m.parts) == 1
+            and isinstance(m.parts[0], TextPart)
+            and m.role == MessageRole.ASSISTANT
+        ]
+        result_text = [
+            m
+            for m in result
+            if len(m.parts) == 1
+            and isinstance(m.parts[0], TextPart)
+            and m.role == MessageRole.ASSISTANT
+        ]
         assert len(result_text) == len(original_text)
         assert phase == 1
 
@@ -206,7 +235,7 @@ class TestTieredPhase1:
         result = result.messages
         assert result[0] is msgs[0]
         assert result[1] is msgs[1]
-        assert result[-(len(msgs) - eligible_end):] == msgs[eligible_end:]
+        assert result[-(len(msgs) - eligible_end) :] == msgs[eligible_end:]
 
     def test_short_tool_result_not_truncated(self) -> None:
         """Tool results under TRUNCATE_CHARS are kept as-is."""
@@ -326,15 +355,10 @@ class TestTieredEscalation:
 
     def test_observed_usage_survives_phase1_noop_until_phase2_rewrite(self) -> None:
         msgs = _build_history(4)
-        strategy = TieredCompact(
-            keep_recent=1,
-            phase_thresholds=(0.5, 0.7, 0.9),
-        )
+        strategy = TieredCompact(keep_recent=1, phase_thresholds=(0.5, 0.7, 0.9))
 
         result, phase = strategy._compact_with_initial_usage(
-            ConversationState(msgs),
-            budget_tokens=100,
-            initial_tokens=80,
+            ConversationState(msgs), budget_tokens=100, initial_tokens=80
         )
         result = result.messages
 
@@ -343,15 +367,10 @@ class TestTieredEscalation:
 
     def test_real_phase1_rewrite_switches_to_heuristic(self) -> None:
         msgs = _build_history(4, long_results=True)
-        strategy = TieredCompact(
-            keep_recent=1,
-            phase_thresholds=(0.5, 0.5, 0.9),
-        )
+        strategy = TieredCompact(keep_recent=1, phase_thresholds=(0.5, 0.5, 0.9))
 
         result, phase = strategy._compact_with_initial_usage(
-            ConversationState(msgs),
-            budget_tokens=1000,
-            initial_tokens=600,
+            ConversationState(msgs), budget_tokens=1000, initial_tokens=600
         )
         result = result.messages
 
@@ -364,12 +383,17 @@ class TestTieredEscalation:
 def test_phase1_shared_block_budget_preserves_fields_and_correlation(lengths):
     from dataclasses import replace
 
-    blocks = [TextPart(chr(65 + i) * n, {"block": i}, bare=True)
-              for i, n in enumerate(lengths)]
-    part = ToolResultPart("correlated", blocks, "error",
-                          "string" if len(blocks) == 1 else "blocks", {"result": 1})
-    message = RichMessage(MessageRole.USER, [part], step_index=0,
-                          extra_fields={"name": "read"}, content_shape="blocks")
+    blocks = [TextPart(chr(65 + i) * n, {"block": i}, bare=True) for i, n in enumerate(lengths)]
+    part = ToolResultPart(
+        "correlated", blocks, "error", "string" if len(blocks) == 1 else "blocks", {"result": 1}
+    )
+    message = RichMessage(
+        MessageRole.USER,
+        [part],
+        step_index=0,
+        extra_fields={"name": "read"},
+        content_shape="blocks",
+    )
     state = ConversationState([_sys(), _user_input(), message, _tool_call(step=1)])
     before = deepcopy(state)
     result, phase = _p1_only(1).compact(state, BIG)
@@ -379,9 +403,11 @@ def test_phase1_shared_block_budget_preserves_fields_and_correlation(lengths):
     assert phase == 1
     assert truncated == replace(part, content=truncated.content)
     assert result.messages[2] == replace(message, parts=[truncated])
-    assert "".join(b.text for b in truncated.content) == "".join(b.text for b in blocks)[:200] + notice
+    assert (
+        "".join(b.text for b in truncated.content) == "".join(b.text for b in blocks)[:200] + notice
+    )
     assert [(b.extra_fields, b.bare) for b in truncated.content] == [
-        (b.extra_fields, b.bare) for b in blocks[:len(truncated.content)]
+        (b.extra_fields, b.bare) for b in blocks[: len(truncated.content)]
     ]
     if lengths == (150, 120):
         assert truncated.content[0] is blocks[0]
@@ -390,12 +416,20 @@ def test_phase1_shared_block_budget_preserves_fields_and_correlation(lengths):
 
 
 def test_phase1_two_results_have_independent_budgets_and_keep_visible_text():
-    results = [ToolResultPart(f"call-{i}", [TextPart("x" * size, {"i": i}, True)],
-                              outcome, "blocks", {"result": i})
-               for i, (size, outcome) in enumerate([(270, "success"), (350, "error")])]
+    results = [
+        ToolResultPart(
+            f"call-{i}", [TextPart("x" * size, {"i": i}, True)], outcome, "blocks", {"result": i}
+        )
+        for i, (size, outcome) in enumerate([(270, "success"), (350, "error")])
+    ]
     text = TextPart("ordinary visible text", {"visible": True})
-    message = RichMessage(MessageRole.USER, [results[0], text, results[1]], 0,
-                          extra_fields={"message": True}, content_shape="blocks")
+    message = RichMessage(
+        MessageRole.USER,
+        [results[0], text, results[1]],
+        0,
+        extra_fields={"message": True},
+        content_shape="blocks",
+    )
     state = ConversationState([_sys(), _user_input(), message, _tool_call(step=1)])
     result, _ = _p1_only(1).compact(state, BIG)
     first, kept_text, second = result.messages[2].parts
@@ -411,21 +445,34 @@ def test_phase1_two_results_have_independent_budgets_and_keep_visible_text():
 
 
 @pytest.mark.parametrize("phase", [1, 2, 3])
-@pytest.mark.parametrize("purpose", ["retry", "unknown_tool", "tool_arg_validation", "step", "prerequisite"])
+@pytest.mark.parametrize(
+    "purpose", ["retry", "unknown_tool", "tool_arg_validation", "step", "prerequisite"]
+)
 def test_correction_parts_removed_without_losing_unrelated_parts(phase, purpose):
     reasoning = ReasoningPart("interpretation")
     call = ToolCallPart("read", ValidArguments({}), "call")
-    correction = RichMessage(MessageRole.USER, [
-        TextPart("correction"), ToolResultPart("bad", [TextPart("invalid")], "error"),
-        reasoning, call,
-    ], 0, purpose, {"name": "retained"}, "blocks")
-    ordinary = RichMessage(MessageRole.USER, [TextPart("visible"),
-        ToolResultPart("execution-error", [TextPart("x" * 270)], "error"),
-    ], 0)
+    correction = RichMessage(
+        MessageRole.USER,
+        [
+            TextPart("correction"),
+            ToolResultPart("bad", [TextPart("invalid")], "error"),
+            reasoning,
+            call,
+        ],
+        0,
+        purpose,
+        {"name": "retained"},
+        "blocks",
+    )
+    ordinary = RichMessage(
+        MessageRole.USER,
+        [TextPart("visible"), ToolResultPart("execution-error", [TextPart("x" * 270)], "error")],
+        0,
+    )
     state = ConversationState([_sys(), _user_input(), correction, ordinary, _tool_call(step=1)])
-    strategy = TieredCompact(keep_recent=1, phase_thresholds={
-        1: (0, 1, 1), 2: (0, 0, 1), 3: (0, 0, 0),
-    }[phase])
+    strategy = TieredCompact(
+        keep_recent=1, phase_thresholds={1: (0, 1, 1), 2: (0, 0, 1), 3: (0, 0, 0)}[phase]
+    )
     result, reached = strategy.compact(state, BIG)
     assert reached == phase
     assert result.messages[2].parts == [reasoning, call]
@@ -445,10 +492,19 @@ def test_mixed_assistant_preserves_calls_and_message_fields(phase):
     from dataclasses import replace
 
     call = ToolCallPart("read", ValidArguments({"x": 1}), "call", {"call": True})
-    message = RichMessage(MessageRole.ASSISTANT, [
-        TextPart("visible"), ReasoningPart("reasoning"), call,
-        ToolResultPart("other", [TextPart("result")]),
-    ], 0, extra_fields={"name": "assistant"}, content_shape="blocks", empty_tool_calls=True)
+    message = RichMessage(
+        MessageRole.ASSISTANT,
+        [
+            TextPart("visible"),
+            ReasoningPart("reasoning"),
+            call,
+            ToolResultPart("other", [TextPart("result")]),
+        ],
+        0,
+        extra_fields={"name": "assistant"},
+        content_shape="blocks",
+        empty_tool_calls=True,
+    )
     state = ConversationState([_sys(), _user_input(), message, _tool_call(step=1)])
     strategy = _p1_p2_only(1) if phase == 2 else _all_phases(1)
     result, _ = strategy.compact(state, BIG)
@@ -508,19 +564,27 @@ async def test_runner_retry_history_uses_incoming_and_completed_boundaries(strat
             return super().maybe_compact(state, **kwargs)
 
     context = RecordingContext(NoCompact(), 10000)
-    client = MockClient([
-        assistant(call("read"), call("read")),
-        assistant(TextPart("rejected text")),
-        assistant(call("read")),
-        assistant(call("finish")),
-    ])
+    client = MockClient(
+        [
+            assistant(call("read"), call("read")),
+            assistant(TextPart("rejected text")),
+            assistant(call("read")),
+            assistant(call("finish")),
+        ]
+    )
     workflow = Workflow(
-        "retry-boundary", "test", tools={name: ToolDefinition(name) for name in ["read", "finish"]},
+        "retry-boundary",
+        "test",
+        tools={name: ToolDefinition(name) for name in ["read", "finish"]},
         handlers={"read": lambda: "result", "finish": lambda: "finished"},
-        required_steps=[], terminal_tool="finish", system_prompt_template="Use tools.",
+        required_steps=[],
+        terminal_tool="finish",
+        system_prompt_template="Use tools.",
     )
     assert await WorkflowRunner(client, context).run(workflow, "Run") == "finished"
-    state = snapshots[-1]  # Before finish: retries consume iterations; acceptance/results use step 3.
+    state = snapshots[
+        -1
+    ]  # Before finish: retries consume iterations; acceptance/results use step 3.
     assert [m.step_index for m in state.messages] == [None, None, 1, 1, 1, 1, 1, 3, 3]
     rejected, correction = state.messages[5:7]
     assert rejected.parts[0].text == "rejected text"

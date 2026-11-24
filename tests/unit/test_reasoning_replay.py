@@ -17,11 +17,7 @@ from forge.core.reasoning import validate_reasoning_replay
 @pytest.mark.parametrize("target", ["openai", "anthropic"])
 @pytest.mark.parametrize(
     "mode,expected",
-    [
-        ("none", []),
-        ("keep-last", ["last1", "last2"]),
-        ("full", ["old1", "old2", "last1", "last2"]),
-    ],
+    [("none", []), ("keep-last", ["last1", "last2"]), ("full", ["old1", "old2", "last1", "last2"])],
 )
 def test_complete_last_reasoning_message_and_cross_protocol_nonmutation(
     source, target, mode, expected
@@ -67,9 +63,7 @@ def test_complete_last_reasoning_message_and_cross_protocol_nonmutation(
         )
     before = deepcopy(state)
     view = replay_messages(state, mode)
-    assert [
-        p.text for m in view for p in m.parts if isinstance(p, ReasoningPart)
-    ] == expected
+    assert [p.text for m in view for p in m.parts if isinstance(p, ReasoningPart)] == expected
     wire = render_openai(view) if target == "openai" else render_anthropic(view)[1]
     serialized = str(wire)
     if source == "openai" and target == "anthropic":
@@ -109,9 +103,7 @@ def test_anthropic_request_omits_foreign_reasoning_without_changing_history():
                 "reasoning_content": "private one",
                 "reasoning": "private two",
                 "reasoning_text": "private three",
-                "tool_calls": [
-                    {"id": "c", "function": {"name": "search", "arguments": "{}"}}
-                ],
+                "tool_calls": [{"id": "c", "function": {"name": "search", "arguments": "{}"}}],
             },
             {"role": "tool", "tool_call_id": "c", "content": "result"},
         ]
@@ -154,9 +146,7 @@ def test_anthropic_renderer_omits_inline_openai_reasoning(visible):
     assert render_openai(state.messages)[0]["reasoning_content"] == "private reasoning"
     _, wire = render_anthropic(replay_messages(state, "full"))
     assert wire == (
-        [{"role": "assistant", "content": [{"type": "text", "text": visible}]}]
-        if visible
-        else []
+        [{"role": "assistant", "content": [{"type": "text", "text": visible}]}] if visible else []
     )
     assert state == before
 

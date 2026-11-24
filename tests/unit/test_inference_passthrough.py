@@ -35,10 +35,7 @@ async def infer(state, client, *, context=None, errors=None, **kwargs):
         [
             ToolDefinition(
                 "search",
-                input_schema={
-                    "$defs": {"X": {"type": "string"}},
-                    "additionalProperties": False,
-                },
+                input_schema={"$defs": {"X": {"type": "string"}}, "additionalProperties": False},
             )
         ],
         **kwargs,
@@ -47,20 +44,14 @@ async def infer(state, client, *, context=None, errors=None, **kwargs):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("stream", [False, True])
-async def test_initial_and_retry_share_renderer_keep_fields_and_record_each_reply(
-    stream,
-):
+async def test_initial_and_retry_share_renderer_keep_fields_and_record_each_reply(stream):
     state = openai_state(
         [
             {
                 "role": "user",
                 "name": "caller",
                 "content": [
-                    {
-                        "type": "text",
-                        "text": "one",
-                        "cache_control": {"type": "ephemeral"},
-                    },
+                    {"type": "text", "text": "one", "cache_control": {"type": "ephemeral"}},
                     {"type": "text", "text": "two", "x": 2},
                 ],
             }
@@ -81,10 +72,7 @@ async def test_initial_and_retry_share_renderer_keep_fields_and_record_each_repl
     assert requests[0].payload["messages"][0] == requests[1].payload["messages"][0]
     assert requests[0].payload["tools"] == requests[1].payload["tools"]
     assert (
-        requests[0].payload["tools"][0]["function"]["parameters"][
-            "additionalProperties"
-        ]
-        is False
+        requests[0].payload["tools"][0]["function"]["parameters"]["additionalProperties"] is False
     )
     assert state.messages == [before, rejected, state.messages[2], accepted]
     assert (
@@ -120,14 +108,11 @@ async def test_rescue_only_visible_parts_joined_by_newline_and_recorded_as_calls
 @pytest.mark.asyncio
 async def test_structured_calls_take_precedence_over_visible_rescue_encoding():
     reply = assistant(
-        TextPart('{"tool":"search","args":{"wrong":true}}'),
-        call(arguments={"q": "structured"}),
+        TextPart('{"tool":"search","args":{"wrong":true}}'), call(arguments={"q": "structured"})
     )
     state = openai_state([])
     await infer(state, MockClient([reply]))
-    assert len(reply.parts) == 2 and reply.parts[-1].arguments.value == {
-        "q": "structured"
-    }
+    assert len(reply.parts) == 2 and reply.parts[-1].arguments.value == {"q": "structured"}
 
 
 @pytest.mark.asyncio
@@ -147,28 +132,21 @@ async def test_invalid_calls_remain_correlated_on_retry_without_coercion(value):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("kind", ["retry", "unknown", "arguments"])
-async def test_error_budget_exhaustion_retains_final_reply_once_and_no_unused_correction(
-    kind,
-):
+async def test_error_budget_exhaustion_retains_final_reply_once_and_no_unused_correction(kind):
     def response():
         if kind == "retry":
             return assistant(TextPart("last text"))
         return assistant(
-            ToolCallPart(
-                "ghost" if kind == "unknown" else "search", InvalidArguments(False)
-            )
+            ToolCallPart("ghost" if kind == "unknown" else "search", InvalidArguments(False))
         )
 
     first, last = response(), response()
     state = openai_state([])
     client = MockClient([first, last])
     with pytest.raises(
-        ToolCallError,
-        match="max_tool_errors=1" if kind == "arguments" else "max_retries=1",
+        ToolCallError, match="max_tool_errors=1" if kind == "arguments" else "max_retries=1"
     ) as error:
-        await infer(
-            state, client, errors=ErrorTracker(max_retries=1, max_tool_errors=1)
-        )
+        await infer(state, client, errors=ErrorTracker(max_retries=1, max_tool_errors=1))
     assert len(client.send_calls) == 2
     assert state.messages[-1] is last
     assert sum(m is last for m in state.messages) == 1 and len(state.messages) == 3
@@ -212,9 +190,7 @@ async def test_request_owned_usage_priority_invalidation_and_legacy_content_esti
     context = ctx()
     assert context.estimate_tokens(state) == 10
     result = await infer(
-        state,
-        UsageClient([assistant(call(arguments={"large": "x" * 10000}))]),
-        context=context,
+        state, UsageClient([assistant(call(arguments={"large": "x" * 10000}))]), context=context
     )
     assert context.estimate_tokens(state) == 31
     assert result.usage.total_tokens == 10
@@ -226,10 +202,7 @@ async def test_request_owned_usage_priority_invalidation_and_legacy_content_esti
 async def test_threshold_warning_is_transient_and_rich_accounting_is_exercised_before_nocompact():
     state = openai_state([{"role": "user", "content": "x" * 40}])
     context = ContextManager(
-        NoCompact(),
-        10,
-        context_thresholds=[0.5],
-        on_context_threshold=lambda *_: "warning",
+        NoCompact(), 10, context_thresholds=[0.5], on_context_threshold=lambda *_: "warning"
     )
     client = MockClient([assistant(call())])
     result = await infer(state, client, context=context)

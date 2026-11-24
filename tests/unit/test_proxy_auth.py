@@ -56,15 +56,11 @@ class TestExtractInboundCredentials:
 
     def test_case_variant_same_name_headers_raise_even_when_equal(self):
         with pytest.raises(MultipleCredentialsError):
-            extract_inbound_credentials(
-                {"Authorization": "Bearer x", "authorization": "Bearer x"}
-            )
+            extract_inbound_credentials({"Authorization": "Bearer x", "authorization": "Bearer x"})
 
     def test_duplicate_same_name_marker_raises(self):
         with pytest.raises(MultipleCredentialsError):
-            extract_inbound_credentials(
-                {"authorization": "Bearer x", DUPLICATE_AUTH_MARKER: "1"}
-            )
+            extract_inbound_credentials({"authorization": "Bearer x", DUPLICATE_AUTH_MARKER: "1"})
 
     def test_empty_or_whitespace_value_is_not_a_credential(self):
         assert extract_inbound_credentials({"authorization": ""}) == {}
@@ -77,9 +73,7 @@ class TestExtractInboundCredentials:
 
     def test_scheme_only_bearer_fails_loud_through_resolve(self):
         assert (
-            resolve_inbound_credential(
-                {"authorization": "Bearer "}, "openai", "anthropic", False
-            )
+            resolve_inbound_credential({"authorization": "Bearer "}, "openai", "anthropic", False)
             is None
         )
 
@@ -96,9 +90,7 @@ class TestRelocateCredential:
         }
 
     def test_same_protocol_anthropic_verbatim(self):
-        assert relocate_credential("x-api-key", "k", "anthropic", "anthropic") == {
-            "x-api-key": "k"
-        }
+        assert relocate_credential("x-api-key", "k", "anthropic", "anthropic") == {"x-api-key": "k"}
 
     def test_cross_anthropic_to_openai_wraps_bearer(self):
         assert relocate_credential("x-api-key", "k", "anthropic", "openai") == {
@@ -106,40 +98,32 @@ class TestRelocateCredential:
         }
 
     def test_cross_openai_to_anthropic_strips_bearer(self):
-        assert relocate_credential(
-            "authorization", "Bearer k", "openai", "anthropic"
-        ) == {"x-api-key": "k"}
+        assert relocate_credential("authorization", "Bearer k", "openai", "anthropic") == {
+            "x-api-key": "k"
+        }
 
     def test_cross_bearer_strip_is_case_insensitive(self):
-        assert relocate_credential(
-            "authorization", "BEARER k", "openai", "anthropic"
-        ) == {"x-api-key": "k"}
+        assert relocate_credential("authorization", "BEARER k", "openai", "anthropic") == {
+            "x-api-key": "k"
+        }
 
     def test_cross_non_bearer_authorization_passes_whole(self):
-        assert relocate_credential(
-            "authorization", "Basic abc", "openai", "anthropic"
-        ) == {"x-api-key": "Basic abc"}
+        assert relocate_credential("authorization", "Basic abc", "openai", "anthropic") == {
+            "x-api-key": "Basic abc"
+        }
 
     def test_no_double_scheme_on_round_trip(self):
-        assert relocate_credential(
-            "x-api-key", "Bearer-like", "anthropic", "openai"
-        ) == {"Authorization": "Bearer Bearer-like"}
+        assert relocate_credential("x-api-key", "Bearer-like", "anthropic", "openai") == {
+            "Authorization": "Bearer Bearer-like"
+        }
 
 
 class TestRelocateCredentials:
     @pytest.mark.parametrize(
         ("source", "target", "expected"),
         [
-            (
-                "openai",
-                "openai",
-                {"authorization": "Bearer TOKEN", "x-api-key": "TOKEN"},
-            ),
-            (
-                "anthropic",
-                "anthropic",
-                {"authorization": "Bearer TOKEN", "x-api-key": "TOKEN"},
-            ),
+            ("openai", "openai", {"authorization": "Bearer TOKEN", "x-api-key": "TOKEN"}),
+            ("anthropic", "anthropic", {"authorization": "Bearer TOKEN", "x-api-key": "TOKEN"}),
             ("anthropic", "openai", {"Authorization": "Bearer TOKEN"}),
             ("anthropic", "ollama", {"Authorization": "Bearer TOKEN"}),
             ("openai", "anthropic", {"x-api-key": "TOKEN"}),
@@ -163,10 +147,7 @@ class TestResolveInboundCredential:
     def test_inbound_plus_static_key_raises(self):
         with pytest.raises(MultipleCredentialsError):
             resolve_inbound_credential(
-                {"authorization": "Bearer x"},
-                "openai",
-                "openai",
-                backend_api_key_present=True,
+                {"authorization": "Bearer x"}, "openai", "openai", backend_api_key_present=True
             )
 
     def test_inbound_relocated_when_no_static(self):
@@ -178,19 +159,13 @@ class TestResolveInboundCredential:
     def test_nonmatching_inbound_auth_headers_raise(self):
         with pytest.raises(MultipleCredentialsError):
             resolve_inbound_credential(
-                {"authorization": "Bearer x", "x-api-key": "k"},
-                "openai",
-                "openai",
-                False,
+                {"authorization": "Bearer x", "x-api-key": "k"}, "openai", "openai", False
             )
 
     def test_matching_pair_plus_static_key_raises(self):
         with pytest.raises(MultipleCredentialsError):
             resolve_inbound_credential(
-                {"authorization": "Bearer x", "x-api-key": "x"},
-                "openai",
-                "openai",
-                True,
+                {"authorization": "Bearer x", "x-api-key": "x"}, "openai", "openai", True
             )
 
     def test_empty_inbound_value_returns_none(self):
@@ -206,11 +181,7 @@ class TestResolveMetadataCredential:
     @pytest.mark.parametrize(
         ("headers", "target", "expected"),
         [
-            (
-                {"authorization": "Bearer TOKEN"},
-                "openai",
-                {"authorization": "Bearer TOKEN"},
-            ),
+            ({"authorization": "Bearer TOKEN"}, "openai", {"authorization": "Bearer TOKEN"}),
             ({"x-api-key": "TOKEN"}, "anthropic", {"x-api-key": "TOKEN"}),
             ({"authorization": "Bearer TOKEN"}, "anthropic", {"x-api-key": "TOKEN"}),
             ({"x-api-key": "TOKEN"}, "openai", {"Authorization": "Bearer TOKEN"}),
@@ -239,26 +210,22 @@ class TestResolveMetadataCredential:
 
     def test_known_source_pair_uses_inference_mapping(self):
         pair = {"authorization": "Bearer TOKEN", "x-api-key": "TOKEN"}
-        assert _resolve_metadata_credential(
-            pair, "openai", None, source_protocol="anthropic"
-        ) == {"Authorization": "Bearer TOKEN"}
+        assert _resolve_metadata_credential(pair, "openai", None, source_protocol="anthropic") == {
+            "Authorization": "Bearer TOKEN"
+        }
 
     def test_static_plus_inbound_and_duplicate_inbound_raise(self):
         with pytest.raises(MultipleCredentialsError):
-            _resolve_metadata_credential(
-                {"authorization": "Bearer INBOUND"}, "openai", "STATIC"
-            )
+            _resolve_metadata_credential({"authorization": "Bearer INBOUND"}, "openai", "STATIC")
         with pytest.raises(MultipleCredentialsError):
             _resolve_metadata_credential(
-                {"authorization": "Bearer ONE", DUPLICATE_AUTH_MARKER: "1"},
-                "openai",
-                None,
+                {"authorization": "Bearer ONE", DUPLICATE_AUTH_MARKER: "1"}, "openai", None
             )
 
     def test_unknown_target_preserves_inbound_slot_verbatim(self):
-        assert _resolve_metadata_credential(
-            {"authorization": "Bearer TOKEN"}, "future", None
-        ) == {"authorization": "Bearer TOKEN"}
+        assert _resolve_metadata_credential({"authorization": "Bearer TOKEN"}, "future", None) == {
+            "authorization": "Bearer TOKEN"
+        }
 
 
 def _mock_client(response):
@@ -280,11 +247,7 @@ def _ctx():
 
 
 def _body(tools=None):
-    body = {
-        "model": "test",
-        "messages": [{"role": "user", "content": "hi"}],
-        "stream": False,
-    }
+    body = {"model": "test", "messages": [{"role": "user", "content": "hi"}], "stream": False}
     if tools:
         body["tools"] = tools
     return body
@@ -314,9 +277,7 @@ async def test_handler_no_tools_relocates_inbound_credential():
         backend_protocol="anthropic",
         headers={"authorization": "Bearer INBOUND"},
     )
-    assert client.render_request.call_args.args[2].extra_headers == {
-        "x-api-key": "INBOUND"
-    }
+    assert client.render_request.call_args.args[2].extra_headers == {"x-api-key": "INBOUND"}
 
 
 @pytest.mark.asyncio

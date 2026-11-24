@@ -16,9 +16,7 @@ from forge.proxy.convert import (
 
 class TestToolCallsToOpenai:
     def test_single_tool_call(self):
-        result = reply_to_openai(
-            assistant(call(name="search", arguments={"q": "test"}))
-        )
+        result = reply_to_openai(assistant(call(name="search", arguments={"q": "test"})))
         assert result["object"] == "chat.completion"
         choices = result["choices"]
         assert len(choices) == 1
@@ -42,9 +40,7 @@ class TestToolCallsToOpenai:
 
     def test_reasoning_omitted_by_default(self):
         result = reply_to_openai(
-            assistant(
-                ReasoningPart("Let me think..."), call(name="search", arguments={})
-            )
+            assistant(ReasoningPart("Let me think..."), call(name="search", arguments={}))
         )
         msg = result["choices"][0]["message"]
         assert msg["content"] is None
@@ -52,9 +48,7 @@ class TestToolCallsToOpenai:
 
     def test_keep_last_reasoning_replay_exposed_as_reasoning_content(self):
         result = reply_to_openai(
-            assistant(
-                ReasoningPart("Let me think..."), call(name="search", arguments={})
-            ),
+            assistant(ReasoningPart("Let me think..."), call(name="search", arguments={})),
             reasoning_replay="keep-last",
         )
         msg = result["choices"][0]["message"]
@@ -63,18 +57,14 @@ class TestToolCallsToOpenai:
 
     def test_full_reasoning_replay_exposes_reasoning_in_content(self):
         result = reply_to_openai(
-            assistant(
-                ReasoningPart("Let me think..."), call(name="search", arguments={})
-            ),
+            assistant(ReasoningPart("Let me think..."), call(name="search", arguments={})),
             reasoning_replay="full",
         )
         assert result["choices"][0]["message"]["content"] == "Let me think..."
 
     def test_none_reasoning_replay_omits_reasoning(self):
         result = reply_to_openai(
-            assistant(
-                ReasoningPart("Let me think..."), call(name="search", arguments={})
-            ),
+            assistant(ReasoningPart("Let me think..."), call(name="search", arguments={})),
             reasoning_replay="none",
         )
         msg = result["choices"][0]["message"]
@@ -86,9 +76,7 @@ class TestToolCallsToOpenai:
         assert result["choices"][0]["message"]["content"] is None
 
     def test_model_name_propagated(self):
-        result = reply_to_openai(
-            assistant(call(name="search", arguments={})), model="my-model"
-        )
+        result = reply_to_openai(assistant(call(name="search", arguments={})), model="my-model")
         assert result["model"] == "my-model"
 
 
@@ -112,9 +100,7 @@ class TestTextResponseToOpenai:
 
 class TestToolCallsToSseEvents:
     def test_single_tool_call_structure(self):
-        events = reply_to_sse_events(
-            assistant(call(name="search", arguments={"q": "x"}))
-        )
+        events = reply_to_sse_events(assistant(call(name="search", arguments={"q": "x"})))
         assert len(events) == 2
         delta = events[0]["choices"][0]["delta"]
         assert "tool_calls" in delta

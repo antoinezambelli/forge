@@ -91,9 +91,7 @@ def test_request_session_precedence_and_opacity(
     body_value, header_value, expected_id, expected_source
 ):
     body = {"litellm_session_id": body_value}
-    headers = (
-        {"x-claude-code-session-id": header_value} if header_value is not None else {}
-    )
+    headers = {"x-claude-code-session-id": header_value} if header_value is not None else {}
     facts = RequestFacts()
     observe_request_context(body, headers, facts)
     if expected_id is None:
@@ -103,9 +101,7 @@ def test_request_session_precedence_and_opacity(
         assert facts.session.source == expected_source
 
 
-@pytest.mark.parametrize(
-    "header_name", ["x-claude-code-agent-id", "x-claude-code-parent-agent-id"]
-)
+@pytest.mark.parametrize("header_name", ["x-claude-code-agent-id", "x-claude-code-parent-agent-id"])
 def test_nonempty_claude_agent_headers_are_ineligible(header_name):
     facts = RequestFacts()
     observe_request_context({}, {header_name: "agent"}, facts)
@@ -145,10 +141,7 @@ class TestNoToolsPassthrough:
     async def test_text_response_passthrough_stream(self):
         client = _mock_client(text_reply("Hello!"))
         result = await handle_chat_completions(
-            _body(stream=True),
-            client,
-            _context_manager(),
-            client_adapter=ClientAdapter.LLAMAFILE,
+            _body(stream=True), client, _context_manager(), client_adapter=ClientAdapter.LLAMAFILE
         )
         assert isinstance(result, list)
         assert result[-1]["choices"][0]["finish_reason"] == "stop"
@@ -273,11 +266,7 @@ class TestEffectiveModelContracts:
         client._http.headers = {}
         client._http.post.return_value = self._openai_response()
         await handle_chat_completions(
-            {
-                "model": "caller-alias",
-                "messages": [{"role": "user", "content": "hi"}],
-                "tools": [],
-            },
+            {"model": "caller-alias", "messages": [{"role": "user", "content": "hi"}], "tools": []},
             client,
             _context_manager(),
             client_adapter=ClientAdapter.VLLM,
@@ -316,22 +305,13 @@ class TestEffectiveModelContracts:
         }
         body_before = deepcopy(body)
         result = await handle_chat_completions(
-            body,
-            client,
-            _context_manager(),
-            max_retries=1,
-            client_adapter=ClientAdapter.VLLM,
+            body, client, _context_manager(), max_retries=1, client_adapter=ClientAdapter.VLLM
         )
-        first, retry = [
-            call.kwargs["json"] for call in client._http.post.call_args_list
-        ]
+        first, retry = [call.kwargs["json"] for call in client._http.post.call_args_list]
         assert first["tools"] == raw_tools
         assert first["messages"][0]["vendor"] == "raw"
         assert retry["tools"] == first["tools"]
-        assert (
-            "x-provider"
-            in retry["tools"][0]["function"]["parameters"]["properties"]["q"]
-        )
+        assert "x-provider" in retry["tools"][0]["function"]["parameters"]["properties"]["q"]
         assert retry["messages"][0]["content"] == "hi"
         assert len(retry["messages"]) > 1
         for request in (first, retry):
@@ -350,9 +330,9 @@ class TestEffectiveModelContracts:
         client._http = AsyncMock()
         client._http.headers = {}
         response = self._openai_response(content=None, tool_name="respond")
-        response.json.return_value["choices"][0]["message"]["tool_calls"][0][
-            "function"
-        ]["arguments"] = '{"message":"finished"}'
+        response.json.return_value["choices"][0]["message"]["tool_calls"][0]["function"][
+            "arguments"
+        ] = '{"message":"finished"}'
         client._http.post.return_value = response
         tools = [_tool_def("search")]
         body = _body(tools=tools)
@@ -365,10 +345,7 @@ class TestEffectiveModelContracts:
             client_adapter=ClientAdapter.VLLM,
         )
         downstream_tools = client._http.post.call_args.kwargs["json"]["tools"]
-        assert [tool["function"]["name"] for tool in downstream_tools] == [
-            "search",
-            "respond",
-        ]
+        assert [tool["function"]["name"] for tool in downstream_tools] == ["search", "respond"]
         assert tools == original_tools
         assert result["choices"][0]["message"]["content"] == "finished"
         assert "tool_calls" not in result["choices"][0]["message"]
@@ -377,9 +354,7 @@ class TestEffectiveModelContracts:
 class TestLazyDiscovery:
     @staticmethod
     def _catalog(window: int | None = 50000) -> ModelCatalog:
-        return ModelCatalog(
-            (ModelCatalogEntry("served", window),), first_served_id="served"
-        )
+        return ModelCatalog((ModelCatalogEntry("served", window),), first_served_id="served")
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("budget", [None, 8192])
@@ -539,11 +514,7 @@ class TestRequestLocalUsage:
             client_adapter=ClientAdapter.LLAMAFILE,
             request_facts=facts,
         )
-        assert result["usage"] == {
-            "prompt_tokens": 0,
-            "completion_tokens": 0,
-            "total_tokens": 0,
-        }
+        assert result["usage"] == {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
         assert facts.usage is None
         assert client.last_usage[0] is stale
 
@@ -559,11 +530,7 @@ class TestRequestLocalUsage:
             max_retries=0,
             request_facts=facts,
         )
-        assert result["usage"] == {
-            "prompt_tokens": 0,
-            "completion_tokens": 0,
-            "total_tokens": 0,
-        }
+        assert result["usage"] == {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
         assert facts.usage is None
         assert client.last_usage[0] is stale
 
@@ -579,11 +546,7 @@ class TestRequestLocalUsage:
             client_adapter=ClientAdapter.LLAMAFILE,
             request_facts=facts,
         )
-        assert result["usage"] == {
-            "prompt_tokens": 0,
-            "completion_tokens": 0,
-            "total_tokens": 0,
-        }
+        assert result["usage"] == {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
         assert facts.usage is None
         assert client.last_usage[0] is stale
 
@@ -593,9 +556,7 @@ class TestWithTools:
     async def test_tool_call_returned(self):
         """Valid tool call is returned in OpenAI format."""
         client = _mock_client(assistant(call(name="search", arguments={"q": "test"})))
-        client.last_usage = {
-            0: TokenUsage(prompt_tokens=10, completion_tokens=5, total_tokens=15)
-        }
+        client.last_usage = {0: TokenUsage(prompt_tokens=10, completion_tokens=5, total_tokens=15)}
         result = await handle_chat_completions(
             _body(tools=[_tool_def("search")]),
             client,
@@ -606,19 +567,13 @@ class TestWithTools:
         assert len(tc) == 1
         assert tc[0]["function"]["name"] == "search"
         assert result["choices"][0]["finish_reason"] == "tool_calls"
-        assert result["usage"] == {
-            "prompt_tokens": 10,
-            "completion_tokens": 5,
-            "total_tokens": 15,
-        }
+        assert result["usage"] == {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15}
 
     @pytest.mark.asyncio
     async def test_tool_call_stream(self):
         """Valid tool call returns SSE events."""
         client = _mock_client(assistant(call(name="search", arguments={})))
-        client.last_usage = {
-            0: TokenUsage(prompt_tokens=10, completion_tokens=5, total_tokens=15)
-        }
+        client.last_usage = {0: TokenUsage(prompt_tokens=10, completion_tokens=5, total_tokens=15)}
         result = await handle_chat_completions(
             _body(tools=[_tool_def("search")], stream=True),
             client,
@@ -636,12 +591,8 @@ class TestWithTools:
     @pytest.mark.asyncio
     async def test_respond_tool_auto_injected(self):
         """With inject_respond_tool=True, a respond() call is stripped to text."""
-        client = _mock_client(
-            assistant(call(name="respond", arguments={"message": "Hi!"}))
-        )
-        client.last_usage = {
-            0: TokenUsage(prompt_tokens=10, completion_tokens=5, total_tokens=15)
-        }
+        client = _mock_client(assistant(call(name="respond", arguments={"message": "Hi!"})))
+        client.last_usage = {0: TokenUsage(prompt_tokens=10, completion_tokens=5, total_tokens=15)}
         result = await handle_chat_completions(
             _body(tools=[_tool_def("search")]),
             client,
@@ -652,21 +603,13 @@ class TestWithTools:
         assert result["choices"][0]["message"]["content"] == "Hi!"
         assert result["choices"][0]["finish_reason"] == "stop"
         assert "tool_calls" not in result["choices"][0]["message"]
-        assert result["usage"] == {
-            "prompt_tokens": 10,
-            "completion_tokens": 5,
-            "total_tokens": 15,
-        }
+        assert result["usage"] == {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15}
 
     @pytest.mark.asyncio
     async def test_respond_stripped_in_stream(self):
         """Respond call in stream mode returns text SSE events."""
-        client = _mock_client(
-            assistant(call(name="respond", arguments={"message": "Hi!"}))
-        )
-        client.last_usage = {
-            0: TokenUsage(prompt_tokens=10, completion_tokens=5, total_tokens=15)
-        }
+        client = _mock_client(assistant(call(name="respond", arguments={"message": "Hi!"})))
+        client.last_usage = {0: TokenUsage(prompt_tokens=10, completion_tokens=5, total_tokens=15)}
         result = await handle_chat_completions(
             _body(tools=[_tool_def("search")], stream=True),
             client,
@@ -690,9 +633,7 @@ class TestWithTools:
                 call(name="respond", arguments={"message": "also this"}),
             )
         )
-        client.last_usage = {
-            0: TokenUsage(prompt_tokens=10, completion_tokens=5, total_tokens=15)
-        }
+        client.last_usage = {0: TokenUsage(prompt_tokens=10, completion_tokens=5, total_tokens=15)}
         result = await handle_chat_completions(
             _body(tools=[_tool_def("search")]),
             client,
@@ -703,21 +644,13 @@ class TestWithTools:
         tc = result["choices"][0]["message"]["tool_calls"]
         assert len(tc) == 1
         assert tc[0]["function"]["name"] == "search"
-        assert result["usage"] == {
-            "prompt_tokens": 10,
-            "completion_tokens": 5,
-            "total_tokens": 15,
-        }
+        assert result["usage"] == {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15}
 
     @pytest.mark.asyncio
     async def test_respond_not_double_injected(self):
         """If client already provides respond tool, don't inject again."""
-        client = _mock_client(
-            assistant(call(name="respond", arguments={"message": "Hi!"}))
-        )
-        client.last_usage = {
-            0: TokenUsage(prompt_tokens=10, completion_tokens=5, total_tokens=15)
-        }
+        client = _mock_client(assistant(call(name="respond", arguments={"message": "Hi!"})))
+        client.last_usage = {0: TokenUsage(prompt_tokens=10, completion_tokens=5, total_tokens=15)}
         tools = [_tool_def("search"), _tool_def("respond")]
         result = await handle_chat_completions(
             _body(tools=tools),
@@ -727,11 +660,7 @@ class TestWithTools:
             inject_respond_tool=True,
         )
         assert result["choices"][0]["message"]["content"] == "Hi!"
-        assert result["usage"] == {
-            "prompt_tokens": 10,
-            "completion_tokens": 5,
-            "total_tokens": 15,
-        }
+        assert result["usage"] == {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15}
 
 
 class TestErrorPaths:
@@ -739,9 +668,7 @@ class TestErrorPaths:
     async def test_retries_exhausted_returns_text(self):
         """When retries are exhausted, last text is returned to client."""
         client = _mock_client(text_reply("I can't do that"))
-        client.last_usage = {
-            0: TokenUsage(prompt_tokens=10, completion_tokens=5, total_tokens=15)
-        }
+        client.last_usage = {0: TokenUsage(prompt_tokens=10, completion_tokens=5, total_tokens=15)}
         result = await handle_chat_completions(
             _body(tools=[_tool_def("search")]),
             client,
@@ -751,19 +678,13 @@ class TestErrorPaths:
         )
         assert result["choices"][0]["message"]["content"] == "I can't do that"
         assert result["choices"][0]["finish_reason"] == "stop"
-        assert result["usage"] == {
-            "prompt_tokens": 10,
-            "completion_tokens": 5,
-            "total_tokens": 15,
-        }
+        assert result["usage"] == {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15}
 
     @pytest.mark.asyncio
     async def test_retries_exhausted_stream(self):
         """Retries exhausted in stream mode returns text SSE events."""
         client = _mock_client(text_reply("nope"))
-        client.last_usage = {
-            0: TokenUsage(prompt_tokens=10, completion_tokens=5, total_tokens=15)
-        }
+        client.last_usage = {0: TokenUsage(prompt_tokens=10, completion_tokens=5, total_tokens=15)}
         result = await handle_chat_completions(
             _body(tools=[_tool_def("search")], stream=True),
             client,
@@ -772,9 +693,7 @@ class TestErrorPaths:
             max_retries=1,
         )
         assert isinstance(result, list)
-        content_events = [
-            e for e in result if e["choices"][0].get("delta", {}).get("content")
-        ]
+        content_events = [e for e in result if e["choices"][0].get("delta", {}).get("content")]
         assert len(content_events) > 0
         assert result[-1]["usage"] == {
             "prompt_tokens": 10,
@@ -788,9 +707,7 @@ class TestErrorPaths:
         max_tool_errors (not max_retries) bounds the loop. Proves the proxy's
         new max_tool_errors knob threads through to the ErrorTracker."""
         client = _mock_client(assistant(call(name="search", arguments="bad")))
-        client.last_usage = {
-            0: TokenUsage(prompt_tokens=10, completion_tokens=5, total_tokens=15)
-        }
+        client.last_usage = {0: TokenUsage(prompt_tokens=10, completion_tokens=5, total_tokens=15)}
         result = await handle_chat_completions(
             _body(tools=[_tool_def("search")]),
             client,
@@ -815,20 +732,12 @@ class TestSamplingPlumbing:
         body["temperature"] = 0.5
         body["top_p"] = 0.9
         result = await handle_chat_completions(
-            body,
-            client,
-            _context_manager(),
-            client_adapter=ClientAdapter.LLAMAFILE,
-            max_retries=1,
+            body, client, _context_manager(), client_adapter=ClientAdapter.LLAMAFILE, max_retries=1
         )
         client.send.assert_called_once()
         sampling = client.render_request.call_args.args[2].sampling
         assert sampling == {"temperature": 0.5, "top_p": 0.9}
-        assert result["usage"] == {
-            "prompt_tokens": 1,
-            "completion_tokens": 1,
-            "total_tokens": 2,
-        }
+        assert result["usage"] == {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}
 
     @pytest.mark.asyncio
     async def test_no_tools_path_no_sampling_fields(self):
@@ -867,18 +776,10 @@ class TestSamplingPlumbing:
         body["seed"] = 42
         body["temperature"] = 0.3
         result = await handle_chat_completions(
-            body,
-            client,
-            _context_manager(),
-            client_adapter=ClientAdapter.LLAMAFILE,
-            max_retries=1,
+            body, client, _context_manager(), client_adapter=ClientAdapter.LLAMAFILE, max_retries=1
         )
         assert captured["sampling"] == {"temperature": 0.3, "seed": 42}
-        assert result["usage"] == {
-            "prompt_tokens": 10,
-            "completion_tokens": 5,
-            "total_tokens": 15,
-        }
+        assert result["usage"] == {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15}
 
     @pytest.mark.asyncio
     async def test_per_call_sampling_does_not_mutate_client(self):
@@ -887,11 +788,7 @@ class TestSamplingPlumbing:
         body1 = _body()
         body1["temperature"] = 0.99
         await handle_chat_completions(
-            body1,
-            client,
-            _context_manager(),
-            client_adapter=ClientAdapter.LLAMAFILE,
-            max_retries=1,
+            body1, client, _context_manager(), client_adapter=ClientAdapter.LLAMAFILE, max_retries=1
         )
         first_sampling = client.render_request.call_args.args[2].sampling
         assert first_sampling == {"temperature": 0.99}
@@ -913,11 +810,7 @@ class TestSamplingPlumbing:
         body["max_tokens"] = 256
         body["tool_choice"] = "auto"
         await handle_chat_completions(
-            body,
-            client,
-            _context_manager(),
-            client_adapter=ClientAdapter.LLAMAFILE,
-            max_retries=1,
+            body, client, _context_manager(), client_adapter=ClientAdapter.LLAMAFILE, max_retries=1
         )
         passthrough = client.render_request.call_args.args[2].extra_fields
         assert passthrough == {"max_tokens": 256, "tool_choice": "auto"}
@@ -938,11 +831,7 @@ class TestSamplingPlumbing:
         body["stream_options"] = {"include_usage": True}
         body["max_tokens"] = 256
         await handle_chat_completions(
-            body,
-            client,
-            _context_manager(),
-            client_adapter=ClientAdapter.LLAMAFILE,
-            max_retries=1,
+            body, client, _context_manager(), client_adapter=ClientAdapter.LLAMAFILE, max_retries=1
         )
         passthrough = client.render_request.call_args.args[2].extra_fields
         assert "stream_options" not in passthrough
@@ -988,27 +877,20 @@ class TestAnthropicProtocol:
 
         async def fake_run_inference(**kwargs):
             return InferenceResult(
-                response=assistant(
-                    call(name="get_weather", arguments={"city": "Paris"})
-                ),
+                response=assistant(call(name="get_weather", arguments={"city": "Paris"})),
                 new_messages=[],
                 tool_call_counter=0,
                 attempts=1,
             )
 
         monkeypatch.setattr("forge.proxy.handler.run_inference", fake_run_inference)
-        client = _mock_client(
-            assistant(call(name="get_weather", arguments={"city": "Paris"}))
-        )
+        client = _mock_client(assistant(call(name="get_weather", arguments={"city": "Paris"})))
         body = self._anthropic_body(
             tools=[
                 {
                     "name": "get_weather",
                     "description": "Weather.",
-                    "input_schema": {
-                        "type": "object",
-                        "properties": {"city": {"type": "string"}},
-                    },
+                    "input_schema": {"type": "object", "properties": {"city": {"type": "string"}}},
                 }
             ]
         )
@@ -1048,9 +930,7 @@ class TestAnthropicProtocol:
     async def test_anthropic_passthrough_translates_to_openai_shape(self):
         """tool_choice and stop_sequences land in passthrough in OpenAI shape."""
         client = _mock_client(text_reply("ok"))
-        body = self._anthropic_body(
-            stop_sequences=["</done>"], tool_choice={"type": "any"}
-        )
+        body = self._anthropic_body(stop_sequences=["</done>"], tool_choice={"type": "any"})
         await handle_chat_completions(
             body,
             client,
@@ -1272,10 +1152,7 @@ class TestNativePassthrough:
         }
         tools = [_tool_def("search", parameters=params)]
         await handle_chat_completions(
-            _body(tools=tools),
-            client,
-            _context_manager(),
-            client_adapter=ClientAdapter.LLAMAFILE,
+            _body(tools=tools), client, _context_manager(), client_adapter=ClientAdapter.LLAMAFILE
         )
         sent = [format_tool(t) for t in client.render_request.call_args.args[1]]
         assert sent == tools
@@ -1403,9 +1280,7 @@ class TestOllamaProxyIntegration:
             {
                 "message": {
                     "role": "assistant",
-                    "tool_calls": [
-                        {"function": {"name": "search", "arguments": {"q": "ok"}}}
-                    ],
+                    "tool_calls": [{"function": {"name": "search", "arguments": {"q": "ok"}}}],
                 }
             }
         )
@@ -1434,53 +1309,6 @@ class TestOllamaProxyIntegration:
         assert tc_msg["tool_calls"][0]["function"]["arguments"] == {"q": "1"}
 
 
-class TestPromptCapabilityHandoff:
-    """In prompt capability (native_passthrough=False) the handler suppresses
-    the verbatim passthrough so the request folds normally and the client's
-    prompt path injects the tools. (The injection itself is covered by the
-    LlamafileClient prompt-mode tests.)"""
-
-    @pytest.mark.asyncio
-    async def test_prompt_mode_receives_canonical_tools(self):
-        client = _mock_client(assistant(call(name="search", arguments={"q": "x"})))
-        await handle_chat_completions(
-            _body(tools=[_tool_def("search")]),
-            client,
-            _context_manager(),
-            client_adapter=ClientAdapter.LLAMAFILE,
-        )
-        assert "raw_openai_tools" not in client.send.call_args.kwargs
-        assert client.render_request.call_args.args[1][0].name == "search"
-
-    @pytest.mark.asyncio
-    async def test_prompt_mode_folds_messages_not_verbatim(self):
-        client = _mock_client(assistant(call(name="search", arguments={"q": "x"})))
-        messages = [{"role": "user", "content": "hi", "name": "u1"}]
-        await handle_chat_completions(
-            _body(messages=messages, tools=[_tool_def("search")]),
-            client,
-            _context_manager(),
-            client_adapter=ClientAdapter.LLAMAFILE,
-        )
-        sent_messages = client.send.call_args.args[0].payload["messages"]
-        assert sent_messages == messages
-        assert sent_messages[0]["name"] == "u1"
-
-    @pytest.mark.asyncio
-    async def test_native_default_still_forwards_raw(self):
-        client = _mock_client(assistant(call(name="search", arguments={"q": "x"})))
-        tools = [_tool_def("search")]
-        await handle_chat_completions(
-            _body(tools=tools),
-            client,
-            _context_manager(),
-            client_adapter=ClientAdapter.LLAMAFILE,
-        )
-        assert [
-            format_tool(t) for t in client.render_request.call_args.args[1]
-        ] == tools
-
-
 @pytest.mark.parametrize(
     "tools, message",
     [
@@ -1494,22 +1322,10 @@ class TestPromptCapabilityHandoff:
         ([{"type": "function", "function": {}}], "name"),
         ([{"type": "function", "function": {"name": ""}}], "name"),
         ([{"type": "function", "function": {"name": 3}}], "name"),
-        (
-            [{"type": "function", "function": {"name": "x", "description": None}}],
-            "description",
-        ),
-        (
-            [{"type": "function", "function": {"name": "x", "description": 2}}],
-            "description",
-        ),
-        (
-            [{"type": "function", "function": {"name": "x", "parameters": []}}],
-            "dictionary",
-        ),
-        (
-            [{"type": "function", "function": {"name": "x", "parameters": None}}],
-            "dictionary",
-        ),
+        ([{"type": "function", "function": {"name": "x", "description": None}}], "description"),
+        ([{"type": "function", "function": {"name": "x", "description": 2}}], "description"),
+        ([{"type": "function", "function": {"name": "x", "parameters": []}}], "dictionary"),
+        ([{"type": "function", "function": {"name": "x", "parameters": None}}], "dictionary"),
         ([_tool_def("x"), _tool_def("x")], "Duplicate"),
     ],
 )
@@ -1573,9 +1389,7 @@ async def test_respond_stripping_preserves_visible_text_beside_retained_real_cal
     )
     if protocol == "openai":
         if stream:
-            text = "".join(
-                e["choices"][0]["delta"].get("content") or "" for e in result
-            )
+            text = "".join(e["choices"][0]["delta"].get("content") or "" for e in result)
             names = [
                 p["function"]["name"]
                 for e in result
@@ -1590,8 +1404,7 @@ async def test_respond_stripping_preserves_visible_text_beside_retained_real_cal
         names = [
             e["content_block"]["name"]
             for e in result
-            if e["type"] == "content_block_start"
-            and e["content_block"]["type"] == "tool_use"
+            if e["type"] == "content_block_start" and e["content_block"]["type"] == "tool_use"
         ]
     else:
         text = "".join(p["text"] for p in result["content"] if p["type"] == "text")
@@ -1606,13 +1419,9 @@ async def test_empty_wire_arguments_preserve_no_argument_proxy_behavior(
     wire_arguments, expected_attempts
 ):
     client = LlamafileClient("model.gguf", base_url="http://test/v1")
-    client._http.post.return_value = TestEffectiveModelContracts._openai_response(
-        tool_name="noop"
-    )
+    client._http.post.return_value = TestEffectiveModelContracts._openai_response(tool_name="noop")
     response = client._http.post.return_value.json.return_value
-    response["choices"][0]["message"]["tool_calls"][0]["function"]["arguments"] = (
-        wire_arguments
-    )
+    response["choices"][0]["message"]["tool_calls"][0]["function"]["arguments"] = wire_arguments
     result = await handle_chat_completions(
         _body(tools=[_tool_def("noop")]),
         client,
@@ -1625,10 +1434,7 @@ async def test_empty_wire_arguments_preserve_no_argument_proxy_behavior(
     choice = result["choices"][0]
     if wire_arguments == "":
         assert choice["finish_reason"] == "tool_calls"
-        assert (
-            json.loads(choice["message"]["tool_calls"][0]["function"]["arguments"])
-            == {}
-        )
+        assert json.loads(choice["message"]["tool_calls"][0]["function"]["arguments"]) == {}
     else:
         assert choice["finish_reason"] == "stop"
         assert "tool_calls" not in choice["message"]

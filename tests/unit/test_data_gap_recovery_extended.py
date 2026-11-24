@@ -55,12 +55,7 @@ def test_lambda_and_stateful_tools_share_output_contracts() -> None:
                 "[PROTECTED]",
                 "[managed externally]",
             ),
-            (
-                "security_audit",
-                "personnel_file",
-                "onboarding_records",
-                "project_assignments",
-            ),
+            ("security_audit", "personnel_file", "onboarding_records", "project_assignments"),
         ),
         (
             "security soft trap",
@@ -83,13 +78,7 @@ def test_lambda_and_stateful_tools_share_output_contracts() -> None:
             ("current pay system", "HR onboarding"),
             ("compensation_v2", "onboarding_records"),
         ),
-        (
-            "current compensation",
-            "compensation_v2",
-            {"employee_id": "E-1847"},
-            ("B7",),
-            (),
-        ),
+        ("current compensation", "compensation_v2", {"employee_id": "E-1847"}, ("B7",), ()),
         (
             "current groups",
             "project_assignments",
@@ -115,13 +104,7 @@ def test_lambda_and_stateful_tools_share_output_contracts() -> None:
             "legacy lure",
             "legacy_records",
             {"employee_id": "E-1847"},
-            (
-                "B5",
-                "legacy-readonly",
-                "legacy_v1",
-                "compensation_v2",
-                "project_assignments",
-            ),
+            ("B5", "legacy-readonly", "legacy_v1", "compensation_v2", "project_assignments"),
             ("B7", "payments-prod-v3"),
         ),
         (
@@ -150,11 +133,7 @@ def test_lambda_and_stateful_tools_share_output_contracts() -> None:
     for implementation in ("lambda", "stateful"):
         for label, tool_name, kwargs, required, forbidden in cases:
             output = _call_tool(implementation, tool_name, kwargs)
-            assert all(signal in output for signal in required), (
-                implementation,
-                label,
-                output,
-            )
+            assert all(signal in output for signal in required), (implementation, label, output)
             assert all(signal not in output for signal in forbidden), (
                 implementation,
                 label,
@@ -179,24 +158,15 @@ def test_lambda_and_stateful_validators_reject_missing_or_lure_facts() -> None:
         ("missing clearance", (("L3", ""), ("Confidential", ""))),
         ("missing contact", (("Michael", ""),)),
         ("missing salary", (("B7", ""),)),
-        (
-            "missing groups",
-            (("payments-prod-v3", ""), ("internal-apis-v2", "")),
-        ),
+        ("missing groups", (("payments-prod-v3", ""), ("internal-apis-v2", ""))),
         ("legacy salary lure", (("B7", "B5"),)),
         (
             "legacy group lure",
-            (
-                ("payments-prod-v3", "legacy-readonly"),
-                (", internal-apis-v2", ""),
-            ),
+            (("payments-prod-v3", "legacy-readonly"), (", internal-apis-v2", "")),
         ),
         (
             "static security groups",
-            (
-                ("payments-prod-v3", "payments-prod"),
-                (", internal-apis-v2", ", internal-apis"),
-            ),
+            (("payments-prod-v3", "payments-prod"), (", internal-apis-v2", ", internal-apis")),
         ),
     ]
 

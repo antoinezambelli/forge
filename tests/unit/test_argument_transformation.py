@@ -43,14 +43,7 @@ def test_lambda_and_stateful_tools_share_output_contracts() -> None:
             "Q4 transactions",
             "list_transactions",
             {"quarter": "Q4", "year": 2024},
-            transaction_signals
-            + (
-                "EUR",
-                "USD",
-                "5,000.00 USD",
-                "ACME Corp",
-                "Wonka Industries",
-            ),
+            transaction_signals + ("EUR", "USD", "5,000.00 USD", "ACME Corp", "Wonka Industries"),
             (),
         ),
         (
@@ -98,33 +91,21 @@ def test_lambda_and_stateful_tools_share_output_contracts() -> None:
         (
             "flagged EUR conversion",
             "currency_convert",
-            {
-                "amount": 4800,
-                "from_currency": "EUR",
-                "to_currency": "USD",
-            },
+            {"amount": 4800, "from_currency": "EUR", "to_currency": "USD"},
             ("5,280.00 USD", "1 EUR = 1.1 USD"),
             (),
         ),
         (
             "under-threshold EUR conversion",
             "currency_convert",
-            {
-                "amount": 2400,
-                "from_currency": "EUR",
-                "to_currency": "USD",
-            },
+            {"amount": 2400, "from_currency": "EUR", "to_currency": "USD"},
             ("2,640.00 USD",),
             (),
         ),
         (
             "unsupported conversion",
             "currency_convert",
-            {
-                "amount": 100,
-                "from_currency": "GBP",
-                "to_currency": "JPY",
-            },
+            {"amount": 100, "from_currency": "GBP", "to_currency": "JPY"},
             ("Unsupported",),
             (),
         ),
@@ -165,11 +146,7 @@ def test_lambda_and_stateful_tools_share_output_contracts() -> None:
     for implementation in ("lambda", "stateful"):
         for label, tool_name, kwargs, required, forbidden in cases:
             output = _call_tool(implementation, tool_name, kwargs)
-            assert all(signal in output for signal in required), (
-                implementation,
-                label,
-                output,
-            )
+            assert all(signal in output for signal in required), (implementation, label, output)
             assert all(signal not in output for signal in forbidden), (
                 implementation,
                 label,
@@ -196,10 +173,7 @@ def test_lambda_and_stateful_validators_reject_benchmark_failure_modes() -> None
     cases = [
         (
             "skipped EUR conversion",
-            {
-                "transaction_ids": "TX-1001, TX-1005, TX-1008",
-                "total_flagged_usd": "$23,700",
-            },
+            {"transaction_ids": "TX-1001, TX-1005, TX-1008", "total_flagged_usd": "$23,700"},
         ),
         (
             "ACME alias over-flag",
@@ -210,16 +184,10 @@ def test_lambda_and_stateful_validators_reject_benchmark_failure_modes() -> None
         ),
         (
             "strict greater-than threshold",
-            {
-                "transaction_ids": "TX-1001, TX-1006, TX-1008",
-                "total_flagged_usd": "$23,980",
-            },
+            {"transaction_ids": "TX-1001, TX-1006, TX-1008", "total_flagged_usd": "$23,980"},
         ),
         ("wrong top vendor", {"top_vendor": "Cyberdyne LLC"}),
-        (
-            "missing transaction",
-            {"transaction_ids": "TX-1001, TX-1005, TX-1008"},
-        ),
+        ("missing transaction", {"transaction_ids": "TX-1001, TX-1005, TX-1008"}),
         ("missing total", {"total_flagged_usd": ""}),
     ]
 
@@ -238,9 +206,7 @@ def test_stateful_tools_record_successful_reasoning_path() -> None:
     assert "alias of Acme Corp" in system.get_vendor_details("ACME Corp")
     assert "5,280.00 USD" in system.currency_convert(4800, "EUR", "USD")
     system.submit_audit_report(
-        transaction_ids="TX-1001",
-        total_flagged_usd="$1.00",
-        top_vendor="Anyone",
+        transaction_ids="TX-1001", total_flagged_usd="$1.00", top_vendor="Anyone"
     )
 
     assert system.list_called_for == ("Q4", 2024)
@@ -267,11 +233,7 @@ def test_stateful_tools_do_not_record_rejected_paths() -> None:
 def _exercise_required_stateful_calls(workflow: Any) -> None:
     workflow.handlers["list_transactions"](quarter="Q4", year=2024)
     workflow.handlers["get_approved_vendors"]()
-    workflow.handlers["currency_convert"](
-        amount=4800,
-        from_currency="EUR",
-        to_currency="USD",
-    )
+    workflow.handlers["currency_convert"](amount=4800, from_currency="EUR", to_currency="USD")
     workflow.handlers["get_vendor_details"](vendor_name="ACME Corp")
 
 
@@ -282,11 +244,7 @@ def test_validate_state_requires_full_reasoning_path_and_submission() -> None:
     workflow.handlers["list_transactions"](quarter="Q4", year=2024)
     workflow.handlers["get_approved_vendors"]()
     assert not validate_state()
-    workflow.handlers["currency_convert"](
-        amount=4800,
-        from_currency="EUR",
-        to_currency="USD",
-    )
+    workflow.handlers["currency_convert"](amount=4800, from_currency="EUR", to_currency="USD")
     assert not validate_state()
     workflow.handlers["get_vendor_details"](vendor_name="ACME Corp")
     assert not validate_state()

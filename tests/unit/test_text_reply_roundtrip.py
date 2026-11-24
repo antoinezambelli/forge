@@ -23,11 +23,13 @@ def _tool_reply(name, mode):
         return {"content": json.dumps({"tool": name, "args": {}})}
     return {
         "content": "",
-        "tool_calls": [{
-            "id": "backend-call",
-            "type": "function",
-            "function": {"name": name, "arguments": "{}"},
-        }],
+        "tool_calls": [
+            {
+                "id": "backend-call",
+                "type": "function",
+                "function": {"name": name, "arguments": "{}"},
+            }
+        ],
     }
 
 
@@ -44,7 +46,8 @@ def _client(mode, replies, requests):
                 ]
             content = "data: " + json.dumps({"choices": [{"delta": delta}]})
             return httpx.Response(
-                200, text=content + "\n\ndata: [DONE]\n\n",
+                200,
+                text=content + "\n\ndata: [DONE]\n\n",
                 headers={"content-type": "text/event-stream"},
             )
         return httpx.Response(200, json={"choices": [{"message": message}]})
@@ -71,8 +74,13 @@ def _assert_text_retries(messages):
 @pytest.mark.parametrize("mode", ["native", "prompt"])
 @pytest.mark.parametrize(
     ("stream", "field"),
-    [(True, {}), (True, {"tool_calls": []}),
-     (False, {}), (False, {"tool_calls": None}), (False, {"tool_calls": []})],
+    [
+        (True, {}),
+        (True, {"tool_calls": []}),
+        (False, {}),
+        (False, {"tool_calls": None}),
+        (False, {"tool_calls": []}),
+    ],
     ids=["stream-missing", "stream-empty-delta", "buffer-missing", "buffer-null", "buffer-empty"],
 )
 async def test_runner_text_retries_preserve_next_wire_history(mode, stream, field):
@@ -85,16 +93,21 @@ async def test_runner_text_retries_preserve_next_wire_history(mode, stream, fiel
     requests = []
     client = _client(mode, replies, requests)
     workflow = Workflow(
-        name="text-retry", description="text retry boundary",
+        name="text-retry",
+        description="text retry boundary",
         tools={name: ToolDefinition(name, input_schema=SCHEMA) for name in ("read", "finish")},
         handlers={"read": lambda: "read result", "finish": lambda: "finished"},
-        required_steps=["read"], terminal_tool="finish",
+        required_steps=["read"],
+        terminal_tool="finish",
         system_prompt_template="Use read, then finish.",
     )
     try:
         result = await WorkflowRunner(
-            client, ContextManager(NoCompact(), 8192), stream=stream,
-            max_iterations=8, reasoning_replay="full",
+            client,
+            ContextManager(NoCompact(), 8192),
+            stream=stream,
+            max_iterations=8,
+            reasoning_replay="full",
         ).run(workflow, "original question")
     finally:
         await client.aclose()
@@ -114,8 +127,12 @@ async def test_runner_text_retries_preserve_next_wire_history(mode, stream, fiel
 
 @pytest.mark.parametrize(
     ("protocol", "mode", "caller_stream"),
-    [("openai", "native", False), ("anthropic", "prompt", True),
-     ("openai", "prompt", True), ("anthropic", "native", False)],
+    [
+        ("openai", "native", False),
+        ("anthropic", "prompt", True),
+        ("openai", "prompt", True),
+        ("anthropic", "native", False),
+    ],
 )
 async def test_proxy_buffered_empty_calls_preserve_retry_history(protocol, mode, caller_stream):
     replies = [
@@ -126,22 +143,29 @@ async def test_proxy_buffered_empty_calls_preserve_retry_history(protocol, mode,
     client = _client(mode, replies, requests)
     tool = {"name": "finish", "description": "Finish", "input_schema": SCHEMA}
     if protocol == "openai":
-        tool = {"type": "function", "function": {
-            "name": "finish", "description": "Finish", "parameters": SCHEMA,
-        }}
+        tool = {
+            "type": "function",
+            "function": {"name": "finish", "description": "Finish", "parameters": SCHEMA},
+        }
     body = {
-        "model": "model", "messages": [
+        "model": "model",
+        "messages": [
             {"role": "system", "content": "Use tools."},
             {"role": "user", "content": "original question"},
-        ], "tools": [tool], "stream": caller_stream,
+        ],
+        "tools": [tool],
+        "stream": caller_stream,
     }
     if protocol == "anthropic":
         body["system"] = body["messages"].pop(0)["content"]
         body["max_tokens"] = 128
     try:
         await handle_chat_completions(
-            body, client, ContextManager(NoCompact(), 8192),
-            client_adapter=ClientAdapter.LLAMAFILE, protocol=protocol,
+            body,
+            client,
+            ContextManager(NoCompact(), 8192),
+            client_adapter=ClientAdapter.LLAMAFILE,
+            protocol=protocol,
             reasoning_replay="full",
         )
     finally:
@@ -164,8 +188,10 @@ async def test_proxy_caller_empty_calls_do_not_hide_historical_text(mode):
     ]
     try:
         await handle_chat_completions(
-            {"model": "model", "messages": messages}, client,
-            ContextManager(NoCompact(), 8192), client_adapter=ClientAdapter.LLAMAFILE,
+            {"model": "model", "messages": messages},
+            client,
+            ContextManager(NoCompact(), 8192),
+            client_adapter=ClientAdapter.LLAMAFILE,
         )
     finally:
         await client.aclose()

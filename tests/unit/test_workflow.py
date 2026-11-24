@@ -38,10 +38,7 @@ def _make_workflow(**overrides: Any) -> Workflow:
     [
         ({"required_steps": ["nonexistent"]}, "Required step 'nonexistent'"),
         ({"terminal_tool": "nonexistent"}, "Terminal tool 'nonexistent'"),
-        (
-            {"terminal_tool": ["submit_result", "nonexistent"]},
-            "Terminal tool 'nonexistent'",
-        ),
+        ({"terminal_tool": ["submit_result", "nonexistent"]}, "Terminal tool 'nonexistent'"),
         (
             {
                 "tools": {
@@ -51,10 +48,7 @@ def _make_workflow(**overrides: Any) -> Workflow:
             },
             "does not match",
         ),
-        (
-            {"required_steps": ["fetch_data", "submit_result"]},
-            "cannot also be a required step",
-        ),
+        ({"required_steps": ["fetch_data", "submit_result"]}, "cannot also be a required step"),
         (
             {
                 "tools": _make_tools("fetch_data", "approve", "reject"),
@@ -97,14 +91,9 @@ def test_accepts_supported_prerequisite(prerequisites: list[Any]) -> None:
 
 @pytest.mark.parametrize(
     ("terminal_tool", "expected"),
-    [
-        ("submit_result", {"submit_result"}),
-        (["approve", "reject"], {"approve", "reject"}),
-    ],
+    [("submit_result", {"submit_result"}), (["approve", "reject"], {"approve", "reject"})],
 )
-def test_terminal_tools_are_normalized(
-    terminal_tool: str | list[str], expected: set[str]
-) -> None:
+def test_terminal_tools_are_normalized(terminal_tool: str | list[str], expected: set[str]) -> None:
     tools = _make_tools("fetch_data", "submit_result", "approve", "reject")
     workflow = _make_workflow(tools=tools, terminal_tool=terminal_tool)
 
@@ -115,10 +104,7 @@ def test_workflow_public_methods_render_and_dispatch() -> None:
     def custom_fn(**kwargs: Any) -> str:
         return f"handled {kwargs['value']}"
 
-    tools = {
-        "custom_tool": _make_tool("custom_tool"),
-        "submit_result": _make_tool("submit_result"),
-    }
+    tools = {"custom_tool": _make_tool("custom_tool"), "submit_result": _make_tool("submit_result")}
     workflow = _make_workflow(
         tools=tools,
         required_steps=["custom_tool"],
@@ -134,55 +120,44 @@ def test_workflow_public_methods_render_and_dispatch() -> None:
         workflow.handlers["nonexistent"]
 
 
-JSON_SCHEMA = {
-    "type": "object",
-    "properties": {
-        "name": {"type": "string", "description": "Name"},
-        "count": {"type": "integer", "default": 5},
-        "unit": {"type": "string", "enum": ["celsius", "fahrenheit"]},
-        "item": {
-            "type": "object",
-            "properties": {
-                "sku": {"type": "string"},
-                "price": {"type": "number"},
-            },
-            "required": ["sku"],
-        },
-        "tags": {"type": "array", "items": {"type": "string"}},
-    },
-    "required": ["name", "unit", "item", "tags"],
-}
-
-
-def test_complete_schema_preserved_without_argument_validation() -> None:
-    definition = ToolDefinition("create", "Create", JSON_SCHEMA)
-    assert definition.input_schema == JSON_SCHEMA
-
-
-@pytest.mark.parametrize("overrides, message", [
-    ({"handlers": {}}, "Missing handler"),
-    ({"handlers": {"fetch_data": _noop, "submit_result": _noop, "unknown": _noop}}, "Handler 'unknown'"),
-    ({"prerequisites": {"unknown": []}}, "Prerequisite owner 'unknown'"),
-])
+@pytest.mark.parametrize(
+    "overrides, message",
+    [
+        ({"handlers": {}}, "Missing handler"),
+        (
+            {"handlers": {"fetch_data": _noop, "submit_result": _noop, "unknown": _noop}},
+            "Handler 'unknown'",
+        ),
+        ({"prerequisites": {"unknown": []}}, "Prerequisite owner 'unknown'"),
+    ],
+)
 def test_execution_mapping_references(overrides, message):
     with pytest.raises(ValueError, match=message):
         _make_workflow(**overrides)
 
 
-@pytest.mark.parametrize("values", [
-    {"name": ""}, {"name": None}, {"name": 12},
-    {"name": "x", "description": None}, {"name": "x", "description": 1},
-    {"name": "x", "input_schema": []}, {"name": "x", "input_schema": None},
-])
+@pytest.mark.parametrize(
+    "values",
+    [
+        {"name": ""},
+        {"name": None},
+        {"name": 12},
+        {"name": "x", "description": None},
+        {"name": "x", "description": 1},
+        {"name": "x", "input_schema": []},
+        {"name": "x", "input_schema": None},
+    ],
+)
 def test_invalid_definition(values):
     with pytest.raises(ValueError):
         ToolDefinition(**values)
 
 
 def test_defaults_and_authoritative_fields():
-    definition = ToolDefinition(name="a name without regex limits", extra_fields={
-        "name": "wrong", "description": "wrong", "input_schema": [], "strict": True,
-    })
+    definition = ToolDefinition(
+        name="a name without regex limits",
+        extra_fields={"name": "wrong", "description": "wrong", "input_schema": [], "strict": True},
+    )
     assert definition.description == ""
     assert definition.input_schema == {}
     assert definition.extra_fields == {"strict": True}

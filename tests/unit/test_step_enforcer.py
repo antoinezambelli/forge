@@ -10,8 +10,7 @@ class TestStepEnforcerCheck:
 
     def setup_method(self):
         self.enforcer = StepEnforcer(
-            required_steps=["search", "lookup"],
-            terminal_tools=frozenset(["answer"]),
+            required_steps=["search", "lookup"], terminal_tools=frozenset(["answer"])
         )
 
     def test_terminal_before_steps_escalates_and_caps_nudge_tier(self):
@@ -42,10 +41,7 @@ class TestStepEnforcerCheck:
         assert result.needs_nudge is False
 
     def test_batch_with_terminal_and_others(self):
-        calls = [
-            call(name="search", arguments={}),
-            call(name="answer", arguments={}),
-        ]
+        calls = [call(name="search", arguments={}), call(name="answer", arguments={})]
         result = self.enforcer.check(calls)
         assert result.needs_nudge is True
 
@@ -55,8 +51,7 @@ class TestStepEnforcerRecord:
 
     def setup_method(self):
         self.enforcer = StepEnforcer(
-            required_steps=["search", "lookup"],
-            terminal_tools=frozenset(["answer"]),
+            required_steps=["search", "lookup"], terminal_tools=frozenset(["answer"])
         )
 
     def test_recording_lifecycle_and_forwarded_tracker_behavior(self):
@@ -76,8 +71,7 @@ class TestStepEnforcerTerminalReached:
 
     def setup_method(self):
         self.enforcer = StepEnforcer(
-            required_steps=["search"],
-            terminal_tools=frozenset(["answer"]),
+            required_steps=["search"], terminal_tools=frozenset(["answer"])
         )
 
     def test_requires_both_satisfied_steps_and_terminal_call(self):
@@ -188,9 +182,7 @@ class TestPrerequisiteCheckArgMatched:
         self.enforcer = StepEnforcer(
             required_steps=[],
             terminal_tools=frozenset(["respond"]),
-            tool_prerequisites={
-                "edit_file": [{"tool": "read_file", "match_arg": "path"}],
-            },
+            tool_prerequisites={"edit_file": [{"tool": "read_file", "match_arg": "path"}]},
         )
 
     def test_blocks_when_matching_prerequisite_is_missing(self):
@@ -198,9 +190,7 @@ class TestPrerequisiteCheckArgMatched:
             enforcer = StepEnforcer(
                 required_steps=[],
                 terminal_tools=frozenset(["respond"]),
-                tool_prerequisites={
-                    "edit_file": [{"tool": "read_file", "match_arg": "path"}],
-                },
+                tool_prerequisites={"edit_file": [{"tool": "read_file", "match_arg": "path"}]},
             )
             if recorded_path is not None:
                 enforcer.record("read_file", {"path": recorded_path})
@@ -244,10 +234,7 @@ class TestPrerequisiteCheckMixed:
             required_steps=[],
             terminal_tools=frozenset(["respond"]),
             tool_prerequisites={
-                "edit_file": [
-                    "authenticate",
-                    {"tool": "read_file", "match_arg": "path"},
-                ],
+                "edit_file": ["authenticate", {"tool": "read_file", "match_arg": "path"}]
             },
         )
         # Neither satisfied
@@ -325,15 +312,13 @@ class TestMultipleTerminalTools:
 
     def setup_method(self):
         self.enforcer = StepEnforcer(
-            required_steps=["gather_data"],
-            terminal_tools=frozenset(["set_ac", "no_action"]),
+            required_steps=["gather_data"], terminal_tools=frozenset(["set_ac", "no_action"])
         )
 
     def test_each_terminal_triggers_premature_check(self):
         for terminal in ["set_ac", "no_action"]:
             enforcer = StepEnforcer(
-                required_steps=["gather_data"],
-                terminal_tools=frozenset(["set_ac", "no_action"]),
+                required_steps=["gather_data"], terminal_tools=frozenset(["set_ac", "no_action"])
             )
             result = enforcer.check([call(name=terminal, arguments={})])
             assert result.needs_nudge is True, terminal

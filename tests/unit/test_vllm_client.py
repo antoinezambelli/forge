@@ -16,9 +16,7 @@ from forge.errors import BackendError
 
 pytestmark = pytest.mark.usefixtures("mock_httpx_client_constructor")
 CITY_SCHEMA = {
-    "properties": {
-        "city": {"description": "City name", "title": "City", "type": "string"}
-    },
+    "properties": {"city": {"description": "City name", "title": "City", "type": "string"}},
     "required": ["city"],
     "title": "CityParams",
     "type": "object",
@@ -26,9 +24,7 @@ CITY_SCHEMA = {
 
 
 def _make_spec(name: str = "get_weather") -> ToolDefinition:
-    return ToolDefinition(
-        name=name, description=f"Get {name}", input_schema=CITY_SCHEMA
-    )
+    return ToolDefinition(name=name, description=f"Get {name}", input_schema=CITY_SCHEMA)
 
 
 def _make_client(*, think: bool = True) -> VLLMClient:
@@ -64,19 +60,14 @@ def _tool_call_response(
         "role": "assistant",
         "content": content,
         "tool_calls": [
-            {
-                "id": "call_1",
-                "type": "function",
-                "function": {"name": name, "arguments": args},
-            }
+            {"id": "call_1", "type": "function", "function": {"name": name, "arguments": args}}
         ],
     }
     if reasoning is not None:
         message["reasoning"] = reasoning
     return {
         "choices": [{"index": 0, "message": message, "finish_reason": "tool_calls"}],
-        "usage": usage
-        or {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15},
+        "usage": usage or {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15},
     }
 
 
@@ -119,9 +110,7 @@ class TestConstructor:
 class TestSend:
     @pytest.mark.asyncio
     async def test_custom_direct_api_base_is_literal_on_wire(self) -> None:
-        client = VLLMClient(
-            model_path="model", base_url="https://gateway.example/deploy/api"
-        )
+        client = VLLMClient(model_path="model", base_url="https://gateway.example/deploy/api")
         client._http = AsyncMock()
         client._http.headers = {}
         client._http.post.return_value = _mock_response(_text_response("ok"))
@@ -136,14 +125,9 @@ class TestSend:
         client = _make_client()
         client._http.post.return_value = _mock_response(_tool_call_response())
         result = await send(
-            client,
-            [{"role": "user", "content": "weather in paris?"}],
-            tools=[_make_spec()],
+            client, [{"role": "user", "content": "weather in paris?"}], tools=[_make_spec()]
         )
-        assert (
-            client._http.post.await_args.args[0]
-            == "http://test:8000/v1/chat/completions"
-        )
+        assert client._http.post.await_args.args[0] == "http://test:8000/v1/chat/completions"
         assert isinstance(result, RichMessage)
         assert reply_calls(result)[0].name == "get_weather"
         assert argument_value(reply_calls(result)[0]) == {"city": "Paris"}
@@ -164,14 +148,9 @@ class TestSend:
         client._http.post.return_value = _mock_response(
             _tool_call_response(args='{"city": "Paris", "units": "metric"}')
         )
-        result = await send(
-            client, [{"role": "user", "content": "x"}], tools=[_make_spec()]
-        )
+        result = await send(client, [{"role": "user", "content": "x"}], tools=[_make_spec()])
         assert isinstance(result, RichMessage)
-        assert argument_value(reply_calls(result)[0]) == {
-            "city": "Paris",
-            "units": "metric",
-        }
+        assert argument_value(reply_calls(result)[0]) == {"city": "Paris", "units": "metric"}
 
     @pytest.mark.asyncio
     async def test_reasoning_field_captured(self) -> None:
@@ -180,21 +159,15 @@ class TestSend:
         client._http.post.return_value = _mock_response(
             _tool_call_response(reasoning="I should check the weather first.")
         )
-        result = await send(
-            client, [{"role": "user", "content": "x"}], tools=[_make_spec()]
-        )
+        result = await send(client, [{"role": "user", "content": "x"}], tools=[_make_spec()])
         assert isinstance(result, RichMessage)
         assert reasoning(result) == "I should check the weather first."
 
     @pytest.mark.asyncio
     async def test_think_false_discards_reasoning(self) -> None:
         client = _make_client(think=False)
-        client._http.post.return_value = _mock_response(
-            _tool_call_response(reasoning="thought")
-        )
-        result = await send(
-            client, [{"role": "user", "content": "x"}], tools=[_make_spec()]
-        )
+        client._http.post.return_value = _mock_response(_tool_call_response(reasoning="thought"))
+        result = await send(client, [{"role": "user", "content": "x"}], tools=[_make_spec()])
         assert isinstance(result, RichMessage)
         assert reasoning(result) == ""
 
@@ -205,9 +178,7 @@ class TestSend:
         client._http.post.return_value = _mock_response(
             _tool_call_response(content="<think>check the weather first</think>")
         )
-        result = await send(
-            client, [{"role": "user", "content": "x"}], tools=[_make_spec()]
-        )
+        result = await send(client, [{"role": "user", "content": "x"}], tools=[_make_spec()])
         assert isinstance(result, RichMessage)
         assert reasoning(result) == "check the weather first"
 
@@ -218,9 +189,7 @@ class TestSend:
         client._http.post.return_value = _mock_response(
             _tool_call_response(reasoning="structured", content="<think>inline</think>")
         )
-        result = await send(
-            client, [{"role": "user", "content": "x"}], tools=[_make_spec()]
-        )
+        result = await send(client, [{"role": "user", "content": "x"}], tools=[_make_spec()])
         assert isinstance(result, RichMessage)
         assert reasoning(result) == "structured"
 
@@ -255,11 +224,7 @@ class TestSend:
         client = _make_client()
         client._http.post.return_value = _mock_response(
             _tool_call_response(
-                usage={
-                    "prompt_tokens": 100,
-                    "completion_tokens": 20,
-                    "total_tokens": 120,
-                }
+                usage={"prompt_tokens": 100, "completion_tokens": 20, "total_tokens": 120}
             )
         )
         await send(client, [{"role": "user", "content": "x"}], tools=[_make_spec()])
@@ -274,9 +239,7 @@ class TestSend:
         client.temperature = 1.0
         client._http.post.return_value = _mock_response(_text_response())
         await send(
-            client,
-            [{"role": "user", "content": "x"}],
-            sampling={"temperature": 0.0, "seed": 42},
+            client, [{"role": "user", "content": "x"}], sampling={"temperature": 0.0, "seed": 42}
         )
         body = client._http.post.call_args.kwargs["json"]
         assert body["temperature"] == 0.0
@@ -286,9 +249,7 @@ class TestSend:
     @pytest.mark.asyncio
     async def test_non_200_raises_backend_error(self) -> None:
         client = _make_client()
-        client._http.post.return_value = _mock_response(
-            {"error": "bad"}, status_code=500
-        )
+        client._http.post.return_value = _mock_response({"error": "bad"}, status_code=500)
         with pytest.raises(BackendError):
             await send(client, [{"role": "user", "content": "x"}])
 
@@ -370,9 +331,7 @@ class TestSend:
         assert body["stop"] == ["END"]
         assert body["provider_extension"] == nested_extension
         assert body["temperature"] == 0.25
-        assert body["tools"] == [
-            format_tool(t) for t in _extract_tool_definitions(raw_tools)
-        ]
+        assert body["tools"] == [format_tool(t) for t in _extract_tool_definitions(raw_tools)]
         assert body["tool_choice"] == "none"
         assert passthrough == passthrough_before
 
@@ -487,9 +446,7 @@ class TestSendStream:
         assert body["stream_options"] == {"include_usage": True}
         assert body["max_tokens"] == 222
         assert body["provider_extension"] == nested_extension
-        assert body["tools"] == [
-            format_tool(t) for t in _extract_tool_definitions(raw_tools)
-        ]
+        assert body["tools"] == [format_tool(t) for t in _extract_tool_definitions(raw_tools)]
         assert body["tool_choice"] == "required"
         assert passthrough == passthrough_before
 
@@ -523,10 +480,7 @@ class TestSendStream:
                             {
                                 "delta": {
                                     "tool_calls": [
-                                        {
-                                            "index": 0,
-                                            "function": {"arguments": '"Paris"}'},
-                                        }
+                                        {"index": 0, "function": {"arguments": '"Paris"}'}}
                                     ]
                                 }
                             }
@@ -690,9 +644,7 @@ class TestSendStream:
     @pytest.mark.asyncio
     async def test_non_200_raises_backend_error(self) -> None:
         client = _make_client()
-        client._http.stream.return_value = _MockStreamResponse(
-            ["bad gateway"], status_code=502
-        )
+        client._http.stream.return_value = _MockStreamResponse(["bad gateway"], status_code=502)
         with pytest.raises(BackendError):
             async for _ in send_stream(client, [{"role": "user", "content": "x"}]):
                 pass
@@ -706,10 +658,7 @@ class TestGetContextLength:
             {
                 "data": [
                     {"id": "other", "max_model_len": 8192},
-                    {
-                        "id": "/models/gemma-4-26B-A4B-it-AWQ-4bit",
-                        "max_model_len": 113000,
-                    },
+                    {"id": "/models/gemma-4-26B-A4B-it-AWQ-4bit", "max_model_len": 113000},
                 ]
             }
         )
@@ -730,18 +679,13 @@ class TestGetContextLength:
         assert await client.get_context_length() is None
 
     @pytest.mark.asyncio
-    async def test_context_lookup_is_independent_of_invalid_first_identity(
-        self,
-    ) -> None:
+    async def test_context_lookup_is_independent_of_invalid_first_identity(self) -> None:
         client = _make_client()
         client._http.get.return_value = _mock_response(
             {
                 "data": [
                     {"max_model_len": 8192},
-                    {
-                        "id": "/models/gemma-4-26B-A4B-it-AWQ-4bit",
-                        "max_model_len": 113000,
-                    },
+                    {"id": "/models/gemma-4-26B-A4B-it-AWQ-4bit", "max_model_len": 113000},
                 ]
             }
         )
@@ -752,14 +696,7 @@ class TestGetContextLength:
     async def test_unusable_exact_window_returns_none(self, window: object) -> None:
         client = _make_client()
         client._http.get.return_value = _mock_response(
-            {
-                "data": [
-                    {
-                        "id": "/models/gemma-4-26B-A4B-it-AWQ-4bit",
-                        "max_model_len": window,
-                    }
-                ]
-            }
+            {"data": [{"id": "/models/gemma-4-26B-A4B-it-AWQ-4bit", "max_model_len": window}]}
         )
         assert await client.get_context_length() is None
 
@@ -839,11 +776,7 @@ class TestSendStreamEdgeCases:
                 _sse(
                     {
                         "choices": [],
-                        "usage": {
-                            "prompt_tokens": 50,
-                            "completion_tokens": 3,
-                            "total_tokens": 53,
-                        },
+                        "usage": {"prompt_tokens": 50, "completion_tokens": 3, "total_tokens": 53},
                     }
                 ),
                 "data: [DONE]",
@@ -854,47 +787,3 @@ class TestSendStreamEdgeCases:
         usage = client.last_usage[0]
         assert usage.prompt_tokens == 50
         assert usage.completion_tokens == 3
-
-
-class TestParseToolCalls:
-    @pytest.mark.parametrize(
-        "raw, expected",
-        [
-            ("{}", {}),
-            ('{"city":"Paris"}', {"city": "Paris"}),
-            ("", {}),
-            ('""', ""),
-            ('{"city": ', '{"city": '),
-            (123, 123),
-            (None, None),
-        ],
-    )
-    def test_argument_shapes_forward_shared_decoder_results(self, raw, expected):
-        from forge.clients.replies import openai_reply
-
-        reply = openai_reply(
-            {"tool_calls": [{"function": {"name": "lookup", "arguments": raw}}]}
-        )
-        assert argument_value(reply_calls(reply)[0]) == expected
-
-    def test_missing_function_retains_existing_fallback(self):
-        from forge.clients.replies import openai_reply
-
-        reply = openai_reply({"tool_calls": [{}]})
-        assert reply_calls(reply)[0].name == ""
-        assert argument_value(reply_calls(reply)[0]) == {}
-
-    def test_reasoning_belongs_to_message_beside_all_calls(self):
-        from forge.clients.replies import openai_reply
-
-        reply = openai_reply(
-            {
-                "reasoning": "because",
-                "tool_calls": [
-                    {"function": {"name": "a", "arguments": "{}"}},
-                    {"function": {"name": "b", "arguments": "{}"}},
-                ],
-            }
-        )
-        assert [p.name for p in reply_calls(reply)] == ["a", "b"]
-        assert reasoning(reply) == "because"

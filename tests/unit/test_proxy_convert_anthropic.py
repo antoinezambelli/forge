@@ -19,9 +19,7 @@ from forge.proxy.convert_anthropic import (
 def test_litellm_session_id_preserved_by_key_presence():
     assert (
         request_extras(
-            RequestMetadata(
-                source_protocol="anthropic", extra_fields={"litellm_session_id": None}
-            ),
+            RequestMetadata(source_protocol="anthropic", extra_fields={"litellm_session_id": None}),
             "openai",
         )["litellm_session_id"]
         is None
@@ -53,9 +51,7 @@ class TestAnthropicToolsToDefinitions:
 
     def test_rejects_nameless_tool(self):
         with pytest.raises(ValueError):
-            anthropic_tools_to_definitions(
-                [{"description": "no name", "input_schema": {}}]
-            )
+            anthropic_tools_to_definitions([{"description": "no name", "input_schema": {}}])
 
 
 class TestAnthropicToolChoiceTranslation:
@@ -63,8 +59,7 @@ class TestAnthropicToolChoiceTranslation:
         assert (
             request_extras(
                 RequestMetadata(
-                    source_protocol="anthropic",
-                    extra_fields={"tool_choice": {"type": "auto"}},
+                    source_protocol="anthropic", extra_fields={"tool_choice": {"type": "auto"}}
                 ),
                 "openai",
             )["tool_choice"]
@@ -75,8 +70,7 @@ class TestAnthropicToolChoiceTranslation:
         assert (
             request_extras(
                 RequestMetadata(
-                    source_protocol="anthropic",
-                    extra_fields={"tool_choice": {"type": "any"}},
+                    source_protocol="anthropic", extra_fields={"tool_choice": {"type": "any"}}
                 ),
                 "openai",
             )["tool_choice"]
@@ -87,8 +81,7 @@ class TestAnthropicToolChoiceTranslation:
         assert (
             request_extras(
                 RequestMetadata(
-                    source_protocol="anthropic",
-                    extra_fields={"tool_choice": {"type": "none"}},
+                    source_protocol="anthropic", extra_fields={"tool_choice": {"type": "none"}}
                 ),
                 "openai",
             )["tool_choice"]
@@ -108,9 +101,7 @@ class TestAnthropicToolChoiceTranslation:
     def test_passes_through_unknown_shape(self):
         assert (
             request_extras(
-                RequestMetadata(
-                    source_protocol="anthropic", extra_fields={"tool_choice": "auto"}
-                ),
+                RequestMetadata(source_protocol="anthropic", extra_fields={"tool_choice": "auto"}),
                 "openai",
             )["tool_choice"]
             == "auto"
@@ -185,20 +176,14 @@ class TestToolCallsToAnthropic:
 
     def test_default_omits_reasoning_text_block(self):
         result = reply_to_anthropic(
-            assistant(
-                ReasoningPart("Let me search."),
-                call(name="search", arguments={"q": "x"}),
-            )
+            assistant(ReasoningPart("Let me search."), call(name="search", arguments={"q": "x"}))
         )
         text_blocks = [b for b in result["content"] if b["type"] == "text"]
         assert text_blocks == []
 
     def test_full_reasoning_replay_emits_reasoning_as_text_block(self):
         result = reply_to_anthropic(
-            assistant(
-                ReasoningPart("Let me search."),
-                call(name="search", arguments={"q": "x"}),
-            ),
+            assistant(ReasoningPart("Let me search."), call(name="search", arguments={"q": "x"})),
             reasoning_replay="full",
         )
         text_blocks = [b for b in result["content"] if b["type"] == "text"]
@@ -206,9 +191,7 @@ class TestToolCallsToAnthropic:
 
     def test_multiple_tool_calls(self):
         result = reply_to_anthropic(
-            assistant(
-                call(name="a", arguments={"x": 1}), call(name="b", arguments={"y": 2})
-            )
+            assistant(call(name="a", arguments={"x": 1}), call(name="b", arguments={"y": 2}))
         )
         tu_blocks = [b for b in result["content"] if b["type"] == "tool_use"]
         assert len(tu_blocks) == 2
@@ -259,22 +242,18 @@ class TestToolCallsToAnthropicSSE:
             (
                 e
                 for e in events
-                if e["type"] == "content_block_delta"
-                and e["delta"]["type"] == "text_delta"
+                if e["type"] == "content_block_delta" and e["delta"]["type"] == "text_delta"
             )
         )
         assert text_delta["delta"]["text"] == "Hmm."
 
     def test_input_json_delta_is_parseable(self):
-        events = reply_to_anthropic_sse(
-            assistant(call(name="x", arguments={"a": 1, "b": "two"}))
-        )
+        events = reply_to_anthropic_sse(assistant(call(name="x", arguments={"a": 1, "b": "two"})))
         json_delta = next(
             (
                 e
                 for e in events
-                if e["type"] == "content_block_delta"
-                and e["delta"]["type"] == "input_json_delta"
+                if e["type"] == "content_block_delta" and e["delta"]["type"] == "input_json_delta"
             )
         )
         assert json.loads(json_delta["delta"]["partial_json"]) == {"a": 1, "b": "two"}
@@ -307,10 +286,7 @@ class TestTextToAnthropicSSE:
         ([{"name": "x", "input_schema": []}], "dictionary"),
         ([{"name": "x", "input_schema": {}, "description": None}], "description"),
         ([{"name": "x", "input_schema": {}, "description": 2}], "description"),
-        (
-            [{"name": "x", "input_schema": {}}, {"name": "x", "input_schema": {}}],
-            "Duplicate",
-        ),
+        ([{"name": "x", "input_schema": {}}, {"name": "x", "input_schema": {}}], "Duplicate"),
     ],
 )
 def test_anthropic_definition_failures(tools, message):
@@ -320,13 +296,7 @@ def test_anthropic_definition_failures(tools, message):
 
 def test_anthropic_defaults_and_flat_extras():
     definition = anthropic_tools_to_definitions(
-        [
-            {
-                "name": "name with spaces",
-                "input_schema": {},
-                "cache_control": {"type": "ephemeral"},
-            }
-        ]
+        [{"name": "name with spaces", "input_schema": {}, "cache_control": {"type": "ephemeral"}}]
     )[0]
     assert definition.description == ""
     assert definition.input_schema == {}

@@ -6,7 +6,13 @@ from datetime import datetime, timezone
 
 import pytest
 
-from forge.core.messages import ConversationState, RichMessage, MessageRole, TextPart, ToolResultPart
+from forge.core.messages import (
+    ConversationState,
+    RichMessage,
+    MessageRole,
+    TextPart,
+    ToolResultPart,
+)
 from forge.core.messages import ReasoningPart, ToolCallPart, ValidArguments
 from forge.context.accounting import estimate_content_tokens
 from forge.context.manager import CompactEvent, ContextManager
@@ -24,12 +30,20 @@ def _msg(content: str) -> RichMessage:
 def _build_messages(total_chars: int, count: int = 5) -> ConversationState:
     """Same content sizes and sequential post-header steps as the old fixture."""
     per_msg = total_chars // count
-    return ConversationState([
-        RichMessage(
-            MessageRole.SYSTEM if i == 0 else MessageRole.USER if i == 1 else MessageRole.ASSISTANT,
-            [TextPart("x" * per_msg)], step_index=i - 2 if i >= 2 else None,
-        ) for i in range(count)
-    ])
+    return ConversationState(
+        [
+            RichMessage(
+                MessageRole.SYSTEM
+                if i == 0
+                else MessageRole.USER
+                if i == 1
+                else MessageRole.ASSISTANT,
+                [TextPart("x" * per_msg)],
+                step_index=i - 2 if i >= 2 else None,
+            )
+            for i in range(count)
+        ]
+    )
 
 
 class TestUnavailableBudget:
@@ -47,16 +61,9 @@ class TestUnavailableBudget:
             (
                 "thresholds",
                 NoCompact(),
-                {
-                    "context_thresholds": [0.5],
-                    "on_context_threshold": lambda *_: None,
-                },
+                {"context_thresholds": [0.5], "on_context_threshold": lambda *_: None},
             ),
-            (
-                "threshold callback",
-                NoCompact(),
-                {"on_context_threshold": lambda *_: None},
-            ),
+            ("threshold callback", NoCompact(), {"on_context_threshold": lambda *_: None}),
         ]
         for label, strategy, kwargs in cases:
             with pytest.raises(ValueError) as exc_info:
@@ -69,14 +76,26 @@ class TestUnavailableBudget:
 
 class TestEstimateTokens:
     def test_mixed_multiblock_accounting_counts_only_legacy_content(self):
-        state = ConversationState([RichMessage(MessageRole.ASSISTANT, [
-            TextPart("ab", {"ignored": "x" * 1000}),
-            ToolCallPart("read", ValidArguments({"huge": "x" * 10000}), "call"),
-            TextPart("cde"), ReasoningPart("reason", field_name="reasoning_content"),
-            ToolResultPart("call", [TextPart("fghi"), TextPart("jklmn")],
-                           extra_fields={"ignored": "x" * 1000}),
-            ToolResultPart("other", [TextPart("op")]),
-        ], extra_fields={"schema": "x" * 10000})])
+        state = ConversationState(
+            [
+                RichMessage(
+                    MessageRole.ASSISTANT,
+                    [
+                        TextPart("ab", {"ignored": "x" * 1000}),
+                        ToolCallPart("read", ValidArguments({"huge": "x" * 10000}), "call"),
+                        TextPart("cde"),
+                        ReasoningPart("reason", field_name="reasoning_content"),
+                        ToolResultPart(
+                            "call",
+                            [TextPart("fghi"), TextPart("jklmn")],
+                            extra_fields={"ignored": "x" * 1000},
+                        ),
+                        ToolResultPart("other", [TextPart("op")]),
+                    ],
+                    extra_fields={"schema": "x" * 10000},
+                )
+            ]
+        )
         before = deepcopy(state)
         manager = ContextManager(NoCompact(), 100)
         # Top-level text 2+1+3, reasoning 6, result 4+1+5, result 2.
@@ -129,10 +148,7 @@ class TestContextUsage:
         assert mgr.usage is None
 
     def test_values_are_frozen_and_timestamp_must_be_utc_aware(self) -> None:
-        usage = ContextUsage(
-            current_usage_tokens=1,
-            observed_at=datetime.now(timezone.utc),
-        )
+        usage = ContextUsage(current_usage_tokens=1, observed_at=datetime.now(timezone.utc))
         with pytest.raises(FrozenInstanceError):
             usage.current_usage_tokens = 2  # type: ignore[misc]
         with pytest.raises(ValueError, match="UTC-aware"):
@@ -157,10 +173,7 @@ class TestContextUsage:
 class TestPublishedProxyUsage:
     def test_published_slot_is_distinct_from_native_policy_usage(self):
         manager = ContextManager(NoCompact(), budget_tokens=1000)
-        native = ContextUsage(
-            current_usage_tokens=10,
-            observed_at=datetime.now(timezone.utc),
-        )
+        native = ContextUsage(current_usage_tokens=10, observed_at=datetime.now(timezone.utc))
         published = ContextUsage(
             current_usage_tokens=20,
             context_window_tokens=100,
@@ -199,16 +212,20 @@ class TestMaybeCompactOverThreshold:
     def test_tiered_rewrite_invalidates_and_resets_warning_threshold(self):
         events = []
         manager = ContextManager(
-            TieredCompact(1, phase_thresholds=(0.5, 0.7, 0.9)), 1000,
-            on_compact=events.append, context_thresholds=[0.5],
+            TieredCompact(1, phase_thresholds=(0.5, 0.7, 0.9)),
+            1000,
+            on_compact=events.append,
+            context_thresholds=[0.5],
             on_context_threshold=lambda *_: "warning",
         )
-        state = ConversationState([
-            RichMessage(MessageRole.SYSTEM, [TextPart("sys")]),
-            RichMessage(MessageRole.USER, [TextPart("user")]),
-            RichMessage(MessageRole.TOOL, [ToolResultPart("old", [TextPart("x" * 450)])], 0),
-            RichMessage(MessageRole.ASSISTANT, [TextPart("recent")], 1),
-        ])
+        state = ConversationState(
+            [
+                RichMessage(MessageRole.SYSTEM, [TextPart("sys")]),
+                RichMessage(MessageRole.USER, [TextPart("user")]),
+                RichMessage(MessageRole.TOOL, [ToolResultPart("old", [TextPart("x" * 450)])], 0),
+                RichMessage(MessageRole.ASSISTANT, [TextPart("recent")], 1),
+            ]
+        )
         manager.update_token_count(800)
         assert manager.check_thresholds(state) == "warning"
         compacted = manager.maybe_compact(state, step_index=7, step_hint="hint")
@@ -227,8 +244,7 @@ class TestMaybeCompactOverThreshold:
         # Build messages with ~400 chars total
         msgs = _build_messages(total_chars=400, count=6)
         mgr = ContextManager(
-            SlidingWindowCompact(keep_recent=1, compact_threshold=0.75),
-            budget_tokens=100,
+            SlidingWindowCompact(keep_recent=1, compact_threshold=0.75), budget_tokens=100
         )
         result = mgr.maybe_compact(msgs)
         assert len(result.messages) < len(msgs.messages)

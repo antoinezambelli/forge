@@ -9,13 +9,28 @@ import pytest
 from forge.clients.base import ChunkType, StreamChunk, TokenUsage
 from forge.context.manager import ContextManager
 from forge.context.strategies import NoCompact
-from forge.core.messages import (ConversationState, RichMessage, MessageRole, TextPart, ReasoningPart, ToolCallPart, ToolResultPart, ValidArguments)
-from forge.core.runner import WorkflowRunner
-from forge.core.workflow import (
-    ToolDefinition,
-    Workflow,
+from forge.core.messages import (
+    ConversationState,
+    RichMessage,
+    MessageRole,
+    TextPart,
+    ReasoningPart,
+    ToolCallPart,
+    ToolResultPart,
+    ValidArguments,
 )
-from forge.errors import MaxIterationsError, PrerequisiteError, StepEnforcementError, StreamError, ToolCallError, ToolExecutionError, ToolResolutionError, WorkflowCancelledError
+from forge.core.runner import WorkflowRunner
+from forge.core.workflow import ToolDefinition, Workflow
+from forge.errors import (
+    MaxIterationsError,
+    PrerequisiteError,
+    StepEnforcementError,
+    StreamError,
+    ToolCallError,
+    ToolExecutionError,
+    ToolResolutionError,
+    WorkflowCancelledError,
+)
 
 from tests.canonical import assistant, call
 from tests.conftest import MockClient
@@ -85,7 +100,9 @@ def _make_runner(
     )
 
 
-def _collecting_runner(client: MockClient, **runner_kwargs) -> tuple[WorkflowRunner, list[RichMessage]]:
+def _collecting_runner(
+    client: MockClient, **runner_kwargs
+) -> tuple[WorkflowRunner, list[RichMessage]]:
     collected: list[RichMessage] = []
     runner = _make_runner(client, on_message=collected.append, **runner_kwargs)
     return runner, collected
@@ -94,15 +111,11 @@ def _collecting_runner(client: MockClient, **runner_kwargs) -> tuple[WorkflowRun
 # ── Happy path ───────────────────────────────────────────────────
 
 
-
 class TestHappyPath:
     @pytest.mark.asyncio
     async def test_simple_workflow(self):
         """One required step + terminal tool → returns terminal result."""
-        client = MockClient([
-            assistant(call("fetch", {})),
-            assistant(call("submit", {})),
-        ])
+        client = MockClient([assistant(call("fetch", {})), assistant(call("submit", {}))])
         runner = _make_runner(client)
         result = await runner.run(_make_workflow(), "do something", prompt_vars={"role": "tester"})
         assert result == "submit_result"
@@ -115,23 +128,14 @@ class TestHappyPath:
             "step_b": _make_tool("step_b"),
             "submit": _make_tool("submit"),
         }
-        tools_handlers = {
-            "step_a": (lambda **kw: "step_a" + "_result"),
-            "step_b": (lambda **kw: "step_b" + "_result"),
-            "submit": (lambda **kw: "submit" + "_result"),
-        }
-        tools_prerequisites = {}
-        wf = _make_workflow(
-            tools=tools,
-            handlers=tools_handlers,
-            prerequisites=tools_prerequisites,
-            required_steps=["step_a", "step_b"],
+        wf = _make_workflow(tools=tools, required_steps=["step_a", "step_b"])
+        client = MockClient(
+            [
+                assistant(call("step_a", {})),
+                assistant(call("step_b", {})),
+                assistant(call("submit", {})),
+            ]
         )
-        client = MockClient([
-            assistant(call("step_a", {})),
-            assistant(call("step_b", {})),
-            assistant(call("submit", {})),
-        ])
         runner = _make_runner(client)
         result = await runner.run(wf, "go", prompt_vars={"role": "agent"})
         assert result == "submit_result"
@@ -146,21 +150,11 @@ class TestHappyPath:
             return "captured"
 
         tools = {"fetch": _make_tool("fetch"), "submit": _make_tool("submit")}
-        tools_handlers = {
-            "fetch": capture_tool,
-            "submit": (lambda **kw: "submit" + "_result"),
-        }
-        tools_prerequisites = {}
-        wf = _make_workflow(
-            tools=tools,
-            handlers=tools_handlers,
-            prerequisites=tools_prerequisites,
-            required_steps=["fetch"],
+        tools_handlers = {"fetch": capture_tool, "submit": (lambda **kw: "submit" + "_result")}
+        wf = _make_workflow(tools=tools, handlers=tools_handlers, required_steps=["fetch"])
+        client = MockClient(
+            [assistant(call("fetch", {"key": "value", "count": 42})), assistant(call("submit", {}))]
         )
-        client = MockClient([
-            assistant(call("fetch", {"key": "value", "count": 42})),
-            assistant(call("submit", {})),
-        ])
         runner = _make_runner(client)
         await runner.run(wf, "go", prompt_vars={"role": "agent"})
         assert received_args == {"key": "value", "count": 42}
@@ -172,19 +166,21 @@ class TestHappyPath:
                 self.initial_usages: list[int] = []
 
             def _compact_with_initial_usage(
-                self, messages, budget_tokens, *, initial_tokens, step_hint="",
+                self, messages, budget_tokens, *, initial_tokens, step_hint=""
             ):
                 self.initial_usages.append(initial_tokens)
                 return ConversationState(list(messages.messages)), 0
 
         class UsageClient(MockClient):
             def __init__(self):
-                super().__init__([
-                    assistant(call("fetch", {})),
-                    assistant(call("submit", {})),
-                    assistant(call("fetch", {})),
-                    assistant(call("submit", {})),
-                ])
+                super().__init__(
+                    [
+                        assistant(call("fetch", {})),
+                        assistant(call("submit", {})),
+                        assistant(call("fetch", {})),
+                        assistant(call("submit", {})),
+                    ]
+                )
                 self.last_usage = {}
                 self._id_slot = 0
 
@@ -192,9 +188,7 @@ class TestHappyPath:
                 response = await super().send(*args, **kwargs)
                 prompt_tokens = self._call_index * 111
                 self.last_usage[0] = TokenUsage(
-                    prompt_tokens=prompt_tokens,
-                    completion_tokens=9,
-                    total_tokens=prompt_tokens + 9,
+                    prompt_tokens=prompt_tokens, completion_tokens=9, total_tokens=prompt_tokens + 9
                 )
                 return response
 
@@ -220,11 +214,13 @@ class TestRetryLogic:
     @pytest.mark.asyncio
     async def test_text_response_triggers_retry(self):
         """TextResponse triggers retry nudge, then ToolCall succeeds."""
-        client = MockClient([
-            assistant(TextPart("I don't know")),
-            assistant(call("fetch", {})),
-            assistant(call("submit", {})),
-        ])
+        client = MockClient(
+            [
+                assistant(TextPart("I don't know")),
+                assistant(call("fetch", {})),
+                assistant(call("submit", {})),
+            ]
+        )
         runner = _make_runner(client)
         result = await runner.run(_make_workflow(), "go", prompt_vars={"role": "agent"})
         assert result == "submit_result"
@@ -232,12 +228,14 @@ class TestRetryLogic:
     @pytest.mark.asyncio
     async def test_retries_exhausted_raises_tool_call_error(self):
         """All retries exhausted → ToolCallError with last raw response."""
-        client = MockClient([
-            assistant(TextPart("nope1")),
-            assistant(TextPart("nope2")),
-            assistant(TextPart("nope3")),
-            assistant(TextPart("final_nope")),
-        ])
+        client = MockClient(
+            [
+                assistant(TextPart("nope1")),
+                assistant(TextPart("nope2")),
+                assistant(TextPart("nope3")),
+                assistant(TextPart("final_nope")),
+            ]
+        )
         runner = _make_runner(client, max_retries_per_step=3)
         with pytest.raises(ToolCallError) as exc_info:
             await runner.run(_make_workflow(), "go", prompt_vars={"role": "agent"})
@@ -251,30 +249,21 @@ class TestRetryLogic:
             "step_b": _make_tool("step_b"),
             "submit": _make_tool("submit"),
         }
-        tools_handlers = {
-            "step_a": (lambda **kw: "step_a" + "_result"),
-            "step_b": (lambda **kw: "step_b" + "_result"),
-            "submit": (lambda **kw: "submit" + "_result"),
-        }
-        tools_prerequisites = {}
-        wf = _make_workflow(
-            tools=tools,
-            handlers=tools_handlers,
-            prerequisites=tools_prerequisites,
-            required_steps=["step_a", "step_b"],
+        wf = _make_workflow(tools=tools, required_steps=["step_a", "step_b"])
+        client = MockClient(
+            [
+                # 2 retries then success
+                assistant(TextPart("fail1")),
+                assistant(TextPart("fail2")),
+                assistant(call("step_a", {})),
+                # 2 more retries then success — counter reset by previous ToolCall
+                assistant(TextPart("fail3")),
+                assistant(TextPart("fail4")),
+                assistant(call("step_b", {})),
+                # Terminal
+                assistant(call("submit", {})),
+            ]
         )
-        client = MockClient([
-            # 2 retries then success
-            assistant(TextPart("fail1")),
-            assistant(TextPart("fail2")),
-            assistant(call("step_a", {})),
-            # 2 more retries then success — counter reset by previous ToolCall
-            assistant(TextPart("fail3")),
-            assistant(TextPart("fail4")),
-            assistant(call("step_b", {})),
-            # Terminal
-            assistant(call("submit", {})),
-        ])
         runner = _make_runner(client, max_retries_per_step=3)
         result = await runner.run(wf, "go", prompt_vars={"role": "agent"})
         assert result == "submit_result"
@@ -282,12 +271,14 @@ class TestRetryLogic:
     @pytest.mark.asyncio
     async def test_retries_consume_iterations(self):
         """Each TextResponse retry consumes an iteration from max_iterations."""
-        client = MockClient([
-            assistant(TextPart("fail1")),  # iteration 0
-            assistant(TextPart("fail2")),  # iteration 1
-            assistant(call("fetch", {})),  # iteration 2
-            assistant(call("submit", {})),  # iteration 3 — would exceed max_iterations=3
-        ])
+        client = MockClient(
+            [
+                assistant(TextPart("fail1")),  # iteration 0
+                assistant(TextPart("fail2")),  # iteration 1
+                assistant(call("fetch", {})),  # iteration 2
+                assistant(call("submit", {})),  # iteration 3 — would exceed max_iterations=3
+            ]
+        )
         runner = _make_runner(client, max_iterations=3, max_retries_per_step=3)
         # 2 retries + 1 fetch = 3 iterations used, no room for submit
         with pytest.raises(MaxIterationsError) as exc_info:
@@ -297,11 +288,13 @@ class TestRetryLogic:
     @pytest.mark.asyncio
     async def test_max_iterations_bounds_total_llm_calls(self):
         """max_iterations is the hard ceiling on total LLM calls including retries."""
-        client = MockClient([
-            assistant(TextPart("nope")),  # iteration 0
-            assistant(TextPart("nope")),  # iteration 1
-            assistant(TextPart("nope")),  # iteration 2
-        ])
+        client = MockClient(
+            [
+                assistant(TextPart("nope")),  # iteration 0
+                assistant(TextPart("nope")),  # iteration 1
+                assistant(TextPart("nope")),  # iteration 2
+            ]
+        )
         # max_retries_per_step=5 (high), but max_iterations=3 (low) — hits iterations first
         runner = _make_runner(client, max_iterations=3, max_retries_per_step=5)
         with pytest.raises(MaxIterationsError):
@@ -324,22 +317,15 @@ class TestStepEnforcement:
             return "submitted"
 
         tools = {"fetch": _make_tool("fetch"), "submit": _make_tool("submit")}
-        tools_handlers = {
-            "fetch": (lambda **kw: "fetch" + "_result"),
-            "submit": counting_submit,
-        }
-        tools_prerequisites = {}
-        wf = _make_workflow(
-            tools=tools,
-            handlers=tools_handlers,
-            prerequisites=tools_prerequisites,
-            required_steps=["fetch"],
+        tools_handlers = {"fetch": (lambda **kw: "fetch" + "_result"), "submit": counting_submit}
+        wf = _make_workflow(tools=tools, handlers=tools_handlers, required_steps=["fetch"])
+        client = MockClient(
+            [
+                assistant(call("submit", {})),  # premature
+                assistant(call("fetch", {})),  # do the required step
+                assistant(call("submit", {})),  # now satisfied
+            ]
         )
-        client = MockClient([
-            assistant(call("submit", {})),   # premature
-            assistant(call("fetch", {})),     # do the required step
-            assistant(call("submit", {})),    # now satisfied
-        ])
         runner = _make_runner(client)
         result = await runner.run(wf, "go", prompt_vars={"role": "agent"})
         assert result == "submitted"
@@ -349,15 +335,17 @@ class TestStepEnforcement:
     @pytest.mark.asyncio
     async def test_premature_terminal_resets_retry_counter(self):
         """Premature terminal (valid ToolCall) resets consecutive_retries."""
-        client = MockClient([
-            assistant(TextPart("garbage")),      # retry 1
-            assistant(TextPart("garbage")),      # retry 2
-            assistant(call("submit", {})),     # premature terminal — resets counter
-            assistant(TextPart("garbage")),      # retry 1 (reset)
-            assistant(TextPart("garbage")),      # retry 2
-            assistant(call("fetch", {})),      # success
-            assistant(call("submit", {})),     # terminal, satisfied
-        ])
+        client = MockClient(
+            [
+                assistant(TextPart("garbage")),  # retry 1
+                assistant(TextPart("garbage")),  # retry 2
+                assistant(call("submit", {})),  # premature terminal — resets counter
+                assistant(TextPart("garbage")),  # retry 1 (reset)
+                assistant(TextPart("garbage")),  # retry 2
+                assistant(call("fetch", {})),  # success
+                assistant(call("submit", {})),  # terminal, satisfied
+            ]
+        )
         # max_retries_per_step=3 — without reset, retries 1+2+1+2 = would exceed
         runner = _make_runner(client, max_retries_per_step=3)
         result = await runner.run(_make_workflow(), "go", prompt_vars={"role": "agent"})
@@ -366,13 +354,15 @@ class TestStepEnforcement:
     @pytest.mark.asyncio
     async def test_escalating_nudge_tiers(self):
         """3 premature terminal calls get tier 1, 2, 3 nudge messages."""
-        client = MockClient([
-            assistant(call("submit", {})),   # tier 1
-            assistant(call("submit", {})),   # tier 2
-            assistant(call("submit", {})),   # tier 3
-            assistant(call("fetch", {})),     # required step
-            assistant(call("submit", {})),    # now OK
-        ])
+        client = MockClient(
+            [
+                assistant(call("submit", {})),  # tier 1
+                assistant(call("submit", {})),  # tier 2
+                assistant(call("submit", {})),  # tier 3
+                assistant(call("fetch", {})),  # required step
+                assistant(call("submit", {})),  # now OK
+            ]
+        )
         ctx = ContextManager(strategy=NoCompact(), budget_tokens=100_000)
         original_compact = ctx.maybe_compact
         captured_messages: list[list[RichMessage]] = []
@@ -405,12 +395,14 @@ class TestStepEnforcement:
     @pytest.mark.asyncio
     async def test_premature_terminal_exhausted_raises_step_enforcement_error(self):
         """4th premature terminal call raises StepEnforcementError."""
-        client = MockClient([
-            assistant(call("submit", {})),   # tier 1
-            assistant(call("submit", {})),   # tier 2
-            assistant(call("submit", {})),   # tier 3
-            assistant(call("submit", {})),   # raises
-        ])
+        client = MockClient(
+            [
+                assistant(call("submit", {})),  # tier 1
+                assistant(call("submit", {})),  # tier 2
+                assistant(call("submit", {})),  # tier 3
+                assistant(call("submit", {})),  # raises
+            ]
+        )
         runner = _make_runner(client)
         with pytest.raises(StepEnforcementError) as exc_info:
             await runner.run(_make_workflow(), "go", prompt_vars={"role": "agent"})
@@ -421,18 +413,20 @@ class TestStepEnforcement:
     @pytest.mark.asyncio
     async def test_premature_terminal_counter_resets_on_progress(self):
         """Successful tool call resets the premature terminal counter."""
-        client = MockClient([
-            assistant(call("submit", {})),   # premature 1
-            assistant(call("submit", {})),   # premature 2
-            assistant(call("submit", {})),   # premature 3
-            # If counter didn't reset, the next premature call would be attempt 4 → raise
-            assistant(call("fetch", {})),     # success — resets counter
-            assistant(call("submit", {})),   # premature 1 (reset)
-            assistant(call("submit", {})),   # premature 2 (reset)
-            assistant(call("submit", {})),   # premature 3 (reset)
-            # Still alive after 3 more because counter was reset
-            assistant(call("submit", {})),    # now satisfied (fetch was done)
-        ])
+        client = MockClient(
+            [
+                assistant(call("submit", {})),  # premature 1
+                assistant(call("submit", {})),  # premature 2
+                assistant(call("submit", {})),  # premature 3
+                # If counter didn't reset, the next premature call would be attempt 4 → raise
+                assistant(call("fetch", {})),  # success — resets counter
+                assistant(call("submit", {})),  # premature 1 (reset)
+                assistant(call("submit", {})),  # premature 2 (reset)
+                assistant(call("submit", {})),  # premature 3 (reset)
+                # Still alive after 3 more because counter was reset
+                assistant(call("submit", {})),  # now satisfied (fetch was done)
+            ]
+        )
         # Need enough iterations for all 8 calls
         runner = _make_runner(client, max_iterations=10)
         result = await runner.run(_make_workflow(), "go", prompt_vars={"role": "agent"})
@@ -446,11 +440,13 @@ class TestErrorHandling:
     @pytest.mark.asyncio
     async def test_unknown_tool_nudge_lists_available_tools(self):
         """Nudge message for unknown tool contains available tool names."""
-        client = MockClient([
-            assistant(call("nonexistent", {})),
-            assistant(call("fetch", {})),
-            assistant(call("submit", {})),
-        ])
+        client = MockClient(
+            [
+                assistant(call("nonexistent", {})),
+                assistant(call("fetch", {})),
+                assistant(call("submit", {})),
+            ]
+        )
         runner = _make_runner(client)
         await runner.run(_make_workflow(), "go", prompt_vars={"role": "agent"})
 
@@ -465,11 +461,13 @@ class TestErrorHandling:
     @pytest.mark.asyncio
     async def test_unknown_tool_consumes_iteration(self):
         """Unknown tool nudge consumes an iteration from max_iterations."""
-        client = MockClient([
-            assistant(call("bad_name", {})),   # iteration 0 (nudge)
-            assistant(call("fetch", {})),        # iteration 1
-            assistant(call("submit", {})),       # iteration 2 — exceeds max_iterations=2
-        ])
+        client = MockClient(
+            [
+                assistant(call("bad_name", {})),  # iteration 0 (nudge)
+                assistant(call("fetch", {})),  # iteration 1
+                assistant(call("submit", {})),  # iteration 2 — exceeds max_iterations=2
+            ]
+        )
         runner = _make_runner(client, max_iterations=2)
         with pytest.raises(MaxIterationsError):
             await runner.run(_make_workflow(), "go", prompt_vars={"role": "agent"})
@@ -477,12 +475,14 @@ class TestErrorHandling:
     @pytest.mark.asyncio
     async def test_unknown_tool_exhausts_retries(self):
         """Repeated unknown tool names exhaust max_retries_per_step → ToolCallError."""
-        client = MockClient([
-            assistant(call("bad1", {})),
-            assistant(call("bad2", {})),
-            assistant(call("bad3", {})),
-            assistant(call("bad4", {})),
-        ])
+        client = MockClient(
+            [
+                assistant(call("bad1", {})),
+                assistant(call("bad2", {})),
+                assistant(call("bad3", {})),
+                assistant(call("bad4", {})),
+            ]
+        )
         runner = _make_runner(client, max_retries_per_step=3)
         with pytest.raises(ToolCallError, match="Exhausted after max_retries"):
             await runner.run(_make_workflow(), "go", prompt_vars={"role": "agent"})
@@ -492,11 +492,13 @@ class TestErrorHandling:
         """Repeated args-validation failures exhaust max_tool_errors, not
         max_retries — these are conceptually 'tool called with bad args',
         same family as FileNotFoundError at runtime."""
-        client = MockClient([
-            assistant(call("fetch", "")),    # type: ignore[arg-type]  # err 1
-            assistant(call("fetch", None)),  # type: ignore[arg-type]  # err 2
-            assistant(call("fetch", [1])),   # type: ignore[arg-type]  # err 3 → exceeds max_tool_errors=2
-        ])
+        client = MockClient(
+            [
+                assistant(call("fetch", "")),  # type: ignore[arg-type]  # err 1
+                assistant(call("fetch", None)),  # type: ignore[arg-type]  # err 2
+                assistant(call("fetch", [1])),  # type: ignore[arg-type]  # err 3 → exceeds max_tool_errors=2
+            ]
+        )
         runner = _make_runner(client, max_tool_errors=2)
         with pytest.raises(ToolCallError, match="Exhausted after max_tool_errors"):
             await runner.run(_make_workflow(), "go", prompt_vars={"role": "agent"})
@@ -510,13 +512,15 @@ class TestErrorHandling:
         # If counters were shared, this would raise. If separate, parse-error
         # counter hit 2 (not yet exhausted at 2, exceeds at 3), then unknown_tool
         # adds 1 retry. Final fetch+submit recovers.
-        client = MockClient([
-            assistant(call("fetch", "")),         # type: ignore[arg-type]  # tool_err 1
-            assistant(call("fetch", None)),       # type: ignore[arg-type]  # tool_err 2
-            assistant(call("nonexistent", {})),   # retry 1 (different budget)
-            assistant(call("fetch", {})),         # recovers
-            assistant(call("submit", {})),
-        ])
+        client = MockClient(
+            [
+                assistant(call("fetch", "")),  # type: ignore[arg-type]  # tool_err 1
+                assistant(call("fetch", None)),  # type: ignore[arg-type]  # tool_err 2
+                assistant(call("nonexistent", {})),  # retry 1 (different budget)
+                assistant(call("fetch", {})),  # recovers
+                assistant(call("submit", {})),
+            ]
+        )
         runner = _make_runner(client, max_tool_errors=2, max_retries_per_step=3)
         result = await runner.run(_make_workflow(), "go", prompt_vars={"role": "agent"})
         assert result == "submit_result"
@@ -524,12 +528,14 @@ class TestErrorHandling:
     @pytest.mark.asyncio
     async def test_unknown_tool_and_text_response_share_retry_counter(self):
         """TextResponse and unknown tool retries accumulate on the same counter."""
-        client = MockClient([
-            assistant(TextPart("garbage")),         # retry 1
-            assistant(call("nonexistent", {})),   # retry 2
-            assistant(TextPart("more garbage")),    # retry 3
-            assistant(call("still_wrong", {})),   # retry 4 → exceeds max_retries=3
-        ])
+        client = MockClient(
+            [
+                assistant(TextPart("garbage")),  # retry 1
+                assistant(call("nonexistent", {})),  # retry 2
+                assistant(TextPart("more garbage")),  # retry 3
+                assistant(call("still_wrong", {})),  # retry 4 → exceeds max_retries=3
+            ]
+        )
         runner = _make_runner(client, max_retries_per_step=3)
         with pytest.raises(ToolCallError, match="Exhausted after max_retries"):
             await runner.run(_make_workflow(), "go", prompt_vars={"role": "agent"})
@@ -547,22 +553,15 @@ class TestErrorHandling:
             return "fetch_result"
 
         tools = {"fetch": _make_tool("fetch"), "submit": _make_tool("submit")}
-        tools_handlers = {
-            "fetch": flaky_fetch,
-            "submit": (lambda **kw: "submit" + "_result"),
-        }
-        tools_prerequisites = {}
-        wf = _make_workflow(
-            tools=tools,
-            handlers=tools_handlers,
-            prerequisites=tools_prerequisites,
-            required_steps=["fetch"],
+        tools_handlers = {"fetch": flaky_fetch, "submit": (lambda **kw: "submit" + "_result")}
+        wf = _make_workflow(tools=tools, handlers=tools_handlers, required_steps=["fetch"])
+        client = MockClient(
+            [
+                assistant(call("fetch", {"count": "five"})),  # will raise
+                assistant(call("fetch", {"count": 5})),  # corrected
+                assistant(call("submit", {})),
+            ]
         )
-        client = MockClient([
-            assistant(call("fetch", {"count": "five"})),   # will raise
-            assistant(call("fetch", {"count": 5})),        # corrected
-            assistant(call("submit", {})),
-        ])
         runner = _make_runner(client)
         result = await runner.run(wf, "go", prompt_vars={"role": "agent"})
         assert result == "submit_result"
@@ -576,22 +575,15 @@ class TestErrorHandling:
             raise ValueError("always fails")
 
         tools = {"fetch": _make_tool("fetch"), "submit": _make_tool("submit")}
-        tools_handlers = {
-            "fetch": bad_tool,
-            "submit": (lambda **kw: "submit" + "_result"),
-        }
-        tools_prerequisites = {}
-        wf = _make_workflow(
-            tools=tools,
-            handlers=tools_handlers,
-            prerequisites=tools_prerequisites,
-            required_steps=["fetch"],
+        tools_handlers = {"fetch": bad_tool, "submit": (lambda **kw: "submit" + "_result")}
+        wf = _make_workflow(tools=tools, handlers=tools_handlers, required_steps=["fetch"])
+        client = MockClient(
+            [
+                assistant(call("fetch", {})),  # error 1
+                assistant(call("fetch", {})),  # error 2
+                assistant(call("fetch", {})),  # error 3 → exceeds max_tool_errors=2
+            ]
         )
-        client = MockClient([
-            assistant(call("fetch", {})),  # error 1
-            assistant(call("fetch", {})),  # error 2
-            assistant(call("fetch", {})),  # error 3 → exceeds max_tool_errors=2
-        ])
         runner = _make_runner(client, max_tool_errors=2)
         with pytest.raises(ToolExecutionError) as exc_info:
             await runner.run(wf, "go", prompt_vars={"role": "agent"})
@@ -615,24 +607,17 @@ class TestErrorHandling:
             return "ok"
 
         tools = {"fetch": _make_tool("fetch"), "submit": _make_tool("submit")}
-        tools_handlers = {
-            "fetch": sometimes_fails,
-            "submit": (lambda **kw: "submit" + "_result"),
-        }
-        tools_prerequisites = {}
-        wf = _make_workflow(
-            tools=tools,
-            handlers=tools_handlers,
-            prerequisites=tools_prerequisites,
-            required_steps=["fetch"],
+        tools_handlers = {"fetch": sometimes_fails, "submit": (lambda **kw: "submit" + "_result")}
+        wf = _make_workflow(tools=tools, handlers=tools_handlers, required_steps=["fetch"])
+        client = MockClient(
+            [
+                assistant(call("fetch", {})),  # error 1 (call_count=1)
+                assistant(call("fetch", {})),  # success  (call_count=2) → resets counter
+                assistant(call("fetch", {})),  # error 1 again (call_count=3) → counter reset
+                assistant(call("fetch", {})),  # success  (call_count=4)
+                assistant(call("submit", {})),
+            ]
         )
-        client = MockClient([
-            assistant(call("fetch", {})),  # error 1 (call_count=1)
-            assistant(call("fetch", {})),  # success  (call_count=2) → resets counter
-            assistant(call("fetch", {})),  # error 1 again (call_count=3) → counter reset
-            assistant(call("fetch", {})),  # success  (call_count=4)
-            assistant(call("submit", {})),
-        ])
         # max_tool_errors=1 — without reset, second error would raise
         runner = _make_runner(client, max_tool_errors=1)
         result = await runner.run(wf, "go", prompt_vars={"role": "agent"})
@@ -651,22 +636,15 @@ class TestErrorHandling:
             return "submitted"
 
         tools = {"fetch": _make_tool("fetch"), "submit": _make_tool("submit")}
-        tools_handlers = {
-            "fetch": (lambda **kw: "fetch" + "_result"),
-            "submit": flaky_submit,
-        }
-        tools_prerequisites = {}
-        wf = _make_workflow(
-            tools=tools,
-            handlers=tools_handlers,
-            prerequisites=tools_prerequisites,
-            required_steps=["fetch"],
+        tools_handlers = {"fetch": (lambda **kw: "fetch" + "_result"), "submit": flaky_submit}
+        wf = _make_workflow(tools=tools, handlers=tools_handlers, required_steps=["fetch"])
+        client = MockClient(
+            [
+                assistant(call("fetch", {})),
+                assistant(call("submit", {"bad": True})),  # terminal raises
+                assistant(call("submit", {})),  # terminal succeeds
+            ]
         )
-        client = MockClient([
-            assistant(call("fetch", {})),
-            assistant(call("submit", {"bad": True})),   # terminal raises
-            assistant(call("submit", {})),               # terminal succeeds
-        ])
         runner = _make_runner(client)
         result = await runner.run(wf, "go", prompt_vars={"role": "agent"})
         assert result == "submitted"
@@ -684,23 +662,16 @@ class TestErrorHandling:
             return "fetch_result"
 
         tools = {"fetch": _make_tool("fetch"), "submit": _make_tool("submit")}
-        tools_handlers = {
-            "fetch": flaky_fetch,
-            "submit": (lambda **kw: "submit" + "_result"),
-        }
-        tools_prerequisites = {}
-        wf = _make_workflow(
-            tools=tools,
-            handlers=tools_handlers,
-            prerequisites=tools_prerequisites,
-            required_steps=["fetch"],
+        tools_handlers = {"fetch": flaky_fetch, "submit": (lambda **kw: "submit" + "_result")}
+        wf = _make_workflow(tools=tools, handlers=tools_handlers, required_steps=["fetch"])
+        client = MockClient(
+            [
+                assistant(call("fetch", {})),  # fails — should NOT satisfy required step
+                assistant(call("submit", {})),  # premature — fetch not satisfied yet
+                assistant(call("fetch", {})),  # succeeds — now satisfied
+                assistant(call("submit", {})),  # terminal — OK
+            ]
         )
-        client = MockClient([
-            assistant(call("fetch", {})),    # fails — should NOT satisfy required step
-            assistant(call("submit", {})),   # premature — fetch not satisfied yet
-            assistant(call("fetch", {})),    # succeeds — now satisfied
-            assistant(call("submit", {})),   # terminal — OK
-        ])
         runner = _make_runner(client)
         result = await runner.run(wf, "go", prompt_vars={"role": "agent"})
         assert result == "submit_result"
@@ -715,22 +686,15 @@ class TestErrorHandling:
             raise ValueError("fails")
 
         tools = {"fetch": _make_tool("fetch"), "submit": _make_tool("submit")}
-        tools_handlers = {
-            "fetch": bad_tool,
-            "submit": (lambda **kw: "submit" + "_result"),
-        }
-        tools_prerequisites = {}
-        wf = _make_workflow(
-            tools=tools,
-            handlers=tools_handlers,
-            prerequisites=tools_prerequisites,
-            required_steps=["fetch"],
+        tools_handlers = {"fetch": bad_tool, "submit": (lambda **kw: "submit" + "_result")}
+        wf = _make_workflow(tools=tools, handlers=tools_handlers, required_steps=["fetch"])
+        client = MockClient(
+            [
+                assistant(call("fetch", {})),  # iteration 0 (error)
+                assistant(call("fetch", {})),  # iteration 1 (error)
+                assistant(call("fetch", {})),  # iteration 2 — exceeds max_iterations=2
+            ]
         )
-        client = MockClient([
-            assistant(call("fetch", {})),  # iteration 0 (error)
-            assistant(call("fetch", {})),  # iteration 1 (error)
-            assistant(call("fetch", {})),  # iteration 2 — exceeds max_iterations=2
-        ])
         runner = _make_runner(client, max_iterations=2, max_tool_errors=5)
         with pytest.raises(MaxIterationsError):
             await runner.run(wf, "go", prompt_vars={"role": "agent"})
@@ -738,9 +702,7 @@ class TestErrorHandling:
     @pytest.mark.asyncio
     async def test_max_iterations_exceeded(self):
         """Non-terminal ToolCalls exhaust max_iterations → MaxIterationsError."""
-        client = MockClient([
-            assistant(call("fetch", {})) for _ in range(5)
-        ])
+        client = MockClient([assistant(call("fetch", {})) for _ in range(5)])
         runner = _make_runner(client, max_iterations=3)
         with pytest.raises(MaxIterationsError) as exc_info:
             await runner.run(_make_workflow(), "go", prompt_vars={"role": "agent"})
@@ -755,10 +717,7 @@ class TestContextManagement:
     @pytest.mark.asyncio
     async def test_compaction_called_each_iteration(self):
         """maybe_compact called once per iteration with correct args."""
-        client = MockClient([
-            assistant(call("fetch", {})),
-            assistant(call("submit", {})),
-        ])
+        client = MockClient([assistant(call("fetch", {})), assistant(call("submit", {}))])
         ctx = ContextManager(strategy=NoCompact(), budget_tokens=100_000)
         original_compact = ctx.maybe_compact
         compact_calls = []
@@ -784,14 +743,9 @@ class TestStreaming:
     @pytest.mark.asyncio
     async def test_stream_mode_uses_send_stream(self):
         """With stream=True, runner calls send_stream() instead of send()."""
-        client = MockClient([
-            assistant(call("fetch", {})),
-            assistant(call("submit", {})),
-        ])
+        client = MockClient([assistant(call("fetch", {})), assistant(call("submit", {}))])
         runner = _make_runner(client, stream=True)
-        result = await runner.run(
-            _make_workflow(), "go", prompt_vars={"role": "agent"}
-        )
+        result = await runner.run(_make_workflow(), "go", prompt_vars={"role": "agent"})
         assert len(client.send_stream_calls) == 2
         assert len(client.send_calls) == 0
         assert result == "submit_result"
@@ -804,10 +758,7 @@ class TestStreaming:
         async def collect(chunk: StreamChunk) -> None:
             received_chunks.append(chunk)
 
-        client = MockClient([
-            assistant(call("fetch", {})),
-            assistant(call("submit", {})),
-        ])
+        client = MockClient([assistant(call("fetch", {})), assistant(call("submit", {}))])
         runner = _make_runner(client, stream=True, on_chunk=collect)
         await runner.run(_make_workflow(), "go", prompt_vars={"role": "agent"})
 
@@ -845,25 +796,14 @@ class TestAsyncToolSupport:
     @pytest.mark.asyncio
     async def test_async_tool_callable(self):
         """Async tool callable is awaited correctly."""
+
         async def async_fetch(**kwargs):
             return "async_result"
 
         tools = {"fetch": _make_tool("fetch"), "submit": _make_tool("submit")}
-        tools_handlers = {
-            "fetch": async_fetch,
-            "submit": (lambda **kw: "submit" + "_result"),
-        }
-        tools_prerequisites = {}
-        wf = _make_workflow(
-            tools=tools,
-            handlers=tools_handlers,
-            prerequisites=tools_prerequisites,
-            required_steps=["fetch"],
-        )
-        client = MockClient([
-            assistant(call("fetch", {})),
-            assistant(call("submit", {})),
-        ])
+        tools_handlers = {"fetch": async_fetch, "submit": (lambda **kw: "submit" + "_result")}
+        wf = _make_workflow(tools=tools, handlers=tools_handlers, required_steps=["fetch"])
+        client = MockClient([assistant(call("fetch", {})), assistant(call("submit", {}))])
         runner = _make_runner(client)
         result = await runner.run(wf, "go", prompt_vars={"role": "agent"})
         assert result == "submit_result"
@@ -876,10 +816,7 @@ class TestMessageStructure:
     @pytest.mark.asyncio
     async def test_initial_messages_correct(self):
         """Initial messages: system prompt + user input with correct metadata."""
-        client = MockClient([
-            assistant(call("fetch", {})),
-            assistant(call("submit", {})),
-        ])
+        client = MockClient([assistant(call("fetch", {})), assistant(call("submit", {}))])
         runner = _make_runner(client)
         await runner.run(_make_workflow(), "do something", prompt_vars={"role": "tester"})
 
@@ -894,10 +831,9 @@ class TestMessageStructure:
     @pytest.mark.asyncio
     async def test_tool_call_message_format(self):
         """Tool call message contains tool name and args, result is stringified."""
-        client = MockClient([
-            assistant(call("fetch", {"key": "val"})),
-            assistant(call("submit", {})),
-        ])
+        client = MockClient(
+            [assistant(call("fetch", {"key": "val"})), assistant(call("submit", {}))]
+        )
         runner = _make_runner(client)
         await runner.run(_make_workflow(), "go", prompt_vars={"role": "agent"})
 
@@ -914,11 +850,13 @@ class TestMessageStructure:
     @pytest.mark.asyncio
     async def test_text_response_emits_assistant_before_retry_nudge(self):
         """TextResponse content is recorded as ASSISTANT/TEXT_RESPONSE before the retry nudge."""
-        client = MockClient([
-            assistant(TextPart("I'm not sure what to do")),
-            assistant(call("fetch", {})),
-            assistant(call("submit", {})),
-        ])
+        client = MockClient(
+            [
+                assistant(TextPart("I'm not sure what to do")),
+                assistant(call("fetch", {})),
+                assistant(call("submit", {})),
+            ]
+        )
         runner = _make_runner(client)
         await runner.run(_make_workflow(), "go", prompt_vars={"role": "agent"})
 
@@ -935,11 +873,13 @@ class TestMessageStructure:
         """Unknown tool call is recorded as ASSISTANT(tc) + TOOL(error) — the
         corrective signal rides the canonical tool-result channel rather than a
         trailing user nudge."""
-        client = MockClient([
-            assistant(call("nonexistent", {"x": 1})),
-            assistant(call("fetch", {})),
-            assistant(call("submit", {})),
-        ])
+        client = MockClient(
+            [
+                assistant(call("nonexistent", {"x": 1})),
+                assistant(call("fetch", {})),
+                assistant(call("submit", {})),
+            ]
+        )
         runner = _make_runner(client)
         await runner.run(_make_workflow(), "go", prompt_vars={"role": "agent"})
 
@@ -956,11 +896,13 @@ class TestMessageStructure:
     async def test_tool_arg_validation_emits_assistant_before_nudge(self):
         """Malformed args is recorded as ASSISTANT(tc) + TOOL(error) on the
         canonical tool-result channel, with [ToolArgValidationError] prefix."""
-        client = MockClient([
-            assistant(call("fetch", "")),  # type: ignore[arg-type]
-            assistant(call("fetch", {})),
-            assistant(call("submit", {})),
-        ])
+        client = MockClient(
+            [
+                assistant(call("fetch", "")),  # type: ignore[arg-type]
+                assistant(call("fetch", {})),
+                assistant(call("submit", {})),
+            ]
+        )
         runner = _make_runner(client)
         await runner.run(_make_workflow(), "go", prompt_vars={"role": "agent"})
 
@@ -976,11 +918,13 @@ class TestMessageStructure:
     @pytest.mark.asyncio
     async def test_step_nudge_emits_assistant_before_nudge(self):
         """Premature terminal tool call is recorded as ASSISTANT before the step nudge."""
-        client = MockClient([
-            assistant(call("submit", {})),   # premature
-            assistant(call("fetch", {})),
-            assistant(call("submit", {})),
-        ])
+        client = MockClient(
+            [
+                assistant(call("submit", {})),  # premature
+                assistant(call("fetch", {})),
+                assistant(call("submit", {})),
+            ]
+        )
         runner = _make_runner(client)
         await runner.run(_make_workflow(), "go", prompt_vars={"role": "agent"})
 
@@ -1001,10 +945,9 @@ class TestRescueToolCalls:
     @pytest.mark.asyncio
     async def test_rescue_rehearsal_syntax(self):
         """TextResponse with rehearsal syntax is rescued."""
-        client = MockClient([
-            assistant(TextPart('fetch[ARGS]{"key": "val"}')),
-            assistant(call("submit", {})),
-        ])
+        client = MockClient(
+            [assistant(TextPart('fetch[ARGS]{"key": "val"}')), assistant(call("submit", {}))]
+        )
         runner = _make_runner(client)
         result = await runner.run(_make_workflow(), "go", prompt_vars={"role": "agent"})
         assert result == "submit_result"
@@ -1013,31 +956,34 @@ class TestRescueToolCalls:
     @pytest.mark.asyncio
     async def test_rescue_resets_retry_counter(self):
         """Rescued tool call resets consecutive_retries like a normal ToolCall."""
-        client = MockClient([
-            assistant(TextPart("plain garbage")),            # retry 1
-            assistant(TextPart("more garbage")),             # retry 2
-            assistant(TextPart('{"tool": "fetch", "args": {}}')),  # rescued → resets
-            assistant(TextPart("garbage again")),            # retry 1 (reset)
-            assistant(TextPart("still garbage")),            # retry 2
-            assistant(TextPart('{"tool": "fetch", "args": {}}')),  # rescued → resets
-            assistant(call("submit", {})),
-        ])
+        client = MockClient(
+            [
+                assistant(TextPart("plain garbage")),  # retry 1
+                assistant(TextPart("more garbage")),  # retry 2
+                assistant(TextPart('{"tool": "fetch", "args": {}}')),  # rescued → resets
+                assistant(TextPart("garbage again")),  # retry 1 (reset)
+                assistant(TextPart("still garbage")),  # retry 2
+                assistant(TextPart('{"tool": "fetch", "args": {}}')),  # rescued → resets
+                assistant(call("submit", {})),
+            ]
+        )
         # max_retries=3 — without reset from rescue, retries would exhaust
         runner = _make_runner(client, max_retries_per_step=3, max_iterations=10)
         result = await runner.run(
-            _make_workflow(required_steps=[]),
-            "go", prompt_vars={"role": "agent"},
+            _make_workflow(required_steps=[]), "go", prompt_vars={"role": "agent"}
         )
         assert result == "submit_result"
 
     @pytest.mark.asyncio
     async def test_rescue_unknown_tool_falls_through(self):
         """Rescued ToolCall with unknown tool name goes to the unknown tool nudge path."""
-        client = MockClient([
-            assistant(TextPart('{"tool": "nonexistent", "args": {}}')),
-            assistant(call("fetch", {})),
-            assistant(call("submit", {})),
-        ])
+        client = MockClient(
+            [
+                assistant(TextPart('{"tool": "nonexistent", "args": {}}')),
+                assistant(call("fetch", {})),
+                assistant(call("submit", {})),
+            ]
+        )
         runner = _make_runner(client)
         result = await runner.run(_make_workflow(), "go", prompt_vars={"role": "agent"})
         # rescue_tool_call returns None for unknown tools → normal retry nudge
@@ -1053,21 +999,14 @@ class TestRescueToolCalls:
             return "captured"
 
         tools = {"fetch": _make_tool("fetch"), "submit": _make_tool("submit")}
-        tools_handlers = {
-            "fetch": capture_tool,
-            "submit": (lambda **kw: "submit" + "_result"),
-        }
-        tools_prerequisites = {}
-        wf = _make_workflow(
-            tools=tools,
-            handlers=tools_handlers,
-            prerequisites=tools_prerequisites,
-            required_steps=["fetch"],
+        tools_handlers = {"fetch": capture_tool, "submit": (lambda **kw: "submit" + "_result")}
+        wf = _make_workflow(tools=tools, handlers=tools_handlers, required_steps=["fetch"])
+        client = MockClient(
+            [
+                assistant(TextPart('{"tool": "fetch", "args": {"count": 42}}')),
+                assistant(call("submit", {})),
+            ]
         )
-        client = MockClient([
-            assistant(TextPart('{"tool": "fetch", "args": {"count": 42}}')),
-            assistant(call("submit", {})),
-        ])
         runner = _make_runner(client)
         await runner.run(wf, "go", prompt_vars={"role": "agent"})
         assert received_args == {"count": 42}
@@ -1080,10 +1019,12 @@ class TestReasoningCapture:
     @pytest.mark.asyncio
     async def test_reasoning_part_precedes_call_in_recorded_reply(self):
         """Rich reply with reasoning → REASONING message before TOOL_CALL in history."""
-        client = MockClient([
-            assistant(ReasoningPart("I need to fetch the data first."), call("fetch", {})),
-            assistant(call("submit", {})),
-        ])
+        client = MockClient(
+            [
+                assistant(ReasoningPart("I need to fetch the data first."), call("fetch", {})),
+                assistant(call("submit", {})),
+            ]
+        )
         ctx = ContextManager(strategy=NoCompact(), budget_tokens=100_000)
         original_compact = ctx.maybe_compact
         captured_messages: list[list[RichMessage]] = []
@@ -1100,7 +1041,9 @@ class TestReasoningCapture:
 
         # Second iteration's messages should have: system, user, REASONING, TOOL_CALL, TOOL_RESULT
         second_iteration_msgs = captured_messages[1]
-        reasoning_msgs = [m for m in second_iteration_msgs if any(isinstance(p, ReasoningPart) for p in m.parts)]
+        reasoning_msgs = [
+            m for m in second_iteration_msgs if any(isinstance(p, ReasoningPart) for p in m.parts)
+        ]
         assert len(reasoning_msgs) == 1
         assert reasoning_msgs[0].parts[0].text == "I need to fetch the data first."
         assert reasoning_msgs[0].role == MessageRole.ASSISTANT
@@ -1112,10 +1055,7 @@ class TestReasoningCapture:
     @pytest.mark.asyncio
     async def test_no_reasoning_message_when_reasoning_is_none(self):
         """Rich reply without reasoning → no REASONING message in history."""
-        client = MockClient([
-            assistant(call("fetch", {})),
-            assistant(call("submit", {})),
-        ])
+        client = MockClient([assistant(call("fetch", {})), assistant(call("submit", {}))])
         ctx = ContextManager(strategy=NoCompact(), budget_tokens=100_000)
         original_compact = ctx.maybe_compact
         captured_messages: list[list[RichMessage]] = []
@@ -1147,22 +1087,15 @@ class TestReasoningCapture:
             return "ok"
 
         tools = {"fetch": _make_tool("fetch"), "submit": _make_tool("submit")}
-        tools_handlers = {
-            "fetch": flaky_fetch,
-            "submit": (lambda **kw: "submit" + "_result"),
-        }
-        tools_prerequisites = {}
-        wf = _make_workflow(
-            tools=tools,
-            handlers=tools_handlers,
-            prerequisites=tools_prerequisites,
-            required_steps=["fetch"],
+        tools_handlers = {"fetch": flaky_fetch, "submit": (lambda **kw: "submit" + "_result")}
+        wf = _make_workflow(tools=tools, handlers=tools_handlers, required_steps=["fetch"])
+        client = MockClient(
+            [
+                assistant(ReasoningPart("Let me try fetching."), call("fetch", {})),
+                assistant(call("fetch", {})),
+                assistant(call("submit", {})),
+            ]
         )
-        client = MockClient([
-            assistant(ReasoningPart("Let me try fetching."), call("fetch", {})),
-            assistant(call("fetch", {})),
-            assistant(call("submit", {})),
-        ])
         ctx = ContextManager(strategy=NoCompact(), budget_tokens=100_000)
         original_compact = ctx.maybe_compact
         captured_messages: list[list[RichMessage]] = []
@@ -1179,7 +1112,9 @@ class TestReasoningCapture:
 
         # Second iteration should see: ..., REASONING, TOOL_CALL, TOOL_RESULT(error)
         second_iteration_msgs = captured_messages[1]
-        reasoning_msgs = [m for m in second_iteration_msgs if any(isinstance(p, ReasoningPart) for p in m.parts)]
+        reasoning_msgs = [
+            m for m in second_iteration_msgs if any(isinstance(p, ReasoningPart) for p in m.parts)
+        ]
         assert len(reasoning_msgs) == 1
         assert reasoning_msgs[0].parts[0].text == "Let me try fetching."
 
@@ -1189,10 +1124,12 @@ class TestReasoningCapture:
     @pytest.mark.asyncio
     async def test_reasoning_not_on_wire_by_default(self):
         """Default reasoning_replay="none": reasoning never reaches the wire."""
-        client = MockClient([
-            assistant(ReasoningPart("Thinking about this..."), call("fetch", {})),
-            assistant(call("submit", {})),
-        ])
+        client = MockClient(
+            [
+                assistant(ReasoningPart("Thinking about this..."), call("fetch", {})),
+                assistant(call("submit", {})),
+            ]
+        )
         runner = _make_runner(client)
         await runner.run(_make_workflow(), "go", prompt_vars={"role": "agent"})
 
@@ -1207,10 +1144,12 @@ class TestReasoningCapture:
     @pytest.mark.asyncio
     async def test_reasoning_replayed_beside_call_on_wire(self):
         """Reasoning replay stays separate from visible text beside the call."""
-        client = MockClient([
-            assistant(ReasoningPart("Thinking about this..."), call("fetch", {})),
-            assistant(call("submit", {})),
-        ])
+        client = MockClient(
+            [
+                assistant(ReasoningPart("Thinking about this..."), call("fetch", {})),
+                assistant(call("submit", {})),
+            ]
+        )
         runner = _make_runner(client, reasoning_replay="keep-last")
         await runner.run(_make_workflow(), "go", prompt_vars={"role": "agent"})
 
@@ -1226,11 +1165,13 @@ class TestReasoningCapture:
     @pytest.mark.asyncio
     async def test_text_response_not_folded_into_tool_call(self):
         """Rejected visible text stays separate from the later accepted reply."""
-        client = MockClient([
-            assistant(TextPart("Let me think about this...")),
-            assistant(ReasoningPart("Now I know what to do"), call("fetch", {})),
-            assistant(call("submit", {})),
-        ])
+        client = MockClient(
+            [
+                assistant(TextPart("Let me think about this...")),
+                assistant(ReasoningPart("Now I know what to do"), call("fetch", {})),
+                assistant(call("submit", {})),
+            ]
+        )
         runner = _make_runner(client, reasoning_replay="keep-last")
         await runner.run(_make_workflow(), "go", prompt_vars={"role": "agent"})
 
@@ -1257,8 +1198,12 @@ class TestOnMessageCallback:
         await runner.run(_make_workflow(), "go", prompt_vars={"role": "agent"})
 
         assert [message.role for message in collected] == [
-            MessageRole.SYSTEM, MessageRole.USER, MessageRole.ASSISTANT,
-            MessageRole.TOOL, MessageRole.ASSISTANT, MessageRole.TOOL,
+            MessageRole.SYSTEM,
+            MessageRole.USER,
+            MessageRole.ASSISTANT,
+            MessageRole.TOOL,
+            MessageRole.ASSISTANT,
+            MessageRole.TOOL,
         ]
         assert isinstance(collected[2].parts[0], ToolCallPart)
         assert isinstance(collected[3].parts[0], ToolResultPart)
@@ -1272,28 +1217,32 @@ class TestOnMessageCallback:
             (assistant(TextPart('{"tool": "fetch", "args": {"key": "val"}}')), None, ToolCallPart),
         ]
         for first, purpose, part_type in cases:
-            runner, collected = _collecting_runner(MockClient([
-                first, assistant(call("fetch", {})), assistant(call("submit", {}))
-            ]))
+            runner, collected = _collecting_runner(
+                MockClient([first, assistant(call("fetch", {})), assistant(call("submit", {}))])
+            )
             await runner.run(_make_workflow(), "go", prompt_vars={"role": "agent"})
             assert any(isinstance(p, part_type) for m in collected for p in m.parts)
             if purpose:
                 assert any(m.forge_purpose == purpose for m in collected)
             if part_type is ReasoningPart:
-                assert any(p.text == "Thinking..." for m in collected for p in m.parts if isinstance(p, ReasoningPart))
-            if first.parts and isinstance(first.parts[0], ToolCallPart) and first.parts[0].name == "fetch":
+                assert any(
+                    p.text == "Thinking..."
+                    for m in collected
+                    for p in m.parts
+                    if isinstance(p, ReasoningPart)
+                )
+            if (
+                first.parts
+                and isinstance(first.parts[0], ToolCallPart)
+                and first.parts[0].name == "fetch"
+            ):
                 assert not any(m.forge_purpose == "retry" for m in collected)
 
     @pytest.mark.asyncio
     async def test_on_message_captures_tool_failures_before_exceptional_exit(self):
         cases = [
             (ValueError("broken"), "[ToolError]", ToolExecutionError, 0),
-            (
-                ToolResolutionError("missing"),
-                "[ToolResolutionError]",
-                MaxIterationsError,
-                2,
-            ),
+            (ToolResolutionError("missing"), "[ToolResolutionError]", MaxIterationsError, 2),
         ]
 
         for failure, marker, expected_error, max_tool_errors in cases:
@@ -1315,13 +1264,17 @@ class TestOnMessageCallback:
             with pytest.raises(expected_error):
                 await runner.run(workflow, "go", prompt_vars={"role": "agent"})
 
-            failures = [p for message in collected for p in message.parts if isinstance(p, ToolResultPart) and any(marker in text.text for text in p.content)]
+            failures = [
+                p
+                for message in collected
+                for p in message.parts
+                if isinstance(p, ToolResultPart) and any(marker in text.text for text in p.content)
+            ]
             assert len(failures) == 1
             assert failures[0].outcome == "error"
 
 
 # ── initial_messages ──────────────────────────────────────────
-
 
 
 class TestInitialMessages:
@@ -1330,13 +1283,9 @@ class TestInitialMessages:
     @pytest.mark.asyncio
     async def test_initial_messages_are_sent_without_being_reemitted(self):
         collected: list[RichMessage] = []
-        client = MockClient([
-            assistant(call("submit", {})),
-        ])
+        client = MockClient([assistant(call("submit", {}))])
         ctx = ContextManager(strategy=NoCompact(), budget_tokens=100_000)
-        runner = WorkflowRunner(
-            client=client, context_manager=ctx, on_message=collected.append
-        )
+        runner = WorkflowRunner(client=client, context_manager=ctx, on_message=collected.append)
 
         seed = [
             RichMessage(MessageRole.SYSTEM, [TextPart("You are a tester.")]),
@@ -1360,7 +1309,6 @@ class TestInitialMessages:
         assert len(seed) == 5
 
 
-
 # ── ToolResolutionError ──────────────────────────────────────────
 
 
@@ -1374,26 +1322,21 @@ class TestToolResolutionError:
             nonlocal call_count
             call_count += 1
             if call_count == 1:
-                raise ToolResolutionError("No entry found for 'capital of France'. Try another key.")
+                raise ToolResolutionError(
+                    "No entry found for 'capital of France'. Try another key."
+                )
             return "The capital of France is Paris."
 
         tools = {"fetch": _make_tool("fetch"), "submit": _make_tool("submit")}
-        tools_handlers = {
-            "fetch": lookup,
-            "submit": (lambda **kw: "submit" + "_result"),
-        }
-        tools_prerequisites = {}
-        wf = _make_workflow(
-            tools=tools,
-            handlers=tools_handlers,
-            prerequisites=tools_prerequisites,
-            required_steps=["fetch"],
+        tools_handlers = {"fetch": lookup, "submit": (lambda **kw: "submit" + "_result")}
+        wf = _make_workflow(tools=tools, handlers=tools_handlers, required_steps=["fetch"])
+        client = MockClient(
+            [
+                assistant(call("fetch", {"query": "capital of France"})),
+                assistant(call("fetch", {"query": "france"})),
+                assistant(call("submit", {})),
+            ]
         )
-        client = MockClient([
-            assistant(call("fetch", {"query": "capital of France"})),
-            assistant(call("fetch", {"query": "france"})),
-            assistant(call("submit", {})),
-        ])
         runner = _make_runner(client)
         result = await runner.run(wf, "go", prompt_vars={"role": "agent"})
         assert result == "submit_result"
@@ -1407,22 +1350,15 @@ class TestToolResolutionError:
             raise ToolResolutionError("No entry found for 'bad key'. Try another key.")
 
         tools = {"fetch": _make_tool("fetch"), "submit": _make_tool("submit")}
-        tools_handlers = {
-            "fetch": always_miss,
-            "submit": (lambda **kw: "submit" + "_result"),
-        }
-        tools_prerequisites = {}
-        wf = _make_workflow(
-            tools=tools,
-            handlers=tools_handlers,
-            prerequisites=tools_prerequisites,
-            required_steps=["fetch"],
+        tools_handlers = {"fetch": always_miss, "submit": (lambda **kw: "submit" + "_result")}
+        wf = _make_workflow(tools=tools, handlers=tools_handlers, required_steps=["fetch"])
+        client = MockClient(
+            [
+                assistant(call("fetch", {})),
+                assistant(call("fetch", {})),
+                assistant(call("fetch", {})),
+            ]
         )
-        client = MockClient([
-            assistant(call("fetch", {})),
-            assistant(call("fetch", {})),
-            assistant(call("fetch", {})),
-        ])
         runner = _make_runner(client, max_iterations=3)
         with pytest.raises(MaxIterationsError):
             await runner.run(wf, "go", prompt_vars={"role": "agent"})
@@ -1441,20 +1377,9 @@ class TestToolResolutionError:
             raise ToolResolutionError("miss")
 
         tools = {"fetch": _make_tool("fetch"), "submit": _make_tool("submit")}
-        tools_handlers = {
-            "fetch": always_miss,
-            "submit": (lambda **kw: "submit" + "_result"),
-        }
-        tools_prerequisites = {}
-        wf = _make_workflow(
-            tools=tools,
-            handlers=tools_handlers,
-            prerequisites=tools_prerequisites,
-            required_steps=["fetch"],
-        )
-        client = MockClient([
-            assistant(call("fetch", {})) for _ in range(5)
-        ])
+        tools_handlers = {"fetch": always_miss, "submit": (lambda **kw: "submit" + "_result")}
+        wf = _make_workflow(tools=tools, handlers=tools_handlers, required_steps=["fetch"])
+        client = MockClient([assistant(call("fetch", {})) for _ in range(5)])
         # max_tool_errors=1 — a single hard error would raise ToolExecutionError.
         # But 5 consecutive ToolResolutionErrors should NOT trigger it.
         runner = _make_runner(client, max_iterations=5, max_tool_errors=1)
@@ -1476,23 +1401,16 @@ class TestToolResolutionError:
             return "hit"
 
         tools = {"fetch": _make_tool("fetch"), "submit": _make_tool("submit")}
-        tools_handlers = {
-            "fetch": miss_then_hit,
-            "submit": (lambda **kw: "submit" + "_result"),
-        }
-        tools_prerequisites = {}
-        wf = _make_workflow(
-            tools=tools,
-            handlers=tools_handlers,
-            prerequisites=tools_prerequisites,
-            required_steps=["fetch"],
+        tools_handlers = {"fetch": miss_then_hit, "submit": (lambda **kw: "submit" + "_result")}
+        wf = _make_workflow(tools=tools, handlers=tools_handlers, required_steps=["fetch"])
+        client = MockClient(
+            [
+                assistant(call("fetch", {})),  # ToolResolutionError — step NOT recorded
+                assistant(call("submit", {})),  # premature — fetch not satisfied
+                assistant(call("fetch", {})),  # succeeds — step recorded
+                assistant(call("submit", {})),  # now OK
+            ]
         )
-        client = MockClient([
-            assistant(call("fetch", {})),    # ToolResolutionError — step NOT recorded
-            assistant(call("submit", {})),   # premature — fetch not satisfied
-            assistant(call("fetch", {})),    # succeeds — step recorded
-            assistant(call("submit", {})),   # now OK
-        ])
         runner = _make_runner(client)
         result = await runner.run(wf, "go", prompt_vars={"role": "agent"})
         assert result == "submit_result"
@@ -1513,23 +1431,16 @@ class TestToolResolutionError:
             return "ok"
 
         tools = {"fetch": _make_tool("fetch"), "submit": _make_tool("submit")}
-        tools_handlers = {
-            "fetch": mixed_errors,
-            "submit": (lambda **kw: "submit" + "_result"),
-        }
-        tools_prerequisites = {}
-        wf = _make_workflow(
-            tools=tools,
-            handlers=tools_handlers,
-            prerequisites=tools_prerequisites,
-            required_steps=["fetch"],
+        tools_handlers = {"fetch": mixed_errors, "submit": (lambda **kw: "submit" + "_result")}
+        wf = _make_workflow(tools=tools, handlers=tools_handlers, required_steps=["fetch"])
+        client = MockClient(
+            [
+                assistant(call("fetch", {})),  # ToolResolutionError (no increment)
+                assistant(call("fetch", {})),  # ValueError (increment to 1)
+                assistant(call("fetch", {})),  # succeeds
+                assistant(call("submit", {})),
+            ]
         )
-        client = MockClient([
-            assistant(call("fetch", {})),   # ToolResolutionError (no increment)
-            assistant(call("fetch", {})),   # ValueError (increment to 1)
-            assistant(call("fetch", {})),   # succeeds
-            assistant(call("submit", {})),
-        ])
         # max_tool_errors=1 — the one hard error hits 1, which is <=, not >
         runner = _make_runner(client, max_tool_errors=1)
         result = await runner.run(wf, "go", prompt_vars={"role": "agent"})
@@ -1539,6 +1450,7 @@ class TestToolResolutionError:
     async def test_resolution_error_is_not_forge_error(self):
         """ToolResolutionError is a plain Exception, not a ForgeError."""
         from forge.errors import ForgeError
+
         err = ToolResolutionError("test")
         assert isinstance(err, Exception)
         assert not isinstance(err, ForgeError)
@@ -1565,19 +1477,19 @@ class TestPrerequisiteEnforcement:
             "edit_file": lambda **kwargs: "edited",
             "submit": (lambda **kw: "submit" + "_result"),
         }
-        tools_prerequisites = {
-            "edit_file": [{"tool": "read_file", "match_arg": "path"}]
-        }
-        client = MockClient([
-            # 1: model tries edit_file first → blocked
-            assistant(call("edit_file", {"path": "foo.py"})),
-            # 2: model corrects, calls read_file
-            assistant(call("read_file", {"path": "foo.py"})),
-            # 3: model calls edit_file again → now allowed
-            assistant(call("edit_file", {"path": "foo.py"})),
-            # 4: terminal
-            assistant(call("submit", {})),
-        ])
+        tools_prerequisites = {"edit_file": [{"tool": "read_file", "match_arg": "path"}]}
+        client = MockClient(
+            [
+                # 1: model tries edit_file first → blocked
+                assistant(call("edit_file", {"path": "foo.py"})),
+                # 2: model corrects, calls read_file
+                assistant(call("read_file", {"path": "foo.py"})),
+                # 3: model calls edit_file again → now allowed
+                assistant(call("edit_file", {"path": "foo.py"})),
+                # 4: terminal
+                assistant(call("submit", {})),
+            ]
+        )
         wf = _make_workflow(
             tools=tools,
             handlers=tools_handlers,
@@ -1606,12 +1518,14 @@ class TestPrerequisiteEnforcement:
             "submit": (lambda **kw: "submit" + "_result"),
         }
         tools_prerequisites = {"edit_file": ["read_file"]}
-        client = MockClient([
-            assistant(call("edit_file", {})),
-            assistant(call("read_file", {})),
-            assistant(call("edit_file", {})),
-            assistant(call("submit", {})),
-        ])
+        client = MockClient(
+            [
+                assistant(call("edit_file", {})),
+                assistant(call("read_file", {})),
+                assistant(call("edit_file", {})),
+                assistant(call("submit", {})),
+            ]
+        )
         wf = _make_workflow(
             tools=tools,
             handlers=tools_handlers,
@@ -1643,12 +1557,14 @@ class TestPrerequisiteEnforcement:
             "submit": (lambda **kw: "submit" + "_result"),
         }
         tools_prerequisites = {"edit_file": ["read_file"]}
-        client = MockClient([
-            assistant(call("edit_file", {})),
-            assistant(call("edit_file", {})),
-            assistant(call("edit_file", {})),
-            assistant(call("edit_file", {})),
-        ])
+        client = MockClient(
+            [
+                assistant(call("edit_file", {})),
+                assistant(call("edit_file", {})),
+                assistant(call("edit_file", {})),
+                assistant(call("edit_file", {})),
+            ]
+        )
         wf = _make_workflow(
             tools=tools,
             handlers=tools_handlers,
@@ -1677,18 +1593,18 @@ class TestPrerequisiteEnforcement:
             "edit_file": lambda **kwargs: "edited",
             "submit": (lambda **kw: "submit" + "_result"),
         }
-        tools_prerequisites = {
-            "edit_file": [{"tool": "read_file", "match_arg": "path"}]
-        }
-        client = MockClient([
-            # Read a.py, then try to edit b.py → blocked (arg mismatch)
-            assistant(call("read_file", {"path": "a.py"})),
-            assistant(call("edit_file", {"path": "b.py"})),
-            # Read b.py, then edit b.py → allowed
-            assistant(call("read_file", {"path": "b.py"})),
-            assistant(call("edit_file", {"path": "b.py"})),
-            assistant(call("submit", {})),
-        ])
+        tools_prerequisites = {"edit_file": [{"tool": "read_file", "match_arg": "path"}]}
+        client = MockClient(
+            [
+                # Read a.py, then try to edit b.py → blocked (arg mismatch)
+                assistant(call("read_file", {"path": "a.py"})),
+                assistant(call("edit_file", {"path": "b.py"})),
+                # Read b.py, then edit b.py → allowed
+                assistant(call("read_file", {"path": "b.py"})),
+                assistant(call("edit_file", {"path": "b.py"})),
+                assistant(call("submit", {})),
+            ]
+        )
         wf = _make_workflow(
             tools=tools,
             handlers=tools_handlers,
@@ -1724,22 +1640,15 @@ class TestMultipleTerminalTools:
                 "set_ac": lambda **kw: "ac_on",
                 "no_action": lambda **kw: "skipped",
             }
-            tools_prerequisites = {}
-            client = MockClient([
-                assistant(call("gather", {})),
-                assistant(call(terminal, {})),
-            ])
+            client = MockClient([assistant(call("gather", {})), assistant(call(terminal, {}))])
             wf = _make_workflow(
                 tools=tools,
                 handlers=tools_handlers,
-                prerequisites=tools_prerequisites,
                 required_steps=["gather"],
                 terminal_tool=["set_ac", "no_action"],
             )
             runner = _make_runner(client)
-            result = await runner.run(
-                wf, "manage ac", prompt_vars={"role": "agent"}
-            )
+            result = await runner.run(wf, "manage ac", prompt_vars={"role": "agent"})
             assert result == expected, terminal
 
     @pytest.mark.asyncio
@@ -1751,24 +1660,16 @@ class TestMultipleTerminalTools:
             "set_ac": _make_tool("set_ac"),
             "no_action": _make_tool("no_action"),
         }
-        tools_handlers = {
-            "gather": (lambda **kw: "gather" + "_result"),
-            "set_ac": (lambda **kw: "set_ac" + "_result"),
-            "no_action": (lambda **kw: "no_action" + "_result"),
-        }
-        tools_prerequisites = {}
-        client = MockClient([
-            assistant(call("set_ac", {})),       # premature
-            assistant(call("no_action", {})),     # also premature
-            assistant(call("gather", {})),         # required step
-            assistant(call("set_ac", {})),         # now allowed
-        ])
+        client = MockClient(
+            [
+                assistant(call("set_ac", {})),  # premature
+                assistant(call("no_action", {})),  # also premature
+                assistant(call("gather", {})),  # required step
+                assistant(call("set_ac", {})),  # now allowed
+            ]
+        )
         wf = _make_workflow(
-            tools=tools,
-            handlers=tools_handlers,
-            prerequisites=tools_prerequisites,
-            required_steps=["gather"],
-            terminal_tool=["set_ac", "no_action"],
+            tools=tools, required_steps=["gather"], terminal_tool=["set_ac", "no_action"]
         )
         runner = _make_runner(client)
         runner.on_message = collected.append
@@ -1787,10 +1688,7 @@ class TestCancellation:
     @pytest.mark.asyncio
     async def test_cancel_before_start(self):
         """Cancel event set before run() starts raises immediately."""
-        client = MockClient([
-            assistant(call("fetch", {})),
-            assistant(call("submit", {})),
-        ])
+        client = MockClient([assistant(call("fetch", {})), assistant(call("submit", {}))])
         wf = _make_workflow()
         runner = _make_runner(client)
         cancel = asyncio.Event()
@@ -1816,17 +1714,8 @@ class TestCancellation:
             "fetch": cancel_after_fetch,
             "submit": (lambda **kw: "submit" + "_result"),
         }
-        tools_prerequisites = {}
-        client = MockClient([
-            assistant(call("fetch", {})),
-            assistant(call("submit", {})),
-        ])
-        wf = _make_workflow(
-            tools=tools,
-            handlers=tools_handlers,
-            prerequisites=tools_prerequisites,
-            required_steps=["fetch"],
-        )
+        client = MockClient([assistant(call("fetch", {})), assistant(call("submit", {}))])
+        wf = _make_workflow(tools=tools, handlers=tools_handlers, required_steps=["fetch"])
         runner = _make_runner(client)
 
         with pytest.raises(WorkflowCancelledError) as exc_info:
@@ -1845,10 +1734,7 @@ class TestCancellation:
     async def test_unset_cancel_event_runs_normally(self):
         """Cancel event that is never set doesn't interfere."""
         cancel = asyncio.Event()  # never set
-        client = MockClient([
-            assistant(call("fetch", {})),
-            assistant(call("submit", {})),
-        ])
+        client = MockClient([assistant(call("fetch", {})), assistant(call("submit", {}))])
         wf = _make_workflow()
         runner = _make_runner(client)
         result = await runner.run(wf, "go", prompt_vars={"role": "dev"}, cancel_event=cancel)
@@ -1896,8 +1782,11 @@ async def test_recorded_mixed_reply_identity_ids_grouping_and_terminal_batch(str
     order = []
     terminal_value = {"finished": [1, 2]}
     reply = assistant(
-        TextPart("visible"), ReasoningPart("first"), ReasoningPart("second"),
-        call("submit", {}), call("fetch", {"key": "later"}),
+        TextPart("visible"),
+        ReasoningPart("first"),
+        ReasoningPart("second"),
+        call("submit", {}),
+        call("fetch", {"key": "later"}),
     )
     client = MockClient([reply])
     timeline = []
@@ -1906,7 +1795,10 @@ async def test_recorded_mixed_reply_identity_ids_grouping_and_terminal_batch(str
         timeline.append(chunk.type)
         if chunk.type == ChunkType.FINAL:
             assert order == []
-            assert not any(isinstance(item, RichMessage) and item.role == MessageRole.ASSISTANT for item in timeline)
+            assert not any(
+                isinstance(item, RichMessage) and item.role == MessageRole.ASSISTANT
+                for item in timeline
+            )
 
     def terminal(**kwargs):
         order.append("submit")
@@ -1919,7 +1811,8 @@ async def test_recorded_mixed_reply_identity_ids_grouping_and_terminal_batch(str
     runner = _make_runner(client, stream=stream, on_chunk=on_chunk, on_message=timeline.append)
     result = await runner.run(
         _make_workflow(required_steps=[], handlers={"submit": terminal, "fetch": fetch}),
-        "go", prompt_vars={"role": "agent"},
+        "go",
+        prompt_vars={"role": "agent"},
     )
     messages = [item for item in timeline if isinstance(item, RichMessage)]
     assert result is terminal_value
@@ -1954,12 +1847,17 @@ async def test_exhaustion_delivers_each_existing_reply_once(boundary, stream):
         timeline.append(chunk.type)
 
     runner = _make_runner(
-        MockClient(replies), stream=stream, on_chunk=on_chunk,
-        on_message=timeline.append, max_iterations=2,
+        MockClient(replies),
+        stream=stream,
+        on_chunk=on_chunk,
+        on_message=timeline.append,
+        max_iterations=2,
         max_retries_per_step=1 if boundary == "retries" else 5,
         max_tool_errors=1 if invalid else 5,
     )
-    workflow = _make_workflow(handlers={"fetch": lambda **kw: executed.append(kw), "submit": lambda: "done"})
+    workflow = _make_workflow(
+        handlers={"fetch": lambda **kw: executed.append(kw), "submit": lambda: "done"}
+    )
     with pytest.raises(MaxIterationsError if boundary == "iterations" else ToolCallError):
         await runner.run(workflow, "go", prompt_vars={"role": "agent"})
     messages = [item for item in timeline if isinstance(item, RichMessage)]
@@ -1996,8 +1894,7 @@ async def test_context_warning_is_one_transient_event(exhaust):
     reply = assistant(TextPart("bad")) if exhaust else assistant(call("submit", {}))
     client = StateClient([reply])
     context = StateContext(
-        NoCompact(), 10, context_thresholds=[0.1],
-        on_context_threshold=lambda *_: "CONTEXT WARNING",
+        NoCompact(), 10, context_thresholds=[0.1], on_context_threshold=lambda *_: "CONTEXT WARNING"
     )
     emitted = []
     runner = WorkflowRunner(client, context, on_message=emitted.append, max_iterations=1)
@@ -2015,7 +1912,17 @@ async def test_context_warning_is_one_transient_event(exhaust):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("seed", ["old text", ["old text"], [{"role": "user", "content": "old"}], (RichMessage(MessageRole.USER, []),), [RichMessage(MessageRole.USER, "old")], [RichMessage(MessageRole.USER, ["old"])]] )
+@pytest.mark.parametrize(
+    "seed",
+    [
+        "old text",
+        ["old text"],
+        [{"role": "user", "content": "old"}],
+        (RichMessage(MessageRole.USER, []),),
+        [RichMessage(MessageRole.USER, "old")],
+        [RichMessage(MessageRole.USER, ["old"])],
+    ],
+)
 async def test_legacy_and_malformed_initial_history_fails_clearly(seed):
     runner = _make_runner(MockClient([]))
     with pytest.raises(TypeError, match="initial_messages must be a list of RichMessage"):
@@ -2026,9 +1933,9 @@ async def test_legacy_and_malformed_initial_history_fails_clearly(seed):
 async def test_retry_accepted_reply_and_step_correction_share_completed_iteration():
     first = assistant(TextPart("bad"))
     premature = assistant(call("submit", {}))
-    runner, emitted = _collecting_runner(MockClient([
-        first, premature, assistant(call("fetch", {})), assistant(call("submit", {})),
-    ]))
+    runner, emitted = _collecting_runner(
+        MockClient([first, premature, assistant(call("fetch", {})), assistant(call("submit", {}))])
+    )
     await runner.run(_make_workflow(), "go", prompt_vars={"role": "agent"})
     correction = next(m for m in emitted if m.forge_purpose == "step")
     assert first.step_index == 0
@@ -2055,7 +1962,8 @@ async def test_terminal_batch_still_applies_later_callable_error_budget():
     with pytest.raises(ToolExecutionError):
         await runner.run(
             _make_workflow(required_steps=[], handlers={"submit": terminal, "fetch": fail}),
-            "go", prompt_vars={"role": "agent"},
+            "go",
+            prompt_vars={"role": "agent"},
         )
     assert executed == ["submit", "fetch"]
     results = [p for m in emitted for p in m.parts if isinstance(p, ToolResultPart)]
@@ -2069,8 +1977,12 @@ async def test_parallel_invalid_arguments_block_entire_batch_before_handlers():
     replies = [assistant(call("fetch", {}), call("submit", [])), assistant(call("submit", {}))]
     runner, emitted = _collecting_runner(MockClient(replies), max_tool_errors=2)
     result = await runner.run(
-        _make_workflow(required_steps=[], handlers={"fetch": lambda: executed.append("fetch"), "submit": lambda: "done"}),
-        "go", prompt_vars={"role": "agent"},
+        _make_workflow(
+            required_steps=[],
+            handlers={"fetch": lambda: executed.append("fetch"), "submit": lambda: "done"},
+        ),
+        "go",
+        prompt_vars={"role": "agent"},
     )
     assert result == "done"
     assert executed == []

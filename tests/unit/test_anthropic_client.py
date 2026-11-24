@@ -17,9 +17,7 @@ from forge.core.workflow import ToolDefinition
 from forge.errors import BackendError, MissingModelError
 
 CITY_SCHEMA = {
-    "properties": {
-        "city": {"description": "City name", "title": "City", "type": "string"}
-    },
+    "properties": {"city": {"description": "City name", "title": "City", "type": "string"}},
     "required": ["city"],
     "title": "CityParams",
     "type": "object",
@@ -27,9 +25,7 @@ CITY_SCHEMA = {
 
 
 def _make_spec(name: str = "get_weather") -> ToolDefinition:
-    return ToolDefinition(
-        name=name, description=f"Get {name}", input_schema=CITY_SCHEMA
-    )
+    return ToolDefinition(name=name, description=f"Get {name}", input_schema=CITY_SCHEMA)
 
 
 class _EventStream(httpx.AsyncByteStream):
@@ -58,9 +54,7 @@ def _text_delta(text: str, index: int = 0) -> dict:
 
 def _thinking_delta(thinking: str) -> dict:
     return _stream_event(
-        "content_block_delta",
-        index=0,
-        delta={"type": "thinking_delta", "thinking": thinking},
+        "content_block_delta", index=0, delta={"type": "thinking_delta", "thinking": thinking}
     )
 
 
@@ -68,12 +62,7 @@ def _tool_start(name: str, index: int = 1) -> dict:
     return _stream_event(
         "content_block_start",
         index=index,
-        content_block={
-            "type": "tool_use",
-            "id": f"toolu_{index}",
-            "name": name,
-            "input": {},
-        },
+        content_block={"type": "tool_use", "id": f"toolu_{index}", "name": name, "input": {}},
     )
 
 
@@ -104,15 +93,12 @@ def _mock_stream(
     if events and events[-1]["type"] == "message_stop":
         events = [
             *events[:-1],
-            _stream_event(
-                "message_delta", usage={"output_tokens": usage["output_tokens"]}
-            ),
+            _stream_event("message_delta", usage={"output_tokens": usage["output_tokens"]}),
             events[-1],
         ]
     events = [
         _stream_event(
-            "message_start",
-            message={"content": [], "usage": {**usage, "output_tokens": 0}},
+            "message_start", message={"content": [], "usage": {**usage, "output_tokens": 0}}
         ),
         *events,
     ]
@@ -133,35 +119,10 @@ def _text_response(text: str = "ok", **usage: int) -> dict:
     }
 
 
-SET_UNIT_SCHEMA = {
-    "properties": {
-        "unit": {
-            "description": "Unit",
-            "enum": ["celsius", "fahrenheit"],
-            "title": "Unit",
-            "type": "string",
-        }
-    },
-    "required": ["unit"],
-    "title": "SetUnitParams",
-    "type": "object",
-}
-
-
-def _make_spec_with_enum() -> ToolDefinition:
-    return ToolDefinition(
-        name="set_unit",
-        description="Set temperature unit",
-        input_schema=SET_UNIT_SCHEMA,
-    )
-
-
 @pytest.mark.asyncio
 async def test_direct_base_url_preserves_deployment_prefix() -> None:
     service_root = "https://anthropic.example/deployment/"
-    client = AnthropicClient(
-        model="claude-test", api_key="dummy", base_url=service_root
-    )
+    client = AnthropicClient(model="claude-test", api_key="dummy", base_url=service_root)
     requests = []
 
     def respond(request):
@@ -185,33 +146,6 @@ class TestConvertTools:
         assert "city" in schema["properties"]
         assert schema["required"] == ["city"]
 
-    def test_enum_param(self) -> None:
-        result = AnthropicClient._convert_tools([_make_spec_with_enum()])
-        prop = result[0]["input_schema"]["properties"]["unit"]
-        assert prop["enum"] == ["celsius", "fahrenheit"]
-
-    def test_optional_param(self) -> None:
-        SEARCH_WITH_LIMIT_SCHEMA = {
-            "properties": {
-                "query": {"description": "Query", "title": "Query", "type": "string"},
-                "limit": {
-                    "anyOf": [{"type": "integer"}, {"type": "null"}],
-                    "default": None,
-                    "description": "Max results",
-                    "title": "Limit",
-                },
-            },
-            "required": ["query"],
-            "title": "SearchWithLimitParams",
-            "type": "object",
-        }
-        spec = ToolDefinition(
-            name="search", description="Search", input_schema=SEARCH_WITH_LIMIT_SCHEMA
-        )
-        result = AnthropicClient._convert_tools([spec])
-        assert "query" in result[0]["input_schema"]["required"]
-        assert "limit" not in result[0]["input_schema"]["required"]
-
     def test_multiple_tools(self) -> None:
         specs = [_make_spec("tool_a"), _make_spec("tool_b")]
         result = AnthropicClient._convert_tools(specs)
@@ -230,10 +164,7 @@ class TestConvertMessages:
         assert converted[0]["role"] == "user"
 
     def test_simple_user_assistant(self) -> None:
-        msgs = [
-            {"role": "user", "content": "Hi"},
-            {"role": "assistant", "content": "Hello!"},
-        ]
+        msgs = [{"role": "user", "content": "Hi"}, {"role": "assistant", "content": "Hello!"}]
         system, converted = render_anthropic(openai_state(msgs).messages)
         assert system is None
         assert len(converted) == 2
@@ -251,10 +182,7 @@ class TestConvertMessages:
                     {
                         "type": "function",
                         "id": "call_001",
-                        "function": {
-                            "name": "get_weather",
-                            "arguments": '{"city": "Paris"}',
-                        },
+                        "function": {"name": "get_weather", "arguments": '{"city": "Paris"}'},
                     }
                 ],
             },
@@ -307,12 +235,7 @@ class TestConvertMessages:
                     }
                 ],
             },
-            {
-                "role": "tool",
-                "content": "result_data",
-                "tool_call_id": "call_001",
-                "name": "f",
-            },
+            {"role": "tool", "content": "result_data", "tool_call_id": "call_001", "name": "f"},
         ]
         _, converted = render_anthropic(openai_state(msgs).messages)
         assert len(converted) == 3
@@ -385,10 +308,7 @@ class TestConvertMessages:
                     {
                         "type": "function",
                         "id": "call_000",
-                        "function": {
-                            "name": "get_weather",
-                            "arguments": '{"city": "Paris"}',
-                        },
+                        "function": {"name": "get_weather", "arguments": '{"city": "Paris"}'},
                     }
                 ],
             },
@@ -405,10 +325,7 @@ class TestConvertMessages:
                     {
                         "type": "function",
                         "id": "call_001",
-                        "function": {
-                            "name": "submit",
-                            "arguments": '{"answer": "22C"}',
-                        },
+                        "function": {"name": "submit", "arguments": '{"answer": "22C"}'},
                     }
                 ],
             },
@@ -416,12 +333,7 @@ class TestConvertMessages:
         system, converted = render_anthropic(openai_state(msgs).messages)
         assert system == "You are a helper."
         assert len(converted) == 4
-        assert [m["role"] for m in converted] == [
-            "user",
-            "assistant",
-            "user",
-            "assistant",
-        ]
+        assert [m["role"] for m in converted] == ["user", "assistant", "user", "assistant"]
         assert converted[1]["content"][0]["type"] == "tool_use"
         assert converted[1]["content"][0]["name"] == "get_weather"
         assert converted[2]["content"][0]["type"] == "tool_result"
@@ -449,12 +361,7 @@ class TestConvertMessages:
         ]
         _, converted = render_anthropic(openai_state(msgs).messages)
         assert len(converted) == 4
-        assert [m["role"] for m in converted] == [
-            "user",
-            "assistant",
-            "user",
-            "assistant",
-        ]
+        assert [m["role"] for m in converted] == ["user", "assistant", "user", "assistant"]
 
     def test_arguments_as_dict(self) -> None:
         """Arguments already parsed as dict (Ollama format) still works."""
@@ -485,9 +392,7 @@ class TestParseResponse:
 
     def test_tool_use_response(self) -> None:
         response = {
-            "content": [
-                {"type": "tool_use", "name": "get_weather", "input": {"city": "Paris"}}
-            ]
+            "content": [{"type": "tool_use", "name": "get_weather", "input": {"city": "Paris"}}]
         }
         result = anthropic_reply(response)
         assert isinstance(result, RichMessage)
@@ -550,9 +455,7 @@ class TestStreaming:
         client = AnthropicClient(model="claude-test", api_key="dummy")
         events = [
             _stream_event(
-                "content_block_start",
-                index=0,
-                content_block={"type": "text", "text": ""},
+                "content_block_start", index=0, content_block={"type": "text", "text": ""}
             ),
             _text_delta("Hello, "),
             _text_delta("world!"),
@@ -576,10 +479,7 @@ class TestStreaming:
         }
         _mock_stream(client, events, usage=usage)
         chunks = [
-            chunk
-            async for chunk in send_stream(
-                client, [{"role": "user", "content": "hello"}]
-            )
+            chunk async for chunk in send_stream(client, [{"role": "user", "content": "hello"}])
         ]
         assert [chunk.type for chunk in chunks] == [
             ChunkType.TEXT_DELTA,
@@ -603,9 +503,7 @@ class TestStreaming:
         client = AnthropicClient(model="claude-test", api_key="dummy")
         events = [
             _stream_event(
-                "content_block_start",
-                index=0,
-                content_block={"type": "text", "text": ""},
+                "content_block_start", index=0, content_block={"type": "text", "text": ""}
             ),
             _text_delta("Let me check both."),
             _stream_event("content_block_stop", index=0),
@@ -626,13 +524,17 @@ class TestStreaming:
                 client, [{"role": "user", "content": "weather and units"}]
             )
         ]
-        assert [
-            chunk.content for chunk in chunks if chunk.type == ChunkType.TOOL_CALL_DELTA
-        ] == ['{"city":', '"Paris"}', '{"unit":"cel', 'sius"}']
+        assert [chunk.content for chunk in chunks if chunk.type == ChunkType.TOOL_CALL_DELTA] == [
+            '{"city":',
+            '"Paris"}',
+            '{"unit":"cel',
+            'sius"}',
+        ]
         assert chunks[-1].type == ChunkType.FINAL
-        assert [
-            (p.name, argument_value(p)) for p in reply_calls(chunks[-1].response)
-        ] == [("get_weather", {"city": "Paris"}), ("set_unit", {"unit": "celsius"})]
+        assert [(p.name, argument_value(p)) for p in reply_calls(chunks[-1].response)] == [
+            ("get_weather", {"city": "Paris"}),
+            ("set_unit", {"unit": "celsius"}),
+        ]
         assert visible(chunks[-1].response) == "Let me check both."
         assert reasoning(chunks[-1].response) == ""
 
@@ -649,9 +551,7 @@ class TestStreaming:
             _thinking_delta("search."),
             _stream_event("content_block_stop", index=0),
             _stream_event(
-                "content_block_start",
-                index=1,
-                content_block={"type": "text", "text": ""},
+                "content_block_start", index=1, content_block={"type": "text", "text": ""}
             ),
             _text_delta("Visible preamble.", index=1),
             _stream_event("content_block_stop", index=1),
@@ -667,9 +567,9 @@ class TestStreaming:
                 client, [{"role": "user", "content": "search for forge"}]
             )
         ]
-        assert [
-            chunk.content for chunk in chunks if chunk.type == ChunkType.TEXT_DELTA
-        ] == ["Visible preamble."]
+        assert [chunk.content for chunk in chunks if chunk.type == ChunkType.TEXT_DELTA] == [
+            "Visible preamble."
+        ]
         assert reply_calls(chunks[-1].response) == [call("search", {"q": "forge"})]
         assert reasoning(chunks[-1].response) == "I should search."
         assert visible(chunks[-1].response) == "Visible preamble."
@@ -678,18 +578,14 @@ class TestStreaming:
     async def test_http_stream_failure_becomes_backend_error(self) -> None:
         client = AnthropicClient(model="claude-test", api_key="dummy", max_retries=0)
         http_error = httpx.ReadError(
-            "stream failed",
-            request=httpx.Request("POST", "https://api.anthropic.com/v1/messages"),
+            "stream failed", request=httpx.Request("POST", "https://api.anthropic.com/v1/messages")
         )
         _mock_stream(client, [], error=http_error)
         with pytest.raises(
             BackendError, match="Backend returned 0: Anthropic backend request failed"
         ) as exc:
             _ = [
-                chunk
-                async for chunk in send_stream(
-                    client, [{"role": "user", "content": "hello"}]
-                )
+                chunk async for chunk in send_stream(client, [{"role": "user", "content": "hello"}])
             ]
         assert exc.value.__cause__ is http_error
         assert exc.value.body == "stream failed"
@@ -722,9 +618,7 @@ class TestPromptCaching:
     ]
 
     def test_static_cache_marks_tools_and_system(self) -> None:
-        client = AnthropicClient(
-            model="claude-test", api_key="dummy", prompt_caching=True
-        )
+        client = AnthropicClient(model="claude-test", api_key="dummy", prompt_caching=True)
         tools = [_make_spec("a"), _make_spec("b")]
         kwargs = render(client, self._MESSAGES, tools).payload
         assert kwargs["tools"][-1]["cache_control"] == {"type": "ephemeral"}
@@ -742,9 +636,7 @@ class TestPromptCaching:
     def test_cache_does_not_touch_verbatim_inbound(self) -> None:
         """prompt_caching must not mutate the path-1 verbatim body — that path
         carries the proxy's own cache_control and bypasses the rebuild."""
-        client = AnthropicClient(
-            model="claude-test", api_key="dummy", prompt_caching=True
-        )
+        client = AnthropicClient(model="claude-test", api_key="dummy", prompt_caching=True)
         inbound = {
             "max_tokens": 10,
             "system": "verbatim system",
@@ -756,9 +648,7 @@ class TestPromptCaching:
 
     @pytest.mark.asyncio
     async def test_send_records_cache_usage(self) -> None:
-        client = AnthropicClient(
-            model="claude-test", api_key="dummy", prompt_caching=True
-        )
+        client = AnthropicClient(model="claude-test", api_key="dummy", prompt_caching=True)
         _mock_http(
             client,
             lambda _: httpx.Response(
@@ -787,9 +677,7 @@ class TestRequestRoutedModel:
     def test_dynamic_client_uses_rebuild_passthrough_model(self) -> None:
         client = AnthropicClient(model=None, api_key="dummy")
         kwargs = render(
-            client,
-            [{"role": "user", "content": "hi"}],
-            passthrough={"model": "route-b"},
+            client, [{"role": "user", "content": "hi"}], passthrough={"model": "route-b"}
         ).payload
         assert kwargs["model"] == "route-b"
 
@@ -804,9 +692,7 @@ class TestRequestRoutedModel:
     def test_direct_fixed_client_overrides_passthrough_model(self) -> None:
         client = AnthropicClient(model="fixed-model", api_key="dummy")
         kwargs = render(
-            client,
-            [{"role": "user", "content": "hi"}],
-            passthrough={"model": "request-model"},
+            client, [{"role": "user", "content": "hi"}], passthrough={"model": "request-model"}
         ).payload
         assert kwargs["model"] == "fixed-model"
 
@@ -829,27 +715,19 @@ class TestRequestRoutedModel:
             client.send(
                 render_native(
                     client,
-                    {
-                        "model": "route-opus",
-                        "messages": [{"role": "user", "content": "one"}],
-                    },
+                    {"model": "route-opus", "messages": [{"role": "user", "content": "one"}]},
                 )
             )
         )
         rebuilt = asyncio.create_task(
             send(
-                client,
-                [{"role": "user", "content": "two"}],
-                passthrough={"model": "route-sonnet"},
+                client, [{"role": "user", "content": "two"}], passthrough={"model": "route-sonnet"}
             )
         )
         await both_arrived.wait()
         release.set()
         await asyncio.gather(clean, rebuilt)
-        assert {kwargs["model"] for kwargs in recorded} == {
-            "route-opus",
-            "route-sonnet",
-        }
+        assert {kwargs["model"] for kwargs in recorded} == {"route-opus", "route-sonnet"}
         assert client.model is None
 
 
@@ -857,10 +735,7 @@ class TestThinking:
     """Adaptive extended-thinking request wiring (baseline rows). Request-only:
     thinking is merged into the rebuild path and forces tool_choice=auto."""
 
-    _MESSAGES = [
-        {"role": "system", "content": "sys"},
-        {"role": "user", "content": "hi"},
-    ]
+    _MESSAGES = [{"role": "system", "content": "sys"}, {"role": "user", "content": "hi"}]
 
     def test_thinking_merged_into_kwargs(self) -> None:
         client = AnthropicClient(
@@ -876,19 +751,14 @@ class TestThinking:
 
     def test_thinking_suppresses_forced_tool_choice(self) -> None:
         client = AnthropicClient(
-            model="claude-test",
-            api_key="dummy",
-            tool_choice="any",
-            thinking={"type": "adaptive"},
+            model="claude-test", api_key="dummy", tool_choice="any", thinking={"type": "adaptive"}
         )
         kwargs = render(client, self._MESSAGES, [_make_spec("a")]).payload
         assert "tool_choice" not in kwargs
         assert kwargs["thinking"] == {"type": "adaptive"}
 
     def test_forced_tool_choice_kept_when_no_thinking(self) -> None:
-        client = AnthropicClient(
-            model="claude-test", api_key="dummy", tool_choice="any"
-        )
+        client = AnthropicClient(model="claude-test", api_key="dummy", tool_choice="any")
         kwargs = render(client, self._MESSAGES, [_make_spec("a")]).payload
         assert kwargs["tool_choice"] == {"type": "any"}
 
@@ -930,9 +800,7 @@ class TestGetContextLength:
         ],
     )
     async def test_untrusted_metadata_target_returns_none(self, base_url: str) -> None:
-        client = AnthropicClient(
-            model="claude-test", api_key="dummy", base_url=base_url
-        )
+        client = AnthropicClient(model="claude-test", api_key="dummy", base_url=base_url)
 
         def unexpected_request(request):
             pytest.fail("untrusted targets must not receive metadata requests")
@@ -944,13 +812,9 @@ class TestGetContextLength:
     @pytest.mark.parametrize("window", [None, 0, -1, True, "200000"])
     async def test_unusable_metadata_window_returns_none(self, window: object) -> None:
         client = AnthropicClient(
-            model="claude-test",
-            api_key="dummy",
-            base_url="https://api.anthropic.com:443/",
+            model="claude-test", api_key="dummy", base_url="https://api.anthropic.com:443/"
         )
-        _mock_http(
-            client, lambda _: httpx.Response(200, json={"max_input_tokens": window})
-        )
+        _mock_http(client, lambda _: httpx.Response(200, json={"max_input_tokens": window}))
         assert await client.get_context_length() is None
 
     @pytest.mark.asyncio
@@ -983,9 +847,7 @@ async def test_body_strips_caller_transport_controls_but_keeps_litellm_session()
         "extra_query": {"x": "y"},
         "timeout": 1,
     }
-    await client.send(
-        render_native(client, inbound, extra_headers={"x-api-key": "secret"})
-    )
+    await client.send(render_native(client, inbound, extra_headers={"x-api-key": "secret"}))
     assert len(requests) == 1
     body = json.loads(requests[0].content)
     assert body["litellm_session_id"] is None

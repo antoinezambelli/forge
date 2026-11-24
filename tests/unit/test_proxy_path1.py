@@ -1,14 +1,4 @@
-"""Path-1 tests — Anthropic-protocol downstream + cache_control verbatim emit.
-
-Covers:
-- ProxyServer init-time validation of the Anthropic selector + mode.
-- AnthropicClient verbatim path when inbound_anthropic_body is set.
-- AnthropicClient falling back to _convert_messages rebuild when None.
-- End-to-end: cache_control on inbound blocks reaches the downstream
-  HTTP request unchanged (the headline path-1 capability).
-
-See ADR-015 for the cache_control preservation rationale.
-"""
+"""Anthropic-native request rendering and cache-control preservation on the wire."""
 
 from __future__ import annotations
 from tests.canonical import render, render_native
@@ -41,9 +31,7 @@ class TestProxyServerValidation:
     @pytest.mark.asyncio
     async def test_anthropic_external_receives_backend_timeout(self):
         proxy = ProxyServer(
-            backend_url="http://localhost:8080",
-            backend="anthropic",
-            backend_timeout=1800.0,
+            backend_url="http://localhost:8080", backend="anthropic", backend_timeout=1800.0
         )
         with patch("forge.clients.anthropic.AnthropicClient") as mock_client_cls:
             mock_client = MagicMock()
@@ -72,26 +60,17 @@ class TestProxyServerValidation:
         assert mock_client_cls.call_args.kwargs["model"] == "claude"
 
 
-class TestAnthropicClientVerbatim:
-    def test_verbatim_body_used_when_provided(self):
-        """When inbound_anthropic_body is set, _build_kwargs returns it verbatim
-        (drops only 'stream', sets model default)."""
+class TestAnthropicClientNativeRequest:
+    def test_native_request_fields_survive_rendering(self):
         client = AnthropicClient(model="claude-3-5-sonnet", api_key="dummy")
         inbound = {
             "model": "claude-3-5-sonnet",
             "max_tokens": 1024,
             "messages": [
-                {
-                    "role": "user",
-                    "content": [{"type": "text", "text": "long stable content"}],
-                }
+                {"role": "user", "content": [{"type": "text", "text": "long stable content"}]}
             ],
             "system": [
-                {
-                    "type": "text",
-                    "text": "you are helpful",
-                    "cache_control": {"type": "ephemeral"},
-                }
+                {"type": "text", "text": "you are helpful", "cache_control": {"type": "ephemeral"}}
             ],
             "metadata": {"user_id": "test"},
             "stream": True,
@@ -119,10 +98,7 @@ class TestAnthropicClientVerbatim:
     def test_none_inbound_uses_convert_messages_path(self):
         """When inbound_anthropic_body is None, falls back to rebuild path."""
         client = AnthropicClient(model="claude-3-5-sonnet", api_key="dummy")
-        messages = [
-            {"role": "system", "content": "be helpful"},
-            {"role": "user", "content": "hi"},
-        ]
+        messages = [{"role": "system", "content": "be helpful"}, {"role": "user", "content": "hi"}]
         kwargs = render(client, messages).payload
         assert kwargs["system"] == "be helpful"
         assert kwargs["messages"][0]["role"] == "user"
@@ -243,22 +219,6 @@ class TestCacheControlSurvivesWire:
         msg_blocks = kwargs["messages"][0]["content"]
         assert msg_blocks[0]["cache_control"] == {"type": "ephemeral"}
 
-    @pytest.mark.asyncio
-    async def test_rebuild_path_drops_cache_control(self):
-        """Sanity check: WITHOUT inbound_anthropic_body, _convert_messages
-        rebuilds blocks without cache_control. Documents the limit ADR-015
-        addresses."""
-        client = AnthropicClient(model="claude-3-5-sonnet", api_key="dummy")
-        calls = _mock_anthropic_http(client)
-        openai_messages = [
-            {"role": "system", "content": "large stable system prompt"},
-            {"role": "user", "content": "hi"},
-        ]
-        await client.send(render(client, openai_messages))
-        kwargs = calls[0]
-        assert kwargs["system"] == "large stable system prompt"
-        assert not isinstance(kwargs["system"], list)
-
 
 class TestAnthropicReasoningProxyParity:
     @pytest.mark.asyncio
@@ -275,10 +235,7 @@ class TestAnthropicReasoningProxyParity:
                     "function": {
                         "name": "search",
                         "description": "Search.",
-                        "parameters": {
-                            "type": "object",
-                            "properties": {"q": {"type": "string"}},
-                        },
+                        "parameters": {"type": "object", "properties": {"q": {"type": "string"}}},
                     },
                 }
             ],
@@ -296,18 +253,13 @@ class TestAnthropicReasoningProxyParity:
         if stream:
             assert any(
                 (
-                    event.get("choices", [{}])[0]
-                    .get("delta", {})
-                    .get("reasoning_content")
+                    event.get("choices", [{}])[0].get("delta", {}).get("reasoning_content")
                     == "I should search."
                     for event in result
                 )
             )
         else:
-            assert (
-                result["choices"][0]["message"]["reasoning_content"]
-                == "I should search."
-            )
+            assert result["choices"][0]["message"]["reasoning_content"] == "I should search."
 
 
 class TestRequestLocalModelSurvivesMutation:
@@ -321,10 +273,7 @@ class TestRequestLocalModelSurvivesMutation:
                 {
                     "name": "search",
                     "description": "Search.",
-                    "input_schema": {
-                        "type": "object",
-                        "properties": {"q": {"type": "string"}},
-                    },
+                    "input_schema": {"type": "object", "properties": {"q": {"type": "string"}}},
                 }
             ],
         }
@@ -340,11 +289,7 @@ class TestRequestLocalModelSurvivesMutation:
         client = AnthropicClient(model=client_model, api_key="dummy")
         calls = _mock_anthropic_http(
             client,
-            [
-                _stub_anthropic_response(),
-                _stub_anthropic_response(),
-                _stub_tool_response(q="done"),
-            ],
+            [_stub_anthropic_response(), _stub_anthropic_response(), _stub_tool_response(q="done")],
         )
         result = await handle_chat_completions(
             self._body(inbound_model),
@@ -378,8 +323,8 @@ class TestRequestLocalModelSurvivesMutation:
         client = AnthropicClient(model=client_model, api_key="dummy")
         calls = _mock_anthropic_http(client, [_stub_tool_response(q="done")])
         context_manager = MagicMock()
-        context_manager.maybe_compact.side_effect = (
-            lambda state, **_: ConversationState(list(state.messages))
+        context_manager.maybe_compact.side_effect = lambda state, **_: ConversationState(
+            list(state.messages)
         )
         context_manager.check_thresholds.return_value = None
         result = await handle_chat_completions(

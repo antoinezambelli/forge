@@ -39,9 +39,7 @@ def _body(**extra):
     }
 
 
-async def _proxy(
-    client, body, *, protocol="anthropic", backend="anthropic", headers=None
-):
+async def _proxy(client, body, *, protocol="anthropic", backend="anthropic", headers=None):
     return await handle_chat_completions(
         body,
         client,
@@ -85,9 +83,7 @@ async def test_native_versions_preserve_bodies_without_leaking_between_calls():
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("version", ["2023-06-01", "2026-10-21"])
-async def test_native_version_survives_guardrail_rebuild_and_concurrent_requests(
-    version,
-):
+async def test_native_version_survives_guardrail_rebuild_and_concurrent_requests(version):
     client = AnthropicClient(model=None, api_key="static")
     requests = []
     attempts = {}
@@ -101,24 +97,15 @@ async def test_native_version_survives_guardrail_rebuild_and_concurrent_requests
         if attempts[model] == 1:
             return httpx.Response(200, json=_reply())
         return httpx.Response(
-            200,
-            json=_reply(
-                [{"type": "tool_use", "id": "toolu_1", "name": "search", "input": {}}]
-            ),
+            200, json=_reply([{"type": "tool_use", "id": "toolu_1", "name": "search", "input": {}}])
         )
 
     _http(client, handler)
-    tools = [
-        {"name": "search", "description": "Search", "input_schema": {"type": "object"}}
-    ]
+    tools = [{"name": "search", "description": "Search", "input_schema": {"type": "object"}}]
     other = "2026-10-21" if version == "2023-06-01" else "2023-06-01"
     await asyncio.gather(
         *[
-            _proxy(
-                client,
-                _body(model=model, tools=tools),
-                headers={"anthropic-version": selected},
-            )
+            _proxy(client, _body(model=model, tools=tools), headers={"anthropic-version": selected})
             for model, selected in [("route-a", version), ("route-b", other)]
         ]
     )
@@ -143,9 +130,7 @@ async def test_cross_protocol_version_policy(backend):
     def handler(request):
         requests.append(request)
         payload = (
-            _reply()
-            if backend == "anthropic"
-            else {"choices": [{"message": {"content": "ok"}}]}
+            _reply() if backend == "anthropic" else {"choices": [{"message": {"content": "ok"}}]}
         )
         return httpx.Response(200, json=payload)
 
@@ -174,9 +159,7 @@ async def test_invalid_new_contract_body_reaches_backend_unchanged():
 
     def handler(request):
         requests.append(request)
-        return httpx.Response(
-            400, json={"error": {"message": "temperature unsupported"}}
-        )
+        return httpx.Response(400, json={"error": {"message": "temperature unsupported"}})
 
     _http(client, handler)
     body = _body(temperature=0.2)
@@ -189,12 +172,8 @@ async def test_invalid_new_contract_body_reaches_backend_unchanged():
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize(
-    "failure", ["timeout", "body-timeout", "rate-limit", "server-error"]
-)
-async def test_transport_retry_preserves_request_and_honors_retry_after(
-    monkeypatch, failure
-):
+@pytest.mark.parametrize("failure", ["timeout", "body-timeout", "rate-limit", "server-error"])
+async def test_transport_retry_preserves_request_and_honors_retry_after(monkeypatch, failure):
     client = AnthropicClient(model="route", api_key="static", max_retries=1)
     requests, delays = ([], [])
 
@@ -214,8 +193,7 @@ async def test_transport_retry_preserves_request_and_honors_retry_after(
             if failure == "body-timeout":
                 return httpx.Response(200, stream=TimeoutBody())
             return httpx.Response(
-                429 if failure == "rate-limit" else 503,
-                headers={"retry-after-ms": "25"},
+                429 if failure == "rate-limit" else 503, headers={"retry-after-ms": "25"}
             )
         return httpx.Response(200, json=_reply())
 
@@ -277,9 +255,7 @@ async def test_stream_failure_never_replays_or_produces_final(end):
         ]
         if end == "error":
             events.append({"type": "error", "error": {"type": "overloaded_error"}})
-        return httpx.Response(
-            200, content="".join((f"data: {json.dumps(e)}\n\n" for e in events))
-        )
+        return httpx.Response(200, content="".join((f"data: {json.dumps(e)}\n\n" for e in events)))
 
     _http(client, handler)
     with pytest.raises(BackendError):
@@ -306,9 +282,7 @@ async def test_complete_canonical_tools_on_initial_and_retry(inbound, backend, s
         client = VLLMClient(model_path="backend-model", base_url="http://test/v1")
         adapter = ClientAdapter.VLLM
     else:
-        client = LlamafileClient(
-            gguf_path="test.gguf", base_url="http://test", mode="prompt"
-        )
+        client = LlamafileClient(gguf_path="test.gguf", base_url="http://test", mode="prompt")
         adapter = ClientAdapter.LLAMAFILE
     schema = {
         "type": "object",
@@ -317,11 +291,7 @@ async def test_complete_canonical_tools_on_initial_and_retry(inbound, backend, s
         "additionalProperties": False,
         "x-unknown": {"items": [1, 2]},
     }
-    extras = {
-        "strict": True,
-        "cache_control": {"type": "ephemeral"},
-        "x-extension": [1, {"a": 2}],
-    }
+    extras = {"strict": True, "cache_control": {"type": "ephemeral"}, "x-extension": [1, {"a": 2}]}
     if inbound == "openai":
         tools = [
             {
@@ -338,12 +308,7 @@ async def test_complete_canonical_tools_on_initial_and_retry(inbound, backend, s
         ]
     else:
         tools = [
-            {
-                "name": name,
-                "description": "Complete",
-                "input_schema": deepcopy(schema),
-                **extras,
-            }
+            {"name": name, "description": "Complete", "input_schema": deepcopy(schema), **extras}
             for name in ("lookup", "search")
         ]
     body = _body(tools=tools, stream=stream)
@@ -358,12 +323,7 @@ async def test_complete_canonical_tools_on_initial_and_retry(inbound, backend, s
                 [{"type": "text", "text": "try again"}]
                 if first
                 else [
-                    {
-                        "type": "tool_use",
-                        "id": "r",
-                        "name": "respond",
-                        "input": {"message": "done"},
-                    }
+                    {"type": "tool_use", "id": "r", "name": "respond", "input": {"message": "done"}}
                 ]
             )
             if not stream:
@@ -386,19 +346,12 @@ async def test_complete_canonical_tools_on_initial_and_retry(inbound, backend, s
                     {
                         "type": "content_block_start",
                         "index": 0,
-                        "content_block": {
-                            "type": "tool_use",
-                            "id": "r",
-                            "name": "respond",
-                        },
+                        "content_block": {"type": "tool_use", "id": "r", "name": "respond"},
                     },
                     {
                         "type": "content_block_delta",
                         "index": 0,
-                        "delta": {
-                            "type": "input_json_delta",
-                            "partial_json": '{"message":"done"}',
-                        },
+                        "delta": {"type": "input_json_delta", "partial_json": '{"message":"done"}'},
                     },
                 ]
             events.append({"type": "message_stop"})
@@ -415,10 +368,7 @@ async def test_complete_canonical_tools_on_initial_and_retry(inbound, backend, s
                             {
                                 "id": "r",
                                 "type": "function",
-                                "function": {
-                                    "name": "respond",
-                                    "arguments": '{"message":"done"}',
-                                },
+                                "function": {"name": "respond", "arguments": '{"message":"done"}'},
                             }
                         ],
                     }
@@ -431,9 +381,7 @@ async def test_complete_canonical_tools_on_initial_and_retry(inbound, backend, s
         data = "".join(("data: " + json.dumps(event) + "\n\n" for event in events))
         if backend != "anthropic":
             data += "data: [DONE]\n\n"
-        return httpx.Response(
-            200, text=data, headers={"content-type": "text/event-stream"}
-        )
+        return httpx.Response(200, text=data, headers={"content-type": "text/event-stream"})
 
     _http(client, handler)
     try:
@@ -471,9 +419,7 @@ async def test_complete_canonical_tools_on_initial_and_retry(inbound, backend, s
             result = await run_inference(
                 state=messages,
                 client=client,
-                context_manager=ContextManager(
-                    strategy=NoCompact(), budget_tokens=None
-                ),
+                context_manager=ContextManager(strategy=NoCompact(), budget_tokens=None),
                 validator=ResponseValidator([tool.name for tool in definitions]),
                 error_tracker=ErrorTracker(max_retries=1),
                 tool_definitions=definitions,
@@ -503,9 +449,7 @@ async def test_complete_canonical_tools_on_initial_and_retry(inbound, backend, s
             assert '"x-extension": [1, {"a": 2}]' in prompt
             assert "outer-ignored" not in prompt
             assert (
-                prompt.index("## lookup")
-                < prompt.index("## search")
-                < prompt.index("## respond")
+                prompt.index("## lookup") < prompt.index("## search") < prompt.index("## respond")
             )
             assert prompt.count("## respond") == 1
     else:
@@ -524,8 +468,7 @@ async def test_complete_canonical_tools_on_initial_and_retry(inbound, backend, s
 
 
 @pytest.mark.parametrize(
-    "inject, names",
-    [(True, None), (True, []), (False, ["lookup"]), (True, ["lookup", "respond"])],
+    "inject, names", [(True, None), (True, []), (False, ["lookup"]), (True, ["lookup", "respond"])]
 )
 @pytest.mark.asyncio
 async def test_native_anthropic_copied_body_respond_policy(inject, names):
@@ -536,12 +479,7 @@ async def test_native_anthropic_copied_body_respond_policy(inject, names):
         None
         if names is None
         else [
-            {
-                "name": name,
-                "description": "Caller definition",
-                "input_schema": {},
-                "x-tool": name,
-            }
+            {"name": name, "description": "Caller definition", "input_schema": {}, "x-tool": name}
             for name in names
         ]
     )
@@ -590,9 +528,7 @@ async def test_native_anthropic_copied_body_respond_policy(inject, names):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("protocol", ["openai", "anthropic"])
-async def test_native_gateway_extras_and_known_translation_survive_actual_retry(
-    protocol,
-):
+async def test_native_gateway_extras_and_known_translation_survive_actual_retry(protocol):
     client = AnthropicClient(model="pinned", api_key="static")
     sent = []
 
@@ -635,10 +571,7 @@ async def test_native_gateway_extras_and_known_translation_survive_actual_retry(
         ],
     }
     result = await _proxy(
-        client,
-        body,
-        protocol=protocol,
-        headers={"anthropic-version": "gateway-version"},
+        client, body, protocol=protocol, headers={"anthropic-version": "gateway-version"}
     )
     assert len(sent) == 2
     for rendered, headers in sent:
