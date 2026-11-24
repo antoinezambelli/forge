@@ -87,8 +87,8 @@ For full rationale see [ADR-014](decisions/014-recommended-sampling-opt-in.md). 
 The proxy does **not** consult the recommendations map. Generic OpenAI/llama
 and vLLM adapters apply the OpenAI-shaped per-call sampling dictionary. Ollama
 translates supported values into native options. `AnthropicClient` ignores the
-OpenAI-shaped dictionary, while clean Anthropic-to-Anthropic requests preserve
-caller-authored Anthropic body fields. The proxy's pre-built client remains a
+OpenAI-shaped dictionary, while Anthropic-to-Anthropic requests retain supported
+caller-authored Anthropic body fields on initial attempts and retries. The proxy's pre-built client remains a
 blank slate.
 
 To get card-recommended sampling in proxy mode, the calling client looks up

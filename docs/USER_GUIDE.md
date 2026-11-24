@@ -99,7 +99,7 @@ request-routed backend identity, not a fabricated Forge alias.
 
 **Function-calling capability.** `--backend-capability native` (default) uses the backend's chat-template tool-calling and is the smoother default for Claude Code's heavy multi-turn tool use. `--backend-capability prompt` injects the tool surface into the prompt for llama.cpp/llamafile backends without a tool-calling template; whether a model stays coherent across multi-turn tool results in prompt mode varies by model — and tends to degrade on more complex, multi-step interactions — so prefer native whenever the backend supports it. The capability is declared at startup and frozen.
 
-**Reasoning replay.** Reasoning-capable backends may return hidden reasoning alongside tool calls. Forge captures that reasoning for observability, then controls how much is replayed to the backend on later turns with `--reasoning-replay {full,keep-last,none}`. The default is `none`: captured reasoning stays out of backend-facing history entirely. This is the most token-efficient policy, and on forge's eval suite it is statistically indistinguishable from replay-all (no aggregate score cost; see [reasoning-replay results](results/raw/reasoning-replay.md)). `keep-last` replays only the latest captured reasoning block. `full` preserves the historical behavior and replays every captured reasoning block. In OpenAI-compatible proxy responses, `keep-last` exposes current reasoning as `reasoning_content` instead of normal assistant `content` so clients that preserve reasoning fields can replay only the latest block without turning it into plain text; under the default `none`, proxy responses omit captured reasoning. Anthropic proxy responses only emit reasoning text under `full`; Forge does not synthesize signed Anthropic thinking blocks, so default Anthropic proxy responses do not expose replayable reasoning. See [ADR-017](decisions/017-reasoning-replay-policy.md) for the policy design and the eval evidence behind the default.
+**Reasoning replay.** Reasoning-capable backends may return hidden reasoning alongside tool calls. Forge captures that reasoning for observability, then controls how much is replayed to the backend on later turns with `--reasoning-replay {full,keep-last,none}`. The default is `none`: captured reasoning stays out of backend-facing history, avoiding those repeated input tokens. Replay benefits are model-dependent; see the [reasoning-replay results](results/raw/reasoning-replay.md). `keep-last` replays all reasoning in the last reasoning-bearing assistant turn. `full` replays all eligible reasoning. In OpenAI-compatible proxy responses, `keep-last` exposes current reasoning as `reasoning_content` instead of normal assistant `content` so clients can preserve it without turning it into plain text; under the default `none`, proxy responses omit captured reasoning. Anthropic proxy responses only emit reasoning text under `full`; Forge does not synthesize signed Anthropic thinking blocks, so default Anthropic proxy responses do not expose replayable reasoning. See [ADR-017](decisions/017-reasoning-replay-policy.md) for the policy design and the earlier survey behind the default.
 
 For an Anthropic-shaped backend, OpenAI-format reasoning (including reasoning
 extracted from inline thinking tags) stays in canonical history but is omitted
@@ -149,6 +149,14 @@ Import forge's guardrail components directly into your own orchestration loop. Y
 
 **Simple API** (two calls -- covers most use cases):
 
+These loop sketches assume response is a `RichMessage`. The functions
+`record_reply`, `append_correction`, and `execute` are application-owned hooks,
+not Forge APIs: record the assistant reply once after validation/rescue, assign
+any missing tool-call IDs, and append corrections in your framework's format.
+Honor the nudge's role: tool-role corrections need correlated results for the
+rejected calls (`tool_call_id` in OpenAI, `tool_use_id` in Anthropic), not just a
+bare role/content dictionary. Facade step nudges are user-role corrections.
+
 ```python
 from forge.guardrails import Guardrails
 
@@ -160,17 +168,18 @@ guardrails = Guardrails(
 
 # After each LLM response:
 result = guardrails.check(response)
+record_reply(response)
 
-if result.action in ("retry", "step_blocked"):
-    messages.append({"role": result.nudge.role, "content": result.nudge.content})
+if result.action in ("retry", "tool_error", "step_blocked"):
+    append_correction(response, result.nudge)
     continue
 
 if result.action == "fatal":
     raise RuntimeError(result.reason)
 
 # result.action == "execute" -- run the tools, then tell forge what succeeded:
-execute(result.tool_calls)
-done = guardrails.record([tc.tool for tc in result.tool_calls])
+succeeded = execute(result.tool_calls)  # Return only calls that executed successfully.
+done = guardrails.record([(tc.name, tc.arguments.value) for tc in succeeded])
 ```
 
 The `Guardrails` facade covers validation, retry nudges, and step enforcement. It does **not** enforce tool prerequisites — for those, use the Granular API (`StepEnforcer.check_prerequisites`) shown next.
@@ -186,20 +195,40 @@ errors = ErrorTracker(max_retries=3, max_tool_errors=2)
 
 # Inside your loop:
 result = validator.validate(response)
+record_reply(response)
 if result.needs_retry:
-    errors.record_retry()
-    messages.append({"role": result.nudge.role, "content": result.nudge.content})
+    if result.nudge.kind == "tool_arg_validation":
+        errors.record_result(success=False)
+        exhausted = errors.tool_errors_exhausted
+    else:
+        errors.record_retry()
+        exhausted = errors.retries_exhausted
+    if exhausted:
+        raise RuntimeError("Too many consecutive invalid responses")
+    append_correction(response, result.nudge)
     continue
 
+errors.reset_retries()
 step_check = enforcer.check(result.tool_calls)
 if step_check.needs_nudge:
-    messages.append({"role": step_check.nudge.role, "content": step_check.nudge.content})
+    if enforcer.premature_exhausted:
+        raise RuntimeError("Model repeatedly skipped required steps")
+    append_correction(response, step_check.nudge)
     continue
 
+batch_ok = True
 for tc in result.tool_calls:
     ok = execute(tc)
-    enforcer.record(tc.tool)
     errors.record_result(success=ok)
+    if ok:
+        enforcer.record(tc.name, tc.arguments.value)
+    else:
+        batch_ok = False
+if errors.tool_errors_exhausted:
+    raise RuntimeError("Too many consecutive tool execution errors")
+if batch_ok:
+    errors.reset_errors()
+    enforcer.reset_premature()
 ```
 
 **What you own:** The middleware provides validation, rescue parsing, retry nudges, and step enforcement. Your loop is responsible for: iteration caps, cancellation, context management (including compaction and threshold callbacks), and streaming. These are handled automatically by WorkflowRunner but are intentionally left to the caller in middleware mode — the middleware is an advisory layer, not an execution engine.
@@ -358,7 +387,7 @@ await server.stop()
 ### What happens under the hood
 
 1. `setup_backend()` starts the server, detects available VRAM, and calculates a context budget.
-2. `WorkflowRunner.run()` builds a system prompt describing the available tools.
+2. `WorkflowRunner.run()` builds the configured system prompt and supplies the registered tools; native mode sends definitions separately, while prompt mode injects them into the prompt.
 3. The LLM calls `get_weather(city="Paris")` — forge executes it and feeds the result back.
 4. Step enforcement verifies `get_weather` was called (it's in `required_steps`).
 5. The LLM calls `report_weather(...)` — forge executes it, sees it's the `terminal_tool`, and ends the loop.
@@ -401,22 +430,10 @@ so they can include messages later removed by configured compaction.
 
 ### Migrating Python callers
 
-| Old usage | New usage |
-|---|---|
-| `Message(role, content, MessageMeta(...))` | `RichMessage(role, [TextPart(content)])` |
-| `message.metadata.step_index` | `message.step_index` |
-| `MessageType.REASONING` | Ordered `ReasoningPart` values in an assistant message |
-| `message.tool_calls` / `ToolCallInfo` | `ToolCallPart` values in `message.parts` |
-| `ToolCall(tool, args)` / `TextResponse(content)` replies | Assistant `RichMessage` with typed parts |
-| `tc.tool`, `tc.args` | `tc.name`, `tc.arguments.value` after validation |
-| `message.tool_call_id` / result string | `ToolResultPart.call_id`, `.content`, `.outcome` |
-| Retry/step/prerequisite classifications | `forge_purpose` values `retry`, `step`, `prerequisite` |
-| `run_inference(messages=..., reasoning_replay=...)` | `run_inference(state=..., metadata=RequestMetadata(reasoning_replay=...))` |
-
-Removed imports fail; string entries, dictionaries and malformed seed forms
-raise `TypeError`. There is no alternate legacy seed API. Definitions are
-`ToolDefinition` objects; `Workflow.handlers` and `Workflow.prerequisites`
-remain separate execution data.
+See [Migrating to canonical messages and tool definitions](MIGRATING_CANONICAL_PRIMITIVES.md)
+for the old/new API table and before/after examples. Proxy setup is unchanged;
+Python callers must update removed types and tool registration. There is no
+legacy-input adapter. The examples below describe the current callback API.
 
 ```python
 from forge import ReasoningPart, ToolCallPart, ToolResultPart
@@ -588,7 +605,7 @@ prerequisites = {"edit_file": [{"tool": "read_file", "match_arg": "path"}]}
 # Supply handlers=handlers and prerequisites=prerequisites to Workflow.
 ```
 
-If the model calls a tool without satisfying its prerequisites, the runner blocks the batch and emits one tool-error response per blocked tool call (`[PrereqError] ...` on the tool channel, with `PREREQUISITE_NUDGE` message type for compaction prioritization). The model retries off the canonical "tool failed" wire shape rather than a trailing user message — friendlier to OpenAI-tool-trained models. After `max_prereq_violations` (default 2) consecutive violations, `PrerequisiteError` is raised.
+If the model calls a tool without satisfying its prerequisites, the runner blocks the batch and emits one tool-error response per blocked tool call (`[PrerequisiteError] ...` on the tool channel, with `forge_purpose="prerequisite"` for compaction prioritization). The model retries off the canonical "tool failed" wire shape rather than a trailing user message — friendlier to OpenAI-tool-trained models. Once the `max_prereq_violations` allowance (default 2) is exceeded, `PrerequisiteError` is raised.
 
 Prerequisites are not included in the tool schema — the model discovers constraints via the tool-error reply, same as step enforcement.
 
@@ -600,7 +617,7 @@ Workflows can have multiple valid exit points. Pass a list to `terminal_tool`:
 
 ```python
 workflow = Workflow(
-    ...
+    # Other Workflow arguments omitted here.
     terminal_tool=["set_ac", "no_action"],  # either can end the workflow
 )
 ```

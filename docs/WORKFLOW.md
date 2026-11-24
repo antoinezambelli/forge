@@ -119,27 +119,27 @@ TieredCompact applies three escalating phases. Each phase fires only if the prev
 
 ```mermaid
 flowchart TD
-    TRIGGER["Token estimate > budget × 0.75"]
+    TRIGGER["Token estimate >= budget × 0.75<br/>(default first-phase trigger)"]
 
     subgraph P1["Phase 1: Light"]
-        P1A["Drop all step_nudge, prerequisite_nudge, retry_nudge"]
-        P1B["Truncate old tool_results<br/>to ~200 chars"]
+        P1A["Remove eligible Forge corrections<br/>by purpose"]
+        P1B["Truncate each old ToolResultPart<br/>to 200 text chars plus notice"]
         P1A --> P1B
     end
 
     subgraph P2["Phase 2: Moderate"]
-        P2A["Drop step_nudge, prerequisite_nudge, retry_nudge"]
-        P2B["Drop old tool_results entirely"]
-        P2C["Reasoning + text_response PRESERVED"]
+        P2A["Remove eligible Forge corrections"]
+        P2B["Drop old ToolResultPart values"]
+        P2C["Assistant text, reasoning<br/>and tool-call parts PRESERVED"]
         P2A --> P2B --> P2C
     end
 
     subgraph P3["Phase 3: Emergency"]
-        P3A["Drop step_nudge, prerequisite_nudge, retry_nudge"]
-        P3B["Drop old tool_results"]
-        P3C["Drop reasoning"]
-        P3D["Drop text_response"]
-        P3E["Only tool_call messages remain<br/>in eligible window"]
+        P3A["Remove eligible Forge corrections"]
+        P3B["Drop old ToolResultPart values"]
+        P3C["Drop old assistant ReasoningPart values"]
+        P3D["Drop old assistant TextPart values"]
+        P3E["Retain tool-call parts<br/>from eligible assistant replies"]
         P3A --> P3B --> P3C --> P3D --> P3E
     end
 
@@ -160,7 +160,7 @@ flowchart TD
     style P3 fill:#ffebee
 ```
 
-**Protected window:** The `keep_recent` most recent loop iterations (default 2) are never compacted, regardless of phase. Only older messages in the eligible window are affected.
+**Protected window:** The first two messages and the `keep_recent` most recent loop iterations (default 2) are never compacted, regardless of phase. Only older messages in the eligible window are affected.
 
 ---
 
@@ -211,7 +211,7 @@ flowchart LR
 
         subgraph AN["AnthropicClient"]
             AN_API["api_format = 'openai'"]
-            AN_CONV["Convert OpenAI → Anthropic<br/>format before each call"]
+            AN_CONV["Render canonical state → Anthropic<br/>Messages before each call"]
         end
     end
 
@@ -253,13 +253,14 @@ sequenceDiagram
     C->>C: Assemble final response
     C-->>R: StreamChunk(FINAL, response=RichMessage)
 
-    alt Malformed stream
-        C->>C: Internal retry (stream_retries++)
-        C-->>R: StreamChunk(RETRY)
-        Note over R,UI: UI discards partial output
-        C->>API: Re-send request
-    end
 ```
+
+The diagram shows a successful stream. A stream ending without FINAL raises
+`StreamError`; built-in clients do not automatically resend that request.
+`RETRY` remains available for custom adapters that implement retry behavior,
+and consumers should discard failed-attempt partial output when it is emitted.
+The eval harness can retry a whole run separately; that is not a built-in
+client transport retry.
 
 ---
 

@@ -99,8 +99,10 @@ docs/                # User-facing documentation
 
 1. Create `src/forge/clients/yourbackend.py`
 2. Implement the complete `LLMClient` protocol defined in
-   `src/forge/clients/base.py`: `api_format`, `model`, `send()`,
-   `send_stream()`, an honest `get_context_length()` (`None` when
+   `src/forge/clients/base.py`: `api_format`, `model`, synchronous
+   `render_request(state, tools, metadata, stream=...) -> InferenceRequest`,
+   async `send(request) -> RichMessage`, `send_stream(request)` with a rich
+   FINAL response, an honest `get_context_length()` (`None` when
    unavailable), and `aclose()`. The pre-0.9 combined
    `discover_backend_metadata()` API is removed; do not add it to universal
    clients.
@@ -117,11 +119,11 @@ docs/                # User-facing documentation
    - `_stateful_*.py` — stateful variants of the above
 2. Define an `EvalScenario` with a `Workflow`, validation function, and tags
 3. Register it in `ALL_SCENARIOS` (see existing patterns in each file)
-4. Run it: `python -m tests.eval.eval_runner --scenarios your_scenario --runs 5`
+4. Run it: `python -m tests.eval.eval_runner --scenario your_scenario --runs 5`
 
 ### Adding or modifying guardrails
 
-Guardrails live in the runner (`src/forge/core/runner.py`) and nudge templates (`src/forge/prompts/nudges.py`). Each guardrail can be independently toggled via ablation presets in `tests/eval/ablation.py`. If you add a new guardrail:
+Shared guardrail components live in `src/forge/guardrails/`, with attempt/retry orchestration in `src/forge/core/inference.py` and nudge templates in `src/forge/prompts/nudges.py`. Workflow execution, step enforcement, and prerequisites are wired by `src/forge/core/runner.py`; Proxy uses the shared inference path without workflow execution or compaction. Guardrail behavior can be isolated with ablation presets in `tests/eval/ablation.py`. If you add a new guardrail:
 
 1. Add the toggle to `AblationConfig`
 2. Create a new ablation preset that isolates it
@@ -146,9 +148,12 @@ Design decisions are documented in `docs/decisions/`. If you're proposing a sign
 ## Code Style
 
 - Python 3.12+ — use modern syntax (type unions with `|`, etc.)
-- `asyncio` throughout — all client methods and the runner are async
-- Pydantic for tool parameter schemas
+- Async transport and Runner methods; request rendering is synchronous
+- `ToolDefinition` with complete JSON Schema dictionaries; Pydantic is optional application-side schema authoring
 - No external formatting/linting tools enforced yet — match the style of surrounding code
+
+See the [canonical migration guide](docs/MIGRATING_CANONICAL_PRIMITIVES.md) for
+the current message/tool types and low-level extension contracts.
 
 ## Questions
 

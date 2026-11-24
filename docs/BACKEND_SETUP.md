@@ -78,12 +78,25 @@ check inside Forge before dispatch. (Design Principle #1: fail fast, fail loud.)
 Supply the credential at construction, or per call for a rotating token:
 
 ```python
+from forge import OpenAICompatClient, RequestMetadata
+
 # Static credential (API key, service account): set once at construction.
 client = OpenAICompatClient(model=..., base_url=..., api_key=API_KEY)
 
-# Rotating credential (e.g. an SSO token refreshed out of band): per call.
-await client.send(messages, extra_headers={"Authorization": f"Bearer {token()}"})
+# Alternatively, omit api_key and supply a rotating credential per request.
+client = OpenAICompatClient(model=..., base_url=...)
+request = client.render_request(
+    state, definitions,
+    RequestMetadata(extra_headers={"Authorization": f"Bearer {token()}"}),
+)
+reply = await client.send(request)
 ```
+
+Here state is a `ConversationState` and definitions is a list of
+`ToolDefinition` objects, for example `workflow.get_tool_definitions()`.
+WorkflowRunner supplies the render/send boundary itself; this explicit example
+is for callers driving the client directly. See the
+[Python migration guide](MIGRATING_CANONICAL_PRIMITIVES.md#4-low-level-integrations-only).
 
 A construction credential **and** a per-call auth header on the same call is two
 credentials → raises `MultipleCredentialsError`. Pass auth through one channel.
@@ -240,7 +253,7 @@ llamafile --server --nobrowser -m path/to/model.gguf --port 8080 -ngl 999
 
 `LlamafileClient` is **native-first**: `mode="native"` (the default) forwards tools via the backend's `tools` parameter and requires native function calling (llama.cpp with `--jinja`). For a backend without native FC, declare `mode="prompt"` to inject tool descriptions into the prompt and parse the JSON call back out. The capability is declared at construction and frozen — there is no runtime auto-detection. Native-first is the default because local-model FC support has matured into the more reliable path; prompt-injection stays fully supported as an explicit opt-in, but note that on more complex, multi-step interactions models tend to struggle to drive the prompt-injected protocol reliably, so reach for it only when the backend leaves no alternative.
 
-> **Proxy note:** the OpenAI-compatible proxy is **native-first**. By default (`--backend-capability native`) it uses the backend's structured tool API (llama.cpp with `--jinja`, vLLM, Ollama, Anthropic) — the recommended setup. Raw tool fields are preserved on compatible clean paths and converted or rebuilt where the backend adapter or protocol requires it. For a non-FC llama.cpp/llamafile backend, opt into prompt-injection with `--backend-capability prompt` (strips tools into the prompt, parses the JSON call back; reuses the same prompt path as the WorkflowRunner). The choice is frozen at startup — there is no runtime auto-detect in the proxy. Reasoning replay is controlled separately with `--reasoning-replay {full,keep-last,none}`; the default `none` keeps captured reasoning out of backend-facing history (`keep-last` replays only the latest captured reasoning block, `full` replays everything). See ADR-012.
+> **Proxy note:** the OpenAI-compatible proxy is **native-first**. By default (`--backend-capability native`) it uses the backend's structured tool API (llama.cpp with `--jinja`, vLLM, Ollama, Anthropic) — the recommended setup. Supported complete schemas and applicable tool fields are rendered from canonical definitions on both initial attempts and retries. For a non-FC llama.cpp/llamafile backend, opt into prompt-injection with `--backend-capability prompt` (strips tools into the prompt, parses the JSON call back; reuses the same prompt path as the WorkflowRunner). The choice is frozen at startup — there is no runtime auto-detect in the proxy. Reasoning replay is controlled separately with `--reasoning-replay {full,keep-last,none}`; the default `none` keeps captured reasoning out of backend-facing history (`keep-last` replays all reasoning in the last reasoning-bearing assistant turn, `full` replays all eligible reasoning). See [ADR-012](decisions/012-openai-proxy.md).
 
 Smoke-test:
 
