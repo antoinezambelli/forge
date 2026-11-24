@@ -4,23 +4,16 @@ import pytest
 
 from forge.context.manager import ContextManager, default_context_warning
 from forge.context.strategies import NoCompact
-from forge.core.messages import Message, MessageMeta, MessageRole, MessageType
+from forge.core.messages import ConversationState, RichMessage, MessageRole, TextPart
 
 
-def _msg(content: str, role: MessageRole = MessageRole.USER) -> Message:
-    return Message(
-        role=role,
-        content=content,
-        metadata=MessageMeta(type=MessageType.USER_INPUT),
-    )
+def _msg(content: str, role: MessageRole = MessageRole.USER) -> RichMessage:
+    return RichMessage(role, [TextPart(content)])
 
 
-def _make_messages_at_pct(budget: int, pct: float) -> list[Message]:
-    """Create messages whose estimated tokens are ~pct of budget."""
-    # estimate_tokens uses len(content) // 4
+def _make_messages_at_pct(budget: int, pct: float) -> ConversationState:
     target_tokens = int(budget * pct)
-    content = "x" * (target_tokens * 4)
-    return [_msg("system"), _msg(content)]
+    return ConversationState([_msg("system"), _msg("x" * (target_tokens * 4))])
 
 
 # ── default_context_warning ──────────────────────────────────────
@@ -48,32 +41,20 @@ class TestDefaultContextWarning:
 class TestCheckThresholds:
     def test_inactive_configurations_return_none(self) -> None:
         cases = [
-            (
-                "no callback",
-                8000,
-                {"context_thresholds": [0.5], "on_context_threshold": None},
-            ),
+            ("no callback", 8000, {"context_thresholds": [0.5], "on_context_threshold": None}),
             (
                 "no thresholds",
                 8000,
-                {
-                    "context_thresholds": None,
-                    "on_context_threshold": default_context_warning,
-                },
+                {"context_thresholds": None, "on_context_threshold": default_context_warning},
             ),
             (
                 "zero budget",
                 0,
-                {
-                    "context_thresholds": [0.5],
-                    "on_context_threshold": default_context_warning,
-                },
+                {"context_thresholds": [0.5], "on_context_threshold": default_context_warning},
             ),
         ]
         for label, budget, kwargs in cases:
-            ctx = ContextManager(
-                strategy=NoCompact(), budget_tokens=budget, **kwargs
-            )
+            ctx = ContextManager(strategy=NoCompact(), budget_tokens=budget, **kwargs)
             msgs = _make_messages_at_pct(8000, 0.6)
             assert ctx.check_thresholds(msgs) is None, label
 
@@ -165,6 +146,7 @@ class TestCheckThresholds:
 
     def test_importable_from_forge(self) -> None:
         from forge import default_context_warning
+
         assert callable(default_context_warning)
 
     def test_observed_usage_drives_threshold_callback(self) -> None:
@@ -173,13 +155,12 @@ class TestCheckThresholds:
             strategy=NoCompact(),
             budget_tokens=100,
             context_thresholds=[0.5],
-            on_context_threshold=lambda tokens, budget, pct: calls.append(
-                (tokens, budget, pct)
-            ) or "observed",
+            on_context_threshold=lambda tokens, budget, pct: calls.append((tokens, budget, pct))
+            or "observed",
         )
         ctx.update_token_count(60)
 
-        assert ctx.check_thresholds([_msg("tiny")]) == "observed"
+        assert ctx.check_thresholds(ConversationState([_msg("tiny")])) == "observed"
         assert calls == [(60, 100, 0.6)]
 
 
@@ -187,95 +168,39 @@ class TestCheckThresholds:
 
 
 class TestInferenceInjection:
-    """Verify the context warning is injected into api_messages sent to the LLM."""
-
     @pytest.mark.asyncio
-    async def test_warning_injected_into_api_messages(self) -> None:
-        from unittest.mock import AsyncMock
+    @pytest.mark.parametrize("enabled", [True, False])
+    async def test_warning_injected_transiently(self, enabled):
         from forge.core.inference import run_inference
-        from forge.core.workflow import ToolCall
         from forge.guardrails import ErrorTracker, ResponseValidator
+        from tests.conftest import MockClient
+        from tests.canonical import assistant, call
 
-        # Tiny budget, threshold at 30% so our messages will cross it
         ctx = ContextManager(
-            strategy=NoCompact(),
-            budget_tokens=100,
-            context_thresholds=[0.3],
-            on_context_threshold=default_context_warning,
+            NoCompact(),
+            100,
+            context_thresholds=[0.3] if enabled else None,
+            on_context_threshold=default_context_warning if enabled else None,
         )
-
-        # Messages that exceed 30% of 100 tokens (~30 tokens = ~120 chars)
-        msgs = [
-            _msg("You are a helpful assistant."),
-            _msg("x" * 200),  # ~50 tokens, well over 30%
+        state = ConversationState([_msg("system"), _msg("x" * 200)])
+        client = MockClient([assistant(call("done"))])
+        result = await run_inference(
+            state,
+            client,
+            ctx,
+            ResponseValidator(["done"], rescue_enabled=False),
+            ErrorTracker(max_retries=1),
+            [],
+        )
+        warnings = [
+            m
+            for m in client.send_calls[0].payload["messages"]
+            if "Context usage" in m.get("content", "")
         ]
-
-        # Mock client — capture what api_messages it receives
-        captured_messages = []
-
-        async def mock_send(api_messages, tools=None, sampling=None, passthrough=None, inbound_anthropic_body=None):
-            captured_messages.extend(api_messages)
-            return [ToolCall(tool="done", args={})]
-
-        mock_client = AsyncMock()
-        mock_client.send = mock_send
-        mock_client.api_format = "ollama"
-
-        validator = ResponseValidator(tool_names=["done"], rescue_enabled=False)
-        error_tracker = ErrorTracker(max_retries=1)
-
-        await run_inference(
-            messages=msgs,
-            client=mock_client,
-            context_manager=ctx,
-            validator=validator,
-            error_tracker=error_tracker,
-            tool_specs=[],
+        assert len(warnings) == int(enabled)
+        if enabled:
+            assert warnings[0]["role"] == "user"
+        assert not any(m.forge_purpose == "context_warning" for m in state.messages)
+        assert sum(m.forge_purpose == "context_warning" for m in result.new_messages) == int(
+            enabled
         )
-
-        # The injected warning should be the last message (user role)
-        warning_msgs = [m for m in captured_messages if "Context usage" in m.get("content", "")]
-        assert len(warning_msgs) > 0, \
-            f"Expected context warning in api_messages, got: {[m['content'][:50] for m in captured_messages]}"
-        assert warning_msgs[0]["role"] == "user"
-
-    @pytest.mark.asyncio
-    async def test_no_injection_without_threshold_config(self) -> None:
-        from unittest.mock import AsyncMock
-        from forge.core.inference import run_inference
-        from forge.core.workflow import ToolCall
-        from forge.guardrails import ErrorTracker, ResponseValidator
-
-        # No thresholds configured
-        ctx = ContextManager(
-            strategy=NoCompact(),
-            budget_tokens=100,
-        )
-
-        msgs = [_msg("system"), _msg("x" * 200)]
-
-        captured_messages = []
-
-        async def mock_send(api_messages, tools=None, sampling=None, passthrough=None, inbound_anthropic_body=None):
-            captured_messages.extend(api_messages)
-            return [ToolCall(tool="done", args={})]
-
-        mock_client = AsyncMock()
-        mock_client.send = mock_send
-        mock_client.api_format = "ollama"
-
-        validator = ResponseValidator(tool_names=["done"], rescue_enabled=False)
-        error_tracker = ErrorTracker(max_retries=1)
-
-        await run_inference(
-            messages=msgs,
-            client=mock_client,
-            context_manager=ctx,
-            validator=validator,
-            error_tracker=error_tracker,
-            tool_specs=[],
-        )
-
-        # No context warning should be injected
-        system_msgs = [m for m in captured_messages if m["role"] == "system"]
-        assert not any("Context usage" in m.get("content", "") for m in system_msgs)

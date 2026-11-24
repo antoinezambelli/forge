@@ -1,3 +1,6 @@
-from forge.core.runner import WorkflowRunner
+"""Core workflow execution."""
 
-__all__ = ["WorkflowRunner"]
+from forge.core.runner import WorkflowRunner
+from forge.core.slot_worker import SlotWorker
+
+__all__ = ["WorkflowRunner", "SlotWorker"]

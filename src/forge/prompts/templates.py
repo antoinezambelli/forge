@@ -5,11 +5,12 @@ from __future__ import annotations
 import json
 import re
 
-from forge.core.workflow import ToolCall, ToolSpec
+from forge.core.workflow import ToolDefinition
+from forge.core.messages import ToolCallPart, arguments_from_value
 from forge.prompts.think_tags import THINK_TAG_RE as _THINK_TAG_RE
 
 
-def build_tool_prompt(tools: list[ToolSpec]) -> str:
+def build_tool_prompt(tools: list[ToolDefinition]) -> str:
     """Build tool description block for prompt injection.
 
     Args:
@@ -18,7 +19,7 @@ def build_tool_prompt(tools: list[ToolSpec]) -> str:
     lines = ["You have access to the following tools:", ""]
 
     for tool in tools:
-        schema = tool.get_json_schema()
+        schema = tool.input_schema
         properties = schema.get("properties", {})
         required = set(schema.get("required", []))
 
@@ -28,20 +29,28 @@ def build_tool_prompt(tools: list[ToolSpec]) -> str:
             lines.append("Parameters:")
             for name, prop in properties.items():
                 req = " (required)" if name in required else " (optional)"
-                ptype = prop.get("type", "any")
-                desc = prop.get("description", "")
+                readable = prop if isinstance(prop, dict) else {}
+                ptype = readable.get("type", "any")
+                desc = readable.get("description", "")
                 lines.append(f"  - {name} ({ptype}{req}): {desc}")
-                if "enum" in prop:
-                    lines.append(f"    Allowed values: {', '.join(str(v) for v in prop['enum'])}")
+                if "enum" in readable:
+                    lines.append(
+                        f"    Allowed values: {', '.join(str(v) for v in prop['enum'])}"
+                    )
+        lines.append("Input schema: " + json.dumps(schema))
+        if tool.extra_fields:
+            lines.append("Extra fields: " + json.dumps(tool.extra_fields))
         lines.append("")
 
-    lines.append("To call a tool, respond with ONLY a JSON object in this exact format:")
+    lines.append(
+        "To call a tool, respond with ONLY a JSON object in this exact format:"
+    )
     lines.append('{"tool": "<tool_name>", "args": {<arguments>}}')
     lines.append("")
     lines.append("Example:")
     if tools:
         example_tool = tools[0]
-        example_schema = example_tool.get_json_schema()
+        example_schema = example_tool.input_schema
         example_args = {
             name: f"<{name}>" for name in example_schema.get("properties", {})
         }
@@ -52,7 +61,7 @@ def build_tool_prompt(tools: list[ToolSpec]) -> str:
     return "\n".join(lines)
 
 
-def extract_tool_call(text: str, available_tools: list[str]) -> list[ToolCall]:
+def extract_tool_call(text: str, available_tools: list[str]) -> list[ToolCallPart]:
     """Extract all ToolCalls from free-text model output.
 
     Handles JSON wrapped in code fences or embedded in surrounding text.
@@ -66,7 +75,7 @@ def extract_tool_call(text: str, available_tools: list[str]) -> list[ToolCall]:
     cleaned = re.sub(r"```(?:json)?\s*\n?", "", text)
     cleaned = re.sub(r"```", "", cleaned)
 
-    found: list[ToolCall] = []
+    found: list[ToolCallPart] = []
     # Try to find JSON objects by scanning for opening braces
     i = 0
     while i < len(cleaned):
@@ -92,7 +101,9 @@ def extract_tool_call(text: str, available_tools: list[str]) -> list[ToolCall]:
     return found
 
 
-def _try_parse_tool_call(json_str: str, available_tools: list[str]) -> ToolCall | None:
+def _try_parse_tool_call(
+    json_str: str, available_tools: list[str]
+) -> ToolCallPart | None:
     try:
         data = json.loads(json_str)
     except json.JSONDecodeError:
@@ -108,19 +119,15 @@ def _try_parse_tool_call(json_str: str, available_tools: list[str]) -> ToolCall 
     if tool_name not in available_tools:
         return None
 
-    args = data.get("args")
-    if args is None:
-        args = data.get("arguments", {})
+    args = data["args"] if "args" in data else data.get("arguments", {})
 
-    return ToolCall(tool=tool_name, args=args)
+    return ToolCallPart(tool_name, arguments_from_value(args))
 
 
 # Pattern for native FC rehearsal syntax: tool_name[ARGS]{...}
 # Reasoning models rehearse tool calls in thinking tokens using this format.
 # Captures: tool name and the JSON args blob.
-_REHEARSAL_RE = re.compile(
-    r"(\w+)\[ARGS\](\{.*\})", re.DOTALL
-)
+_REHEARSAL_RE = re.compile(r"(\w+)\[ARGS\](\{.*\})", re.DOTALL)
 
 # Qwen Coder XML tool call format.
 # <function=name>
@@ -129,9 +136,7 @@ _REHEARSAL_RE = re.compile(
 # </function>
 # Pattern adapted from Qwen's reference parser:
 # https://huggingface.co/Qwen/Qwen3-Coder-480B-A35B-Instruct/blob/main/qwen3coder_tool_parser.py
-_QWEN_FUNCTION_RE = re.compile(
-    r"<function=([^>\s]+)>(.*?)</function>", re.DOTALL
-)
+_QWEN_FUNCTION_RE = re.compile(r"<function=([^>\s]+)>(.*?)</function>", re.DOTALL)
 _QWEN_PARAMETER_RE = re.compile(
     r"<parameter=([^>\s]+)>(.*?)(?:</parameter>|(?=<parameter=)|(?=</function>)|$)",
     re.DOTALL,
@@ -147,7 +152,9 @@ _QWEN_PARAMETER_RE = re.compile(
 _MISTRAL_BRACKET_RE = re.compile(r"\[TOOL_CALLS\](\w+)\s*(?=\{)")
 
 
-def _parse_qwen_xml_tool_calls(text: str, available_tools: list[str]) -> list[ToolCall]:
+def _parse_qwen_xml_tool_calls(
+    text: str, available_tools: list[str]
+) -> list[ToolCallPart]:
     """Parse Qwen Coder XML-format tool calls from model output.
 
     Handles the format emitted by Qwen3-Coder models (and occasionally other
@@ -155,10 +162,9 @@ def _parse_qwen_xml_tool_calls(text: str, available_tools: list[str]) -> list[To
     wrapper. Whitespace behavior matches Qwen's reference parser: one leading
     and one trailing newline are stripped from each parameter value.
 
-    Type coercion is deferred to Pydantic — all parameter values are passed
-    as strings, and the tool's parameter model coerces at ToolCall construction.
+    Parameter values are passed through as strings.
     """
-    found: list[ToolCall] = []
+    found: list[ToolCallPart] = []
     for fn_match in _QWEN_FUNCTION_RE.finditer(text):
         tool_name = fn_match.group(1).strip()
         if tool_name not in available_tools:
@@ -177,12 +183,14 @@ def _parse_qwen_xml_tool_calls(text: str, available_tools: list[str]) -> list[To
                 value = value[:-1]
             args[key] = value
 
-        found.append(ToolCall(tool=tool_name, args=args))
+        found.append(ToolCallPart(tool_name, arguments_from_value(args)))
 
     return found
 
 
-def _parse_mistral_bracket_tool_calls(text: str, available_tools: list[str]) -> list[ToolCall]:
+def _parse_mistral_bracket_tool_calls(
+    text: str, available_tools: list[str]
+) -> list[ToolCallPart]:
     """Parse Mistral native ``[TOOL_CALLS]<name>{<args>}`` tool-call format.
 
     Devstral-Small-2 and Mistral-Small-3.x emit this shape in prompt mode when
@@ -194,7 +202,7 @@ def _parse_mistral_bracket_tool_calls(text: str, available_tools: list[str]) -> 
     name and the opening ``{``. Multiple bracket-tagged calls in one message
     are returned as a list.
     """
-    found: list[ToolCall] = []
+    found: list[ToolCallPart] = []
     for m in _MISTRAL_BRACKET_RE.finditer(text):
         tool_name = m.group(1)
         if tool_name not in available_tools:
@@ -230,12 +238,14 @@ def _parse_mistral_bracket_tool_calls(text: str, available_tools: list[str]) -> 
                     except json.JSONDecodeError:
                         break
                     if isinstance(args, dict):
-                        found.append(ToolCall(tool=tool_name, args=args))
+                        found.append(
+                            ToolCallPart(tool_name, arguments_from_value(args))
+                        )
                     break
     return found
 
 
-def rescue_tool_call(text: str, available_tools: list[str]) -> list[ToolCall]:
+def rescue_tool_call(text: str, available_tools: list[str]) -> list[ToolCallPart]:
     """Try to parse ToolCalls from a TextResponse that failed native FC.
 
     Used by the runner to rescue valid tool calls that the model emitted as
@@ -265,7 +275,9 @@ def rescue_tool_call(text: str, available_tools: list[str]) -> list[ToolCall]:
                 try:
                     args = json.loads(args_str)
                     if isinstance(args, dict):
-                        found.append(ToolCall(tool=tool_name, args=args))
+                        found.append(
+                            ToolCallPart(tool_name, arguments_from_value(args))
+                        )
                 except json.JSONDecodeError:
                     pass
 

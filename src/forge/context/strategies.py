@@ -3,33 +3,29 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from dataclasses import replace
 
-from forge.core.messages import Message, MessageType
-
-
-def _estimate_tokens(messages: list[Message]) -> int:
-    return sum(len(m.content) for m in messages) // 4
+from forge.core.messages import (
+    ConversationState, RichMessage, MessageRole, TextPart, ReasoningPart, ToolResultPart,
+)
+from forge.context.accounting import estimate_content_tokens
 
 
 class CompactStrategy(ABC):
     """Interface for context compaction strategies.
 
-    Recommended compaction priority (cut first -> preserve longest):
-    1. step_nudge, retry_nudge — ephemeral corrections, no long-term value
-    2. tool_result — truncate to first line; raw data is expendable once processed
-    3. tool_call — collapse to one-liner (tool name + args)
-    4. reasoning — preserve as long as possible; this is the model's interpretive context
-    5. Recent iterations (within keep_recent window) — fully intact
+    Policies operate directly on canonical parts, protecting the first two
+    messages and recent iterations. Calls survive category-based removal.
     """
 
     @abstractmethod
     def compact(
         self,
-        messages: list[Message],
+        messages: ConversationState,
         budget_tokens: int,
         *,
         step_hint: str = "",
-    ) -> tuple[list[Message], int]:
+    ) -> tuple[ConversationState, int]:
         """Return a compacted copy of the message history and the phase reached.
 
         Returns a tuple of (compacted_messages, phase_reached). The phase int
@@ -49,12 +45,12 @@ class CompactStrategy(ABC):
 
     def _compact_with_initial_usage(
         self,
-        messages: list[Message],
+        messages: ConversationState,
         budget_tokens: int,
         *,
         initial_tokens: int,
         step_hint: str = "",
-    ) -> tuple[list[Message], int]:
+    ) -> tuple[ConversationState, int]:
         """Internal manager path; custom strategies retain the public contract."""
         return self.compact(messages, budget_tokens, step_hint=step_hint)
 
@@ -67,12 +63,12 @@ class NoCompact(CompactStrategy):
 
     def compact(
         self,
-        messages: list[Message],
+        messages: ConversationState,
         budget_tokens: int,
         *,
         step_hint: str = "",
-    ) -> tuple[list[Message], int]:
-        return list(messages), 0
+    ) -> tuple[ConversationState, int]:
+        return messages, 0
 
 
 class SlidingWindowCompact(CompactStrategy):
@@ -88,33 +84,33 @@ class SlidingWindowCompact(CompactStrategy):
 
     def compact(
         self,
-        messages: list[Message],
+        messages: ConversationState,
         budget_tokens: int,
         *,
         step_hint: str = "",
-    ) -> tuple[list[Message], int]:
+    ) -> tuple[ConversationState, int]:
         return self._compact_with_initial_usage(
             messages,
             budget_tokens,
-            initial_tokens=_estimate_tokens(messages),
+            initial_tokens=estimate_content_tokens(messages),
             step_hint=step_hint,
         )
 
     def _compact_with_initial_usage(
         self,
-        messages: list[Message],
+        messages: ConversationState,
         budget_tokens: int,
         *,
         initial_tokens: int,
         step_hint: str = "",
-    ) -> tuple[list[Message], int]:
+    ) -> tuple[ConversationState, int]:
         trigger = int(budget_tokens * self.compact_threshold)
         if initial_tokens < trigger:
-            return list(messages), 0
-        eligible_end = TieredCompact._find_eligible_end(messages, self.keep_recent)
+            return ConversationState(list(messages.messages)), 0
+        eligible_end = TieredCompact._find_eligible_end(messages.messages, self.keep_recent)
         if eligible_end <= 2:
-            return list(messages), 1
-        return [messages[0], messages[1]] + messages[eligible_end:], 1
+            return ConversationState(list(messages.messages)), 1
+        return ConversationState(messages.messages[:2] + messages.messages[eligible_end:]), 1
 
 
 class TieredCompact(CompactStrategy):
@@ -156,13 +152,17 @@ class TieredCompact(CompactStrategy):
         if phase_thresholds is not None:
             self._phase_triggers = phase_thresholds
         else:
-            self._phase_triggers = (compact_threshold, compact_threshold, compact_threshold)
+            self._phase_triggers = (
+                compact_threshold,
+                compact_threshold,
+                compact_threshold,
+            )
 
     @staticmethod
-    def _find_eligible_end(messages: list[Message], keep_recent: int) -> int:
+    def _find_eligible_end(messages: list[RichMessage], keep_recent: int) -> int:
         """Find the boundary index: messages before this are eligible for compaction.
 
-        Uses step_index from message metadata to identify iteration boundaries.
+        Uses direct step_index to identify iteration boundaries.
         With parallel tool calls, one iteration may produce variable numbers of
         messages (1 TOOL_CALL + N TOOL_RESULTs), so counting by step_index is
         more accurate than a flat message count.
@@ -171,7 +171,7 @@ class TieredCompact(CompactStrategy):
         # header (messages[0] and [1] have step_index=None).
         seen_steps: list[int] = []
         for m in messages[2:]:
-            si = m.metadata.step_index
+            si = m.step_index
             if si is not None and (not seen_steps or seen_steps[-1] != si):
                 seen_steps.append(si)
 
@@ -183,38 +183,38 @@ class TieredCompact(CompactStrategy):
         cutoff_step = seen_steps[-keep_recent]
         # Find the first message index with step_index >= cutoff_step
         for i in range(2, len(messages)):
-            si = messages[i].metadata.step_index
+            si = messages[i].step_index
             if si is not None and si >= cutoff_step:
                 return i
         return len(messages)
 
     def compact(
         self,
-        messages: list[Message],
+        messages: ConversationState,
         budget_tokens: int,
         *,
         step_hint: str = "",
-    ) -> tuple[list[Message], int]:
+    ) -> tuple[ConversationState, int]:
         """Apply tiered compaction: Phase 1 -> Phase 2 -> Phase 3.
 
         Each phase has its own threshold (fraction of budget_tokens).
-        A phase only runs if estimated tokens exceed its threshold.
+        A phase runs when tokens reach its threshold.
         """
         return self._compact_with_initial_usage(
             messages,
             budget_tokens,
-            initial_tokens=_estimate_tokens(messages),
+            initial_tokens=estimate_content_tokens(messages),
             step_hint=step_hint,
         )
 
     def _compact_with_initial_usage(
         self,
-        messages: list[Message],
+        messages: ConversationState,
         budget_tokens: int,
         *,
         initial_tokens: int,
         step_hint: str = "",
-    ) -> tuple[list[Message], int]:
+    ) -> tuple[ConversationState, int]:
         tokens = initial_tokens
         t1 = int(budget_tokens * self._phase_triggers[0])
         t2 = int(budget_tokens * self._phase_triggers[1])
@@ -222,89 +222,85 @@ class TieredCompact(CompactStrategy):
 
         # Nothing to do if below the lowest threshold
         if tokens < t1:
-            return list(messages), 0
+            return ConversationState(list(messages.messages)), 0
 
         # Determine the boundary: everything before this index is eligible
         # messages[0] and messages[1] are always protected
-        eligible_end = self._find_eligible_end(messages, self.keep_recent)
+        eligible_end = self._find_eligible_end(messages.messages, self.keep_recent)
 
-        # Phase 1: Drop nudges/retries, truncate tool_results to first line
+        # Phase 1: Drop nudges/retries, truncate result text to 200 characters
         result = self._phase1(messages, eligible_end)
         if result != messages:
-            tokens = _estimate_tokens(result)
+            tokens = estimate_content_tokens(result)
         if tokens < t2:
             return result, 1
 
         # Phase 2: Phase 1 + drop tool_results entirely
         phase2_result = self._phase2(messages, eligible_end)
         if phase2_result != result:
-            tokens = _estimate_tokens(phase2_result)
+            tokens = estimate_content_tokens(phase2_result)
         if tokens < t3:
             return phase2_result, 2
 
         # Phase 3: Phase 2 + drop reasoning and text_response (tool_call skeleton only)
         return self._phase3(messages, eligible_end), 3
 
-    def _phase1(
-        self, messages: list[Message], eligible_end: int
-    ) -> list[Message]:
-        """Drop nudges/retries and truncate tool_results outside keep_recent."""
-        result: list[Message] = []
-        for i, msg in enumerate(messages):
-            if 2 <= i < eligible_end:
-                if msg.metadata.type in (
-                    MessageType.STEP_NUDGE,
-                    MessageType.PREREQUISITE_NUDGE,
-                    MessageType.RETRY_NUDGE,
-                ):
+    def _phase1(self, state: ConversationState, eligible_end: int) -> ConversationState:
+        return self._apply_phase(state, eligible_end, 1)
+
+    def _phase2(self, state: ConversationState, eligible_end: int) -> ConversationState:
+        return self._apply_phase(state, eligible_end, 2)
+
+    def _phase3(self, state: ConversationState, eligible_end: int) -> ConversationState:
+        return self._apply_phase(state, eligible_end, 3)
+
+    def _apply_phase(
+        self, state: ConversationState, eligible_end: int, phase: int,
+    ) -> ConversationState:
+        messages: list[RichMessage] = []
+        for i, message in enumerate(state.messages):
+            if not 2 <= i < eligible_end:
+                messages.append(message)
+                continue
+            correction = message.forge_purpose in {
+                "retry", "unknown_tool", "tool_arg_validation", "step", "prerequisite",
+            }
+            parts = []
+            for part in message.parts:
+                if correction and isinstance(part, (TextPart, ToolResultPart)):
                     continue
-                if msg.metadata.type == MessageType.TOOL_RESULT:
-                    if len(msg.content) > self.TRUNCATE_CHARS:
-                        kept = msg.content[:self.TRUNCATE_CHARS]
-                        removed = len(msg.content) - self.TRUNCATE_CHARS
-                        result.append(
-                            Message(
-                                role=msg.role,
-                                content=f"{kept}\n[Truncated — {removed} chars removed]",
-                                metadata=msg.metadata,
-                            )
-                        )
+                if isinstance(part, ToolResultPart):
+                    if phase >= 2:
                         continue
-            result.append(msg)
-        return result
-
-    def _phase2(
-        self, messages: list[Message], eligible_end: int
-    ) -> list[Message]:
-        """Phase 1 + drop tool_results entirely. Reasoning and text preserved."""
-        result: list[Message] = []
-        for i, msg in enumerate(messages):
-            if 2 <= i < eligible_end:
-                if msg.metadata.type in (
-                    MessageType.STEP_NUDGE,
-                    MessageType.PREREQUISITE_NUDGE,
-                    MessageType.RETRY_NUDGE,
-                    MessageType.TOOL_RESULT,
-                ):
+                    part = self._truncate_result(part)
+                if (phase >= 3 and message.role == MessageRole.ASSISTANT
+                        and isinstance(part, (ReasoningPart, TextPart))):
                     continue
-            result.append(msg)
-        return result
+                parts.append(part)
+            if parts == message.parts:
+                messages.append(message)
+            elif parts:
+                messages.append(replace(message, parts=parts))
+        return ConversationState(messages)
 
-    def _phase3(
-        self, messages: list[Message], eligible_end: int
-    ) -> list[Message]:
-        """Phase 2 + drop reasoning and text_response. Tool_call skeleton only."""
-        result: list[Message] = []
-        for i, msg in enumerate(messages):
-            if 2 <= i < eligible_end:
-                if msg.metadata.type in (
-                    MessageType.STEP_NUDGE,
-                    MessageType.PREREQUISITE_NUDGE,
-                    MessageType.RETRY_NUDGE,
-                    MessageType.TOOL_RESULT,
-                    MessageType.REASONING,
-                    MessageType.TEXT_RESPONSE,
-                ):
-                    continue
-            result.append(msg)
-        return result
+    def _truncate_result(self, result: ToolResultPart) -> ToolResultPart:
+        chars = sum(len(block.text) for block in result.content)
+        if chars <= self.TRUNCATE_CHARS:
+            return result
+        remaining = self.TRUNCATE_CHARS
+        blocks: list[TextPart] = []
+        for block in result.content:
+            if remaining == 0:
+                break
+            if len(block.text) <= remaining:
+                blocks.append(block)
+            else:
+                blocks.append(replace(block, text=block.text[:remaining]))
+            remaining -= len(blocks[-1].text)
+        removed = chars - self.TRUNCATE_CHARS
+        # Append to the last retained block: string results retain their exact
+        # prefix/newline/notice output, without inserting a block separator.
+        blocks[-1] = replace(
+            blocks[-1], text=blocks[-1].text + f"\n[Truncated — {removed} chars removed]",
+        )
+        return replace(result, content=blocks)

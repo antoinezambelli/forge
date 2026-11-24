@@ -274,7 +274,6 @@ class ProxyServer:
             max_retries=self._max_retries,
             max_tool_errors=self._max_tool_errors,
             rescue_enabled=self._rescue_enabled,
-            native_passthrough=self._backend_capability == "native",
             inject_respond_tool=self._inject_respond_tool,
             reasoning_replay=self._reasoning_replay,
             backend_protocol=self._backend_protocol,

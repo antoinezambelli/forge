@@ -12,53 +12,135 @@ from __future__ import annotations
 import re
 from typing import Any
 
-from pydantic import BaseModel, Field
 
-from forge.core.workflow import ToolDef, ToolSpec, Workflow
+from forge.core.workflow import ToolDefinition, Workflow
 
 from ._base import EvalScenario
 from ._model_quality import (
-    EmployeeIdParams,
-    EmployeeNameParams,
-    SubmitReportParams,
+    EMPLOYEE_ID_SCHEMA,
+    EMPLOYEE_NAME_SCHEMA,
+    SUBMIT_REPORT_SCHEMA,
 )
 
 
-# ── Pydantic param models (argument_transformation) ─────────────
+# ── Explicit input schemas (argument_transformation) ─────────────
 
 
-class NoParams(BaseModel):
-    pass
+NO_SCHEMA = {"properties": {}, "title": "NoParams", "type": "object"}
 
 
-class QuarterYearParams(BaseModel):
-    quarter: str = Field(description="Fiscal quarter, e.g. 'Q4'")
-    year: int = Field(description="Fiscal year, e.g. 2024")
+QUARTER_YEAR_SCHEMA = {
+    "properties": {
+        "quarter": {
+            "description": "Fiscal quarter, e.g. 'Q4'",
+            "title": "Quarter",
+            "type": "string",
+        },
+        "year": {
+            "description": "Fiscal year, e.g. 2024",
+            "title": "Year",
+            "type": "integer",
+        },
+    },
+    "required": ["quarter", "year"],
+    "title": "QuarterYearParams",
+    "type": "object",
+}
 
 
-class VendorNameParams(BaseModel):
-    vendor_name: str = Field(description="Vendor name (case-sensitive in our records)")
+VENDOR_NAME_SCHEMA = {
+    "properties": {
+        "vendor_name": {
+            "description": "Vendor name (case-sensitive in our records)",
+            "title": "Vendor Name",
+            "type": "string",
+        }
+    },
+    "required": ["vendor_name"],
+    "title": "VendorNameParams",
+    "type": "object",
+}
 
 
-class CurrencyConvertParams(BaseModel):
-    amount: float = Field(description="Amount to convert")
-    from_currency: str = Field(description="Source currency code, e.g. 'EUR'")
-    to_currency: str = Field(description="Target currency code, e.g. 'USD'")
+CURRENCY_CONVERT_SCHEMA = {
+    "properties": {
+        "amount": {
+            "description": "Amount to convert",
+            "title": "Amount",
+            "type": "number",
+        },
+        "from_currency": {
+            "description": "Source currency code, e.g. 'EUR'",
+            "title": "From Currency",
+            "type": "string",
+        },
+        "to_currency": {
+            "description": "Target currency code, e.g. 'USD'",
+            "title": "To Currency",
+            "type": "string",
+        },
+    },
+    "required": ["amount", "from_currency", "to_currency"],
+    "title": "CurrencyConvertParams",
+    "type": "object",
+}
 
 
-class CategorizeExpenseParams(BaseModel):
-    amount: float = Field(description="Expense amount")
-    category: str = Field(description="Expense category")
+CATEGORIZE_EXPENSE_SCHEMA = {
+    "properties": {
+        "amount": {
+            "description": "Expense amount",
+            "title": "Amount",
+            "type": "number",
+        },
+        "category": {
+            "description": "Expense category",
+            "title": "Category",
+            "type": "string",
+        },
+    },
+    "required": ["amount", "category"],
+    "title": "CategorizeExpenseParams",
+    "type": "object",
+}
 
 
-class TransactionIdParams(BaseModel):
-    transaction_id: str = Field(description="Transaction ID, e.g. 'TX-1001'")
+TRANSACTION_ID_SCHEMA = {
+    "properties": {
+        "transaction_id": {
+            "description": "Transaction ID, e.g. 'TX-1001'",
+            "title": "Transaction Id",
+            "type": "string",
+        }
+    },
+    "required": ["transaction_id"],
+    "title": "TransactionIdParams",
+    "type": "object",
+}
 
 
-class SubmitAuditReportParams(BaseModel):
-    transaction_ids: str = Field(description="Comma-separated transaction IDs to flag")
-    total_flagged_usd: str = Field(description="Total flagged amount in USD")
-    top_vendor: str = Field(description="Vendor of the single largest flagged transaction")
+SUBMIT_AUDIT_REPORT_SCHEMA = {
+    "properties": {
+        "transaction_ids": {
+            "description": "Comma-separated transaction IDs to flag",
+            "title": "Transaction Ids",
+            "type": "string",
+        },
+        "total_flagged_usd": {
+            "description": "Total flagged amount in USD",
+            "title": "Total Flagged Usd",
+            "type": "string",
+        },
+        "top_vendor": {
+            "description": "Vendor of the single largest flagged transaction",
+            "title": "Top Vendor",
+            "type": "string",
+        },
+    },
+    "required": ["transaction_ids", "total_flagged_usd", "top_vendor"],
+    "title": "SubmitAuditReportParams",
+    "type": "object",
+}
 
 
 # ── Scenario: data_gap_recovery_extended ────────────────────────
@@ -76,170 +158,148 @@ class SubmitAuditReportParams(BaseModel):
 # report (B7, payments-prod-v3, internal-apis-v2) only appear if the
 # model reached the right downstream tools.
 
-_data_gap_recovery_extended_tools: dict[str, ToolDef] = {
-    "get_employee": ToolDef(
-        spec=ToolSpec(
+_data_gap_recovery_extended_tools: dict[str, ToolDefinition] = {
+    "get_employee": ToolDefinition(
             name="get_employee",
             description="Look up an employee record by name.",
-            parameters=EmployeeNameParams,
+            input_schema=EMPLOYEE_NAME_SCHEMA,
         ),
-        callable=lambda **kwargs: (
-            "Employee Record — Sarah Chen (ID: E-1847)\n"
-            "Department: Engineering\n"
-            "Title: Senior Backend Engineer\n"
-            "Start Date: 2019-03-15\n"
-            "Office: Building 3, Floor 2\n"
-            "Manager: David Park\n"
-            "Clearance Level: [RESTRICTED]\n"
-            "Emergency Contact: [unavailable in this record]\n"
-            "Salary Band: [PROTECTED]\n"
-            "Access Groups: [managed externally]"
-        ),
-    ),
-    "security_audit": ToolDef(
-        spec=ToolSpec(
+    "security_audit": ToolDefinition(
             name="security_audit",
             description="Query security audit records for an employee.",
-            parameters=EmployeeIdParams,
+            input_schema=EMPLOYEE_ID_SCHEMA,
         ),
-        callable=lambda **kwargs: (
-            "Security Audit Record — E-1847 (Sarah Chen)\n"
-            "Clearance Level: L3 — Confidential\n"
-            "Granted: 2021-06-10\n"
-            "Sponsor: David Park (Director, Engineering)\n"
-            "Last Review: 2024-12-01 (passed, no findings)\n"
-            "Expires: 2025-12-01\n"
-            "Access Groups: payments-prod, internal-apis, staging-*"
-        ),
-    ),
-    "onboarding_records": ToolDef(
-        spec=ToolSpec(
+    "onboarding_records": ToolDefinition(
             name="onboarding_records",
             description="Access HR onboarding records for an employee.",
-            parameters=EmployeeIdParams,
+            input_schema=EMPLOYEE_ID_SCHEMA,
         ),
-        callable=lambda **kwargs: (
-            "HR Onboarding Record — E-1847 (Sarah Chen)\n"
-            "Original Onboarding Date: 2019-03-15\n"
-            "Emergency Contact: Michael Chen (spouse) — (555) 867-5309\n"
-            "Dietary Restrictions: None\n"
-            "T-Shirt Size: M\n"
-            'Equipment Issued: MacBook Pro 16", 2x monitors'
-        ),
-    ),
-    "personnel_file": ToolDef(
-        spec=ToolSpec(
+    "personnel_file": ToolDefinition(
             name="personnel_file",
             description="Access an employee's personnel file.",
-            parameters=EmployeeIdParams,
+            input_schema=EMPLOYEE_ID_SCHEMA,
         ),
-        callable=lambda **kwargs: (
-            "Personnel File — E-1847 (Sarah Chen)\n"
-            "Contains: performance reviews, PTO balance.\n"
-            "Note: Compensation data is in our current pay system (migrated 2024).\n"
-            "Note: Emergency contact records are with HR onboarding (2020 migration)."
-        ),
-    ),
-    "compensation_v2": ToolDef(
-        spec=ToolSpec(
+    "compensation_v2": ToolDefinition(
             name="compensation_v2",
             description="Current compensation system — salary band lookup.",
-            parameters=EmployeeIdParams,
+            input_schema=EMPLOYEE_ID_SCHEMA,
         ),
-        callable=lambda **kwargs: (
-            "Compensation v2 — E-1847 (Sarah Chen)\n"
-            "Salary Band: B7\n"
-            "Effective: 2024-04-01\n"
-            "Next Review: 2025-04-01"
-        ),
-    ),
-    "project_assignments": ToolDef(
-        spec=ToolSpec(
+    "project_assignments": ToolDefinition(
             name="project_assignments",
             description="Current project assignments and active access groups for an employee.",
-            parameters=EmployeeIdParams,
+            input_schema=EMPLOYEE_ID_SCHEMA,
         ),
-        callable=lambda **kwargs: (
-            "Project Assignments — E-1847 (Sarah Chen)\n"
-            "Active Access Groups: payments-prod-v3, internal-apis-v2, staging-test\n"
-            "Primary Project: Payments Platform Modernization\n"
-            "Secondary: Internal Tooling Sprint"
-        ),
-    ),
-    "compensation_history": ToolDef(
-        spec=ToolSpec(
+    "compensation_history": ToolDefinition(
             name="compensation_history",
             description="Look up compensation history for an employee.",
-            parameters=EmployeeIdParams,
+            input_schema=EMPLOYEE_ID_SCHEMA,
         ),
-        callable=lambda **kwargs: (
-            "compensation_history — DEPRECATED endpoint.\n"
-            "This service was retired in 2024. Use compensation_v2 for "
-            "current salary band data."
-        ),
-    ),
-    "access_control": ToolDef(
-        spec=ToolSpec(
+    "access_control": ToolDefinition(
             name="access_control",
             description="Look up access control entries for an employee.",
-            parameters=EmployeeIdParams,
+            input_schema=EMPLOYEE_ID_SCHEMA,
         ),
-        callable=lambda **kwargs: (
-            "access_control — DEPRECATED endpoint.\n"
-            "Replaced by project_assignments for current active access "
-            "group data. Static provisioning records remain in security_audit."
-        ),
-    ),
-    "legacy_records": ToolDef(
-        spec=ToolSpec(
+    "legacy_records": ToolDefinition(
             name="legacy_records",
             description="Search legacy records archive for an employee.",
-            parameters=EmployeeIdParams,
+            input_schema=EMPLOYEE_ID_SCHEMA,
         ),
-        callable=lambda **kwargs: (
-            "Legacy Archive — E-1847 (Sarah Chen)\n"
-            "Source: legacy_v1 (READ-ONLY — not synced with current systems)\n"
-            "Salary Band: B5\n"
-            "Access Groups: legacy-readonly\n"
-            "Note: legacy_v1 stopped syncing after the 2024 systems migration. "
-            "For current salary band, query compensation_v2. For current access "
-            "groups, query project_assignments. Data above is provided for "
-            "historical audit only."
-        ),
-    ),
-    "compliance_check": ToolDef(
-        spec=ToolSpec(
+    "compliance_check": ToolDefinition(
             name="compliance_check",
             description="Check compliance status for an employee.",
-            parameters=EmployeeIdParams,
+            input_schema=EMPLOYEE_ID_SCHEMA,
         ),
-        callable=lambda **kwargs: (
-            "Compliance Status — E-1847: All mandatory trainings complete.\n"
-            "Last security awareness training: 2024-11-15.\n"
-            "No outstanding compliance items."
-        ),
-    ),
-    "hr_directory": ToolDef(
-        spec=ToolSpec(
+    "hr_directory": ToolDefinition(
             name="hr_directory",
             description="Look up an employee in the HR directory.",
-            parameters=EmployeeNameParams,
+            input_schema=EMPLOYEE_NAME_SCHEMA,
         ),
-        callable=lambda **kwargs: (
-            "HR Directory Entry — Sarah Chen\n"
-            "Department: Engineering | Reports to: David Park\n"
-            "Office: Building 3, Floor 2 | Extension: x4481\n"
-            "Status: Active | Full-time"
-        ),
-    ),
-    "submit_report": ToolDef(
-        spec=ToolSpec(
+    "submit_report": ToolDefinition(
             name="submit_report",
             description="Submit a completed employee profile report.",
-            parameters=SubmitReportParams,
+            input_schema=SUBMIT_REPORT_SCHEMA,
         ),
-        callable=lambda **kwargs: f"Report submitted for {kwargs.get('employee_name', '')}.",
+}
+_data_gap_recovery_extended_tools_handlers = {
+    "get_employee": lambda **kwargs: (
+        "Employee Record — Sarah Chen (ID: E-1847)\n"
+        "Department: Engineering\n"
+        "Title: Senior Backend Engineer\n"
+        "Start Date: 2019-03-15\n"
+        "Office: Building 3, Floor 2\n"
+        "Manager: David Park\n"
+        "Clearance Level: [RESTRICTED]\n"
+        "Emergency Contact: [unavailable in this record]\n"
+        "Salary Band: [PROTECTED]\n"
+        "Access Groups: [managed externally]"
     ),
+    "security_audit": lambda **kwargs: (
+        "Security Audit Record — E-1847 (Sarah Chen)\n"
+        "Clearance Level: L3 — Confidential\n"
+        "Granted: 2021-06-10\n"
+        "Sponsor: David Park (Director, Engineering)\n"
+        "Last Review: 2024-12-01 (passed, no findings)\n"
+        "Expires: 2025-12-01\n"
+        "Access Groups: payments-prod, internal-apis, staging-*"
+    ),
+    "onboarding_records": lambda **kwargs: (
+        "HR Onboarding Record — E-1847 (Sarah Chen)\n"
+        "Original Onboarding Date: 2019-03-15\n"
+        "Emergency Contact: Michael Chen (spouse) — (555) 867-5309\n"
+        "Dietary Restrictions: None\n"
+        "T-Shirt Size: M\n"
+        'Equipment Issued: MacBook Pro 16", 2x monitors'
+    ),
+    "personnel_file": lambda **kwargs: (
+        "Personnel File — E-1847 (Sarah Chen)\n"
+        "Contains: performance reviews, PTO balance.\n"
+        "Note: Compensation data is in our current pay system (migrated 2024).\n"
+        "Note: Emergency contact records are with HR onboarding (2020 migration)."
+    ),
+    "compensation_v2": lambda **kwargs: (
+        "Compensation v2 — E-1847 (Sarah Chen)\n"
+        "Salary Band: B7\n"
+        "Effective: 2024-04-01\n"
+        "Next Review: 2025-04-01"
+    ),
+    "project_assignments": lambda **kwargs: (
+        "Project Assignments — E-1847 (Sarah Chen)\n"
+        "Active Access Groups: payments-prod-v3, internal-apis-v2, staging-test\n"
+        "Primary Project: Payments Platform Modernization\n"
+        "Secondary: Internal Tooling Sprint"
+    ),
+    "compensation_history": lambda **kwargs: (
+        "compensation_history — DEPRECATED endpoint.\n"
+        "This service was retired in 2024. Use compensation_v2 for "
+        "current salary band data."
+    ),
+    "access_control": lambda **kwargs: (
+        "access_control — DEPRECATED endpoint.\n"
+        "Replaced by project_assignments for current active access "
+        "group data. Static provisioning records remain in security_audit."
+    ),
+    "legacy_records": lambda **kwargs: (
+        "Legacy Archive — E-1847 (Sarah Chen)\n"
+        "Source: legacy_v1 (READ-ONLY — not synced with current systems)\n"
+        "Salary Band: B5\n"
+        "Access Groups: legacy-readonly\n"
+        "Note: legacy_v1 stopped syncing after the 2024 systems migration. "
+        "For current salary band, query compensation_v2. For current access "
+        "groups, query project_assignments. Data above is provided for "
+        "historical audit only."
+    ),
+    "compliance_check": lambda **kwargs: (
+        "Compliance Status — E-1847: All mandatory trainings complete.\n"
+        "Last security awareness training: 2024-11-15.\n"
+        "No outstanding compliance items."
+    ),
+    "hr_directory": lambda **kwargs: (
+        "HR Directory Entry — Sarah Chen\n"
+        "Department: Engineering | Reports to: David Park\n"
+        "Office: Building 3, Floor 2 | Extension: x4481\n"
+        "Status: Active | Full-time"
+    ),
+    "submit_report": lambda **kwargs: f"Report submitted for {kwargs.get('employee_name', '')}.",
 }
 
 
@@ -263,6 +323,7 @@ data_gap_recovery_extended = EvalScenario(
             "across legacy and current systems."
         ),
         tools=_data_gap_recovery_extended_tools,
+        handlers=_data_gap_recovery_extended_tools_handlers,
         required_steps=["get_employee"],
         terminal_tool="submit_report",
         system_prompt_template=(
@@ -435,71 +496,59 @@ def _lookup_transaction(**kwargs: Any) -> str:
     return f"No transaction found for '{tid}'."
 
 
-_argument_transformation_tools: dict[str, ToolDef] = {
-    "list_transactions": ToolDef(
-        spec=ToolSpec(
+_argument_transformation_tools: dict[str, ToolDefinition] = {
+    "list_transactions": ToolDefinition(
             name="list_transactions",
             description="List all expense transactions for a given fiscal quarter and year.",
-            parameters=QuarterYearParams,
+            input_schema=QUARTER_YEAR_SCHEMA,
         ),
-        callable=_list_transactions,
-    ),
-    "get_approved_vendors": ToolDef(
-        spec=ToolSpec(
+    "get_approved_vendors": ToolDefinition(
             name="get_approved_vendors",
             description="Return the canonical list of approved vendor names (case sensitive).",
-            parameters=NoParams,
+            input_schema=NO_SCHEMA,
         ),
-        callable=_get_approved_vendors,
-    ),
-    "get_vendor_details": ToolDef(
-        spec=ToolSpec(
+    "get_vendor_details": ToolDefinition(
             name="get_vendor_details",
             description="Look up vendor details (status, legal entity, trade-name aliases).",
-            parameters=VendorNameParams,
+            input_schema=VENDOR_NAME_SCHEMA,
         ),
-        callable=_get_vendor_details,
-    ),
-    "currency_convert": ToolDef(
-        spec=ToolSpec(
+    "currency_convert": ToolDefinition(
             name="currency_convert",
             description="Convert an amount between currencies (USD/EUR).",
-            parameters=CurrencyConvertParams,
+            input_schema=CURRENCY_CONVERT_SCHEMA,
         ),
-        callable=_currency_convert,
-    ),
-    "categorize_expense": ToolDef(
-        spec=ToolSpec(
+    "categorize_expense": ToolDefinition(
             name="categorize_expense",
             description="Assign an expense to a GL category bucket.",
-            parameters=CategorizeExpenseParams,
+            input_schema=CATEGORIZE_EXPENSE_SCHEMA,
         ),
-        callable=_categorize_expense,
-    ),
-    "lookup_transaction": ToolDef(
-        spec=ToolSpec(
+    "lookup_transaction": ToolDefinition(
             name="lookup_transaction",
             description="Look up a single transaction's full record by ID.",
-            parameters=TransactionIdParams,
+            input_schema=TRANSACTION_ID_SCHEMA,
         ),
-        callable=_lookup_transaction,
-    ),
-    "submit_audit_report": ToolDef(
-        spec=ToolSpec(
+    "submit_audit_report": ToolDefinition(
             name="submit_audit_report",
             description=(
                 "Submit the completed audit report. Provide comma-separated "
                 "transaction IDs of flagged items, the total flagged amount in "
                 "USD, and the vendor of the single largest flagged transaction."
             ),
-            parameters=SubmitAuditReportParams,
+            input_schema=SUBMIT_AUDIT_REPORT_SCHEMA,
         ),
-        callable=lambda **kwargs: (
-            f"Audit report submitted. "
-            f"Flagged: {kwargs.get('transaction_ids', '')}; "
-            f"total: {kwargs.get('total_flagged_usd', '')}; "
-            f"top: {kwargs.get('top_vendor', '')}."
-        ),
+}
+_argument_transformation_tools_handlers = {
+    "list_transactions": _list_transactions,
+    "get_approved_vendors": _get_approved_vendors,
+    "get_vendor_details": _get_vendor_details,
+    "currency_convert": _currency_convert,
+    "categorize_expense": _categorize_expense,
+    "lookup_transaction": _lookup_transaction,
+    "submit_audit_report": lambda **kwargs: (
+        f"Audit report submitted. "
+        f"Flagged: {kwargs.get('transaction_ids', '')}; "
+        f"total: {kwargs.get('total_flagged_usd', '')}; "
+        f"top: {kwargs.get('top_vendor', '')}."
     ),
 }
 
@@ -537,6 +586,7 @@ argument_transformation = EvalScenario(
             "data, then submitting the audit report."
         ),
         tools=_argument_transformation_tools,
+        handlers=_argument_transformation_tools_handlers,
         required_steps=["list_transactions", "get_approved_vendors"],
         terminal_tool="submit_audit_report",
         system_prompt_template=(
@@ -584,37 +634,107 @@ argument_transformation = EvalScenario(
 #  Step 7 submit_audit:        JSON-encoded string (not natural dict)
 
 
-class PageParams(BaseModel):
-    page: int = Field(description="Page number")
-    page_size: int = Field(description="Records per page")
+PAGE_SCHEMA = {
+    "properties": {
+        "page": {"description": "Page number", "title": "Page", "type": "integer"},
+        "page_size": {
+            "description": "Records per page",
+            "title": "Page Size",
+            "type": "integer",
+        },
+    },
+    "required": ["page", "page_size"],
+    "title": "PageParams",
+    "type": "object",
+}
 
 
-class AccountIdParams(BaseModel):
-    account_id: str = Field(description="Account identifier")
+ACCOUNT_ID_SCHEMA = {
+    "properties": {
+        "account_id": {
+            "description": "Account identifier",
+            "title": "Account Id",
+            "type": "string",
+        }
+    },
+    "required": ["account_id"],
+    "title": "AccountIdParams",
+    "type": "object",
+}
 
 
-class TransactionRangeParams(BaseModel):
-    account_id: str = Field(description="Account identifier")
-    since: str = Field(description="Range start")
-    until: str = Field(description="Range end")
+TRANSACTION_RANGE_SCHEMA = {
+    "properties": {
+        "account_id": {
+            "description": "Account identifier",
+            "title": "Account Id",
+            "type": "string",
+        },
+        "since": {"description": "Range start", "title": "Since", "type": "string"},
+        "until": {"description": "Range end", "title": "Until", "type": "string"},
+    },
+    "required": ["account_id", "since", "until"],
+    "title": "TransactionRangeParams",
+    "type": "object",
+}
 
 
-class CategorizeSpendParams(BaseModel):
-    txn_id: int = Field(description="Transaction identifier")
-    category: str = Field(description="Spend category")
+CATEGORIZE_SPEND_SCHEMA = {
+    "properties": {
+        "txn_id": {
+            "description": "Transaction identifier",
+            "title": "Txn Id",
+            "type": "integer",
+        },
+        "category": {
+            "description": "Spend category",
+            "title": "Category",
+            "type": "string",
+        },
+    },
+    "required": ["txn_id", "category"],
+    "title": "CategorizeSpendParams",
+    "type": "object",
+}
 
 
-class ComplianceCheckParams(BaseModel):
-    region: str = Field(description="Region")
-    period: str = Field(description="Reporting period")
+COMPLIANCE_CHECK_SCHEMA = {
+    "properties": {
+        "region": {"description": "Region", "title": "Region", "type": "string"},
+        "period": {
+            "description": "Reporting period",
+            "title": "Period",
+            "type": "string",
+        },
+    },
+    "required": ["region", "period"],
+    "title": "ComplianceCheckParams",
+    "type": "object",
+}
 
 
-class AggregateSubtotalParams(BaseModel):
-    amounts: str = Field(description="Amounts to sum")
+AGGREGATE_SUBTOTAL_SCHEMA = {
+    "properties": {
+        "amounts": {
+            "description": "Amounts to sum",
+            "title": "Amounts",
+            "type": "string",
+        }
+    },
+    "required": ["amounts"],
+    "title": "AggregateSubtotalParams",
+    "type": "object",
+}
 
 
-class SubmitAuditParams(BaseModel):
-    report: str = Field(description="Audit report")
+SUBMIT_AUDIT_SCHEMA = {
+    "properties": {
+        "report": {"description": "Audit report", "title": "Report", "type": "string"}
+    },
+    "required": ["report"],
+    "title": "SubmitAuditParams",
+    "type": "object",
+}
 
 
 _LEGACY_ACCOUNTS = [
@@ -779,63 +899,51 @@ def _legacy_submit_audit(**kwargs: Any) -> str:
     return f"Audit submitted. Report: {s}"
 
 
-_inconsistent_api_recovery_tools: dict[str, ToolDef] = {
-    "legacy_list_accounts": ToolDef(
-        spec=ToolSpec(
+_inconsistent_api_recovery_tools: dict[str, ToolDefinition] = {
+    "legacy_list_accounts": ToolDefinition(
             name="legacy_list_accounts",
             description="List available accounts.",
-            parameters=PageParams,
+            input_schema=PAGE_SCHEMA,
         ),
-        callable=_legacy_list_accounts,
-    ),
-    "legacy_get_balance": ToolDef(
-        spec=ToolSpec(
+    "legacy_get_balance": ToolDefinition(
             name="legacy_get_balance",
             description="Get the current balance for an account.",
-            parameters=AccountIdParams,
+            input_schema=ACCOUNT_ID_SCHEMA,
         ),
-        callable=_legacy_get_balance,
-    ),
-    "legacy_get_transactions": ToolDef(
-        spec=ToolSpec(
+    "legacy_get_transactions": ToolDefinition(
             name="legacy_get_transactions",
             description="List transactions for an account over a date range.",
-            parameters=TransactionRangeParams,
+            input_schema=TRANSACTION_RANGE_SCHEMA,
         ),
-        callable=_legacy_get_transactions,
-    ),
-    "legacy_categorize_spend": ToolDef(
-        spec=ToolSpec(
+    "legacy_categorize_spend": ToolDefinition(
             name="legacy_categorize_spend",
             description="Assign a spend category to a transaction.",
-            parameters=CategorizeSpendParams,
+            input_schema=CATEGORIZE_SPEND_SCHEMA,
         ),
-        callable=_legacy_categorize_spend,
-    ),
-    "legacy_check_compliance": ToolDef(
-        spec=ToolSpec(
+    "legacy_check_compliance": ToolDefinition(
             name="legacy_check_compliance",
             description="Run a regional compliance check for a reporting period.",
-            parameters=ComplianceCheckParams,
+            input_schema=COMPLIANCE_CHECK_SCHEMA,
         ),
-        callable=_legacy_check_compliance,
-    ),
-    "legacy_aggregate_subtotal": ToolDef(
-        spec=ToolSpec(
+    "legacy_aggregate_subtotal": ToolDefinition(
             name="legacy_aggregate_subtotal",
             description="Compute the subtotal of a set of amounts.",
-            parameters=AggregateSubtotalParams,
+            input_schema=AGGREGATE_SUBTOTAL_SCHEMA,
         ),
-        callable=_legacy_aggregate_subtotal,
-    ),
-    "legacy_submit_audit": ToolDef(
-        spec=ToolSpec(
+    "legacy_submit_audit": ToolDefinition(
             name="legacy_submit_audit",
             description="Submit the final compliance audit report.",
-            parameters=SubmitAuditParams,
+            input_schema=SUBMIT_AUDIT_SCHEMA,
         ),
-        callable=_legacy_submit_audit,
-    ),
+}
+_inconsistent_api_recovery_tools_handlers = {
+    "legacy_list_accounts": _legacy_list_accounts,
+    "legacy_get_balance": _legacy_get_balance,
+    "legacy_get_transactions": _legacy_get_transactions,
+    "legacy_categorize_spend": _legacy_categorize_spend,
+    "legacy_check_compliance": _legacy_check_compliance,
+    "legacy_aggregate_subtotal": _legacy_aggregate_subtotal,
+    "legacy_submit_audit": _legacy_submit_audit,
 }
 
 
@@ -864,6 +972,7 @@ inconsistent_api_recovery = EvalScenario(
             "seven inconsistently-designed APIs."
         ),
         tools=_inconsistent_api_recovery_tools,
+        handlers=_inconsistent_api_recovery_tools_handlers,
         required_steps=["legacy_list_accounts"],
         terminal_tool="legacy_submit_audit",
         system_prompt_template=(
@@ -911,13 +1020,37 @@ inconsistent_api_recovery = EvalScenario(
 # Validator (lambda): substring check on terminal candidate + rationale.
 
 
-class CandidateNameParams(BaseModel):
-    candidate_name: str = Field(description="Candidate full name")
+CANDIDATE_NAME_SCHEMA = {
+    "properties": {
+        "candidate_name": {
+            "description": "Candidate full name",
+            "title": "Candidate Name",
+            "type": "string",
+        }
+    },
+    "required": ["candidate_name"],
+    "title": "CandidateNameParams",
+    "type": "object",
+}
 
 
-class SubmitHiringDecisionParams(BaseModel):
-    candidate: str = Field(description="Selected candidate's name")
-    rationale: str = Field(description="Brief justification for the decision")
+SUBMIT_HIRING_DECISION_SCHEMA = {
+    "properties": {
+        "candidate": {
+            "description": "Selected candidate's name",
+            "title": "Candidate",
+            "type": "string",
+        },
+        "rationale": {
+            "description": "Brief justification for the decision",
+            "title": "Rationale",
+            "type": "string",
+        },
+    },
+    "required": ["candidate", "rationale"],
+    "title": "SubmitHiringDecisionParams",
+    "type": "object",
+}
 
 
 _GS_OPEN_ROLE = (
@@ -1164,55 +1297,45 @@ def _gs_submit_hiring_decision(**kwargs: Any) -> str:
     return f"Hiring decision recorded. Candidate: {candidate}. Rationale: {rationale}"
 
 
-_grounded_synthesis_tools: dict[str, ToolDef] = {
-    "get_open_role": ToolDef(
-        spec=ToolSpec(
+_grounded_synthesis_tools: dict[str, ToolDefinition] = {
+    "get_open_role": ToolDefinition(
             name="get_open_role",
             description="Get the spec and constraints for the open role.",
-            parameters=NoParams,
+            input_schema=NO_SCHEMA,
         ),
-        callable=_gs_get_open_role,
-    ),
-    "get_candidate_pool": ToolDef(
-        spec=ToolSpec(
+    "get_candidate_pool": ToolDefinition(
             name="get_candidate_pool",
             description="List the candidates being considered.",
-            parameters=NoParams,
+            input_schema=NO_SCHEMA,
         ),
-        callable=_gs_get_candidate_pool,
-    ),
-    "get_skill_summary": ToolDef(
-        spec=ToolSpec(
+    "get_skill_summary": ToolDefinition(
             name="get_skill_summary",
             description="Get a candidate's distilled skill assessment.",
-            parameters=CandidateNameParams,
+            input_schema=CANDIDATE_NAME_SCHEMA,
         ),
-        callable=_gs_get_skill_summary,
-    ),
-    "get_compatibility_check": ToolDef(
-        spec=ToolSpec(
+    "get_compatibility_check": ToolDefinition(
             name="get_compatibility_check",
             description="Check a candidate's compliance and eligibility for the open role.",
-            parameters=CandidateNameParams,
+            input_schema=CANDIDATE_NAME_SCHEMA,
         ),
-        callable=_gs_get_compatibility_check,
-    ),
-    "get_team_dynamics": ToolDef(
-        spec=ToolSpec(
+    "get_team_dynamics": ToolDefinition(
             name="get_team_dynamics",
             description="Get the team-fit analysis for a candidate.",
-            parameters=CandidateNameParams,
+            input_schema=CANDIDATE_NAME_SCHEMA,
         ),
-        callable=_gs_get_team_dynamics,
-    ),
-    "submit_hiring_decision": ToolDef(
-        spec=ToolSpec(
+    "submit_hiring_decision": ToolDefinition(
             name="submit_hiring_decision",
             description="Submit the final hiring decision with a brief rationale.",
-            parameters=SubmitHiringDecisionParams,
+            input_schema=SUBMIT_HIRING_DECISION_SCHEMA,
         ),
-        callable=_gs_submit_hiring_decision,
-    ),
+}
+_grounded_synthesis_tools_handlers = {
+    "get_open_role": _gs_get_open_role,
+    "get_candidate_pool": _gs_get_candidate_pool,
+    "get_skill_summary": _gs_get_skill_summary,
+    "get_compatibility_check": _gs_get_compatibility_check,
+    "get_team_dynamics": _gs_get_team_dynamics,
+    "submit_hiring_decision": _gs_submit_hiring_decision,
 }
 
 
@@ -1257,6 +1380,7 @@ grounded_synthesis = EvalScenario(
             "honoring compliance constraints surfaced by sub-agent tools."
         ),
         tools=_grounded_synthesis_tools,
+        handlers=_grounded_synthesis_tools_handlers,
         required_steps=["get_open_role", "get_candidate_pool"],
         terminal_tool="submit_hiring_decision",
         system_prompt_template=(

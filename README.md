@@ -25,6 +25,11 @@ Forge takes an 8B local model from single digits to 84% across forge's 26-scenar
 Supports generic OpenAI-compatible endpoints, Ollama, llama-server (llama.cpp),
 Llamafile, vLLM, and Anthropic as backends.
 
+**Upgrading?** The canonical-message update requires no Proxy setup changes.
+Python library callers should follow the
+[migration guide](docs/MIGRATING_CANONICAL_PRIMITIVES.md) for tool registration,
+message callbacks, and low-level client changes.
+
 ## Standalone Forge Proxy
 
 Forge Proxy is a self-contained developer sidecar: point an OpenAI- or
@@ -119,9 +124,8 @@ Then the Python you'll run (e.g. from another shell):
 
 ```python
 import asyncio
-from pydantic import BaseModel, Field
 from forge import (
-    Workflow, ToolDef, ToolSpec,
+    Workflow, ToolDefinition,
     WorkflowRunner, LlamafileClient,
     ContextManager, TieredCompact,
 )
@@ -129,22 +133,21 @@ from forge import (
 def get_weather(city: str) -> str:
     return f"72°F and sunny in {city}"
 
-class GetWeatherParams(BaseModel):
-    city: str = Field(description="City name")
-
 workflow = Workflow(
     name="weather",
     description="Look up weather for a city.",
     tools={
-        "get_weather": ToolDef(
-            spec=ToolSpec(
-                name="get_weather",
-                description="Get current weather",
-                parameters=GetWeatherParams,
-            ),
-            callable=get_weather,
+        "get_weather": ToolDefinition(
+            name="get_weather",
+            description="Get current weather",
+            input_schema={
+                "type": "object",
+                "properties": {"city": {"type": "string", "description": "City name"}},
+                "required": ["city"],
+            },
         ),
     },
+    handlers={"get_weather": get_weather},
     required_steps=[],
     terminal_tool="get_weather",
     system_prompt_template="You are a helpful assistant. Use the available tools to answer the user.",
@@ -163,7 +166,7 @@ async def main():
 asyncio.run(main())
 ```
 
-For multi-step workflows, multi-turn conversations, and backend auto-management, see the [User Guide](docs/USER_GUIDE.md). If you're building a long-running session (CLI, chat server, voice assistant), see the [long-running session advisory](docs/USER_GUIDE.md#long-running-sessions-filtering-transient-messages) for important guidance on filtering transient messages.
+For multi-step workflows, multi-turn conversations, and backend auto-management, see the [User Guide](docs/USER_GUIDE.md). If you're building a long-running session (CLI, chat server, voice assistant), see the [persistent-session guidance](docs/USER_GUIDE.md#persistent-sessions) for filtering transient messages.
 
 ## Proxy Server
 
@@ -173,7 +176,7 @@ old/new/action table.
 
 Drop-in proxy that sits between any client and a local model server, speaking both the OpenAI chat-completions API and the Anthropic Messages API (`/v1/messages`). Point your client at the proxy (e.g. `http://localhost:8081/v1`) and forge applies its guardrails transparently — the client thinks it's talking to a smarter model.
 
-This is the path for **using forge with an existing harness** (opencode, Continue, aider, Cline, anything that speaks the OpenAI chat-completions schema — or Claude Code, which speaks the Anthropic Messages API). No Python rewrite. Reasoning replay defaults to `none`: Forge still captures reasoning for observability, but keeps it out of backend-facing history on later turns — the most token-efficient policy, and statistically indistinguishable from replay-all on the eval suite (see [reasoning-replay results](docs/results/raw/reasoning-replay.md)). Use `--reasoning-replay keep-last` to replay only the latest reasoning block, or `--reasoning-replay full` for the historical replay-all behavior.
+This is the path for **using forge with an existing harness** (opencode, Continue, aider, Cline, anything that speaks the OpenAI chat-completions schema — or Claude Code, which speaks the Anthropic Messages API). No Python rewrite. Reasoning replay defaults to `none`: Forge captures reasoning for observability but does not resend it in backend-facing history, avoiding those repeated input tokens. Replay benefits are model-dependent; see the [reasoning-replay results](docs/results/raw/reasoning-replay.md). Use `--reasoning-replay keep-last` to replay all reasoning in the last reasoning-bearing assistant turn, or `--reasoning-replay full` to replay all eligible reasoning.
 
 ```bash
 # External llama-server — you manage the backend, forge proxies it
@@ -204,7 +207,7 @@ On tool-bearing inference requests, forge applies (in order):
 
 1. **Response validation** — each tool call in the model's response is checked against the `tools` array in the request. Calls to unknown tool names or with malformed shapes are caught before the response returns to your client.
 2. **Rescue parsing** — when the model emits tool calls in the wrong format (JSON in a code fence, Mistral's `[TOOL_CALLS]name{args}`, Qwen's `<tool_call>...</tool_call>` XML), forge extracts the structured call and re-emits it in the canonical OpenAI `tool_calls` schema. Biggest practical lift for Mistral-family models.
-3. **Retry loop with error tracking** — if validation fails, forge retries inference up to `--max-retries` (default 3) with a corrective tool-result message on the canonical channel, rather than returning a malformed response. From your client's perspective the proxy looks like a single request that just took a few extra ms.
+3. **Retry loop with error tracking** — if validation fails, forge retries inference up to `--max-retries` (default 3): bare-text failures receive a user-role correction, while unknown tools and malformed arguments receive correlated tool-result errors. From your client's perspective this remains one request, with the latency of any additional inference attempts.
 4. **Optional synthetic `respond` tool injection** — `--inject-respond-tool` opts into a synthetic `respond` tool when tools are present. It defaults off. When enabled, the call is stripped from the outbound response and becomes normal text. See [ADR-013](docs/decisions/013-text-response-intent.md) for the rationale.
 
 Tool-free requests bypass validation, rescue, and retry and go directly to the
@@ -311,6 +314,39 @@ python -m tests.eval.report eval_results.jsonl --html docs/results/dashboard.htm
 python -m tests.eval.report eval_results.jsonl --markdown docs/results/
 ```
 
+## Runner history and callbacks
+
+`WorkflowRunner` uses `ConversationState` internally and accepts only
+`initial_messages: list[RichMessage]`. Supplied seeds are shallow-list copied,
+replace the fresh system/user pair, and are not emitted again. String seeds,
+legacy `Message` values and the removed `ToolCall`/`TextResponse` imports are
+an intentional Python API break.
+
+```python
+from forge import RichMessage, MessageRole, TextPart, ToolCallPart, ToolResultPart
+
+new_messages = []
+runner = WorkflowRunner(client, ctx, on_message=new_messages.append)
+seed = [RichMessage(MessageRole.SYSTEM, [TextPart("Use the workflow tools.")]),
+        RichMessage(MessageRole.USER, [TextPart("Do the task.")])]
+value = await runner.run(workflow, "Do the task.", initial_messages=seed)
+for message in new_messages:
+    for part in message.parts:
+        if isinstance(part, ToolCallPart):
+            print(part.name, part.arguments, part.call_id)
+        elif isinstance(part, ToolResultPart):
+            print(part.call_id, part.outcome, [text.text for text in part.content])
+```
+
+Shared inference records each assistant reply once, including its ordered
+visible text, reasoning and calls. Runner callbacks receive that same reply,
+then correlated execution results or purpose-marked corrections. Transient
+`forge_purpose == "context_warning"` events are not persistent history.
+`on_chunk` receives streamed `FINAL` before reply delivery or execution.
+The terminal return is the handler's actual Python value; successful non-string
+values are represented as JSON text in model-visible results.
+See [the migration and multi-turn guide](docs/USER_GUIDE.md#multi-turn-conversations).
+
 ## Project Structure
 
 ```
@@ -319,9 +355,9 @@ src/forge/
   errors.py            # ForgeError hierarchy
   server.py            # setup_backend(), ServerManager, BudgetMode
   core/
-    messages.py        # Message, MessageRole, MessageType, MessageMeta
-    workflow.py        # ToolSpec, ToolDef, ToolCall, TextResponse, Workflow
-    inference.py       # run_inference() — shared front half (compact, fold, validate, retry)
+    messages.py        # ConversationState, RichMessage, ordered typed parts
+    workflow.py        # ToolDefinition, Workflow, separate execution registries
+    inference.py       # run_inference() — shared front half (compact, render, validate, record, retry)
     runner.py          # WorkflowRunner — the agentic loop
     slot_worker.py     # SlotWorker — priority-queued slot access
     steps.py           # StepTracker
@@ -346,7 +382,7 @@ src/forge/
     templates.py       # Tool prompt builders (prompt-injected path)
     nudges.py          # Retry and step-enforcement nudge templates
   tools/
-    respond.py         # Synthetic respond tool (respond_tool(), respond_spec())
+    respond.py         # Synthetic respond tool (respond_definition(), respond())
   proxy/
     __main__.py        # CLI entry point: python -m forge.proxy
     proxy.py           # ProxyServer — programmatic start/stop API
@@ -360,8 +396,9 @@ tests/
 
 ## Documentation
 
+- [Canonical Primitives Migration](docs/MIGRATING_CANONICAL_PRIMITIVES.md) — No Proxy setup changes; Python API replacements and before/after examples
 - [Forge Proxy Installation](docs/PROXY_INSTALLATION.md) — Standalone platform installation, profiles, updates, recovery, and uninstall
-- [User Guide](docs/USER_GUIDE.md) — Usage patterns, multi-turn, context management, guardrails, slot worker, long-running session advisory
+- [User Guide](docs/USER_GUIDE.md) — Usage patterns, multi-turn, context management, guardrails, slot worker, persistent sessions
 - [Model Guide](docs/MODEL_GUIDE.md) — Which model and backend for your hardware
 - [Backend Setup](docs/BACKEND_SETUP.md) — Backend installation and server setup
 - [Eval Guide](docs/EVAL_GUIDE.md) — Eval harness CLI reference, batch eval

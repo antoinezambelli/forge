@@ -8,7 +8,8 @@ from datetime import datetime, timezone
 
 from forge.context.observations import ContextUsage
 from forge.context.strategies import CompactStrategy, NoCompact
-from forge.core.messages import Message
+from forge.core.messages import ConversationState
+from forge.context.accounting import estimate_content_tokens
 
 
 @dataclass(frozen=True)
@@ -96,7 +97,9 @@ class ContextManager:
         self.strategy = strategy
         self.budget_tokens = budget_tokens
         self.on_compact = on_compact
-        self._context_thresholds = sorted(context_thresholds) if context_thresholds else []
+        self._context_thresholds = (
+            sorted(context_thresholds) if context_thresholds else []
+        )
         self._on_context_threshold = on_context_threshold
         self._fired_thresholds: set[float] = set()
         self._usage: ContextUsage | None = None
@@ -138,18 +141,20 @@ class ContextManager:
         if total_tokens < 0:
             self.invalidate_usage()
             return
-        self.record_usage(ContextUsage(
-            current_usage_tokens=total_tokens,
-            observed_at=datetime.now(timezone.utc),
-        ))
+        self.record_usage(
+            ContextUsage(
+                current_usage_tokens=total_tokens,
+                observed_at=datetime.now(timezone.utc),
+            )
+        )
 
-    def estimate_tokens(self, messages: list[Message]) -> int:
+    def estimate_tokens(self, messages: ConversationState) -> int:
         """Return actual token count if available, else char/4 heuristic."""
         if self._usage is not None:
             return self._usage.current_usage_tokens
-        return sum(len(m.content) for m in messages) // 4
+        return estimate_content_tokens(messages)
 
-    def check_thresholds(self, messages: list[Message]) -> str | None:
+    def check_thresholds(self, messages: ConversationState) -> str | None:
         """Check context thresholds and return an optional warning to inject.
 
         Fires the ``on_context_threshold`` callback when usage crosses a
@@ -189,10 +194,10 @@ class ContextManager:
 
     def maybe_compact(
         self,
-        messages: list[Message],
+        messages: ConversationState,
         step_index: int = 0,
         step_hint: str = "",
-    ) -> list[Message]:
+    ) -> ConversationState:
         """Delegate to the strategy, which owns threshold logic."""
         if self.budget_tokens is None:
             return messages
@@ -222,8 +227,8 @@ class ContextManager:
                 tokens_before=tokens_before,
                 tokens_after=tokens_after,
                 budget_tokens=self.budget_tokens,
-                messages_before=len(messages),
-                messages_after=len(result),
+                messages_before=len(messages.messages),
+                messages_after=len(result.messages),
                 phase_reached=phase,
             )
             self.on_compact(event)

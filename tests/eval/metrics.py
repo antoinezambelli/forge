@@ -2,13 +2,16 @@
 
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
-from forge.core.inference import fold_and_serialize
-from forge.core.messages import Message, MessageRole, MessageType
-from forge.core.reasoning import ReasoningReplay
+from forge.core.messages import (
+    RichMessage,
+    MessageRole,
+    ReasoningPart,
+    ToolCallPart,
+    ToolResultPart,
+)
 
 if TYPE_CHECKING:
     from tests.eval.eval_runner import RunResult
@@ -30,71 +33,28 @@ class HistoryStats:
     reasoning_messages: int = 0
 
 
-def analyze_history(messages: list[Message]) -> HistoryStats:
-    """Extract stats from a run's message history."""
+def analyze_history(messages: list[RichMessage]) -> HistoryStats:
+    """Count typed parts, keeping callable failures distinct from corrections."""
     stats = HistoryStats()
     for msg in messages:
-        match msg.metadata.type:
-            case MessageType.TOOL_CALL:
+        if msg.forge_purpose in {"retry", "unknown_tool", "tool_arg_validation"}:
+            stats.retry_nudges += 1
+        elif msg.forge_purpose == "step":
+            stats.step_nudges += 1
+        for part in msg.parts:
+            if msg.role == MessageRole.ASSISTANT and isinstance(part, ToolCallPart):
                 stats.total_tool_calls += 1
-                # Extract tool name from "[tool_call] name({...})"
-                content = msg.content
-                if content.startswith("[tool_call] "):
-                    name = content[len("[tool_call] "):].split("(", 1)[0]
-                    stats.unique_tools_called.add(name)
-            case MessageType.RETRY_NUDGE:
-                stats.retry_nudges += 1
-            case MessageType.STEP_NUDGE:
-                stats.step_nudges += 1
-            case MessageType.TOOL_RESULT:
-                if "[ToolError]" in msg.content:
-                    stats.tool_errors += 1
-            case MessageType.REASONING:
+                stats.unique_tools_called.add(part.name)
+            elif msg.role == MessageRole.ASSISTANT and isinstance(part, ReasoningPart):
                 stats.reasoning_messages += 1
+            elif (
+                isinstance(part, ToolResultPart)
+                and part.outcome == "error"
+                and msg.forge_purpose is None
+            ):
+                if any("[ToolError]" in text.text for text in part.content):
+                    stats.tool_errors += 1
     return stats
-
-
-def count_wire_reasoning(
-    messages: list[Message],
-    reasoning_replay: ReasoningReplay,
-    api_format: str = "openai",
-) -> tuple[int, int]:
-    """Count reasoning messages whose text actually survives onto the backend wire.
-
-    This is an *independent* validation of the reasoning-replay knob, not a
-    reimplementation of it: we serialize the recorded transcript through the
-    real production serializer (``fold_and_serialize`` — the single replay-policy
-    choke point) and then check which of the run's REASONING contents are present
-    in the resulting payload. Returns ``(survived, total)``.
-
-    Expected by policy on a transcript with N>0 reasoning messages:
-      * ``none``      -> survived == 0   (knob strips all reasoning from the wire)
-      * ``keep-last`` -> survived == 1   (only the final reasoning is folded)
-      * ``full``      -> survived == N   (every reasoning is folded, legacy behavior)
-
-    Semantics note: this re-derives the *final-snapshot* wire payload, so for
-    ``keep-last`` it reflects the last reasoning in the completed history, not the
-    cumulative count sent turn-by-turn. ``none``==0 is exact for every prefix
-    because the drop is unconditional. Reasoning survival is independent of
-    ``api_format`` (the drop happens before ``to_api_dict``), so the default is fine.
-    """
-    reasoning_texts = [
-        m.content
-        for m in messages
-        if m.metadata.type == MessageType.REASONING
-        and m.role == MessageRole.ASSISTANT
-        and m.content
-    ]
-    total = len(reasoning_texts)
-    if total == 0:
-        return 0, 0
-    wire = fold_and_serialize(messages, api_format, reasoning_replay=reasoning_replay)
-    blob = json.dumps(wire, ensure_ascii=False)
-    survived = sum(1 for text in reasoning_texts if text in blob)
-    return survived, total
-
-
-# ── Aggregated metrics ───────────────────────────────────────────
 
 
 @dataclass

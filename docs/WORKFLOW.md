@@ -9,17 +9,17 @@ Visual guide to the forge agentic tool-calling loop.
 **Entry Point:** `WorkflowRunner.run()` in `src/forge/core/runner.py`
 
 **Critical Files:**
-- `src/forge/core/inference.py` - run_inference() — shared "front half" (compact, fold, validate, retry)
+- `src/forge/core/inference.py` - run_inference() — shared "front half" (compact, render, validate, record, retry)
 - `src/forge/core/runner.py` - Agentic loop "back half" (step enforcement, tool execution, terminal check)
-- `src/forge/core/workflow.py` - Workflow, ToolSpec, ToolCall, TextResponse
-- `src/forge/core/messages.py` - Message, MessageRole, MessageType, MessageMeta
+- `src/forge/core/workflow.py` - Workflow, ToolDefinition, separate handlers/prerequisites
+- `src/forge/core/messages.py` - ConversationState, RichMessage, typed parts
 - `src/forge/core/steps.py` - StepTracker (used internally by StepEnforcer)
 - `src/forge/guardrails/` - Composable middleware (ResponseValidator, StepEnforcer, ErrorTracker, Nudge)
 - `src/forge/context/manager.py` - ContextManager, CompactEvent
 - `src/forge/context/strategies.py` - TieredCompact (3-phase compaction)
 - `src/forge/clients/base.py` - LLMClient protocol
 - `src/forge/server.py` - ServerManager, BudgetMode, setup_backend()
-- `src/forge/tools/respond.py` - Synthetic respond tool (respond_tool(), respond_spec())
+- `src/forge/tools/respond.py` - Synthetic respond tool (respond_definition(), respond())
 - `src/forge/prompts/nudges.py` - Retry, unknown-tool, and step nudges
 - `src/forge/prompts/templates.py` - Prompt-injected tool prompt, extract/rescue
 
@@ -27,140 +27,89 @@ Visual guide to the forge agentic tool-calling loop.
 
 ## Agentic Loop
 
-The core of forge. The runner delegates inference to `run_inference()` (the shared "front half" — compaction, reasoning folding, serialization, sending, validation, and retry), then handles step enforcement, tool execution, and terminal checks (the "back half"). The proxy also consumes `run_inference()` directly, sharing the same validation logic.
+Runner and Proxy use the same canonical inference lifecycle. Runner owns
+configured context management, step/prerequisite enforcement and actual handler
+execution. Proxy uses NoCompact, no warnings, no step enforcement and leaves
+execution to its client.
 
 ```mermaid
 flowchart TD
-    subgraph Init["Initialization"]
-        BUILD["Build messages:<br/>system prompt + user input<br/>(or seed from initial_messages)"]
-        GUARDS["Initialize guardrail middleware:<br/>ResponseValidator, StepEnforcer,<br/>ErrorTracker"]
-        BUILD --> GUARDS
-    end
-
-    subgraph Loop["Main Loop (up to max_iterations)"]
-        direction TB
-        CANCEL{"cancel_event<br/>set?"}
-        CANCELLED["Raise WorkflowCancelledError<br/>(messages, completed_steps, iteration)"]
-        COMPACT["3a. ContextManager.maybe_compact()"]
-        SEND["3b. Fold REASONING into next TOOL_CALL content,<br/>serialize & send to LLM (stream or batch)"]
-        CHECK{"list[ToolCall] or<br/>TextResponse?"}
-
-        subgraph TextPath["ValidationResult.needs_retry Path"]
-            VALIDATE["ResponseValidator.validate()<br/>rescue + retry + unknown tool"]
-            RESCUED{"needs_retry<br/>= False?"}
-            RETRY_COUNT{"ErrorTracker<br/>retries_exhausted?"}
-            NUDGE["Emit assistant content + retry_nudge (role=user)<br/>→ next iteration"]
-            FAIL_RETRY["Raise ToolCallError"]
-        end
-
-        subgraph ToolPath["ToolCall Batch Path"]
-            KNOWN{"ResponseValidator:<br/>all tools known?"}
-            UNKNOWN_TOOL_ERROR["Emit TOOL_CALL + unknown_tool tool-error<br/>(role=tool, per blocked call)<br/>→ next iteration"]
-            TERMINAL{"StepEnforcer.check():<br/>premature terminal?"}
-            STEP_TOOL_ERROR["Emit TOOL_CALL + [StepEnforcementError] tool-error<br/>(role=tool, per blocked call)"]
-            STEP_FAIL["Raise StepEnforcementError<br/>(premature_exhausted)"]
-            PREREQ{"StepEnforcer.<br/>check_prerequisites()?"}
-            PREREQ_TOOL_ERROR["Emit TOOL_CALL + [PrereqError] tool-error<br/>(role=tool, per blocked call)<br/>→ next iteration"]
-            PREREQ_FAIL["Raise PrerequisiteError<br/>(prereq_exhausted)"]
-            EMIT["Emit REASONING (if present)<br/>+ TOOL_CALL message"]
-            EXEC_BATCH["Execute ALL tools in batch"]
-            TOOL_ERROR{"Exception type?"}
-            RESOLUTION_ERR["ToolResolutionError:<br/>feed back, don't count error,<br/>don't record step"]
-            EXEC_ERR["Other exception:<br/>feed back as [ToolError],<br/>count toward consecutive errors"]
-            TOOL_FAIL["Raise ToolExecutionError<br/>(ErrorTracker.tool_errors_exhausted)"]
-            BATCH_DONE{"Terminal tool<br/>succeeded?"}
-            RETURN["Return terminal result"]
-            RECORD["StepEnforcer.record() per success<br/>reset_premature(), reset_errors()<br/>→ next iteration"]
-        end
-
-        CANCEL -- "yes" --> CANCELLED
-        CANCEL -- "no" --> COMPACT
-        COMPACT --> SEND --> CHECK
-        CHECK -- "any response" --> VALIDATE
-        VALIDATE --> RESCUED
-
-        RESCUED -- "yes (tool_calls)" --> TERMINAL
-        RESCUED -- "no (needs_retry)" --> RETRY_COUNT
-        RETRY_COUNT -- "no" --> NUDGE
-        RETRY_COUNT -- "yes" --> FAIL_RETRY
-
-        TERMINAL -- "needs_nudge" --> STEP_TOOL_ERROR
-        TERMINAL -- "no premature" --> PREREQ
-        STEP_TOOL_ERROR -- "premature_exhausted" --> STEP_FAIL
-        PREREQ -- "needs_nudge" --> PREREQ_TOOL_ERROR
-        PREREQ -- "satisfied" --> EMIT
-        PREREQ_TOOL_ERROR -- "prereq_exhausted" --> PREREQ_FAIL
-
-        EMIT --> EXEC_BATCH
-        EXEC_BATCH --> TOOL_ERROR
-        TOOL_ERROR -- "ToolResolutionError" --> RESOLUTION_ERR
-        TOOL_ERROR -- "other Exception" --> EXEC_ERR
-        EXEC_ERR -- "tool_errors_exhausted" --> TOOL_FAIL
-        TOOL_ERROR -- "no error" --> BATCH_DONE
-        BATCH_DONE -- "yes" --> RETURN
-        BATCH_DONE -- "no" --> RECORD
-    end
-
-    Init --> CANCEL
+    SEED["Fresh rich system/user seeds or silent list of RichMessage"] --> STATE["One ConversationState"]
+    STATE --> CANCEL{"Cancelled?"}
+    CANCEL -- yes --> STOP["WorkflowCancelledError with rich history"]
+    CANCEL -- no --> INFER["Shared inference: compact, render, send, validate"]
+    INFER --> RECORD["Record assistant RichMessage once; assign call IDs"]
+    RECORD --> VALID{"Accepted?"}
+    VALID -- no --> RETRY["Correlated tool errors or user retry correction"]
+    RETRY --> BUDGET{"Attempts remain?"}
+    BUDGET -- yes --> INFER
+    BUDGET -- no --> EXHAUST["Keep final rejected reply; preserve exception or iteration exit"]
+    VALID -- yes --> GROUP["Group same reply at completed iteration; notify new messages"]
+    GROUP --> STEP{"Required steps and prerequisites satisfied?"}
+    STEP -- no --> CORRECTION["Purpose-marked correlated error results or enforcement exhaustion"]
+    CORRECTION --> CANCEL
+    STEP -- yes --> EXEC["Execute every call in original order, including after terminal"]
+    EXEC --> RESULTS["Append typed results; record successful steps; update error budget"]
+    RESULTS --> TERMINAL{"Terminal succeeded?"}
+    TERMINAL -- yes --> RETURN["Return actual Python terminal value"]
+    TERMINAL -- no --> CANCEL
 ```
 
----
+Formatting retries consume the iteration budget. Malformed arguments use the
+shared tool-error budget and never reach handlers. Callable failures retain the
+`[ToolError]` channel and recovery behavior. `ToolResolutionError` produces
+correlated error history without recording step completion or consuming the
+callable-error budget. Step/prerequisite checks block the whole batch against
+pre-batch state. A terminal handler does not bypass later handlers or post-batch
+error bookkeeping.
 
 ## Message Lifecycle
-
-Every message flows through three stages: creation (with metadata), API serialization (metadata stripped, reasoning folded), and compaction eligibility (prioritized by type).
 
 ```mermaid
 sequenceDiagram
     participant R as WorkflowRunner
-    participant M as Message
-    participant C as LLMClient
-    participant API as LLM Backend
-    participant CM as ContextManager
-
-    R->>M: Create Message(role, content, metadata)
-    Note over M: metadata: type, step_index,<br/>token_estimate
-
-    R->>R: Reasoning folding: merge standalone<br/>REASONING msg into next TOOL_CALL's<br/>content field for wire format
-
-    R->>M: to_api_dict(format)
-    Note over M: Strips metadata.<br/>format="ollama" or "openai"
-
-    M->>C: {"role": ..., "content": ...}
-    C->>API: HTTP request
-
-    API-->>C: Response (list[ToolCall] or TextResponse)
-    C-->>R: Parsed LLMResponse
-
-    R->>R: Append new Messages to history
-
-    R->>CM: maybe_compact(messages)
-    Note over CM: Check token estimate<br/>vs budget × 0.75
-
-    alt Over threshold
-        CM->>CM: CompactStrategy.compact()
-        CM->>R: Compacted messages + CompactEvent
-    else Under threshold
-        CM->>R: Messages unchanged
-    end
+    participant I as Shared inference
+    participant C as Selected client renderer/transport
+    participant E as on_chunk / on_message
+    R->>I: state, definitions, RequestMetadata, remaining attempts
+    I->>I: configured compaction and transient warnings
+    I->>C: render_request(state, definitions, metadata)
+    C-->>I: complete disposable InferenceRequest
+    I->>C: send(request) or send_stream(request)
+    C-->>I: assistant RichMessage / FINAL
+    I->>E: await on_chunk(FINAL), if streaming
+    I->>I: validate/rescue, assign IDs, append same reply once
+    I-->>R: InferenceResult with existing new_messages references
+    R->>R: accepted reply.step_index = completed iteration
+    R->>E: on_message for those existing references
+    R->>R: enforcement and execution
+    R->>E: append and emit correlated ToolResultPart messages
 ```
 
-### Message Types and Compaction Priority
+On attempt-limit or validation exhaustion, inference flushes the existing
+per-call messages to Runner callbacks, including the final rejected reply.
+No unused correction or extra attempt is added. Transport exception behavior
+is unchanged. Context warnings are callback events and outgoing-view additions,
+never persistent canonical history.
 
-Messages are tagged with `MessageType` metadata that determines their compaction priority:
+### Role, parts and purpose
 
-| MessageType | Role | Created By | Cut Order |
-|-------------|------|-----------|-----------|
-| `system_prompt` | system | Runner init | Never cut |
-| `user_input` | user | Runner init | Never cut |
-| `tool_call` | assistant | After LLM response | Never cut (all phases) |
-| `tool_result` | tool | After tool execution | Truncated P1, dropped P2 |
-| `reasoning` | assistant | Thinking models | Preserved through P2, dropped P3 |
-| `text_response` | assistant | Failed tool call attempt | Preserved through P2, dropped P3 |
-| `step_nudge` | tool | Runner step enforcement (`[StepEnforcementError]` prefix) | Dropped P1 |
-| `prerequisite_nudge` | tool | Runner prereq enforcement (`[PrereqError]` prefix) | Dropped P1 |
-| `retry_nudge` | user | Runner retry logic (bare-text rescue path) | Dropped P1 |
-| `summary` | system | Compaction output | Never cut |
+| View | Canonical representation | Owner |
+|---|---|---|
+| System/user seed | Role plus ordered `TextPart` values | Runner or supplied seed |
+| Assistant reply | One message with ordered text, reasoning and calls | Shared inference |
+| Accepted call | `ToolCallPart(name, ValidArguments(value), call_id)` | Validator/inference |
+| Invalid call | `ToolCallPart` with `InvalidArguments(received)` | Validator; never executed |
+| Execution result | `ToolResultPart(call_id, content, outcome)` | Runner |
+| Corrections | `forge_purpose`: `retry`, `unknown_tool`, `tool_arg_validation`, `step`, `prerequisite` | Inference or Runner |
+| Warning | `forge_purpose == "context_warning"` | Transient context event |
+
+`step_index` and `forge_purpose` are direct Forge control fields. There is no
+MessageType classifier or universal text projection. Display iterates ordered
+parts; metrics count individual calls/names and reasoning parts, using purpose
+and outcome/prefix to distinguish corrections from callable failures. Actual
+terminal Python values stay local; successful non-string model-visible results
+remain JSON text. Result `name` remains an applicable message extra.
 
 ---
 
@@ -170,27 +119,27 @@ TieredCompact applies three escalating phases. Each phase fires only if the prev
 
 ```mermaid
 flowchart TD
-    TRIGGER["Token estimate > budget × 0.75"]
+    TRIGGER["Token estimate >= budget × 0.75<br/>(default first-phase trigger)"]
 
     subgraph P1["Phase 1: Light"]
-        P1A["Drop all step_nudge, prerequisite_nudge, retry_nudge"]
-        P1B["Truncate old tool_results<br/>to ~200 chars"]
+        P1A["Remove eligible Forge corrections<br/>by purpose"]
+        P1B["Truncate each old ToolResultPart<br/>to 200 text chars plus notice"]
         P1A --> P1B
     end
 
     subgraph P2["Phase 2: Moderate"]
-        P2A["Drop step_nudge, prerequisite_nudge, retry_nudge"]
-        P2B["Drop old tool_results entirely"]
-        P2C["Reasoning + text_response PRESERVED"]
+        P2A["Remove eligible Forge corrections"]
+        P2B["Drop old ToolResultPart values"]
+        P2C["Assistant text, reasoning<br/>and tool-call parts PRESERVED"]
         P2A --> P2B --> P2C
     end
 
     subgraph P3["Phase 3: Emergency"]
-        P3A["Drop step_nudge, prerequisite_nudge, retry_nudge"]
-        P3B["Drop old tool_results"]
-        P3C["Drop reasoning"]
-        P3D["Drop text_response"]
-        P3E["Only tool_call messages remain<br/>in eligible window"]
+        P3A["Remove eligible Forge corrections"]
+        P3B["Drop old ToolResultPart values"]
+        P3C["Drop old assistant ReasoningPart values"]
+        P3D["Drop old assistant TextPart values"]
+        P3E["Retain tool-call parts<br/>from eligible assistant replies"]
         P3A --> P3B --> P3C --> P3D --> P3E
     end
 
@@ -211,14 +160,14 @@ flowchart TD
     style P3 fill:#ffebee
 ```
 
-**Protected window:** The `keep_recent` most recent loop iterations (default 2) are never compacted, regardless of phase. Only older messages in the eligible window are affected.
+**Protected window:** The first two messages and the `keep_recent` most recent loop iterations (default 2) are never compacted, regardless of phase. Only older messages in the eligible window are affected.
 
 ---
 
 ## Client Adapter Flow
 
 The `LLMClient` protocol abstracts backend differences. The runner never sees
-raw HTTP — it gets `list[ToolCall] | TextResponse`. Built-in adapters cover
+raw HTTP — it gets an assistant `RichMessage`. Built-in adapters cover
 generic OpenAI-compatible endpoints, Ollama, llama-server/llamafile, vLLM, and
 Anthropic. The protocol also requires an honest `get_context_length()` result
 for budget discovery (`None` when unavailable).
@@ -262,7 +211,7 @@ flowchart LR
 
         subgraph AN["AnthropicClient"]
             AN_API["api_format = 'openai'"]
-            AN_CONV["Convert OpenAI → Anthropic<br/>format before each call"]
+            AN_CONV["Render canonical state → Anthropic<br/>Messages before each call"]
         end
     end
 
@@ -290,7 +239,8 @@ sequenceDiagram
     participant API as Backend (SSE)
     participant UI as on_chunk callback
 
-    R->>C: send_stream(messages, tools)
+    R->>C: render_request(state, tools, metadata, stream=True)
+    R->>C: send_stream(request)
     C->>API: HTTP request (stream=true)
 
     loop SSE chunks
@@ -301,15 +251,16 @@ sequenceDiagram
     end
 
     C->>C: Assemble final response
-    C-->>R: StreamChunk(FINAL, response=list[ToolCall]|TextResponse)
+    C-->>R: StreamChunk(FINAL, response=RichMessage)
 
-    alt Malformed stream
-        C->>C: Internal retry (stream_retries++)
-        C-->>R: StreamChunk(RETRY)
-        Note over R,UI: UI discards partial output
-        C->>API: Re-send request
-    end
 ```
+
+The diagram shows a successful stream. A stream ending without FINAL raises
+`StreamError`; built-in clients do not automatically resend that request.
+`RETRY` remains available for custom adapters that implement retry behavior,
+and consumers should discard failed-attempt partial output when it is emitted.
+The eval harness can retry a whole run separately; that is not a built-in
+client transport retry.
 
 ---
 
@@ -383,8 +334,8 @@ flowchart TB
     subgraph forge["src/forge/"]
         subgraph core["core/"]
             RUNNER["runner.py<br/>WorkflowRunner"]
-            WORKFLOW["workflow.py<br/>Workflow, ToolSpec,<br/>ToolCall, TextResponse"]
-            MESSAGES["messages.py<br/>Message, MessageMeta"]
+            WORKFLOW["workflow.py<br/>Workflow, ToolDefinition,<br/>handlers, prerequisites"]
+            MESSAGES["messages.py<br/>ConversationState, RichMessage"]
             STEPTRACK["steps.py<br/>StepTracker"]
         end
 
@@ -452,51 +403,35 @@ flowchart TB
 Workflow
 ├── name: str
 ├── description: str
-├── tools: dict[str, ToolDef]          # keyed by tool name
+├── tools: dict[str, ToolDefinition]   # ordered model-visible definitions
+├── handlers: dict[str, Callable]      # execution keyed by tool name
+├── prerequisites: dict[str, list]     # conditional dependencies keyed by name
 ├── required_steps: list[str]          # must be called before terminal
 ├── terminal_tool: str | list[str]     # tool(s) that end the workflow
 ├── terminal_tools: frozenset[str]     # normalized (init=False)
 └── system_prompt_template: str        # may contain {placeholders}
 
-ToolDef
-├── spec: ToolSpec
-├── callable: Callable[..., Any]
-└── prerequisites: list[str | dict]   # conditional dependencies (default [])
-
-ToolSpec
+ToolDefinition
 ├── name: str
-├── description: str
-└── parameters: type[BaseModel]        # dynamic Pydantic model (from_json_schema)
-
-ToolCall
-├── tool: str
-├── args: dict[str, Any]
-└── reasoning: str | None              # chain-of-thought (thinking models)
-
-TextResponse
-└── content: str                       # non-tool-call output
+├── description: str                   # defaults to empty string
+├── input_schema: dict                 # complete schema
+└── extra_fields: dict                 # applicable function-tool extras
 ```
 
-### Message Types (`src/forge/core/messages.py`)
+### Canonical History (`src/forge/core/messages.py`)
 
+```text
+ConversationState(messages: list[RichMessage])
+RichMessage(role, parts, step_index=None, forge_purpose=None, extra_fields={})
+TextPart(text, extra_fields={})
+ReasoningPart(text, extra_fields={}, field_name=None)
+ToolCallPart(name, arguments: ValidArguments | InvalidArguments, call_id="")
+ToolResultPart(call_id, content: list[TextPart], outcome="success")
 ```
-ToolCallInfo (frozen)
-├── name: str
-├── args: dict[str, Any]
-└── call_id: str
 
-Message
-├── role: MessageRole                  # system, user, assistant, tool
-├── content: str
-├── metadata: MessageMeta
-│   ├── type: MessageType              # compaction priority tag
-│   ├── step_index: int | None
-│   ├── original_type: MessageType | None
-│   └── token_estimate: int | None
-├── tool_name: str | None              # for role="tool" results
-├── tool_call_id: str | None           # OpenAI-format correlation
-└── tool_calls: list[ToolCallInfo] | None  # for assistant tool calls (1+ entries)
-```
+Backend replies, callbacks and supplied seeds all use this surface. See the
+[Python migration examples](USER_GUIDE.md#multi-turn-conversations) for concrete
+old-to-new authoring and callback operations.
 
 ### Streaming Types (`src/forge/clients/base.py`)
 
@@ -504,7 +439,7 @@ Message
 StreamChunk
 ├── type: ChunkType                    # TEXT_DELTA, TOOL_CALL_DELTA, FINAL, RETRY
 ├── content: str                       # partial text for deltas
-└── response: LLMResponse | None       # only set when type == FINAL
+└── response: RichMessage | None       # only set when type == FINAL
 ```
 
 ---

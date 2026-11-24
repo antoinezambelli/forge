@@ -1,13 +1,14 @@
-"""Tests for proxy HTTP server."""
+from forge.clients.replies import text_reply
+from tests.canonical import assistant, call
+from tests.conftest import MockClient
 
+"""Tests for proxy HTTP server."""
 import asyncio
 import gzip
 import json
 from datetime import datetime, timezone
-
 import pytest
 from unittest.mock import AsyncMock, MagicMock
-
 import forge.proxy.server as server_module
 from forge._backend_profiles import (
     ClientAdapter,
@@ -20,18 +21,19 @@ from forge.clients.base import TokenUsage
 from forge.context.manager import ContextManager
 from forge.context.observations import ContextSession, ContextUsage
 from forge.context.strategies import NoCompact
-from forge.core.workflow import TextResponse, ToolCall
 from forge.errors import BackendError
 from forge.proxy.handler import LazyDiscovery, RequestFacts
 from forge.proxy.server import HTTPServer
 
 
-# ── Helpers ──────────────────────────────────────────────────
-
-
 def _mock_client(response):
     """Create a mock LLMClient that returns the given response."""
     client = AsyncMock()
+    client.render_request = MagicMock(
+        side_effect=lambda state, tools, metadata, **kw: MockClient.render_request(
+            client, state, tools, metadata, **kw
+        )
+    )
     client.api_format = "ollama"
     client.model = "mock-model"
     client.send = AsyncMock(return_value=response)
@@ -51,18 +53,16 @@ async def server_factory():
             context_manager=ctx,
             client_adapter=ClientAdapter.LLAMAFILE,
             host="127.0.0.1",
-            port=0,  # OS picks a free port
+            port=0,
             serialize_requests=serialize,
         )
         await srv.start()
-        # Get the actual port from the server
         sock = srv._server.sockets[0]
         port = sock.getsockname()[1]
         servers.append(srv)
-        return srv, port
+        return (srv, port)
 
     yield _make
-
     for srv in servers:
         await srv.stop()
 
@@ -74,35 +74,20 @@ async def _http_request(port, method, path, body=None):
         if body is not None:
             body_bytes = json.dumps(body).encode()
             request = (
-                f"{method} {path} HTTP/1.1\r\n"
-                f"Host: 127.0.0.1:{port}\r\n"
-                f"Content-Type: application/json\r\n"
-                f"Content-Length: {len(body_bytes)}\r\n"
-                f"\r\n"
-            ).encode() + body_bytes
+                f"{method} {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nContent-Type: application/json\r\nContent-Length: {len(body_bytes)}\r\n\r\n".encode()
+                + body_bytes
+            )
         else:
-            request = (
-                f"{method} {path} HTTP/1.1\r\n"
-                f"Host: 127.0.0.1:{port}\r\n"
-                f"\r\n"
-            ).encode()
-
+            request = f"{method} {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\n\r\n".encode()
         writer.write(request)
         await writer.drain()
-
-        # Read response
         response_data = await asyncio.wait_for(reader.read(65536), timeout=10.0)
         response_str = response_data.decode("utf-8", errors="replace")
-
-        # Parse status line
         lines = response_str.split("\r\n")
         status = int(lines[0].split(" ", 2)[1])
-
-        # Find body (after blank line)
         body_start = response_str.find("\r\n\r\n")
-        response_body = response_str[body_start + 4:] if body_start >= 0 else ""
-
-        return status, response_body
+        response_body = response_str[body_start + 4 :] if body_start >= 0 else ""
+        return (status, response_body)
     finally:
         writer.close()
         await writer.wait_closed()
@@ -112,14 +97,8 @@ async def _raw_http_response(port, method, path, header_lines=()):
     """Send a bodyless request and return status, headers, and exact bytes."""
     reader, writer = await asyncio.open_connection("127.0.0.1", port)
     try:
-        extra = "".join(f"{line}\r\n" for line in header_lines)
-        writer.write(
-            (
-                f"{method} {path} HTTP/1.1\r\n"
-                f"Host: 127.0.0.1:{port}\r\n"
-                f"{extra}\r\n"
-            ).encode()
-        )
+        extra = "".join((f"{line}\r\n" for line in header_lines))
+        writer.write(f"{method} {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\n{extra}\r\n".encode())
         await writer.drain()
         data = await asyncio.wait_for(reader.read(65536), timeout=10.0)
         head, _, body = data.partition(b"\r\n\r\n")
@@ -129,7 +108,7 @@ async def _raw_http_response(port, method, path, header_lines=()):
             name.lower(): value.strip()
             for name, value in (line.split(":", 1) for line in lines[1:] if ":" in line)
         }
-        return status, headers, body
+        return (status, headers, body)
     finally:
         writer.close()
         await writer.wait_closed()
@@ -170,20 +149,23 @@ async def metadata_pair_factory():
             if delay:
                 await asyncio.sleep(delay)
             status, response_headers, body = responses.get(
-                target,
-                (404, {"Content-Type": "text/plain"}, b"backend-miss"),
+                target, (404, {"Content-Type": "text/plain"}, b"backend-miss")
             )
-            reason = {200: "OK", 401: "Unauthorized", 403: "Forbidden", 404: "Not Found", 503: "Service Unavailable"}.get(status, "Result")
+            reason = {
+                200: "OK",
+                401: "Unauthorized",
+                403: "Forbidden",
+                404: "Not Found",
+                503: "Service Unavailable",
+            }.get(status, "Result")
             header_block = "".join(
-                f"{name}: {value}\r\n" for name, value in response_headers.items()
+                (f"{name}: {value}\r\n" for name, value in response_headers.items())
             )
             writer.write(
-                (
-                    f"HTTP/1.1 {status} {reason}\r\n"
-                    f"{header_block}"
-                    f"Content-Length: {len(body)}\r\n"
-                    "Connection: close\r\n\r\n"
-                ).encode("latin-1") + body
+                f"HTTP/1.1 {status} {reason}\r\n{header_block}Content-Length: {len(body)}\r\nConnection: close\r\n\r\n".encode(
+                    "latin-1"
+                )
+                + body
             )
             await writer.drain()
             writer.close()
@@ -191,9 +173,9 @@ async def metadata_pair_factory():
 
         backend = await asyncio.start_server(handle_backend, "127.0.0.1", 0)
         backend_port = backend.sockets[0].getsockname()[1]
-        client = client or _mock_client(TextResponse(content="ok"))
+        client = client or _mock_client(text_reply("ok"))
         context_manager = context_manager or ContextManager(
-            strategy=NoCompact(), budget_tokens=8192,
+            strategy=NoCompact(), budget_tokens=8192
         )
         proxy = HTTPServer(
             client=client,
@@ -210,22 +192,17 @@ async def metadata_pair_factory():
             mount_root=f"http://127.0.0.1:{backend_port}{mount_suffix}",
             backend_api_key=static_key,
             timeout=timeout,
-            private_catalog_url=(
-                f"http://127.0.0.1:{backend_port}{mount_suffix}/v1/models"
-                if lazy_discovery is not None
-                else None
-            ),
-            catalog_parser=(
-                parse_vllm_model_catalog if lazy_discovery is not None else None
-            ),
+            private_catalog_url=f"http://127.0.0.1:{backend_port}{mount_suffix}/v1/models"
+            if lazy_discovery is not None
+            else None,
+            catalog_parser=parse_vllm_model_catalog if lazy_discovery is not None else None,
         )
         await proxy.start()
         proxy_port = proxy._server.sockets[0].getsockname()[1]
         resources.append((proxy, backend))
-        return proxy, proxy_port, requests, client, context_manager
+        return (proxy, proxy_port, requests, client, context_manager)
 
     yield _make
-
     for proxy, backend in resources:
         await proxy.stop()
         backend.close()
@@ -238,26 +215,18 @@ async def _sse_request(port, body):
     try:
         body_bytes = json.dumps(body).encode()
         request = (
-            f"POST /v1/chat/completions HTTP/1.1\r\n"
-            f"Host: 127.0.0.1:{port}\r\n"
-            f"Content-Type: application/json\r\n"
-            f"Content-Length: {len(body_bytes)}\r\n"
-            f"\r\n"
-        ).encode() + body_bytes
-
+            f"POST /v1/chat/completions HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nContent-Type: application/json\r\nContent-Length: {len(body_bytes)}\r\n\r\n".encode()
+            + body_bytes
+        )
         writer.write(request)
         await writer.drain()
-
         response_data = await asyncio.wait_for(reader.read(65536), timeout=10.0)
         response_str = response_data.decode("utf-8", errors="replace")
-
-        # Extract SSE data lines from chunked transfer encoding
         data_lines = []
         for line in response_str.split("\n"):
             line = line.strip()
             if line.startswith("data: "):
                 data_lines.append(line[6:])
-
         return data_lines
     finally:
         writer.close()
@@ -265,7 +234,7 @@ async def _sse_request(port, body):
 
 
 async def _anthropic_backend_server(model):
-    client = _mock_client(TextResponse(content="ok"))
+    client = _mock_client(text_reply("ok"))
     client.model = model
     ctx = ContextManager(strategy=NoCompact(), budget_tokens=8192)
     srv = HTTPServer(
@@ -278,16 +247,13 @@ async def _anthropic_backend_server(model):
         backend_protocol="anthropic",
     )
     await srv.start()
-    return srv, srv._server.sockets[0].getsockname()[1], client
-
-
-# ── Health & Models ──────────────────────────────────────────
+    return (srv, srv._server.sockets[0].getsockname()[1], client)
 
 
 class TestHealthAndModels:
     @pytest.mark.asyncio
     async def test_forge_health_is_exact_local_response(self, server_factory):
-        srv, port = await server_factory(TextResponse(content=""))
+        srv, port = await server_factory(text_reply(""))
         status, headers, body = await _raw_http_response(port, "GET", "/forge/health")
         assert status == 200
         assert headers["content-type"] == "application/json"
@@ -295,57 +261,50 @@ class TestHealthAndModels:
 
     @pytest.mark.asyncio
     async def test_old_health_without_courier_is_not_synthetic(self, server_factory):
-        srv, port = await server_factory(TextResponse(content=""))
+        srv, port = await server_factory(text_reply(""))
         status, _ = await _http_request(port, "GET", "/health")
         assert status == 502
 
     @pytest.mark.asyncio
     async def test_not_found(self, server_factory):
-        srv, port = await server_factory(TextResponse(content=""))
+        srv, port = await server_factory(text_reply(""))
         status, body = await _http_request(port, "GET", "/nonexistent")
         assert status == 404
 
     @pytest.mark.asyncio
     async def test_cors_preflight(self, server_factory):
-        srv, port = await server_factory(TextResponse(content=""))
+        srv, port = await server_factory(text_reply(""))
         status, _ = await _http_request(port, "OPTIONS", "/v1/chat/completions")
         assert status == 204
-
-
-# ── Chat Completions ────────────────────────────────────────
 
 
 class TestChatCompletions:
     @pytest.mark.asyncio
     async def test_no_tools_text_response(self, server_factory):
-        srv, port = await server_factory(TextResponse(content="Hello!"))
+        srv, port = await server_factory(text_reply("Hello!"))
         body = {"messages": [{"role": "user", "content": "hi"}]}
-        status, response_body = await _http_request(
-            port, "POST", "/v1/chat/completions", body,
-        )
+        status, response_body = await _http_request(port, "POST", "/v1/chat/completions", body)
         assert status == 200
         data = json.loads(response_body)
         assert data["choices"][0]["message"]["content"] == "Hello!"
 
     @pytest.mark.asyncio
     async def test_tool_call_response(self, server_factory):
-        srv, port = await server_factory(
-            [ToolCall(tool="search", args={"q": "test"})],
-        )
+        srv, port = await server_factory(assistant(call(name="search", arguments={"q": "test"})))
         body = {
             "messages": [{"role": "user", "content": "search for test"}],
-            "tools": [{
-                "type": "function",
-                "function": {
-                    "name": "search",
-                    "description": "Search",
-                    "parameters": {"type": "object", "properties": {}},
-                },
-            }],
+            "tools": [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "search",
+                        "description": "Search",
+                        "parameters": {"type": "object", "properties": {}},
+                    },
+                }
+            ],
         }
-        status, response_body = await _http_request(
-            port, "POST", "/v1/chat/completions", body,
-        )
+        status, response_body = await _http_request(port, "POST", "/v1/chat/completions", body)
         assert status == 200
         data = json.loads(response_body)
         tc = data["choices"][0]["message"]["tool_calls"]
@@ -354,17 +313,14 @@ class TestChatCompletions:
 
     @pytest.mark.asyncio
     async def test_invalid_json_returns_400(self, server_factory):
-        srv, port = await server_factory(TextResponse(content=""))
+        srv, port = await server_factory(text_reply(""))
         reader, writer = await asyncio.open_connection("127.0.0.1", port)
         try:
             bad_body = b"not json"
             request = (
-                f"POST /v1/chat/completions HTTP/1.1\r\n"
-                f"Host: 127.0.0.1:{port}\r\n"
-                f"Content-Type: application/json\r\n"
-                f"Content-Length: {len(bad_body)}\r\n"
-                f"\r\n"
-            ).encode() + bad_body
+                f"POST /v1/chat/completions HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nContent-Type: application/json\r\nContent-Length: {len(bad_body)}\r\n\r\n".encode()
+                + bad_body
+            )
             writer.write(request)
             await writer.drain()
             response_data = await asyncio.wait_for(reader.read(65536), timeout=10.0)
@@ -375,16 +331,10 @@ class TestChatCompletions:
 
     @pytest.mark.asyncio
     async def test_invalid_content_length_returns_400(self, server_factory):
-        srv, port = await server_factory(TextResponse(content=""))
+        srv, port = await server_factory(text_reply(""))
         reader, writer = await asyncio.open_connection("127.0.0.1", port)
         try:
-            request = (
-                f"POST /v1/chat/completions HTTP/1.1\r\n"
-                f"Host: 127.0.0.1:{port}\r\n"
-                f"Content-Type: application/json\r\n"
-                f"Content-Length: abc\r\n"
-                f"\r\n"
-            ).encode()
+            request = f"POST /v1/chat/completions HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nContent-Type: application/json\r\nContent-Length: abc\r\n\r\n".encode()
             writer.write(request)
             await writer.drain()
             response_data = await asyncio.wait_for(reader.read(65536), timeout=10.0)
@@ -395,57 +345,42 @@ class TestChatCompletions:
 
     @pytest.mark.asyncio
     async def test_non_object_body_returns_400(self, server_factory):
-        srv, port = await server_factory(TextResponse(content=""))
-        # Valid JSON but not an object (array) must be rejected before the
-        # handler calls body.get(...), which would otherwise raise.
-        status, _ = await _http_request(
-            port, "POST", "/v1/chat/completions", body=[1, 2, 3]
-        )
+        srv, port = await server_factory(text_reply(""))
+        status, _ = await _http_request(port, "POST", "/v1/chat/completions", body=[1, 2, 3])
         assert status == 400
-
-
-# ── SSE Streaming ───────────────────────────────────────────
 
 
 class TestSSEStreaming:
     @pytest.mark.asyncio
     async def test_streaming_text_response(self, server_factory):
-        srv, port = await server_factory(TextResponse(content="Hello!"))
-        body = {
-            "messages": [{"role": "user", "content": "hi"}],
-            "stream": True,
-        }
+        srv, port = await server_factory(text_reply("Hello!"))
+        body = {"messages": [{"role": "user", "content": "hi"}], "stream": True}
         data_lines = await _sse_request(port, body)
-        # Should have content events and [DONE]
         assert "[DONE]" in data_lines
         json_events = [json.loads(d) for d in data_lines if d != "[DONE]"]
         assert len(json_events) > 0
 
     @pytest.mark.asyncio
     async def test_streaming_tool_call(self, server_factory):
-        srv, port = await server_factory(
-            [ToolCall(tool="search", args={"q": "x"})],
-        )
+        srv, port = await server_factory(assistant(call(name="search", arguments={"q": "x"})))
         body = {
             "messages": [{"role": "user", "content": "go"}],
-            "tools": [{
-                "type": "function",
-                "function": {
-                    "name": "search",
-                    "description": "Search",
-                    "parameters": {"type": "object", "properties": {}},
-                },
-            }],
+            "tools": [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "search",
+                        "description": "Search",
+                        "parameters": {"type": "object", "properties": {}},
+                    },
+                }
+            ],
             "stream": True,
         }
         data_lines = await _sse_request(port, body)
         assert "[DONE]" in data_lines
         json_events = [json.loads(d) for d in data_lines if d != "[DONE]"]
-        # Should have tool call deltas
-        has_tool_call = any(
-            "tool_calls" in e["choices"][0].get("delta", {})
-            for e in json_events
-        )
+        has_tool_call = any(("tool_calls" in e["choices"][0].get("delta", {}) for e in json_events))
         assert has_tool_call
 
 
@@ -460,10 +395,7 @@ class TestMissingAnthropicModel:
                 port,
                 "POST",
                 path,
-                {
-                    "messages": [{"role": "user", "content": "hi"}],
-                    "stream": stream,
-                },
+                {"messages": [{"role": "user", "content": "hi"}], "stream": stream},
             )
             assert status == 400
             assert "No model was supplied" in body
@@ -476,20 +408,21 @@ class TestMissingAnthropicModel:
 
 @pytest.mark.asyncio
 async def test_usage_route_is_empty_then_emits_exact_local_snapshot(server_factory):
-    srv, port = await server_factory(TextResponse(content="ok"))
+    srv, port = await server_factory(text_reply("ok"))
     status, headers, body = await _raw_http_response(port, "GET", "/forge/usage")
     assert status == 204
     assert headers["content-length"] == "0"
     assert body == b""
-
-    srv._context_manager.record_published_usage(ContextUsage(
-        current_usage_tokens=300,
-        context_window_tokens=200,
-        model="model-a",
-        context_window_source="backend_metadata",
-        observed_at=datetime(2026, 8, 6, 18, 42, 17, tzinfo=timezone.utc),
-        session=ContextSession("opaque", "claude_code"),
-    ))
+    srv._context_manager.record_published_usage(
+        ContextUsage(
+            current_usage_tokens=300,
+            context_window_tokens=200,
+            model="model-a",
+            context_window_source="backend_metadata",
+            observed_at=datetime(2026, 8, 6, 18, 42, 17, tzinfo=timezone.utc),
+            session=ContextSession("opaque", "claude_code"),
+        )
+    )
     status, _, body = await _raw_http_response(port, "GET", "/forge/usage")
     assert status == 200
     assert json.loads(body) == {
@@ -505,11 +438,11 @@ async def test_usage_route_is_empty_then_emits_exact_local_snapshot(server_facto
 
 @pytest.mark.asyncio
 async def test_delivered_request_publishes_request_owned_usage_and_session():
-    client = _mock_client(TextResponse(content="ok"))
+    client = _mock_client(text_reply("ok"))
 
     async def send(*args, **kwargs):
         TokenUsage(25, 7, 32)
-        return TextResponse(content="ok")
+        return text_reply("ok")
 
     client.send.side_effect = send
     manager = ContextManager(NoCompact(), budget_tokens=100)
@@ -522,18 +455,21 @@ async def test_delivered_request_publishes_request_owned_usage_and_session():
         serialize_requests=False,
     )
     server._configure_context_reporting(
-        managed=False,
-        context_window_tokens=100,
-        metadata_format=MetadataFormat.NONE,
+        managed=False, context_window_tokens=100, metadata_format=MetadataFormat.NONE
     )
     await server.start()
     port = server._server.sockets[0].getsockname()[1]
     try:
-        status, _ = await _http_request(port, "POST", "/v1/chat/completions", {
-            "model": "model-a",
-            "messages": [{"role": "user", "content": "hi"}],
-            "litellm_session_id": "opaque",
-        })
+        status, _ = await _http_request(
+            port,
+            "POST",
+            "/v1/chat/completions",
+            {
+                "model": "model-a",
+                "messages": [{"role": "user", "content": "hi"}],
+                "litellm_session_id": "opaque",
+            },
+        )
         assert status == 200
         status, _, body = await _raw_http_response(port, "GET", "/forge/usage")
         assert status == 200
@@ -549,7 +485,7 @@ async def test_delivered_request_publishes_request_owned_usage_and_session():
 async def test_finalize_uses_cache_occupancy_and_operator_precedence():
     manager = ContextManager(NoCompact(), budget_tokens=1000)
     server = HTTPServer(
-        client=_mock_client(TextResponse(content="ok")),
+        client=_mock_client(text_reply("ok")),
         context_manager=manager,
         client_adapter=ClientAdapter.LLAMAFILE,
         serialize_requests=False,
@@ -573,9 +509,7 @@ async def test_finalize_uses_cache_occupancy_and_operator_precedence():
             cache_read_input_tokens=20,
         ),
     )
-
     await server._finalize_context_report(facts, {}, "openai")
-
     usage = manager.published_usage
     assert usage.current_usage_tokens == 35
     assert usage.context_window_tokens == 1000
@@ -588,7 +522,7 @@ async def test_finalize_uses_cache_occupancy_and_operator_precedence():
 async def test_managed_window_uses_managed_provenance_without_metadata_query():
     manager = ContextManager(NoCompact(), budget_tokens=4096)
     server = HTTPServer(
-        client=_mock_client(TextResponse(content="ok")),
+        client=_mock_client(text_reply("ok")),
         context_manager=manager,
         client_adapter=ClientAdapter.LLAMAFILE,
         serialize_requests=False,
@@ -600,13 +534,13 @@ async def test_managed_window_uses_managed_provenance_without_metadata_query():
         metadata_url="http://must-not-query/props",
     )
     server._fetch_reporting_json = AsyncMock(side_effect=AssertionError("queried"))
-
-    await server._finalize_context_report(RequestFacts(
-        effective_model="managed-model",
-        completed=True,
-        usage=TokenUsage(100, 1, 101),
-    ), {}, "openai")
-
+    await server._finalize_context_report(
+        RequestFacts(
+            effective_model="managed-model", completed=True, usage=TokenUsage(100, 1, 101)
+        ),
+        {},
+        "openai",
+    )
     usage = manager.published_usage
     assert usage.context_window_tokens == 4096
     assert usage.context_window_source == "managed_backend"
@@ -617,7 +551,7 @@ async def test_managed_window_uses_managed_provenance_without_metadata_query():
 async def test_llama_props_and_official_anthropic_exact_metadata_adapters():
     llama_manager = ContextManager(NoCompact(), budget_tokens=None)
     llama = HTTPServer(
-        client=_mock_client(TextResponse(content="ok")),
+        client=_mock_client(text_reply("ok")),
         context_manager=llama_manager,
         client_adapter=ClientAdapter.LLAMAFILE,
         serialize_requests=False,
@@ -628,23 +562,18 @@ async def test_llama_props_and_official_anthropic_exact_metadata_adapters():
         metadata_format=MetadataFormat.LLAMA_PROPERTIES,
         metadata_url="http://backend/props",
     )
-    llama._fetch_reporting_json = AsyncMock(return_value={
-        "default_generation_settings": {"n_ctx": 32768},
-    })
-    await llama._finalize_context_report(RequestFacts(
-        effective_model="llama-model",
-        completed=True,
-        usage=TokenUsage(12, 0, 12),
-    ), {}, "openai")
-    llama._fetch_reporting_json.assert_awaited_once_with(
-        "http://backend/props", {}, "openai",
+    llama._fetch_reporting_json = AsyncMock(
+        return_value={"default_generation_settings": {"n_ctx": 32768}}
     )
+    await llama._finalize_context_report(
+        RequestFacts(effective_model="llama-model", completed=True, usage=TokenUsage(12, 0, 12)),
+        {},
+        "openai",
+    )
+    llama._fetch_reporting_json.assert_awaited_once_with("http://backend/props", {}, "openai")
     assert llama_manager.published_usage.context_window_tokens == 32768
-    assert llama_manager.published_usage.context_window_source == (
-        "backend_metadata"
-    )
-
-    anthropic_client = _mock_client(TextResponse(content="ok"))
+    assert llama_manager.published_usage.context_window_source == "backend_metadata"
+    anthropic_client = _mock_client(text_reply("ok"))
     anthropic_client._get_context_length_for_model = AsyncMock(return_value=200000)
     anthropic_manager = ContextManager(NoCompact(), budget_tokens=None)
     anthropic = HTTPServer(
@@ -655,41 +584,39 @@ async def test_llama_props_and_official_anthropic_exact_metadata_adapters():
         backend_protocol="anthropic",
     )
     anthropic._configure_context_reporting(
-        managed=False,
-        context_window_tokens=None,
-        metadata_format=MetadataFormat.ANTHROPIC_MODELS,
+        managed=False, context_window_tokens=None, metadata_format=MetadataFormat.ANTHROPIC_MODELS
     )
-    await anthropic._finalize_context_report(RequestFacts(
-        effective_model="claude-exact",
-        completed=True,
-        usage=TokenUsage(20, 0, 20),
-    ), {"x-api-key": "forwarded"}, "anthropic")
+    await anthropic._finalize_context_report(
+        RequestFacts(effective_model="claude-exact", completed=True, usage=TokenUsage(20, 0, 20)),
+        {"x-api-key": "forwarded"},
+        "anthropic",
+    )
     anthropic_client._get_context_length_for_model.assert_awaited_once_with(
-        "claude-exact", {"x-api-key": "forwarded"},
+        "claude-exact", {"x-api-key": "forwarded"}
     )
     assert anthropic_manager.published_usage.context_window_tokens == 200000
-    assert anthropic_manager.published_usage.context_window_source == (
-        "backend_metadata"
-    )
+    assert anthropic_manager.published_usage.context_window_source == "backend_metadata"
 
 
 @pytest.mark.asyncio
 async def test_reporting_metadata_failure_after_http_delivery_clears_to_204():
-    client = _mock_client(TextResponse(content="ok"))
+    client = _mock_client(text_reply("ok"))
 
     async def send(*args, **kwargs):
         TokenUsage(25, 1, 26)
-        return TextResponse(content="ok")
+        return text_reply("ok")
 
     client.send.side_effect = send
     manager = ContextManager(NoCompact(), budget_tokens=None)
-    manager.record_published_usage(ContextUsage(
-        current_usage_tokens=1,
-        context_window_tokens=10,
-        model="prior",
-        context_window_source="backend_metadata",
-        observed_at=datetime.now(timezone.utc),
-    ))
+    manager.record_published_usage(
+        ContextUsage(
+            current_usage_tokens=1,
+            context_window_tokens=10,
+            model="prior",
+            context_window_source="backend_metadata",
+            observed_at=datetime.now(timezone.utc),
+        )
+    )
     server = HTTPServer(
         client=client,
         context_manager=manager,
@@ -736,7 +663,6 @@ async def test_partial_buffered_sse_delivery_retains_prior_snapshot():
             self.drains += 1
 
         def is_closing(self):
-            # Header drain succeeds, then the first buffered event disconnects.
             return self.drains >= 2
 
     manager = ContextManager(NoCompact(), budget_tokens=100)
@@ -748,11 +674,11 @@ async def test_partial_buffered_sse_delivery_retains_prior_snapshot():
         observed_at=datetime.now(timezone.utc),
     )
     manager.record_published_usage(prior)
-    client = _mock_client(TextResponse(content="two events"))
+    client = _mock_client(text_reply("two events"))
 
     async def send(*args, **kwargs):
         TokenUsage(25, 1, 26)
-        return TextResponse(content="two events")
+        return text_reply("two events")
 
     client.send.side_effect = send
     server = HTTPServer(
@@ -762,20 +688,14 @@ async def test_partial_buffered_sse_delivery_retains_prior_snapshot():
         serialize_requests=False,
     )
     server._configure_context_reporting(
-        managed=False,
-        context_window_tokens=100,
-        metadata_format=MetadataFormat.NONE,
+        managed=False, context_window_tokens=100, metadata_format=MetadataFormat.NONE
     )
-
     await server._handle_completions(
         ClosingWriter(),
-        json.dumps({
-            "model": "new",
-            "messages": [{"role": "user", "content": "hi"}],
-            "stream": True,
-        }).encode(),
+        json.dumps(
+            {"model": "new", "messages": [{"role": "user", "content": "hi"}], "stream": True}
+        ).encode(),
     )
-
     assert manager.published_usage is prior
 
 
@@ -791,30 +711,20 @@ async def test_subagent_retains_prior_and_delivered_unavailable_clears():
     )
     manager.record_published_usage(prior)
     server = HTTPServer(
-        client=_mock_client(TextResponse(content="ok")),
+        client=_mock_client(text_reply("ok")),
         context_manager=manager,
         client_adapter=ClientAdapter.LLAMAFILE,
         serialize_requests=False,
     )
     server._configure_context_reporting(
-        managed=False,
-        context_window_tokens=None,
-        metadata_format=MetadataFormat.NONE,
+        managed=False, context_window_tokens=None, metadata_format=MetadataFormat.NONE
     )
     subagent = RequestFacts(
-        effective_model="new",
-        reporting_eligible=False,
-        completed=True,
-        usage=TokenUsage(2, 0, 2),
+        effective_model="new", reporting_eligible=False, completed=True, usage=TokenUsage(2, 0, 2)
     )
     await server._finalize_context_report(subagent, {}, "openai")
     assert manager.published_usage is prior
-
-    eligible = RequestFacts(
-        effective_model="new",
-        completed=True,
-        usage=TokenUsage(2, 0, 2),
-    )
+    eligible = RequestFacts(effective_model="new", completed=True, usage=TokenUsage(2, 0, 2))
     await server._finalize_context_report(eligible, {}, "openai")
     assert manager.published_usage is None
 
@@ -823,7 +733,7 @@ async def test_subagent_retains_prior_and_delivered_unavailable_clears():
 async def test_backend_window_reuses_only_current_exact_model_and_requeries_switchback():
     manager = ContextManager(NoCompact(), budget_tokens=None)
     server = HTTPServer(
-        client=_mock_client(TextResponse(content="ok")),
+        client=_mock_client(text_reply("ok")),
         context_manager=manager,
         client_adapter=ClientAdapter.LLAMAFILE,
         serialize_requests=False,
@@ -835,25 +745,26 @@ async def test_backend_window_reuses_only_current_exact_model_and_requeries_swit
         metadata_url="http://backend/v1/models",
     )
     server._catalog_parser = parse_vllm_model_catalog
-    server._fetch_reporting_json = AsyncMock(side_effect=[
-        {"data": [{"id": "a", "max_model_len": 100}]},
-        {"data": [{"id": "b", "max_model_len": 200}]},
-        {"data": [{"id": "a", "max_model_len": 300}]},
-    ])
+    server._fetch_reporting_json = AsyncMock(
+        side_effect=[
+            {"data": [{"id": "a", "max_model_len": 100}]},
+            {"data": [{"id": "b", "max_model_len": 200}]},
+            {"data": [{"id": "a", "max_model_len": 300}]},
+        ]
+    )
 
     async def publish(model):
-        await server._finalize_context_report(RequestFacts(
-            effective_model=model,
-            completed=True,
-            usage=TokenUsage(1, 0, 1),
-        ), {}, "openai")
+        await server._finalize_context_report(
+            RequestFacts(effective_model=model, completed=True, usage=TokenUsage(1, 0, 1)),
+            {},
+            "openai",
+        )
 
     await publish("a")
     await publish("a")
     assert server._fetch_reporting_json.await_count == 1
     await publish("b")
     await publish("a")
-
     assert server._fetch_reporting_json.await_count == 3
     assert manager.published_usage.model == "a"
     assert manager.published_usage.context_window_tokens == 300
@@ -862,7 +773,7 @@ async def test_backend_window_reuses_only_current_exact_model_and_requeries_swit
 @pytest.mark.asyncio
 async def test_overlapping_metadata_finalization_uses_natural_completion_order():
     manager = ContextManager(NoCompact(), budget_tokens=None)
-    client = _mock_client(TextResponse(content="ok"))
+    client = _mock_client(text_reply("ok"))
     first_release = asyncio.Event()
     second_release = asyncio.Event()
 
@@ -882,17 +793,15 @@ async def test_overlapping_metadata_finalization_uses_natural_completion_order()
         backend_protocol="anthropic",
     )
     server._configure_context_reporting(
-        managed=False,
-        context_window_tokens=None,
-        metadata_format=MetadataFormat.ANTHROPIC_MODELS,
+        managed=False, context_window_tokens=None, metadata_format=MetadataFormat.ANTHROPIC_MODELS
     )
 
     async def finalize(model):
-        await server._finalize_context_report(RequestFacts(
-            effective_model=model,
-            completed=True,
-            usage=TokenUsage(1, 0, 1),
-        ), {}, "anthropic")
+        await server._finalize_context_report(
+            RequestFacts(effective_model=model, completed=True, usage=TokenUsage(1, 0, 1)),
+            {},
+            "anthropic",
+        )
 
     first = asyncio.create_task(finalize("first"))
     await asyncio.sleep(0)
@@ -906,26 +815,16 @@ async def test_overlapping_metadata_finalization_uses_natural_completion_order()
     assert manager.published_usage.model == "first"
 
 
-# ── Serialization ───────────────────────────────────────────
-
-
 class TestSerialization:
     @pytest.mark.asyncio
     async def test_serialized_requests_processed(self, server_factory):
         """Serialized mode processes requests through the queue."""
-        srv, port = await server_factory(
-            TextResponse(content="ok"), serialize=True,
-        )
+        srv, port = await server_factory(text_reply("ok"), serialize=True)
         body = {"messages": [{"role": "user", "content": "hi"}]}
-        status, response_body = await _http_request(
-            port, "POST", "/v1/chat/completions", body,
-        )
+        status, response_body = await _http_request(port, "POST", "/v1/chat/completions", body)
         assert status == 200
         data = json.loads(response_body)
         assert data["choices"][0]["message"]["content"] == "ok"
-
-
-# ── Inbound credential threading (v0.8.0) ────────────────────
 
 
 async def _http_request_with_auth(port, body, auth_header):
@@ -934,13 +833,9 @@ async def _http_request_with_auth(port, body, auth_header):
     try:
         body_bytes = json.dumps(body).encode()
         request = (
-            f"POST /v1/chat/completions HTTP/1.1\r\n"
-            f"Host: 127.0.0.1:{port}\r\n"
-            f"Content-Type: application/json\r\n"
-            f"Authorization: {auth_header}\r\n"
-            f"Content-Length: {len(body_bytes)}\r\n"
-            f"\r\n"
-        ).encode() + body_bytes
+            f"POST /v1/chat/completions HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nContent-Type: application/json\r\nAuthorization: {auth_header}\r\nContent-Length: {len(body_bytes)}\r\n\r\n".encode()
+            + body_bytes
+        )
         writer.write(request)
         await writer.drain()
         await asyncio.wait_for(reader.read(65536), timeout=10.0)
@@ -949,18 +844,12 @@ async def _http_request_with_auth(port, body, auth_header):
         await writer.wait_closed()
 
 
-async def _auth_server(
-    serialize,
-    backend_api_key_present=False,
-    backend_protocol="anthropic",
-):
+async def _auth_server(serialize, backend_api_key_present=False, backend_protocol="anthropic"):
     """An HTTPServer fronting the selected backend protocol, with a mock client."""
-    client = _mock_client(TextResponse(content="ok"))
+    client = _mock_client(text_reply("ok"))
     ctx = ContextManager(strategy=NoCompact(), budget_tokens=8192)
     adapter = (
-        ClientAdapter.ANTHROPIC
-        if backend_protocol == "anthropic"
-        else ClientAdapter.LLAMAFILE
+        ClientAdapter.ANTHROPIC if backend_protocol == "anthropic" else ClientAdapter.LLAMAFILE
     )
     srv = HTTPServer(
         client=client,
@@ -974,32 +863,26 @@ async def _auth_server(
     )
     await srv.start()
     port = srv._server.sockets[0].getsockname()[1]
-    return srv, port, client
+    return (srv, port, client)
 
 
-async def _raw_request(
-    port, header_lines, body, *, path="/v1/chat/completions",
-):
+async def _raw_request(port, header_lines, body, *, path="/v1/chat/completions"):
     """POST with arbitrary extra header lines; return (status, body_str)."""
     reader, writer = await asyncio.open_connection("127.0.0.1", port)
     try:
         body_bytes = json.dumps(body).encode()
-        extra = "".join(f"{line}\r\n" for line in header_lines)
+        extra = "".join((f"{line}\r\n" for line in header_lines))
         request = (
-            f"POST {path} HTTP/1.1\r\n"
-            f"Host: 127.0.0.1:{port}\r\n"
-            f"Content-Type: application/json\r\n"
-            f"{extra}"
-            f"Content-Length: {len(body_bytes)}\r\n"
-            f"\r\n"
-        ).encode() + body_bytes
+            f"POST {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nContent-Type: application/json\r\n{extra}Content-Length: {len(body_bytes)}\r\n\r\n".encode()
+            + body_bytes
+        )
         writer.write(request)
         await writer.drain()
         data = await asyncio.wait_for(reader.read(65536), timeout=10.0)
         text = data.decode("utf-8", errors="replace")
         status = int(text.split("\r\n", 1)[0].split(" ", 2)[1])
         start = text.find("\r\n\r\n")
-        return status, (text[start + 4:] if start >= 0 else "")
+        return (status, text[start + 4 :] if start >= 0 else "")
     finally:
         writer.close()
         await writer.wait_closed()
@@ -1009,18 +892,13 @@ class TestInboundCredentialThreading:
     @pytest.mark.asyncio
     @pytest.mark.parametrize("serialize", [False, True])
     async def test_inbound_auth_relocated_to_backend_client(self, serialize):
-        # Both dispatch paths (direct and the serialized queue worker) must
-        # carry the inbound header to the handler. Source openai endpoint →
-        # anthropic backend: Bearer stripped, relocated to x-api-key.
         srv, port, client = await _auth_server(serialize)
         try:
             await _http_request_with_auth(
-                port,
-                {"messages": [{"role": "user", "content": "hi"}]},
-                "Bearer INBOUND",
+                port, {"messages": [{"role": "user", "content": "hi"}]}, "Bearer INBOUND"
             )
             assert client.send.await_count == 1
-            assert client.send.call_args.kwargs["extra_headers"] == {"x-api-key": "INBOUND"}
+            assert client.send.call_args.args[0].headers == {"x-api-key": "INBOUND"}
         finally:
             await srv.stop()
 
@@ -1028,31 +906,17 @@ class TestInboundCredentialThreading:
     @pytest.mark.parametrize(
         ("source_protocol", "target_protocol", "expected_headers"),
         [
-            (
-                "openai",
-                "openai",
-                {"authorization": "Bearer SAME", "x-api-key": "SAME"},
-            ),
-            (
-                "anthropic",
-                "anthropic",
-                {"authorization": "Bearer SAME", "x-api-key": "SAME"},
-            ),
+            ("openai", "openai", {"authorization": "Bearer SAME", "x-api-key": "SAME"}),
+            ("anthropic", "anthropic", {"authorization": "Bearer SAME", "x-api-key": "SAME"}),
             ("openai", "anthropic", {"x-api-key": "SAME"}),
             ("anthropic", "openai", {"Authorization": "Bearer SAME"}),
         ],
     )
     async def test_identical_dual_auth_resolution_matrix(
-        self, source_protocol, target_protocol, expected_headers,
+        self, source_protocol, target_protocol, expected_headers
     ):
-        srv, port, client = await _auth_server(
-            serialize=False, backend_protocol=target_protocol,
-        )
-        path = (
-            "/v1/messages"
-            if source_protocol == "anthropic"
-            else "/v1/chat/completions"
-        )
+        srv, port, client = await _auth_server(serialize=False, backend_protocol=target_protocol)
+        path = "/v1/messages" if source_protocol == "anthropic" else "/v1/chat/completions"
         body = {
             "model": "caller-model",
             "max_tokens": 64,
@@ -1060,14 +924,11 @@ class TestInboundCredentialThreading:
         }
         try:
             status, _ = await _raw_request(
-                port,
-                ["Authorization: Bearer SAME", "X-Api-Key: SAME"],
-                body,
-                path=path,
+                port, ["Authorization: Bearer SAME", "X-Api-Key: SAME"], body, path=path
             )
             assert status == 200
             assert client.send.await_count == 1
-            assert client.send.call_args.kwargs["extra_headers"] == expected_headers
+            assert client.send.call_args.args[0].headers == expected_headers
         finally:
             await srv.stop()
 
@@ -1089,8 +950,6 @@ class TestInboundCredentialThreading:
 
     @pytest.mark.asyncio
     async def test_duplicate_auth_header_refused_400_no_secret(self):
-        # Two same-name Authorization headers must be refused (never pick a
-        # winner), as a 400 client error, with no secret in the response body.
         srv, port, client = await _auth_server(serialize=False)
         try:
             status, resp_body = await _raw_request(
@@ -1107,10 +966,7 @@ class TestInboundCredentialThreading:
 
     @pytest.mark.asyncio
     async def test_inbound_plus_static_key_refused_400(self):
-        # Inbound credential + configured --backend-api-key → 400 client error.
-        srv, port, client = await _auth_server(
-            serialize=False, backend_api_key_present=True,
-        )
+        srv, port, client = await _auth_server(serialize=False, backend_api_key_present=True)
         try:
             status, resp_body = await _raw_request(
                 port,
@@ -1125,9 +981,7 @@ class TestInboundCredentialThreading:
 
     @pytest.mark.asyncio
     async def test_matching_pair_plus_static_key_refused_400(self):
-        srv, port, client = await _auth_server(
-            serialize=False, backend_api_key_present=True,
-        )
+        srv, port, client = await _auth_server(serialize=False, backend_api_key_present=True)
         try:
             status, resp_body = await _raw_request(
                 port,
@@ -1141,15 +995,12 @@ class TestInboundCredentialThreading:
             await srv.stop()
 
 
-# ── Deferred discovery → status mapping ─────────────────────
-
-
 async def _discovery_server(*, side_effect=None, budget=50000):
     """An OpenAI-wire server whose first request resolves vLLM identity."""
-    client = _mock_client(TextResponse(content="ok"))
+    client = _mock_client(text_reply("ok"))
     client.model = "default"
     client._set_model_identity = MagicMock(
-        side_effect=lambda model: setattr(client, "model", model),
+        side_effect=lambda model: setattr(client, "model", model)
     )
     ctx = ContextManager(strategy=NoCompact(), budget_tokens=8192)
     srv = HTTPServer(
@@ -1165,54 +1016,42 @@ async def _discovery_server(*, side_effect=None, budget=50000):
     if side_effect is not None:
         srv._fetch_private_catalog = AsyncMock(side_effect=side_effect)
     else:
-        srv._fetch_private_catalog = AsyncMock(return_value=ModelCatalog(
-            (ModelCatalogEntry("served", budget),),
-            first_served_id="served",
-        ))
+        srv._fetch_private_catalog = AsyncMock(
+            return_value=ModelCatalog(
+                (ModelCatalogEntry("served", budget),), first_served_id="served"
+            )
+        )
     await srv.start()
     port = srv._server.sockets[0].getsockname()[1]
-    return srv, port, client, ctx
+    return (srv, port, client, ctx)
 
 
 class TestMetadataForwarding:
     @pytest.mark.asyncio
-    async def test_local_health_never_uses_backend_or_auth(
-        self, metadata_pair_factory,
-    ):
+    async def test_local_health_never_uses_backend_or_auth(self, metadata_pair_factory):
         _, port, requests, _, _ = await metadata_pair_factory({})
         status, _, body = await _raw_http_response(
-            port,
-            "GET",
-            "/forge/health",
-            ["Authorization: Bearer ONE", "x-api-key: TWO"],
+            port, "GET", "/forge/health", ["Authorization: Bearer ONE", "x-api-key: TWO"]
         )
         assert (status, body) == (200, b'{"status":"ok"}')
         assert requests == []
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize(
-        "path",
-        ["/health", "/v1/health", "/v1/models", "/models", "/props"],
-    )
+    @pytest.mark.parametrize("path", ["/health", "/v1/health", "/v1/models", "/models", "/props"])
     async def test_closed_get_allowlist_is_forwarded(self, metadata_pair_factory, path):
         expected_target = f"/prefix{path}?raw=%2f%2F&item=a+b"
         _, port, requests, _, _ = await metadata_pair_factory(
             {expected_target: (200, {"Content-Type": "application/json"}, b"{}")},
             mount_suffix="/prefix?discard=root",
         )
-        status, _, body = await _raw_http_response(
-            port, "GET", f"{path}?raw=%2f%2F&item=a+b",
-        )
+        status, _, body = await _raw_http_response(port, "GET", f"{path}?raw=%2f%2F&item=a+b")
         assert (status, body) == (200, b"{}")
         assert requests[0][0] == expected_target
 
     @pytest.mark.asyncio
-    async def test_missing_inbound_query_removes_mount_root_query(
-        self, metadata_pair_factory,
-    ):
+    async def test_missing_inbound_query_removes_mount_root_query(self, metadata_pair_factory):
         _, port, requests, _, _ = await metadata_pair_factory(
-            {"/prefix/health": (200, {}, b"ready")},
-            mount_suffix="/prefix?discard=root",
+            {"/prefix/health": (200, {}, b"ready")}, mount_suffix="/prefix?discard=root"
         )
         status, _, body = await _raw_http_response(port, "GET", "/health")
         assert (status, body) == (200, b"ready")
@@ -1220,9 +1059,7 @@ class TestMetadataForwarding:
 
     @pytest.mark.asyncio
     async def test_empty_query_marker_is_preserved(self, metadata_pair_factory):
-        _, port, requests, _, _ = await metadata_pair_factory({
-            "/health?": (200, {}, b"ready"),
-        })
+        _, port, requests, _, _ = await metadata_pair_factory({"/health?": (200, {}, b"ready")})
         status, _, body = await _raw_http_response(port, "GET", "/health?")
         assert (status, body) == (200, b"ready")
         assert requests[0][0] == "/health?"
@@ -1243,7 +1080,7 @@ class TestMetadataForwarding:
         ],
     )
     async def test_declined_and_encoded_routes_stay_local_404(
-        self, metadata_pair_factory, method, path,
+        self, metadata_pair_factory, method, path
     ):
         _, port, requests, _, _ = await metadata_pair_factory({})
         status, _, _ = await _raw_http_response(port, method, path)
@@ -1253,20 +1090,22 @@ class TestMetadataForwarding:
     @pytest.mark.asyncio
     @pytest.mark.parametrize("backend_status", [401, 403, 404, 503])
     async def test_backend_status_and_raw_body_are_honest(
-        self, metadata_pair_factory, backend_status,
+        self, metadata_pair_factory, backend_status
     ):
-        raw = b'not-json:\x00\xff'
-        _, port, _, _, _ = await metadata_pair_factory({
-            "/props": (
-                backend_status,
-                {
-                    "Content-Type": "application/octet-stream",
-                    "X-Backend-Secret": "omit-me",
-                    "Keep-Alive": "timeout=30",
-                },
-                raw,
-            ),
-        })
+        raw = b"not-json:\x00\xff"
+        _, port, _, _, _ = await metadata_pair_factory(
+            {
+                "/props": (
+                    backend_status,
+                    {
+                        "Content-Type": "application/octet-stream",
+                        "X-Backend-Secret": "omit-me",
+                        "Keep-Alive": "timeout=30",
+                    },
+                    raw,
+                )
+            }
+        )
         status, headers, body = await _raw_http_response(port, "GET", "/props")
         assert (status, body) == (backend_status, raw)
         assert headers["content-type"] == "application/octet-stream"
@@ -1279,11 +1118,9 @@ class TestMetadataForwarding:
     @pytest.mark.asyncio
     @pytest.mark.parametrize("body", [b"", b"{malformed", b"\x00\x80binary"])
     async def test_empty_malformed_and_binary_bodies_are_not_parsed(
-        self, metadata_pair_factory, body,
+        self, metadata_pair_factory, body
     ):
-        _, port, _, _, _ = await metadata_pair_factory({
-            "/models": (200, {}, body),
-        })
+        _, port, _, _, _ = await metadata_pair_factory({"/models": (200, {}, body)})
         status, headers, received = await _raw_http_response(port, "GET", "/models")
         assert (status, received) == (200, body)
         assert headers["content-length"] == str(len(body))
@@ -1291,36 +1128,33 @@ class TestMetadataForwarding:
 
     @pytest.mark.asyncio
     async def test_gzip_is_buffered_as_decoded_bytes_without_encoding_header(
-        self, metadata_pair_factory,
+        self, metadata_pair_factory
     ):
         decoded = b'{"ready":true}'
         compressed = gzip.compress(decoded)
-        _, port, _, _, _ = await metadata_pair_factory({
-            "/health": (
-                200,
-                {"Content-Type": "application/json", "Content-Encoding": "gzip"},
-                compressed,
-            ),
-        })
+        _, port, _, _, _ = await metadata_pair_factory(
+            {
+                "/health": (
+                    200,
+                    {"Content-Type": "application/json", "Content-Encoding": "gzip"},
+                    compressed,
+                )
+            }
+        )
         status, headers, body = await _raw_http_response(port, "GET", "/health")
         assert (status, body) == (200, decoded)
         assert headers["content-length"] == str(len(decoded))
         assert "content-encoding" not in headers
 
     @pytest.mark.asyncio
-    async def test_transport_connection_and_timeout_failures_map_502(
-        self, metadata_pair_factory,
-    ):
+    async def test_transport_connection_and_timeout_failures_map_502(self, metadata_pair_factory):
         _, timeout_port, _, _, _ = await metadata_pair_factory(
-            {"/health": (200, {}, b"late")}, timeout=0.01, delay=0.1,
+            {"/health": (200, {}, b"late")}, timeout=0.01, delay=0.1
         )
-        timeout_status, _, timeout_body = await _raw_http_response(
-            timeout_port, "GET", "/health",
-        )
+        timeout_status, _, timeout_body = await _raw_http_response(timeout_port, "GET", "/health")
         assert timeout_status == 502
         assert json.loads(timeout_body)["error"]["type"] == "proxy_error"
-
-        client = _mock_client(TextResponse(content="ok"))
+        client = _mock_client(text_reply("ok"))
         ctx = ContextManager(strategy=NoCompact(), budget_tokens=8192)
         proxy = HTTPServer(
             client=client,
@@ -1331,67 +1165,45 @@ class TestMetadataForwarding:
             serialize_requests=False,
         )
         proxy._configure_metadata_courier(
-            mount_root="http://127.0.0.1:1", backend_api_key=None, timeout=0.05,
+            mount_root="http://127.0.0.1:1", backend_api_key=None, timeout=0.05
         )
         await proxy.start()
         try:
             proxy_port = proxy._server.sockets[0].getsockname()[1]
-            connection_status, _, _ = await _raw_http_response(
-                proxy_port, "GET", "/health",
-            )
+            connection_status, _, _ = await _raw_http_response(proxy_port, "GET", "/health")
             assert connection_status == 502
         finally:
             await proxy.stop()
 
     @pytest.mark.asyncio
     async def test_auth_conflicts_and_overlapping_requests_do_not_bleed(
-        self, metadata_pair_factory,
+        self, metadata_pair_factory
     ):
-        responses = {
-            "/models?one": (200, {}, b"one"),
-            "/models?two": (200, {}, b"two"),
-        }
-        _, port, requests, _, _ = await metadata_pair_factory(
-            responses, protocol="anthropic",
-        )
+        responses = {"/models?one": (200, {}, b"one"), "/models?two": (200, {}, b"two")}
+        _, port, requests, _, _ = await metadata_pair_factory(responses, protocol="anthropic")
         results = await asyncio.gather(
-            _raw_http_response(
-                port, "GET", "/models?one", ["Authorization: Bearer FIRST"],
-            ),
+            _raw_http_response(port, "GET", "/models?one", ["Authorization: Bearer FIRST"]),
             _raw_http_response(port, "GET", "/models?two", ["x-api-key: SECOND"]),
         )
         assert [result[2] for result in results] == [b"one", b"two"]
         auth_by_target = {target: headers for target, headers in requests}
         assert auth_by_target["/models?one"]["x-api-key"] == "FIRST"
         assert auth_by_target["/models?two"]["x-api-key"] == "SECOND"
-
         conflict_status, _, _ = await _raw_http_response(
-            port,
-            "GET",
-            "/models",
-            ["Authorization: Bearer ONE", "x-api-key: TWO"],
+            port, "GET", "/models", ["Authorization: Bearer ONE", "x-api-key: TWO"]
         )
         duplicate_status, _, _ = await _raw_http_response(
-            port,
-            "GET",
-            "/models",
-            ["Authorization: Bearer ONE", "Authorization: Bearer TWO"],
+            port, "GET", "/models", ["Authorization: Bearer ONE", "Authorization: Bearer TWO"]
         )
         assert (conflict_status, duplicate_status) == (400, 400)
 
     @pytest.mark.asyncio
-    async def test_protocol_neutral_metadata_preserves_matching_pair(
-        self, metadata_pair_factory,
-    ):
+    async def test_protocol_neutral_metadata_preserves_matching_pair(self, metadata_pair_factory):
         _, port, requests, _, _ = await metadata_pair_factory(
-            {"/models": (200, {}, b"ok")},
-            protocol="anthropic",
+            {"/models": (200, {}, b"ok")}, protocol="anthropic"
         )
         status, _, body = await _raw_http_response(
-            port,
-            "GET",
-            "/models",
-            ["Authorization: Bearer SAME", "X-Api-Key: SAME"],
+            port, "GET", "/models", ["Authorization: Bearer SAME", "X-Api-Key: SAME"]
         )
         assert (status, body) == (200, b"ok")
         assert requests[0][1]["authorization"] == "Bearer SAME"
@@ -1410,41 +1222,28 @@ class TestMetadataForwarding:
         ],
     )
     async def test_forwarded_credential_matrix_and_static_key(
-        self,
-        metadata_pair_factory,
-        protocol,
-        static_key,
-        inbound,
-        expected_name,
-        expected_value,
+        self, metadata_pair_factory, protocol, static_key, inbound, expected_name, expected_value
     ):
         _, port, requests, _, _ = await metadata_pair_factory(
-            {"/models": (200, {}, b"ok")},
-            protocol=protocol,
-            static_key=static_key,
+            {"/models": (200, {}, b"ok")}, protocol=protocol, static_key=static_key
         )
         header_lines = [] if inbound is None else [inbound]
-        status, _, _ = await _raw_http_response(
-            port, "GET", "/models", header_lines,
-        )
+        status, _, _ = await _raw_http_response(port, "GET", "/models", header_lines)
         assert status == 200
         assert requests[0][1][expected_name] == expected_value
 
     @pytest.mark.asyncio
-    async def test_static_plus_inbound_refused_and_no_key_is_omitted(
-        self, metadata_pair_factory,
-    ):
+    async def test_static_plus_inbound_refused_and_no_key_is_omitted(self, metadata_pair_factory):
         _, static_port, static_requests, _, _ = await metadata_pair_factory(
-            {"/models": (200, {}, b"ok")}, static_key="STATIC",
+            {"/models": (200, {}, b"ok")}, static_key="STATIC"
         )
         status, _, _ = await _raw_http_response(
-            static_port, "GET", "/models", ["x-api-key: INBOUND"],
+            static_port, "GET", "/models", ["x-api-key: INBOUND"]
         )
         assert status == 400
         assert static_requests == []
-
         _, no_key_port, no_key_requests, _, _ = await metadata_pair_factory(
-            {"/models": (200, {}, b"ok")},
+            {"/models": (200, {}, b"ok")}
         )
         status, _, _ = await _raw_http_response(no_key_port, "GET", "/models")
         assert status == 200
@@ -1453,29 +1252,22 @@ class TestMetadataForwarding:
 
     @pytest.mark.asyncio
     async def test_public_models_does_not_touch_private_discovery_state(
-        self, metadata_pair_factory,
+        self, metadata_pair_factory
     ):
-        client = _mock_client(TextResponse(content="ok"))
+        client = _mock_client(text_reply("ok"))
         client.model = "default"
         client._set_model_identity = MagicMock(
-            side_effect=lambda model: setattr(client, "model", model),
+            side_effect=lambda model: setattr(client, "model", model)
         )
         ctx = ContextManager(strategy=NoCompact(), budget_tokens=8192)
         lazy = LazyDiscovery()
         raw_catalog = b'{"data":[{"id":"served","max_model_len":64000}]}'
         _, port, requests, _, _ = await metadata_pair_factory(
-            {
-                "/v1/models": (
-                    200,
-                    {"Content-Type": "application/json"},
-                    raw_catalog,
-                ),
-            },
+            {"/v1/models": (200, {"Content-Type": "application/json"}, raw_catalog)},
             client=client,
             context_manager=ctx,
             lazy_discovery=lazy,
         )
-
         status, _, body = await _raw_http_response(port, "GET", "/v1/models")
         assert (status, body) == (200, raw_catalog)
         assert [target for target, _ in requests] == ["/v1/models"]
@@ -1483,9 +1275,8 @@ class TestMetadataForwarding:
         assert client.model == "default"
         assert ctx.budget_tokens == 8192
         assert lazy.done is False
-
         completion_status, _ = await _raw_request(
-            port, [], {"messages": [{"role": "user", "content": "hi"}]},
+            port, [], {"messages": [{"role": "user", "content": "hi"}]}
         )
         assert completion_status == 200
         assert [target for target, _ in requests] == ["/v1/models", "/v1/models"]
@@ -1496,15 +1287,15 @@ class TestMetadataForwarding:
 
     @pytest.mark.asyncio
     async def test_unpinned_auth_budget_matrix_uses_one_private_prefixed_get(
-        self, metadata_pair_factory,
+        self, metadata_pair_factory
     ):
         for static_key in (None, "STATIC"):
             for budget in (None, 4096):
                 case = (static_key, budget)
-                client = _mock_client(TextResponse(content="ok"))
+                client = _mock_client(text_reply("ok"))
                 client.model = "default"
                 client._set_model_identity = MagicMock(
-                    side_effect=lambda model: setattr(client, "model", model),
+                    side_effect=lambda model: setattr(client, "model", model)
                 )
                 ctx = ContextManager(strategy=NoCompact(), budget_tokens=budget)
                 _, port, requests, _, _ = await metadata_pair_factory(
@@ -1513,7 +1304,7 @@ class TestMetadataForwarding:
                             200,
                             {"Content-Type": "application/json"},
                             b'{"data":[{"id":"served"}]}',
-                        ),
+                        )
                     },
                     mount_suffix="/deploy",
                     static_key=static_key,
@@ -1521,31 +1312,23 @@ class TestMetadataForwarding:
                     context_manager=ctx,
                     lazy_discovery=LazyDiscovery(),
                 )
-                inbound = (
-                    [] if static_key else ["Authorization: Bearer FORWARDED"]
-                )
+                inbound = [] if static_key else ["Authorization: Bearer FORWARDED"]
                 status, _ = await _raw_request(
-                    port,
-                    inbound,
-                    {"messages": [{"role": "user", "content": "hi"}]},
+                    port, inbound, {"messages": [{"role": "user", "content": "hi"}]}
                 )
                 assert status == 200, case
-                assert [target for target, _ in requests] == [
-                    "/deploy/v1/models"
-                ], case
+                assert [target for target, _ in requests] == ["/deploy/v1/models"], case
                 expected = "Bearer STATIC" if static_key else "Bearer FORWARDED"
                 assert requests[0][1]["authorization"] == expected, case
                 assert client.model == "served", case
                 assert ctx.budget_tokens == budget, case
 
     @pytest.mark.asyncio
-    async def test_private_discovery_maps_pair_like_inference_request(
-        self, metadata_pair_factory,
-    ):
-        client = _mock_client(TextResponse(content="ok"))
+    async def test_private_discovery_maps_pair_like_inference_request(self, metadata_pair_factory):
+        client = _mock_client(text_reply("ok"))
         client.model = "default"
         client._set_model_identity = MagicMock(
-            side_effect=lambda model: setattr(client, "model", model),
+            side_effect=lambda model: setattr(client, "model", model)
         )
         _, port, requests, _, _ = await metadata_pair_factory(
             {
@@ -1553,7 +1336,7 @@ class TestMetadataForwarding:
                     200,
                     {"Content-Type": "application/json"},
                     b'{"data":[{"id":"served","max_model_len":64000}]}',
-                ),
+                )
             },
             protocol="openai",
             client=client,
@@ -1574,22 +1357,19 @@ class TestMetadataForwarding:
         assert [target for target, _ in requests] == ["/v1/models"]
         assert requests[0][1]["authorization"] == "Bearer SAME"
         assert "x-api-key" not in requests[0][1]
-        assert client.send.call_args.kwargs["extra_headers"] == {
-            "Authorization": "Bearer SAME",
-        }
+        assert client.send.call_args.args[0].headers == {"Authorization": "Bearer SAME"}
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("serialize", [False, True])
     async def test_streaming_predispatch_carries_facts_without_second_query(
-        self, metadata_pair_factory, serialize, monkeypatch,
+        self, metadata_pair_factory, serialize, monkeypatch
     ):
-        client = _mock_client(TextResponse(content="ok"))
+        client = _mock_client(text_reply("ok"))
         client.model = "default"
         client._set_model_identity = MagicMock(
-            side_effect=lambda model: setattr(client, "model", model),
+            side_effect=lambda model: setattr(client, "model", model)
         )
         captured_facts = []
-
         real_handler = server_module.handle_chat_completions
 
         async def capture_facts(**kwargs):
@@ -1603,7 +1383,7 @@ class TestMetadataForwarding:
                     200,
                     {"Content-Type": "application/json"},
                     b'{"data":[{"id":"served","max_model_len":64000}]}',
-                ),
+                )
             },
             client=client,
             lazy_discovery=LazyDiscovery(),
@@ -1614,27 +1394,18 @@ class TestMetadataForwarding:
             status, _ = await _raw_request(
                 port,
                 [],
-                {
-                    "model": alias,
-                    "messages": [{"role": "user", "content": "hi"}],
-                    "stream": True,
-                },
+                {"model": alias, "messages": [{"role": "user", "content": "hi"}], "stream": True},
             )
             assert status == 200
         assert [target for target, _ in requests] == ["/v1/models"]
-        assert [facts.effective_model for facts in captured_facts] == [
-            "served",
-            "served",
-        ]
+        assert [facts.effective_model for facts in captured_facts] == ["served", "served"]
         assert captured_facts[0] is not captured_facts[1]
         assert captured_facts[0].model_catalog is not None
         assert captured_facts[1].model_catalog is None
 
     @pytest.mark.asyncio
-    async def test_missing_first_identity_is_502_and_does_not_latch(
-        self, metadata_pair_factory,
-    ):
-        client = _mock_client(TextResponse(content="ok"))
+    async def test_missing_first_identity_is_502_and_does_not_latch(self, metadata_pair_factory):
+        client = _mock_client(text_reply("ok"))
         client.model = "default"
         client._set_model_identity = MagicMock()
         lazy = LazyDiscovery()
@@ -1644,14 +1415,14 @@ class TestMetadataForwarding:
                     200,
                     {"Content-Type": "application/json"},
                     b'{"data":[{"max_model_len":64000},{"id":"later"}]}',
-                ),
+                )
             },
             client=client,
             lazy_discovery=lazy,
         )
         for _ in range(2):
             status, _ = await _raw_request(
-                port, [], {"messages": [{"role": "user", "content": "hi"}]},
+                port, [], {"messages": [{"role": "user", "content": "hi"}]}
             )
             assert status == 502
         assert len(requests) == 2
@@ -1661,7 +1432,7 @@ class TestMetadataForwarding:
 
     @pytest.mark.asyncio
     async def test_courier_closes_on_stop_and_bind_failure(self):
-        client = _mock_client(TextResponse(content="ok"))
+        client = _mock_client(text_reply("ok"))
         ctx = ContextManager(strategy=NoCompact(), budget_tokens=8192)
         server = HTTPServer(
             client=client,
@@ -1672,14 +1443,13 @@ class TestMetadataForwarding:
             serialize_requests=False,
         )
         server._configure_metadata_courier(
-            mount_root="http://127.0.0.1:1", backend_api_key=None, timeout=1.0,
+            mount_root="http://127.0.0.1:1", backend_api_key=None, timeout=1.0
         )
         courier = server._metadata_courier
         await server.start()
         await server.stop()
         await server.stop()
         assert courier._http.is_closed
-
         occupied = await asyncio.start_server(lambda _reader, _writer: None, "127.0.0.1", 0)
         occupied_port = occupied.sockets[0].getsockname()[1]
         failed = HTTPServer(
@@ -1691,7 +1461,7 @@ class TestMetadataForwarding:
             serialize_requests=True,
         )
         failed._configure_metadata_courier(
-            mount_root="http://127.0.0.1:1", backend_api_key=None, timeout=1.0,
+            mount_root="http://127.0.0.1:1", backend_api_key=None, timeout=1.0
         )
         failed_courier = failed._metadata_courier
         try:
@@ -1711,15 +1481,13 @@ class TestDeferredDiscoveryStatusMapping:
         [(401, 401), (502, 502)],
         ids=["auth-rejection", "backend-fault"],
     )
-    async def test_discovery_errors_map_to_http_status(
-        self, backend_status, expected_status,
-    ):
-        srv, port, client, _ = await _discovery_server(side_effect=BackendError(
-            backend_status, "discovery failed",
-        ))
+    async def test_discovery_errors_map_to_http_status(self, backend_status, expected_status):
+        srv, port, client, _ = await _discovery_server(
+            side_effect=BackendError(backend_status, "discovery failed")
+        )
         try:
             status, _ = await _raw_request(
-                port, [], {"messages": [{"role": "user", "content": "hi"}]},
+                port, [], {"messages": [{"role": "user", "content": "hi"}]}
             )
             assert status == expected_status
             client.send.assert_not_awaited()
@@ -1731,7 +1499,7 @@ class TestDeferredDiscoveryStatusMapping:
         srv, port, client, ctx = await _discovery_server(budget=50000)
         try:
             status, _ = await _raw_request(
-                port, [], {"messages": [{"role": "user", "content": "hi"}]},
+                port, [], {"messages": [{"role": "user", "content": "hi"}]}
             )
             assert status == 200
             assert ctx.budget_tokens == 8192
@@ -1741,37 +1509,34 @@ class TestDeferredDiscoveryStatusMapping:
             discovery_headers = srv._fetch_private_catalog.await_args.args[0]
             assert "authorization" not in discovery_headers
             assert "x-api-key" not in discovery_headers
-            assert srv._fetch_private_catalog.await_args.kwargs == {
-                "source_protocol": "openai",
-            }
+            assert srv._fetch_private_catalog.await_args.kwargs == {"source_protocol": "openai"}
         finally:
             await srv.stop()
 
 
-# ── Backend-error status, credential hygiene, and CORS ──────
-
-
 async def _error_server(exc):
     """An openai-wire server whose backend client.send raises ``exc``."""
-    client = _mock_client(TextResponse(content="x"))
+    client = _mock_client(text_reply("x"))
     client.send = AsyncMock(side_effect=exc)
     ctx = ContextManager(strategy=NoCompact(), budget_tokens=8192)
     srv = HTTPServer(
-        client=client, context_manager=ctx, host="127.0.0.1", port=0,
+        client=client,
+        context_manager=ctx,
+        host="127.0.0.1",
+        port=0,
         client_adapter=ClientAdapter.LLAMAFILE,
-        serialize_requests=False, backend_protocol="openai",
+        serialize_requests=False,
+        backend_protocol="openai",
     )
     await srv.start()
-    return srv, srv._server.sockets[0].getsockname()[1]
+    return (srv, srv._server.sockets[0].getsockname()[1])
 
 
 async def _raw_response(port, method, path):
     """Return the full raw HTTP response string for a bodyless request."""
     reader, writer = await asyncio.open_connection("127.0.0.1", port)
     try:
-        writer.write(
-            f"{method} {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\n\r\n".encode()
-        )
+        writer.write(f"{method} {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\n\r\n".encode())
         await writer.drain()
         data = await asyncio.wait_for(reader.read(65536), timeout=10.0)
         return data.decode("utf-8", errors="replace")
@@ -1783,16 +1548,15 @@ async def _raw_response(port, method, path):
 class TestBackendErrorStatusMapping:
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
-        ("backend_status", "expected_status"),
-        [(401, 401), (403, 401), (500, 502)],
+        ("backend_status", "expected_status"), [(401, 401), (403, 401), (500, 502)]
     )
     async def test_backend_dispatch_errors_map_to_http_status(
-        self, backend_status, expected_status,
+        self, backend_status, expected_status
     ):
         srv, port = await _error_server(BackendError(backend_status, "failed"))
         try:
             status, _ = await _raw_request(
-                port, [], {"messages": [{"role": "user", "content": "hi"}]},
+                port, [], {"messages": [{"role": "user", "content": "hi"}]}
             )
             assert status == expected_status
         finally:
@@ -1802,18 +1566,15 @@ class TestBackendErrorStatusMapping:
 class TestSecretHygiene:
     @pytest.mark.asyncio
     async def test_backend_error_body_secret_not_leaked_to_client(self):
-        # A backend that echoes the inbound auth header in its raw error body
-        # must not leak it: the raw body rides exc.body (off the message), so the
-        # proxy returns only the safe "Backend returned <status>" summary.
         srv, port = await _error_server(
-            BackendError(500, raw_body="rejected Authorization: Bearer sk-leak-7777"),
+            BackendError(500, raw_body="rejected Authorization: Bearer sk-leak-7777")
         )
         try:
             _, body = await _raw_request(
-                port, [], {"messages": [{"role": "user", "content": "hi"}]},
+                port, [], {"messages": [{"role": "user", "content": "hi"}]}
             )
             assert "sk-leak-7777" not in body
-            assert "Backend returned 500" in body  # safe status summary only
+            assert "Backend returned 500" in body
         finally:
             await srv.stop()
 
@@ -1827,14 +1588,8 @@ class TestStreamingErrorStatus:
     @pytest.mark.parametrize(
         "header_lines",
         [
-            [
-                "Authorization: Bearer SECRET-ONE",
-                "Authorization: Bearer SECRET-TWO",
-            ],
-            [
-                "Authorization: Bearer SECRET-ONE",
-                "X-Api-Key: SECRET-TWO",
-            ],
+            ["Authorization: Bearer SECRET-ONE", "Authorization: Bearer SECRET-TWO"],
+            ["Authorization: Bearer SECRET-ONE", "X-Api-Key: SECRET-TWO"],
         ],
         ids=["repeated-slot", "unequal-pair"],
     )
@@ -1846,7 +1601,7 @@ class TestStreamingErrorStatus:
                 header_lines,
                 {"messages": [{"role": "user", "content": "hi"}], "stream": True},
             )
-            assert status == 400  # real status, not 200 + an SSE error event
+            assert status == 400
             assert "SECRET-ONE" not in body and "SECRET-TWO" not in body
             client.send.assert_not_awaited()
         finally:
@@ -1855,21 +1610,19 @@ class TestStreamingErrorStatus:
     @pytest.mark.asyncio
     async def test_streaming_discovery_failure_returns_401_not_200(self):
         srv, port, client, _ = await _discovery_server(
-            side_effect=BackendError(401, "unauthorized"),
+            side_effect=BackendError(401, "unauthorized")
         )
         try:
             status, _ = await _raw_request(
-                port, [],
-                {"messages": [{"role": "user", "content": "hi"}], "stream": True},
+                port, [], {"messages": [{"role": "user", "content": "hi"}], "stream": True}
             )
-            assert status == 401  # deferred-discovery 401 surfaces before the stream
+            assert status == 401
             client.send.assert_not_awaited()
         finally:
             await srv.stop()
 
     @pytest.mark.asyncio
     async def test_streaming_success_still_sse_200(self):
-        # The success path is unchanged: header flushes and SSE events stream.
         srv, port, client = await _auth_server(serialize=False)
         try:
             status, body = await _raw_request(
@@ -1890,11 +1643,9 @@ class TestChatCompletionsAlias:
 
     @pytest.mark.asyncio
     async def test_unprefixed_chat_completions_routes(self, server_factory):
-        srv, port = await server_factory(TextResponse(content="Hello!"))
+        srv, port = await server_factory(text_reply("Hello!"))
         body = {"messages": [{"role": "user", "content": "hi"}]}
-        status, response_body = await _http_request(
-            port, "POST", "/chat/completions", body,
-        )
+        status, response_body = await _http_request(port, "POST", "/chat/completions", body)
         assert status == 200
         data = json.loads(response_body)
         assert data["choices"][0]["message"]["content"] == "Hello!"
@@ -1909,8 +1660,11 @@ class TestCorsAllowsApiKey:
             raw = await _raw_response(port, "OPTIONS", "/v1/chat/completions")
             assert raw.startswith("HTTP/1.1 204")
             allow = next(
-                line for line in raw.splitlines()
-                if line.lower().startswith("access-control-allow-headers")
+                (
+                    line
+                    for line in raw.splitlines()
+                    if line.lower().startswith("access-control-allow-headers")
+                )
             )
             assert "x-api-key" in allow.lower()
         finally:

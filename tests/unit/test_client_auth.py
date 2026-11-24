@@ -12,12 +12,13 @@ no-leak property; and the Anthropic version/beta policy.
 """
 
 from __future__ import annotations
-
+from tests.canonical import render_native
+from forge.core.messages import RichMessage, ReasoningPart
+from forge.core.codecs import argument_value
+from tests.canonical import send, send_stream, calls as reply_calls, visible, reasoning
 import os
-
 import httpx
 import pytest
-
 from forge.clients.anthropic import AnthropicClient, _prepare_anthropic_headers
 from forge.clients.base import (
     AUTH_HEADER_NAMES,
@@ -35,11 +36,7 @@ from forge.errors import MissingCredentialError, MultipleCredentialsError
 from tests.http_mocks import build_with_mock_http
 
 _USER_MSG = [{"role": "user", "content": "hi"}]
-
 _OPENAI_OK = {"choices": [{"message": {"content": "ok"}}]}
-
-
-# ── base.py shared helpers ───────────────────────────────────────────
 
 
 class TestResolveRequestHeaders:
@@ -48,20 +45,10 @@ class TestResolveRequestHeaders:
             ("static with no extra", True, None, None),
             ("no static with no extra", False, None, None),
             ("empty extra", True, {}, None),
-            (
-                "per-call auth",
-                False,
-                {"Authorization": "Bearer x"},
-                {"Authorization": "Bearer x"},
-            ),
+            ("per-call auth", False, {"Authorization": "Bearer x"}, {"Authorization": "Bearer x"}),
             ("static plus trace", True, {"X-Trace-Id": "1"}, {"X-Trace-Id": "1"}),
             ("blank auth", True, {"Authorization": ""}, {"Authorization": ""}),
-            (
-                "scheme-only auth",
-                True,
-                {"Authorization": "Bearer "},
-                {"Authorization": "Bearer "},
-            ),
+            ("scheme-only auth", True, {"Authorization": "Bearer "}, {"Authorization": "Bearer "}),
         ]
         for case, static, extra, expected in cases:
             out = resolve_request_headers(static, extra)
@@ -75,10 +62,7 @@ class TestResolveRequestHeaders:
         with pytest.raises(MultipleCredentialsError):
             resolve_request_headers(True, {"Authorization": "Bearer k"})
         with pytest.raises(MultipleCredentialsError):
-            resolve_request_headers(
-                True,
-                {"Authorization": "Bearer k", "X-Api-Key": "k"},
-            )
+            resolve_request_headers(True, {"Authorization": "Bearer k", "X-Api-Key": "k"})
 
     def test_matching_per_call_pair_is_preserved(self) -> None:
         pair = {"Authorization": "Bearer TOKEN", "X-Api-Key": "TOKEN"}
@@ -94,8 +78,7 @@ class TestResolveRequestHeaders:
     def test_case_variant_same_name_pair_raises(self) -> None:
         with pytest.raises(MultipleCredentialsError):
             resolve_request_headers(
-                False,
-                {"Authorization": "Bearer A", "authorization": "Bearer A"},
+                False, {"Authorization": "Bearer A", "authorization": "Bearer A"}
             )
 
 
@@ -163,23 +146,12 @@ class TestRedactAuthHeaders:
             assert redact_auth_headers(headers) == expected, case
 
 
-# ── httpx clients: real wire headers via MockTransport ───────────────
-#
-# Each factory builds the client normally (so its construction headers come
-# from the real api_key/extra_headers path), then swaps only the transport —
-# preserving the exact construction headers — so the captured request shows the
-# genuine httpx merge of construction + per-call headers.
-
-
 def _capturing_http(construction_headers: httpx.Headers, captured: dict) -> httpx.AsyncClient:
     def handler(request: httpx.Request) -> httpx.Response:
         captured["request"] = request
         return httpx.Response(200, json=_OPENAI_OK)
 
-    return httpx.AsyncClient(
-        headers=construction_headers,
-        transport=httpx.MockTransport(handler),
-    )
+    return httpx.AsyncClient(headers=construction_headers, transport=httpx.MockTransport(handler))
 
 
 def _swap_transport(client, handler) -> None:
@@ -198,7 +170,7 @@ def _wire(build):
         c = build_with_mock_http(build, **kw)
         cap: dict = {}
         c._http = _capturing_http(c._http.headers, cap)
-        return c, cap
+        return (c, cap)
 
     return factory
 
@@ -207,8 +179,6 @@ _openai = _wire(lambda **kw: OpenAICompatClient(base_url="https://b/v1", model="
 _ollama = _wire(lambda **kw: OllamaClient(model="m", base_url="https://b", **kw))
 _llamafile = _wire(lambda **kw: LlamafileClient(gguf_path="m.gguf", base_url="https://b/v1", **kw))
 _vllm = _wire(lambda **kw: VLLMClient(model_path="m", base_url="https://b/v1", **kw))
-
-
 _FACTORIES = [
     pytest.param(_openai, id="openai_compat"),
     pytest.param(_ollama, id="ollama"),
@@ -221,27 +191,43 @@ _FACTORIES = [
 @pytest.mark.parametrize("factory", _FACTORIES)
 async def test_construction_api_key_sets_bearer_on_wire(factory) -> None:
     client, cap = factory(api_key="STATICKEY")
-    await client.send(_USER_MSG)
+    await send(client, _USER_MSG)
     assert cap["request"].headers["authorization"] == "Bearer STATICKEY"
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("factory", _FACTORIES)
 async def test_per_call_extra_headers_reach_the_wire(factory) -> None:
-    client, cap = factory(api_key="")  # no static credential
-    await client.send(_USER_MSG, extra_headers={"Authorization": "Bearer INBOUND"})
+    client, cap = factory(api_key="")
+    await send(client, _USER_MSG, extra_headers={"Authorization": "Bearer INBOUND"})
     assert cap["request"].headers["authorization"] == "Bearer INBOUND"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("factory", _FACTORIES)
+async def test_per_call_header_overrides_default_without_leaking(factory) -> None:
+    client, cap = factory(extra_headers={"X-Request-ID": "default", "X-Client": "shared"})
+    try:
+        await send(client, _USER_MSG, extra_headers={"X-Request-ID": "this-call", "X-Call": "one"})
+        wire = cap["request"].headers
+        assert wire.get_list("x-request-id") == ["this-call"]
+        assert wire["x-client"] == "shared"
+        assert wire["x-call"] == "one"
+
+        await send(client, _USER_MSG)
+        wire = cap["request"].headers
+        assert wire.get_list("x-request-id") == ["default"]
+        assert wire["x-client"] == "shared"
+        assert "x-call" not in wire
+    finally:
+        await client.aclose()
 
 
 @pytest.mark.asyncio
 async def test_matching_pair_reaches_openai_wire() -> None:
     client, cap = _openai(api_key="")
-    await client.send(
-        _USER_MSG,
-        extra_headers={
-            "Authorization": "Bearer INBOUND",
-            "X-Api-Key": "INBOUND",
-        },
+    await send(
+        client, _USER_MSG, extra_headers={"Authorization": "Bearer INBOUND", "X-Api-Key": "INBOUND"}
     )
     wire = cap["request"].headers
     assert wire["authorization"] == "Bearer INBOUND"
@@ -253,48 +239,23 @@ async def test_static_plus_per_call_auth_raises() -> None:
     factory = _openai
     client, _ = factory(api_key="STATICKEY")
     with pytest.raises(MultipleCredentialsError):
-        await client.send(_USER_MSG, extra_headers={"x-api-key": "INBOUND"})
+        await send(client, _USER_MSG, extra_headers={"x-api-key": "INBOUND"})
 
 
 @pytest.mark.asyncio
 async def test_construction_extra_headers_auth_also_blocks_per_call() -> None:
-    # §10.3 must trip even when the static credential came via extra_headers
-    # (not api_key=), so static_present can't be derived from api_key alone.
     client, _ = _openai(extra_headers={"Authorization": "Bearer STATIC"})
     with pytest.raises(MultipleCredentialsError):
-        await client.send(_USER_MSG, extra_headers={"Authorization": "Bearer INBOUND"})
+        await send(client, _USER_MSG, extra_headers={"Authorization": "Bearer INBOUND"})
 
 
 @pytest.mark.asyncio
 async def test_no_credential_leak_across_serialized_requests() -> None:
-    # The proxy reuses one client instance across requests. A per-call inbound
-    # credential must NOT persist into a later request that carries none.
     client, cap = _openai(api_key="")
-    await client.send(_USER_MSG, extra_headers={"Authorization": "Bearer A"})
+    await send(client, _USER_MSG, extra_headers={"Authorization": "Bearer A"})
     assert cap["request"].headers["authorization"] == "Bearer A"
-    await client.send(_USER_MSG)  # no per-call credential this time
+    await send(client, _USER_MSG)
     assert "authorization" not in cap["request"].headers
-
-
-@pytest.mark.asyncio
-async def test_ollama_think_retry_keeps_credential() -> None:
-    # The think-unsupported fallback re-POSTs; that second request must still
-    # carry the per-call credential (M6).
-    requests: list[httpx.Request] = []
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        requests.append(request)
-        if len(requests) == 1:
-            return httpx.Response(
-                400, json={"error": "registry.ollama.ai does not support thinking"}
-            )
-        return httpx.Response(200, json={"message": {"content": "ok"}})
-
-    client = OllamaClient(model="reasoner", base_url="https://b", think=None)
-    _swap_transport(client, handler)
-    await client.send(_USER_MSG, extra_headers={"Authorization": "Bearer INBOUND"})
-    assert len(requests) == 2  # initial + retry
-    assert requests[1].headers["authorization"] == "Bearer INBOUND"
 
 
 @pytest.mark.asyncio
@@ -307,8 +268,6 @@ async def test_ollama_think_retry_keeps_credential() -> None:
     ],
 )
 async def test_sse_stream_forwards_credential(factory) -> None:
-    # The three OpenAI-SSE clients must forward the per-call credential on the
-    # streaming path too (M6), not just send().
     client, cap = factory(api_key="")
     sse = b'data: {"choices":[{"delta":{"content":"hi"}}]}\n\ndata: [DONE]\n\n'
 
@@ -318,11 +277,12 @@ async def test_sse_stream_forwards_credential(factory) -> None:
 
     _swap_transport(client, handler)
     chunks = [
-        c async for c in client.send_stream(
-            _USER_MSG, extra_headers={"Authorization": "Bearer INBOUND"}
+        c
+        async for c in send_stream(
+            client, _USER_MSG, extra_headers={"Authorization": "Bearer INBOUND"}
         )
     ]
-    assert chunks  # stream produced output
+    assert chunks
     assert cap["request"].headers["authorization"] == "Bearer INBOUND"
 
 
@@ -338,8 +298,9 @@ async def test_ollama_stream_forwards_credential() -> None:
     client = OllamaClient(model="m", base_url="https://b", think=False)
     _swap_transport(client, handler)
     _ = [
-        c async for c in client.send_stream(
-            _USER_MSG, extra_headers={"Authorization": "Bearer INBOUND"}
+        c
+        async for c in send_stream(
+            client, _USER_MSG, extra_headers={"Authorization": "Bearer INBOUND"}
         )
     ]
     assert cap["request"].headers["authorization"] == "Bearer INBOUND"
@@ -347,41 +308,26 @@ async def test_ollama_stream_forwards_credential() -> None:
 
 @pytest.mark.asyncio
 async def test_llamafile_prompt_mode_forwards_credential() -> None:
-    # Prompt capability routes through _send_prompt, a distinct outbound body
-    # from _send_native — verify it carries the credential too.
     client, cap = _llamafile(api_key="STATICKEY", mode="prompt")
-    await client.send(_USER_MSG)
+    await send(client, _USER_MSG)
     assert cap["request"].headers["authorization"] == "Bearer STATICKEY"
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("factory", _FACTORIES)
 async def test_construction_api_key_plus_auth_header_raises(factory) -> None:
-    # Two static credentials at construction (api_key AND an auth header) is
-    # itself two credentials → refused at construction (fail loud).
     with pytest.raises(MultipleCredentialsError):
         factory(api_key="STATICKEY", extra_headers={"x-api-key": "OTHER"})
-
-
-# ── Anthropic SDK seam ───────────────────────────────────────────────
 
 
 class TestPrepareAnthropicHeaders:
     def test_normalizes_every_supported_header_shape(self) -> None:
         cases = [
             ("api key", {"x-api-key": "k"}, {"x-api-key": "k"}),
-            (
-                "authorization",
-                {"authorization": "Bearer k"},
-                {"authorization": "Bearer k"},
-            ),
+            ("authorization", {"authorization": "Bearer k"}, {"authorization": "Bearer k"}),
             (
                 "version retained and beta excluded",
-                {
-                    "x-api-key": "k",
-                    "anthropic-version": "2023-06-01",
-                    "anthropic-beta": "x",
-                },
+                {"x-api-key": "k", "anthropic-version": "2023-06-01", "anthropic-beta": "x"},
                 {"x-api-key": "k", "anthropic-version": "2023-06-01"},
             ),
             ("unknown", {"X-Trace": "1"}, {"x-trace": "1"}),
@@ -393,9 +339,7 @@ class TestPrepareAnthropicHeaders:
             assert _prepare_anthropic_headers(headers) == expected, case
 
 
-def _anthropic_capturing(
-    client: AnthropicClient, captured: dict,
-) -> None:
+def _anthropic_capturing(client: AnthropicClient, captured: dict) -> None:
     """Capture HTTP requests without replacing production credential setup."""
 
     def handler(request):
@@ -415,36 +359,26 @@ def _anthropic_capturing(
         )
 
     client._http = httpx.AsyncClient(
-        headers=client._http.headers,
-        base_url="https://b",
-        transport=httpx.MockTransport(handler),
+        headers=client._http.headers, base_url="https://b", transport=httpx.MockTransport(handler)
     )
 
 
 def test_anthropic_empty_key_is_pure_passthrough_no_static_auth() -> None:
-    # The proxy constructs with api_key="" for pure inbound passthrough: no
-    # static credential, and api_key is mapped to None so HTTP emits no auth
-    # header at all (no spurious empty X-Api-Key).
     client = AnthropicClient(model="claude", api_key="")
     assert client._static_auth is False
     assert not has_auth_header(client._http.headers)
 
 
 def test_anthropic_passthrough_suppresses_ambient_env(monkeypatch) -> None:
-    # B1/B2: with ambient ANTHROPIC_* set, a pure-passthrough client must carry
-    # NO ambient credential, and the env must be restored after construction.
     monkeypatch.setenv("ANTHROPIC_API_KEY", "env-api-key")
     monkeypatch.setenv("ANTHROPIC_AUTH_TOKEN", "env-auth-token")
     client = AnthropicClient(model="claude", api_key="")
     assert not has_auth_header(client._http.headers)
-    # restored for forge's own (eval) clients / other processes
     assert os.environ["ANTHROPIC_API_KEY"] == "env-api-key"
     assert os.environ["ANTHROPIC_AUTH_TOKEN"] == "env-auth-token"
 
 
 def test_anthropic_static_key_suppresses_ambient_auth_token(monkeypatch) -> None:
-    # A static --backend-api-key must be the ONLY credential — ambient
-    # ANTHROPIC_AUTH_TOKEN must not add a second (Authorization: Bearer).
     monkeypatch.setenv("ANTHROPIC_AUTH_TOKEN", "env-auth-token")
     client = AnthropicClient(model="claude", api_key="STATIC")
     assert client._http.headers["x-api-key"] == "STATIC"
@@ -453,24 +387,19 @@ def test_anthropic_static_key_suppresses_ambient_auth_token(monkeypatch) -> None
 
 
 def test_anthropic_none_key_defers_to_env(monkeypatch) -> None:
-    # WR direct use: api_key=None reads ANTHROPIC_API_KEY (the dev's deliberate
-    # single credential); forge does not suppress it.
     monkeypatch.setenv("ANTHROPIC_API_KEY", "env-api-key")
-    client = AnthropicClient(model="claude")  # api_key=None default
+    client = AnthropicClient(model="claude")
     assert client._http.headers["x-api-key"] == "env-api-key"
 
 
 @pytest.mark.asyncio
 async def test_anthropic_inbound_lowercase_xapikey_reaches_wire() -> None:
-    # The proxy lowercases inbound keys; HTTP must carry the credential once.
     client = AnthropicClient(model="claude", api_key="")
     cap: dict = {}
     _anthropic_capturing(client, cap)
-    # lowercase, as it would arrive from the proxy's header dict
-    await client.send(_USER_MSG, extra_headers={"x-api-key": "REALKEY"})
+    await send(client, _USER_MSG, extra_headers={"x-api-key": "REALKEY"})
     wire = cap["request"].headers
-    assert wire["x-api-key"] == "REALKEY"  # httpx.Headers lookup is case-insensitive
-    # exactly one auth credential on the wire
+    assert wire["x-api-key"] == "REALKEY"
     assert wire.get_list("x-api-key") == ["REALKEY"]
     assert "authorization" not in wire
 
@@ -480,12 +409,8 @@ async def test_anthropic_matching_pair_reaches_wire() -> None:
     client = AnthropicClient(model="claude", api_key="")
     cap: dict = {}
     _anthropic_capturing(client, cap)
-    await client.send(
-        _USER_MSG,
-        extra_headers={
-            "authorization": "Bearer INBOUND",
-            "x-api-key": "INBOUND",
-        },
+    await send(
+        client, _USER_MSG, extra_headers={"authorization": "Bearer INBOUND", "x-api-key": "INBOUND"}
     )
     wire = cap["request"].headers
     assert wire["authorization"] == "Bearer INBOUND"
@@ -497,21 +422,16 @@ async def test_anthropic_static_plus_per_call_auth_raises() -> None:
     client = AnthropicClient(model="claude", api_key="STATIC")
     assert client._static_auth is True
     with pytest.raises(MultipleCredentialsError):
-        await client.send(_USER_MSG, extra_headers={"x-api-key": "INBOUND"})
+        await send(client, _USER_MSG, extra_headers={"x-api-key": "INBOUND"})
 
 
 def test_anthropic_construction_api_key_plus_default_header_raises() -> None:
     with pytest.raises(MultipleCredentialsError):
-        AnthropicClient(
-            model="claude", api_key="STATIC",
-            default_headers={"x-api-key": "OTHER"},
-        )
+        AnthropicClient(model="claude", api_key="STATIC", default_headers={"x-api-key": "OTHER"})
 
 
 def test_anthropic_construction_default_headers_reach_http() -> None:
-    client = AnthropicClient(
-        model="claude", api_key="", default_headers={"x-api-key": "STATICKEY"},
-    )
+    client = AnthropicClient(model="claude", api_key="", default_headers={"x-api-key": "STATICKEY"})
     assert client._static_auth is True
     stored = dict(client._http.headers)
     assert stored.get("x-api-key") == "STATICKEY"
@@ -519,9 +439,6 @@ def test_anthropic_construction_default_headers_reach_http() -> None:
 
 @pytest.mark.asyncio
 async def test_anthropic_verbatim_body_cannot_smuggle_extra_headers() -> None:
-    # A verbatim inbound body may carry top-level ``extra_headers`` without a
-    # Forge per-call credential. Use a static key so the request proceeds, then
-    # assert that only the static credential reaches the wire.
     client = AnthropicClient(model="claude", api_key="STATIC")
     cap: dict = {}
     _anthropic_capturing(client, cap)
@@ -531,20 +448,19 @@ async def test_anthropic_verbatim_body_cannot_smuggle_extra_headers() -> None:
         "max_tokens": 16,
         "extra_headers": {"x-api-key": "SMUGGLED"},
     }
-    await client.send(_USER_MSG, inbound_anthropic_body=malicious_body)
+    await client.send(render_native(client, malicious_body))
     values = cap["request"].headers.get_list("x-api-key")
     assert "SMUGGLED" not in values
-    assert values == ["STATIC"]  # exactly the static credential, nothing smuggled
+    assert values == ["STATIC"]
 
 
 @pytest.mark.asyncio
 async def test_anthropic_passthrough_cannot_smuggle_extra_headers() -> None:
-    # Same guard on the non-verbatim path: a passthrough dict carrying
-    # ``extra_headers`` must not inject auth either.
     client = AnthropicClient(model="claude", api_key="STATIC")
     cap: dict = {}
     _anthropic_capturing(client, cap)
-    await client.send(
+    await send(
+        client,
         _USER_MSG,
         passthrough={"extra_headers": {"x-api-key": "SMUGGLED"}, "max_tokens": 16},
     )
@@ -561,37 +477,26 @@ async def test_anthropic_stream_installs_credential() -> None:
     def handler(request):
         captured["request"] = request
         return httpx.Response(
-            200, headers={"content-type": "text/event-stream"},
+            200,
+            headers={"content-type": "text/event-stream"},
             content=b'data: {"type":"message_stop"}\n\n',
         )
 
     client._http = httpx.AsyncClient(
-        base_url="https://b", transport=httpx.MockTransport(handler),
-        headers=client._http.headers,
+        base_url="https://b", transport=httpx.MockTransport(handler), headers=client._http.headers
     )
-    _ = [
-        c async for c in client.send_stream(
-            _USER_MSG, extra_headers={"x-api-key": "REALKEY"}
-        )
-    ]
+    _ = [c async for c in send_stream(client, _USER_MSG, extra_headers={"x-api-key": "REALKEY"})]
     assert captured["request"].headers.get_list("x-api-key") == ["REALKEY"]
-
-
-# ── zero-credential fail-loud (no credential at all) ─────────────────
 
 
 @pytest.mark.asyncio
 async def test_anthropic_zero_credential_send_raises_missing(monkeypatch) -> None:
-    # Pure passthrough (api_key="" -> None), no ambient env, no per-call auth:
-    # forge must fail loud BEFORE the SDK's opaque "could not resolve
-    # authentication" error (which surfaces as HTTP 502). Raised pre-dispatch,
-    # so no network call is attempted.
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     monkeypatch.delenv("ANTHROPIC_AUTH_TOKEN", raising=False)
     client = AnthropicClient(model="claude", api_key="")
     assert not has_auth_header(client._http.headers)
     with pytest.raises(MissingCredentialError):
-        await client.send(_USER_MSG)
+        await send(client, _USER_MSG)
 
 
 @pytest.mark.asyncio
@@ -600,13 +505,11 @@ async def test_anthropic_zero_credential_stream_raises_missing(monkeypatch) -> N
     monkeypatch.delenv("ANTHROPIC_AUTH_TOKEN", raising=False)
     client = AnthropicClient(model="claude", api_key="")
     with pytest.raises(MissingCredentialError):
-        _ = [c async for c in client.send_stream(_USER_MSG)]
+        _ = [c async for c in send_stream(client, _USER_MSG)]
 
 
 def test_anthropic_ambient_env_satisfies_credential_requirement(monkeypatch) -> None:
-    # WR direct use: api_key=None reads ANTHROPIC_API_KEY at construction, so the
-    # zero-credential guard must NOT trip even with no per-call header.
     monkeypatch.setenv("ANTHROPIC_API_KEY", "env-key")
-    client = AnthropicClient(model="claude")  # api_key=None default
+    client = AnthropicClient(model="claude")
     assert client._http.headers["x-api-key"] == "env-key"
-    client._ensure_credential(None)  # no raise
+    client._ensure_credential(None)

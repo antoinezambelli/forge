@@ -3,27 +3,19 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncIterator
 from functools import partial
-from unittest.mock import AsyncMock
 
 import pytest
 
 from forge.context.manager import ContextManager
 from forge.context.strategies import NoCompact
-from forge.core.messages import MessageType
+from forge.core.messages import TextPart
 from forge.core.runner import WorkflowRunner
 from forge.core.slot_worker import SlotWorker
-from forge.core.workflow import (
-    TextResponse,
-    ToolCall,
-    ToolDef,
-    ToolSpec,
-    Workflow,
-)
+from forge.core.workflow import ToolDefinition, Workflow
 from forge.errors import WorkflowCancelledError
-from pydantic import BaseModel
 
+from tests.canonical import assistant, call
 from tests.conftest import MockClient as _SharedMockClient
 
 # SlotWorker tests never stream; the shared double's send_stream is left
@@ -31,30 +23,26 @@ from tests.conftest import MockClient as _SharedMockClient
 MockClient = partial(_SharedMockClient, stream_mode="unsupported")
 
 
-class EmptyParams(BaseModel):
-    pass
+EMPTY_SCHEMA = {"properties": {}, "title": "EmptyParams", "type": "object"}
 
 
 # ── Helpers ──────────────────────────────────────────────────
 
 
-def _make_tool(name: str, fn=None) -> ToolDef:
-    if fn is None:
-        fn = lambda **kwargs: f"{name}_result"
-    return ToolDef(
-        spec=ToolSpec(name=name, description=f"Tool {name}", parameters=EmptyParams),
-        callable=fn,
-    )
+def _make_tool(name: str) -> ToolDefinition:
+    return ToolDefinition(name=name, description=f"Tool {name}", input_schema=EMPTY_SCHEMA)
 
 
 def _make_workflow(terminal_tool: str = "submit") -> Workflow:
     return Workflow(
         name="test_wf",
         description="A test workflow",
-        tools={
-            "fetch": _make_tool("fetch"),
-            terminal_tool: _make_tool(terminal_tool),
+        tools={"fetch": _make_tool("fetch"), terminal_tool: _make_tool(terminal_tool)},
+        handlers={
+            "fetch": (lambda **kw: "fetch" + "_result"),
+            terminal_tool: (lambda **kw: terminal_tool + "_result"),
         },
+        prerequisites={},
         required_steps=["fetch"],
         terminal_tool=terminal_tool,
         system_prompt_template="You are a {role}.",
@@ -71,19 +59,13 @@ def _make_worker(client: _SharedMockClient) -> SlotWorker:
 
 
 class TestBasicOperation:
-
     @pytest.mark.asyncio
     async def test_submit_returns_result(self):
-        client = MockClient([
-            ToolCall(tool="fetch", args={}),
-            ToolCall(tool="submit", args={}),
-        ])
+        client = MockClient([assistant(call("fetch", {})), assistant(call("submit", {}))])
         worker = _make_worker(client)
         await worker.start()
         try:
-            result = await worker.submit(
-                _make_workflow(), "go", prompt_vars={"role": "dev"},
-            )
+            result = await worker.submit(_make_workflow(), "go", prompt_vars={"role": "dev"})
             assert result == "submit_result"
         finally:
             await worker.stop()
@@ -97,20 +79,20 @@ class TestBasicOperation:
             def fn(**kw):
                 order.append(tag)
                 return f"{tag}_done"
-            client = MockClient([
-                ToolCall(tool="fetch", args={}),
-                ToolCall(tool="submit", args={}),
-            ])
+
+            client = MockClient([assistant(call("fetch", {})), assistant(call("submit", {}))])
             return client, fn
 
         # We need a single client that can handle multiple sequential workflows.
         # Use a client with enough responses for 2 sequential workflows.
-        client = MockClient([
-            ToolCall(tool="fetch", args={}),
-            ToolCall(tool="submit", args={}),
-            ToolCall(tool="fetch", args={}),
-            ToolCall(tool="submit", args={}),
-        ])
+        client = MockClient(
+            [
+                assistant(call("fetch", {})),
+                assistant(call("submit", {})),
+                assistant(call("fetch", {})),
+                assistant(call("submit", {})),
+            ]
+        )
 
         def track_first(**kw):
             order.append("first")
@@ -121,15 +103,23 @@ class TestBasicOperation:
             return "second_result"
 
         wf1 = Workflow(
-            name="wf1", description="first",
-            tools={"fetch": _make_tool("fetch"), "submit": _make_tool("submit", fn=track_first)},
-            required_steps=["fetch"], terminal_tool="submit",
+            name="wf1",
+            description="first",
+            tools={"fetch": _make_tool("fetch"), "submit": _make_tool("submit")},
+            handlers={"fetch": (lambda **kw: "fetch" + "_result"), "submit": track_first},
+            prerequisites={},
+            required_steps=["fetch"],
+            terminal_tool="submit",
             system_prompt_template="You are a {role}.",
         )
         wf2 = Workflow(
-            name="wf2", description="second",
-            tools={"fetch": _make_tool("fetch"), "submit": _make_tool("submit", fn=track_second)},
-            required_steps=["fetch"], terminal_tool="submit",
+            name="wf2",
+            description="second",
+            tools={"fetch": _make_tool("fetch"), "submit": _make_tool("submit")},
+            handlers={"fetch": (lambda **kw: "fetch" + "_result"), "submit": track_second},
+            prerequisites={},
+            required_steps=["fetch"],
+            terminal_tool="submit",
             system_prompt_template="You are a {role}.",
         )
 
@@ -166,7 +156,6 @@ class TestBasicOperation:
 
 
 class TestPriority:
-
     @pytest.mark.asyncio
     async def test_higher_priority_runs_first_when_queued(self):
         """When multiple tasks are queued, lower int runs first."""
@@ -189,29 +178,39 @@ class TestPriority:
             return "low_result"
 
         # First workflow blocks, then two more queue up
-        client = MockClient([
-            # First workflow (blocker)
-            ToolCall(tool="fetch", args={}),
-            ToolCall(tool="submit", args={}),
-            # High priority (should run second)
-            ToolCall(tool="fetch", args={}),
-            ToolCall(tool="submit", args={}),
-            # Low priority (should run third)
-            ToolCall(tool="fetch", args={}),
-            ToolCall(tool="submit", args={}),
-        ])
+        client = MockClient(
+            [
+                # First workflow (blocker)
+                assistant(call("fetch", {})),
+                assistant(call("submit", {})),
+                # High priority (should run second)
+                assistant(call("fetch", {})),
+                assistant(call("submit", {})),
+                # Low priority (should run third)
+                assistant(call("fetch", {})),
+                assistant(call("submit", {})),
+            ]
+        )
 
         wf_blocker = _make_workflow()
         wf_high = Workflow(
-            name="high", description="high",
-            tools={"fetch": _make_tool("fetch"), "submit": _make_tool("submit", fn=track_high)},
-            required_steps=["fetch"], terminal_tool="submit",
+            name="high",
+            description="high",
+            tools={"fetch": _make_tool("fetch"), "submit": _make_tool("submit")},
+            handlers={"fetch": (lambda **kw: "fetch" + "_result"), "submit": track_high},
+            prerequisites={},
+            required_steps=["fetch"],
+            terminal_tool="submit",
             system_prompt_template="You are a {role}.",
         )
         wf_low = Workflow(
-            name="low", description="low",
-            tools={"fetch": _make_tool("fetch"), "submit": _make_tool("submit", fn=track_low)},
-            required_steps=["fetch"], terminal_tool="submit",
+            name="low",
+            description="low",
+            tools={"fetch": _make_tool("fetch"), "submit": _make_tool("submit")},
+            handlers={"fetch": (lambda **kw: "fetch" + "_result"), "submit": track_low},
+            prerequisites={},
+            required_steps=["fetch"],
+            terminal_tool="submit",
             system_prompt_template="You are a {role}.",
         )
 
@@ -242,17 +241,12 @@ class TestPriority:
     @pytest.mark.asyncio
     async def test_default_priority_is_zero(self):
         """Default priority is 0 (equal for all tasks)."""
-        client = MockClient([
-            ToolCall(tool="fetch", args={}),
-            ToolCall(tool="submit", args={}),
-        ])
+        client = MockClient([assistant(call("fetch", {})), assistant(call("submit", {}))])
         worker = _make_worker(client)
         await worker.start()
         try:
             # Submit without explicit priority
-            result = await worker.submit(
-                _make_workflow(), "go", prompt_vars={"role": "dev"},
-            )
+            result = await worker.submit(_make_workflow(), "go", prompt_vars={"role": "dev"})
             assert result == "submit_result"
         finally:
             await worker.stop()
@@ -262,7 +256,6 @@ class TestPriority:
 
 
 class TestPreemption:
-
     @pytest.mark.asyncio
     async def test_cancel_current(self):
         """cancel_current() cancels the running workflow."""
@@ -272,28 +265,27 @@ class TestPreemption:
             await gate.wait()
             return "fetch_result"
 
-        client = MockClient([
-            ToolCall(tool="fetch", args={}),
-        ])
+        client = MockClient([assistant(call("fetch", {}))])
         wf = Workflow(
-            name="slow", description="slow",
+            name="slow",
+            description="slow",
             tools={
-                "fetch": ToolDef(
-                    spec=ToolSpec(name="fetch", description="fetch", parameters=EmptyParams),
-                    callable=slow_fetch,
+                "fetch": ToolDefinition(
+                    name="fetch", description="fetch", input_schema=EMPTY_SCHEMA
                 ),
                 "submit": _make_tool("submit"),
             },
-            required_steps=["fetch"], terminal_tool="submit",
+            handlers={"fetch": slow_fetch, "submit": (lambda **kw: "submit" + "_result")},
+            prerequisites={},
+            required_steps=["fetch"],
+            terminal_tool="submit",
             system_prompt_template="You are a {role}.",
         )
 
         worker = _make_worker(client)
         await worker.start()
         try:
-            task = asyncio.create_task(
-                worker.submit(wf, "go", prompt_vars={"role": "dev"})
-            )
+            task = asyncio.create_task(worker.submit(wf, "go", prompt_vars={"role": "dev"}))
             await asyncio.sleep(0.05)  # let the worker start
             worker.cancel_current()
             gate.set()  # unblock the tool so the runner can check cancel
@@ -313,21 +305,26 @@ class TestPreemption:
             return "fetch_result"
 
         # Slow workflow on slot (priority 10)
-        client = MockClient([
-            ToolCall(tool="fetch", args={}),  # slow task
-            ToolCall(tool="fetch", args={}),  # high-priority task
-            ToolCall(tool="submit", args={}),
-        ])
+        client = MockClient(
+            [
+                assistant(call("fetch", {})),  # slow task
+                assistant(call("fetch", {})),  # high-priority task
+                assistant(call("submit", {})),
+            ]
+        )
         wf_slow = Workflow(
-            name="slow", description="slow",
+            name="slow",
+            description="slow",
             tools={
-                "fetch": ToolDef(
-                    spec=ToolSpec(name="fetch", description="fetch", parameters=EmptyParams),
-                    callable=slow_fetch,
+                "fetch": ToolDefinition(
+                    name="fetch", description="fetch", input_schema=EMPTY_SCHEMA
                 ),
                 "submit": _make_tool("submit"),
             },
-            required_steps=["fetch"], terminal_tool="submit",
+            handlers={"fetch": slow_fetch, "submit": (lambda **kw: "submit" + "_result")},
+            prerequisites={},
+            required_steps=["fetch"],
+            terminal_tool="submit",
             system_prompt_template="You are a {role}.",
         )
         wf_fast = _make_workflow()
@@ -357,20 +354,22 @@ class TestPreemption:
     @pytest.mark.asyncio
     async def test_no_preempt_equal_priority(self):
         """Equal priority does not trigger preemption."""
-        client = MockClient([
-            ToolCall(tool="fetch", args={}),
-            ToolCall(tool="submit", args={}),
-            ToolCall(tool="fetch", args={}),
-            ToolCall(tool="submit", args={}),
-        ])
+        client = MockClient(
+            [
+                assistant(call("fetch", {})),
+                assistant(call("submit", {})),
+                assistant(call("fetch", {})),
+                assistant(call("submit", {})),
+            ]
+        )
         worker = _make_worker(client)
         await worker.start()
         try:
             r1 = await worker.submit(
-                _make_workflow(), "first", priority=5, prompt_vars={"role": "dev"},
+                _make_workflow(), "first", priority=5, prompt_vars={"role": "dev"}
             )
             r2 = await worker.submit(
-                _make_workflow(), "second", priority=5, prompt_vars={"role": "dev"},
+                _make_workflow(), "second", priority=5, prompt_vars={"role": "dev"}
             )
             assert r1 == "submit_result"
             assert r2 == "submit_result"
@@ -382,63 +381,58 @@ class TestPreemption:
 
 
 class TestErrorHandling:
-
     @pytest.mark.asyncio
     async def test_exception_propagates_to_caller(self):
         """Exceptions from the runner propagate to the submit() caller."""
         from forge.errors import MaxIterationsError
 
-        client = MockClient([
-            TextResponse(content="bare text"),
-            TextResponse(content="bare text again"),
-            TextResponse(content="bare text third"),
-            TextResponse(content="bare text fourth"),
-        ])
+        client = MockClient(
+            [
+                assistant(TextPart("bare text")),
+                assistant(TextPart("bare text again")),
+                assistant(TextPart("bare text third")),
+                assistant(TextPart("bare text fourth")),
+            ]
+        )
         ctx = ContextManager(strategy=NoCompact(), budget_tokens=100_000)
         runner = WorkflowRunner(
-            client=client, context_manager=ctx,
-            max_iterations=3, rescue_enabled=False,
+            client=client, context_manager=ctx, max_iterations=3, rescue_enabled=False
         )
         worker = SlotWorker(runner)
         await worker.start()
         try:
             with pytest.raises(Exception):
-                await worker.submit(
-                    _make_workflow(), "go", prompt_vars={"role": "dev"},
-                )
+                await worker.submit(_make_workflow(), "go", prompt_vars={"role": "dev"})
         finally:
             await worker.stop()
 
     @pytest.mark.asyncio
     async def test_worker_continues_after_error(self):
         """Worker processes next task after a failed one."""
-        client = MockClient([
-            # First workflow: will fail (not enough responses to complete)
-            TextResponse(content="fail"),
-            TextResponse(content="fail"),
-            TextResponse(content="fail"),
-            TextResponse(content="fail"),
-            # Second workflow: succeeds
-            ToolCall(tool="fetch", args={}),
-            ToolCall(tool="submit", args={}),
-        ])
+        client = MockClient(
+            [
+                # First workflow: will fail (not enough responses to complete)
+                assistant(TextPart("fail")),
+                assistant(TextPart("fail")),
+                assistant(TextPart("fail")),
+                assistant(TextPart("fail")),
+                # Second workflow: succeeds
+                assistant(call("fetch", {})),
+                assistant(call("submit", {})),
+            ]
+        )
         ctx = ContextManager(strategy=NoCompact(), budget_tokens=100_000)
         runner = WorkflowRunner(
-            client=client, context_manager=ctx,
-            max_iterations=3, rescue_enabled=False,
+            client=client, context_manager=ctx, max_iterations=3, rescue_enabled=False
         )
         worker = SlotWorker(runner)
         await worker.start()
         try:
             # First task fails
             with pytest.raises(Exception):
-                await worker.submit(
-                    _make_workflow(), "fail", prompt_vars={"role": "dev"},
-                )
+                await worker.submit(_make_workflow(), "fail", prompt_vars={"role": "dev"})
             # Second task succeeds
-            result = await worker.submit(
-                _make_workflow(), "succeed", prompt_vars={"role": "dev"},
-            )
+            result = await worker.submit(_make_workflow(), "succeed", prompt_vars={"role": "dev"})
             assert result == "submit_result"
         finally:
             await worker.stop()

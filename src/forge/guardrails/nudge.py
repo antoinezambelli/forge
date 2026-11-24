@@ -23,7 +23,7 @@ class Nudge:
         content: The nudge text.
         kind: Identifies what generated the nudge ("retry", "unknown_tool",
             "step"). Useful for logging/metrics and for WorkflowRunner to
-            map back to MessageType for compaction prioritization.
+            identify the message forge_purpose for compaction policy.
         tier: Escalation level for step nudges (0 = N/A, 1-3 = escalating).
     """
 

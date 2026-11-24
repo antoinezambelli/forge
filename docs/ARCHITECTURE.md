@@ -25,7 +25,7 @@ No defensive coding. No silent `try/except`, no fallback defaults, no swallowed 
 try:
     tool_call = parse_tool_call(response)
 except Exception:
-    tool_call = ToolCall(tool="fallback", args={})  # Silent corruption
+    tool_call = ToolCallPart("fallback", ValidArguments({}))  # Silent corruption
 
 # GOOD — fail fast with context
 try:
@@ -34,13 +34,12 @@ except ParseError as e:
     raise ToolCallError(
         f"Failed to parse tool call on attempt {attempt}/{max_retries}",
         raw_response=response,
-        cause=e,
-    )
+    ) from e
 ```
 
 ### 2. Explicit Over Implicit
 
-All schemas defined with Pydantic. All LLM outputs validated before execution. Configuration is explicit: when forge auto-detects hardware, it logs what it detected and what budget it chose. The user can always override.
+Function tools use `ToolDefinition` with complete JSON Schema dictionaries. Applications may generate those dictionaries with Pydantic, but Forge does not require a Pydantic model for each tool. Before execution, guardrails check tool names and argument object shape; this does not imply full JSON-Schema or application-model validation. Configuration is explicit: when forge auto-detects hardware, it logs what it detected and what budget it chose. The user can always override.
 
 Cloud APIs absorb ambiguity gracefully. A 14B model at Q4 does not. Every implicit assumption is a failure mode.
 
@@ -56,9 +55,9 @@ Concrete consequence: step completion is tracked in a `StepTracker` on the runne
 
 ### 4. The Client Adapter Is the Abstraction Boundary
 
-Forge doesn't know whether the LLM supports native function calling, prompt-injected tool calling, or some future protocol. The `LLMClient` adapter translates between forge's internal `ToolCall` representation and whatever the backend expects. The tool-calling loop receives validated `ToolCall` objects and never parses raw text.
+The configured `LLMClient` renders canonical conversation state and tool definitions into a backend request, then returns an assistant `RichMessage` with ordered text, reasoning, and tool-call parts. The tool-calling loop does not handle raw HTTP or backend-specific response envelopes.
 
-This means rescue parsing (Mistral `[TOOL_CALLS]`, Qwen `<tool_call>` XML, fenced JSON, etc.) lives in the *client* — `runner.py` doesn't grow special cases per model family. See [ADR-005](decisions/005-parallel-tool-calls.md) for the batched-tool-call shape and [ADR-013](decisions/013-text-response-intent.md) for the synthetic respond tool's role in this boundary.
+Backend decoding and prompt-mode extraction belong in clients. Shared `ResponseValidator` supplies generic rescue parsing (Mistral `[TOOL_CALLS]`, Qwen `<tool_call>` XML, fenced JSON, etc.) and validation for both Runner and Proxy; `runner.py` does not grow parser branches per model family. See [ADR-005](decisions/005-parallel-tool-calls.md) for the original batched-call rationale, [ADR-013](decisions/013-text-response-intent.md) for the synthetic respond tool, and the [canonical migration guide](MIGRATING_CANONICAL_PRIMITIVES.md) for the current Python types.
 
 ### 5. Context Is a First-Class Resource
 

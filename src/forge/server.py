@@ -34,7 +34,6 @@ from forge._endpoint_layouts import BackendOperation, ConnectionInputKind
 from forge._resolved_backend import ResolvedBackend, resolve_backend
 from forge.context.hardware import detect_hardware
 from forge.context.manager import CompactEvent, ContextManager
-from forge.context.strategies import TieredCompact
 from forge.errors import BackendError, BudgetResolutionError
 from forge.rpc import (
     LlamaCppRpcConfig,
@@ -1176,6 +1175,8 @@ async def setup_backend(
         (ServerManager, ContextManager) tuple. Caller is responsible
         for calling ``server.stop()`` when done.
     """
+    from forge.context.strategies import TieredCompact
+
     managed_setup = await _setup_managed_backend(
         backend=backend,
         model=model,

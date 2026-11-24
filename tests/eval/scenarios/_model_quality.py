@@ -4,150 +4,313 @@ from __future__ import annotations
 
 from typing import Any
 
-from pydantic import BaseModel, Field
 
-from forge.core.workflow import ToolDef, ToolSpec, Workflow
+from forge.core.workflow import ToolDefinition, Workflow
 
 from ._base import EvalScenario, _check
 
-# ── Pydantic param models ────────────────────────────────────────
-# Shared single-field models (reused across scenarios)
+# ── Explicit input schemas ────────────────────────────────────────
+# Shared single-field schemas (reused across scenarios)
 
 
-class QueryParams(BaseModel):
-    query: str = Field(description="The search query")
+QUERY_SCHEMA = {
+    "properties": {
+        "query": {"description": "The search query", "title": "Query", "type": "string"}
+    },
+    "required": ["query"],
+    "title": "QueryParams",
+    "type": "object",
+}
 
 
-class PathParams(BaseModel):
-    path: str = Field(description="Path to the file")
+PATH_SCHEMA = {
+    "properties": {
+        "path": {"description": "Path to the file", "title": "Path", "type": "string"}
+    },
+    "required": ["path"],
+    "title": "PathParams",
+    "type": "object",
+}
 
 
-class CmdParams(BaseModel):
-    cmd: str = Field(description="The command to run")
+CMD_SCHEMA = {
+    "properties": {
+        "cmd": {"description": "The command to run", "title": "Cmd", "type": "string"}
+    },
+    "required": ["cmd"],
+    "title": "CmdParams",
+    "type": "object",
+}
 
 
-class ToParams(BaseModel):
-    to: str = Field(description="Recipient email address")
+TO_SCHEMA = {
+    "properties": {
+        "to": {
+            "description": "Recipient email address",
+            "title": "To",
+            "type": "string",
+        }
+    },
+    "required": ["to"],
+    "title": "ToParams",
+    "type": "object",
+}
 
 
-class NameParams(BaseModel):
-    name: str = Field(description="The user's name")
+NAME_SCHEMA = {
+    "properties": {
+        "name": {"description": "The user's name", "title": "Name", "type": "string"}
+    },
+    "required": ["name"],
+    "title": "NameParams",
+    "type": "object",
+}
 
 
-class UserIdParams(BaseModel):
-    user_id: str = Field(description="The user's ID")
+USER_ID_SCHEMA = {
+    "properties": {
+        "user_id": {
+            "description": "The user's ID",
+            "title": "User Id",
+            "type": "string",
+        }
+    },
+    "required": ["user_id"],
+    "title": "UserIdParams",
+    "type": "object",
+}
 
 
-class AnswerParams(BaseModel):
-    answer: str = Field(description="The final answer")
+ANSWER_SCHEMA = {
+    "properties": {
+        "answer": {
+            "description": "The final answer",
+            "title": "Answer",
+            "type": "string",
+        }
+    },
+    "required": ["answer"],
+    "title": "AnswerParams",
+    "type": "object",
+}
 
 
 # argument_fidelity
 
 
-class EntityParams(BaseModel):
-    entity: str = Field(description="Entity name")
+ENTITY_SCHEMA = {
+    "properties": {
+        "entity": {"description": "Entity name", "title": "Entity", "type": "string"}
+    },
+    "required": ["entity"],
+    "title": "EntityParams",
+    "type": "object",
+}
 
 
-class EntityIdParams(BaseModel):
-    entity_id: str = Field(description="The entity's ID")
+ENTITY_ID_SCHEMA = {
+    "properties": {
+        "entity_id": {
+            "description": "The entity's ID",
+            "title": "Entity Id",
+            "type": "string",
+        }
+    },
+    "required": ["entity_id"],
+    "title": "EntityIdParams",
+    "type": "object",
+}
 
 
-class SummaryParams(BaseModel):
-    summary: str = Field(description="The summary to present")
+SUMMARY_SCHEMA = {
+    "properties": {
+        "summary": {
+            "description": "The summary to present",
+            "title": "Summary",
+            "type": "string",
+        }
+    },
+    "required": ["summary"],
+    "title": "SummaryParams",
+    "type": "object",
+}
 
 
 # sequential_reasoning
 
 
-class PatientIdParams(BaseModel):
-    patient_id: str = Field(description="The patient's ID")
+PATIENT_ID_SCHEMA = {
+    "properties": {
+        "patient_id": {
+            "description": "The patient's ID",
+            "title": "Patient Id",
+            "type": "string",
+        }
+    },
+    "required": ["patient_id"],
+    "title": "PatientIdParams",
+    "type": "object",
+}
 
 
-class PatientNameParams(BaseModel):
-    name: str = Field(description="Patient's full name")
+PATIENT_NAME_SCHEMA = {
+    "properties": {
+        "name": {
+            "description": "Patient's full name",
+            "title": "Name",
+            "type": "string",
+        }
+    },
+    "required": ["name"],
+    "title": "PatientNameParams",
+    "type": "object",
+}
 
 
-class MedicationParams(BaseModel):
-    medication: str = Field(description="Medication name")
+MEDICATION_SCHEMA = {
+    "properties": {
+        "medication": {
+            "description": "Medication name",
+            "title": "Medication",
+            "type": "string",
+        }
+    },
+    "required": ["medication"],
+    "title": "MedicationParams",
+    "type": "object",
+}
 
 
-class RecommendParams(BaseModel):
-    patient_id: str = Field(description="The patient's ID")
-    findings: str = Field(description="The findings to base the recommendation on")
+RECOMMEND_SCHEMA = {
+    "properties": {
+        "patient_id": {
+            "description": "The patient's ID",
+            "title": "Patient Id",
+            "type": "string",
+        },
+        "findings": {
+            "description": "The findings to base the recommendation on",
+            "title": "Findings",
+            "type": "string",
+        },
+    },
+    "required": ["patient_id", "findings"],
+    "title": "RecommendParams",
+    "type": "object",
+}
 
 
 # conditional_routing
 
 
-class ServiceParams(BaseModel):
-    service: str = Field(description="Service name")
+SERVICE_SCHEMA = {
+    "properties": {
+        "service": {"description": "Service name", "title": "Service", "type": "string"}
+    },
+    "required": ["service"],
+    "title": "ServiceParams",
+    "type": "object",
+}
 
 
-class DiagnoseParams(BaseModel):
-    diagnosis: str = Field(description="The root cause diagnosis")
-    action: str = Field(description="The recommended action")
+DIAGNOSE_SCHEMA = {
+    "properties": {
+        "diagnosis": {
+            "description": "The root cause diagnosis",
+            "title": "Diagnosis",
+            "type": "string",
+        },
+        "action": {
+            "description": "The recommended action",
+            "title": "Action",
+            "type": "string",
+        },
+    },
+    "required": ["diagnosis", "action"],
+    "title": "DiagnoseParams",
+    "type": "object",
+}
 
 
 # data_gap_recovery
 
 
-class EmployeeNameParams(BaseModel):
-    name: str = Field(description="Employee's full name")
+EMPLOYEE_NAME_SCHEMA = {
+    "properties": {
+        "name": {
+            "description": "Employee's full name",
+            "title": "Name",
+            "type": "string",
+        }
+    },
+    "required": ["name"],
+    "title": "EmployeeNameParams",
+    "type": "object",
+}
 
 
-class EmployeeIdParams(BaseModel):
-    employee_id: str = Field(description="Employee's ID")
+EMPLOYEE_ID_SCHEMA = {
+    "properties": {
+        "employee_id": {
+            "description": "Employee's ID",
+            "title": "Employee Id",
+            "type": "string",
+        }
+    },
+    "required": ["employee_id"],
+    "title": "EmployeeIdParams",
+    "type": "object",
+}
 
 
-class SubmitReportParams(BaseModel):
-    employee_name: str = Field(description="Employee's full name")
-    report: str = Field(description="The complete profile report")
+SUBMIT_REPORT_SCHEMA = {
+    "properties": {
+        "employee_name": {
+            "description": "Employee's full name",
+            "title": "Employee Name",
+            "type": "string",
+        },
+        "report": {
+            "description": "The complete profile report",
+            "title": "Report",
+            "type": "string",
+        },
+    },
+    "required": ["employee_name", "report"],
+    "title": "SubmitReportParams",
+    "type": "object",
+}
 
 
 # ── Scenario 5: tool_selection ───────────────────────────────────
 
-_tool_selection_tools: dict[str, ToolDef] = {
-    "search_web": ToolDef(
-        spec=ToolSpec(name="search_web", description="Search the web for information.",
-                      parameters=QueryParams),
-        callable=lambda **kwargs: "No results found.",
-    ),
-    "read_file": ToolDef(
-        spec=ToolSpec(name="read_file", description="Read a file from disk.",
-                      parameters=PathParams),
-        callable=lambda **kwargs: "Error: file not found.",
-    ),
-    "list_directory": ToolDef(
-        spec=ToolSpec(name="list_directory", description="List contents of a directory.",
-                      parameters=PathParams),
-        callable=lambda **kwargs: "Empty directory.",
-    ),
-    "run_command": ToolDef(
-        spec=ToolSpec(name="run_command", description="Run a shell command.",
-                      parameters=CmdParams),
-        callable=lambda **kwargs: "Permission denied.",
-    ),
-    "send_email": ToolDef(
-        spec=ToolSpec(name="send_email", description="Send an email.",
-                      parameters=ToParams),
-        callable=lambda **kwargs: "Email sent.",
-    ),
-    "lookup_user": ToolDef(
-        spec=ToolSpec(name="lookup_user", description="Look up a user by name.",
-                      parameters=NameParams),
-        callable=lambda **kwargs: "User: Alice, Role: Engineer, Team: Platform, ID: U-1001",
-    ),
-    "get_permissions": ToolDef(
-        spec=ToolSpec(name="get_permissions", description="Get permissions for a user by their user ID.",
-                      parameters=UserIdParams),
-        callable=lambda **kwargs: "Permissions: read, write, admin on repo forge-dev",
-    ),
-    "respond": ToolDef(
-        spec=ToolSpec(name="respond", description="Provide the final answer to the user.",
-                      parameters=AnswerParams),
-        callable=lambda **kwargs: kwargs.get("answer", ""),
-    ),
+_tool_selection_tools: dict[str, ToolDefinition] = {
+    "search_web": ToolDefinition(name="search_web", description="Search the web for information.",
+                      input_schema=QUERY_SCHEMA),
+    "read_file": ToolDefinition(name="read_file", description="Read a file from disk.",
+                      input_schema=PATH_SCHEMA),
+    "list_directory": ToolDefinition(name="list_directory", description="List contents of a directory.",
+                      input_schema=PATH_SCHEMA),
+    "run_command": ToolDefinition(name="run_command", description="Run a shell command.",
+                      input_schema=CMD_SCHEMA),
+    "send_email": ToolDefinition(name="send_email", description="Send an email.",
+                      input_schema=TO_SCHEMA),
+    "lookup_user": ToolDefinition(name="lookup_user", description="Look up a user by name.",
+                      input_schema=NAME_SCHEMA),
+    "get_permissions": ToolDefinition(name="get_permissions", description="Get permissions for a user by their user ID.",
+                      input_schema=USER_ID_SCHEMA),
+    "respond": ToolDefinition(name="respond", description="Provide the final answer to the user.",
+                      input_schema=ANSWER_SCHEMA),
+}
+_tool_selection_tools_handlers = {
+    "search_web": lambda **kwargs: "No results found.",
+    "read_file": lambda **kwargs: "Error: file not found.",
+    "list_directory": lambda **kwargs: "Empty directory.",
+    "run_command": lambda **kwargs: "Permission denied.",
+    "send_email": lambda **kwargs: "Email sent.",
+    "lookup_user": lambda **kwargs: "User: Alice, Role: Engineer, Team: Platform, ID: U-1001",
+    "get_permissions": lambda **kwargs: "Permissions: read, write, admin on repo forge-dev",
+    "respond": lambda **kwargs: kwargs.get("answer", ""),
 }
 
 tool_selection = EvalScenario(
@@ -157,6 +320,7 @@ tool_selection = EvalScenario(
         name="tool_selection",
         description="Look up a user and check permissions",
         tools=_tool_selection_tools,
+        handlers=_tool_selection_tools_handlers,
         required_steps=["lookup_user", "get_permissions"],
         terminal_tool="respond",
         system_prompt_template=(
@@ -181,31 +345,27 @@ def _fetch_details(**kwargs: Any) -> str:
     return f"Warning: entity_id '{entity_id}' not recognized, returning default."
 
 
-_argument_fidelity_tools: dict[str, ToolDef] = {
-    "lookup_entity": ToolDef(
-        spec=ToolSpec(
+_argument_fidelity_tools: dict[str, ToolDefinition] = {
+    "lookup_entity": ToolDefinition(
             name="lookup_entity",
             description="Look up an entity by name.",
-            parameters=EntityParams,
+            input_schema=ENTITY_SCHEMA,
         ),
-        callable=lambda **kwargs: "Entity ID: ENT-4728, Status: active, Owner: alice@example.com",
-    ),
-    "fetch_details": ToolDef(
-        spec=ToolSpec(
+    "fetch_details": ToolDefinition(
             name="fetch_details",
             description="Fetch details for an entity by its ID.",
-            parameters=EntityIdParams,
+            input_schema=ENTITY_ID_SCHEMA,
         ),
-        callable=_fetch_details,
-    ),
-    "present": ToolDef(
-        spec=ToolSpec(
+    "present": ToolDefinition(
             name="present",
             description="Present the final summary to the user.",
-            parameters=SummaryParams,
+            input_schema=SUMMARY_SCHEMA,
         ),
-        callable=lambda **kwargs: kwargs.get("summary", ""),
-    ),
+}
+_argument_fidelity_tools_handlers = {
+    "lookup_entity": lambda **kwargs: "Entity ID: ENT-4728, Status: active, Owner: alice@example.com",
+    "fetch_details": _fetch_details,
+    "present": lambda **kwargs: kwargs.get("summary", ""),
 }
 
 argument_fidelity = EvalScenario(
@@ -215,6 +375,7 @@ argument_fidelity = EvalScenario(
         name="argument_fidelity",
         description="Lookup entity, fetch details by ID, present summary",
         tools=_argument_fidelity_tools,
+        handlers=_argument_fidelity_tools_handlers,
         required_steps=["lookup_entity", "fetch_details"],
         terminal_tool="present",
         system_prompt_template=(
@@ -231,45 +392,39 @@ argument_fidelity = EvalScenario(
 
 # ── Scenario 7: sequential_reasoning ─────────────────────────────
 
-_sequential_reasoning_tools: dict[str, ToolDef] = {
-    "identify_patient": ToolDef(
-        spec=ToolSpec(
+_sequential_reasoning_tools: dict[str, ToolDefinition] = {
+    "identify_patient": ToolDefinition(
             name="identify_patient",
             description="Identify a patient by name.",
-            parameters=PatientNameParams,
+            input_schema=PATIENT_NAME_SCHEMA,
         ),
-        callable=lambda **kwargs: "Patient ID: PT-7829, DOB: 1985-03-14, Blood type: O+",
-    ),
-    "get_records": ToolDef(
-        spec=ToolSpec(
+    "get_records": ToolDefinition(
             name="get_records",
             description="Get medical records for a patient.",
-            parameters=PatientIdParams,
+            input_schema=PATIENT_ID_SCHEMA,
         ),
-        callable=lambda **kwargs: (
-            "Records: Last visit 2024-11-02, Diagnosis: hypertension, "
-            "Medication: lisinopril 10mg"
-        ),
-    ),
-    "check_interactions": ToolDef(
-        spec=ToolSpec(
+    "check_interactions": ToolDefinition(
             name="check_interactions",
             description="Check drug interactions for a medication.",
-            parameters=MedicationParams,
+            input_schema=MEDICATION_SCHEMA,
         ),
-        callable=lambda **kwargs: (
-            "Interactions: lisinopril + ibuprofen = risk of kidney damage. "
-            "lisinopril + potassium supplements = hyperkalemia risk."
-        ),
-    ),
-    "recommend": ToolDef(
-        spec=ToolSpec(
+    "recommend": ToolDefinition(
             name="recommend",
             description="Provide a recommendation based on findings.",
-            parameters=RecommendParams,
+            input_schema=RECOMMEND_SCHEMA,
         ),
-        callable=lambda **kwargs: kwargs.get("findings", ""),
+}
+_sequential_reasoning_tools_handlers = {
+    "identify_patient": lambda **kwargs: "Patient ID: PT-7829, DOB: 1985-03-14, Blood type: O+",
+    "get_records": lambda **kwargs: (
+        "Records: Last visit 2024-11-02, Diagnosis: hypertension, "
+        "Medication: lisinopril 10mg"
     ),
+    "check_interactions": lambda **kwargs: (
+        "Interactions: lisinopril + ibuprofen = risk of kidney damage. "
+        "lisinopril + potassium supplements = hyperkalemia risk."
+    ),
+    "recommend": lambda **kwargs: kwargs.get("findings", ""),
 }
 
 
@@ -288,6 +443,7 @@ sequential_reasoning = EvalScenario(
         name="sequential_reasoning",
         description="Identify patient, get records, check interactions, recommend",
         tools=_sequential_reasoning_tools,
+        handlers=_sequential_reasoning_tools_handlers,
         required_steps=["identify_patient", "get_records", "check_interactions"],
         terminal_tool="recommend",
         system_prompt_template=(
@@ -304,86 +460,78 @@ sequential_reasoning = EvalScenario(
 
 # ── Scenario 8: conditional_routing ─────────────────────────────
 
-_conditional_routing_tools: dict[str, ToolDef] = {
-    "get_alert": ToolDef(
-        spec=ToolSpec(
+_conditional_routing_tools: dict[str, ToolDefinition] = {
+    "get_alert": ToolDefinition(
             name="get_alert",
             description="Get details for the current P1 alert.",
-            parameters=ServiceParams,
+            input_schema=SERVICE_SCHEMA,
         ),
-        callable=lambda **kwargs: (
-            "Alert: P1-8842 — payments-service\n"
-            "Triggered: 2025-01-15 14:23:07 UTC\n"
-            "Type: Error Rate Threshold\n"
-            "Current error rate: 12.4% (threshold: 2%)\n"
-            "Affected endpoint: /api/v2/charge\n"
-            "Duration: 18 minutes\n"
-            "Last deploy: 2025-01-15 14:04:51 UTC\n"
-            "Previous alert on this service: 2024-11-03 (resolved — DB connection pool)"
-        ),
-    ),
-    "check_metrics": ToolDef(
-        spec=ToolSpec(
+    "check_metrics": ToolDefinition(
             name="check_metrics",
             description="Get time-series system metrics for a service.",
-            parameters=ServiceParams,
+            input_schema=SERVICE_SCHEMA,
         ),
-        callable=lambda **kwargs: (
-            "Metrics for payments-service (last 60 min):\n"
-            "  14:00 — error_rate: 0.3%, latency_p99: 120ms, cpu: 45%, mem: 62%\n"
-            "  14:05 — error_rate: 0.4%, latency_p99: 118ms, cpu: 44%, mem: 61%\n"
-            "  14:10 — error_rate: 8.1%, latency_p99: 940ms, cpu: 47%, mem: 63%\n"
-            "  14:15 — error_rate: 11.2%, latency_p99: 1850ms, cpu: 51%, mem: 64%\n"
-            "  14:20 — error_rate: 12.4%, latency_p99: 2100ms, cpu: 52%, mem: 65%\n"
-            "  14:25 — error_rate: 12.1%, latency_p99: 2040ms, cpu: 50%, mem: 64%\n"
-            "\n"
-            "Note: Error spike begins between 14:05 and 14:10. No significant\n"
-            "CPU or memory change. Latency correlates with error rate."
-        ),
-    ),
-    "check_logs": ToolDef(
-        spec=ToolSpec(
+    "check_logs": ToolDefinition(
             name="check_logs",
             description="Get recent log entries for a service.",
-            parameters=ServiceParams,
+            input_schema=SERVICE_SCHEMA,
         ),
-        callable=lambda **kwargs: (
-            "Recent logs for payments-service (last 30 min):\n"
-            "  14:08:12 WARN  [HttpClient] Retry attempt 1 for upstream call\n"
-            "  14:08:15 WARN  [HttpClient] Retry attempt 2 for upstream call\n"
-            "  14:09:01 ERROR [PaymentProcessor] Transaction failed: unexpected response format\n"
-            "  14:09:03 ERROR [PaymentProcessor] Transaction failed: unexpected response format\n"
-            "  14:11:44 WARN  [ConnectionPool] Pool utilization at 78%\n"
-            "  14:14:22 ERROR [PaymentProcessor] Transaction failed: unexpected response format\n"
-            "  14:18:33 WARN  [HttpClient] Retry attempt 1 for upstream call\n"
-            "  (247 similar entries omitted)"
-        ),
-    ),
-    "check_deployment": ToolDef(
-        spec=ToolSpec(
+    "check_deployment": ToolDefinition(
             name="check_deployment",
             description="Get details of the last deployment to a service.",
-            parameters=ServiceParams,
+            input_schema=SERVICE_SCHEMA,
         ),
-        callable=lambda **kwargs: (
-            "Last deployment to payments-service:\n"
-            "  Deploy ID: deploy-a7f3e2\n"
-            "  Timestamp: 2025-01-15 14:04:51 UTC\n"
-            "  Author: jenkins-ci (triggered by merge PR #1147)\n"
-            "  Changes: Updated payment gateway SDK from v3.8.1 to v4.0.0\n"
-            '  Changelog note: "v4.0.0 — Breaking change: response schema updated,\n'
-            "    'transaction_id' field moved from root to 'data.transaction_id'\"\n"
-            "  Rollback available: Yes (deploy-b82c1a, v3.8.1)"
-        ),
-    ),
-    "diagnose": ToolDef(
-        spec=ToolSpec(
+    "diagnose": ToolDefinition(
             name="diagnose",
             description="Submit a root cause diagnosis and recommended action.",
-            parameters=DiagnoseParams,
+            input_schema=DIAGNOSE_SCHEMA,
         ),
-        callable=lambda **kwargs: f"Diagnosis: {kwargs.get('diagnosis', '')} | Action: {kwargs.get('action', '')}",
+}
+_conditional_routing_tools_handlers = {
+    "get_alert": lambda **kwargs: (
+        "Alert: P1-8842 — payments-service\n"
+        "Triggered: 2025-01-15 14:23:07 UTC\n"
+        "Type: Error Rate Threshold\n"
+        "Current error rate: 12.4% (threshold: 2%)\n"
+        "Affected endpoint: /api/v2/charge\n"
+        "Duration: 18 minutes\n"
+        "Last deploy: 2025-01-15 14:04:51 UTC\n"
+        "Previous alert on this service: 2024-11-03 (resolved — DB connection pool)"
     ),
+    "check_metrics": lambda **kwargs: (
+        "Metrics for payments-service (last 60 min):\n"
+        "  14:00 — error_rate: 0.3%, latency_p99: 120ms, cpu: 45%, mem: 62%\n"
+        "  14:05 — error_rate: 0.4%, latency_p99: 118ms, cpu: 44%, mem: 61%\n"
+        "  14:10 — error_rate: 8.1%, latency_p99: 940ms, cpu: 47%, mem: 63%\n"
+        "  14:15 — error_rate: 11.2%, latency_p99: 1850ms, cpu: 51%, mem: 64%\n"
+        "  14:20 — error_rate: 12.4%, latency_p99: 2100ms, cpu: 52%, mem: 65%\n"
+        "  14:25 — error_rate: 12.1%, latency_p99: 2040ms, cpu: 50%, mem: 64%\n"
+        "\n"
+        "Note: Error spike begins between 14:05 and 14:10. No significant\n"
+        "CPU or memory change. Latency correlates with error rate."
+    ),
+    "check_logs": lambda **kwargs: (
+        "Recent logs for payments-service (last 30 min):\n"
+        "  14:08:12 WARN  [HttpClient] Retry attempt 1 for upstream call\n"
+        "  14:08:15 WARN  [HttpClient] Retry attempt 2 for upstream call\n"
+        "  14:09:01 ERROR [PaymentProcessor] Transaction failed: unexpected response format\n"
+        "  14:09:03 ERROR [PaymentProcessor] Transaction failed: unexpected response format\n"
+        "  14:11:44 WARN  [ConnectionPool] Pool utilization at 78%\n"
+        "  14:14:22 ERROR [PaymentProcessor] Transaction failed: unexpected response format\n"
+        "  14:18:33 WARN  [HttpClient] Retry attempt 1 for upstream call\n"
+        "  (247 similar entries omitted)"
+    ),
+    "check_deployment": lambda **kwargs: (
+        "Last deployment to payments-service:\n"
+        "  Deploy ID: deploy-a7f3e2\n"
+        "  Timestamp: 2025-01-15 14:04:51 UTC\n"
+        "  Author: jenkins-ci (triggered by merge PR #1147)\n"
+        "  Changes: Updated payment gateway SDK from v3.8.1 to v4.0.0\n"
+        '  Changelog note: "v4.0.0 — Breaking change: response schema updated,\n'
+        "    'transaction_id' field moved from root to 'data.transaction_id'\"\n"
+        "  Rollback available: Yes (deploy-b82c1a, v3.8.1)"
+    ),
+    "diagnose": lambda **kwargs: f"Diagnosis: {kwargs.get('diagnosis', '')} | Action: {kwargs.get('action', '')}",
 }
 
 
@@ -402,6 +550,7 @@ conditional_routing = EvalScenario(
         name="conditional_routing",
         description="Diagnose a P1 production incident by correlating alert, metrics, and deployment data",
         tools=_conditional_routing_tools,
+        handlers=_conditional_routing_tools_handlers,
         required_steps=["get_alert", "check_metrics"],
         terminal_tool="diagnose",
         system_prompt_template=(
@@ -423,101 +572,89 @@ conditional_routing = EvalScenario(
 
 # ── Scenario 9: data_gap_recovery ───────────────────────────────
 
-_data_gap_recovery_tools: dict[str, ToolDef] = {
-    "get_employee": ToolDef(
-        spec=ToolSpec(
+_data_gap_recovery_tools: dict[str, ToolDefinition] = {
+    "get_employee": ToolDefinition(
             name="get_employee",
             description="Look up an employee record by name.",
-            parameters=EmployeeNameParams,
+            input_schema=EMPLOYEE_NAME_SCHEMA,
         ),
-        callable=lambda **kwargs: (
-            "Employee Record — Sarah Chen (ID: E-1847)\n"
-            "Department: Engineering\n"
-            "Title: Senior Backend Engineer\n"
-            "Start Date: 2019-03-15\n"
-            "Office: Building 3, Floor 2\n"
-            "Manager: David Park\n"
-            "Clearance Level: [RESTRICTED — request via security_audit]\n"
-            "Emergency Contact: [MIGRATED — see historical employee records]"
-        ),
-    ),
-    "security_audit": ToolDef(
-        spec=ToolSpec(
+    "security_audit": ToolDefinition(
             name="security_audit",
             description="Query security audit records for an employee.",
-            parameters=EmployeeIdParams,
+            input_schema=EMPLOYEE_ID_SCHEMA,
         ),
-        callable=lambda **kwargs: (
-            "Security Audit Record — E-1847 (Sarah Chen)\n"
-            "Clearance Level: L3 — Confidential\n"
-            "Granted: 2021-06-10\n"
-            "Sponsor: David Park (Director, Engineering)\n"
-            "Last Review: 2024-12-01 (passed, no findings)\n"
-            "Expires: 2025-12-01\n"
-            "Access Groups: payments-prod, internal-apis, staging-*"
-        ),
-    ),
-    "personnel_file": ToolDef(
-        spec=ToolSpec(
+    "personnel_file": ToolDefinition(
             name="personnel_file",
             description="Access an employee's personnel file.",
-            parameters=EmployeeIdParams,
+            input_schema=EMPLOYEE_ID_SCHEMA,
         ),
-        callable=lambda **kwargs: (
-            "Personnel File — E-1847 (Sarah Chen)\n"
-            "Contains: compensation history, performance reviews, PTO balance.\n"
-            "Note: Emergency contact information is not stored in personnel files.\n"
-            "It was moved to HR onboarding records during the 2020 system migration."
-        ),
-    ),
-    "onboarding_records": ToolDef(
-        spec=ToolSpec(
+    "onboarding_records": ToolDefinition(
             name="onboarding_records",
             description="Access HR onboarding records for an employee.",
-            parameters=EmployeeIdParams,
+            input_schema=EMPLOYEE_ID_SCHEMA,
         ),
-        callable=lambda **kwargs: (
-            "HR Onboarding Record — E-1847 (Sarah Chen)\n"
-            "Original Onboarding Date: 2019-03-15\n"
-            "Emergency Contact: Michael Chen (spouse) — (555) 867-5309\n"
-            "Dietary Restrictions: None\n"
-            "T-Shirt Size: M\n"
-            "Equipment Issued: MacBook Pro 16\", 2x monitors"
-        ),
-    ),
-    "compliance_check": ToolDef(
-        spec=ToolSpec(
+    "compliance_check": ToolDefinition(
             name="compliance_check",
             description="Check compliance status for an employee.",
-            parameters=EmployeeIdParams,
+            input_schema=EMPLOYEE_ID_SCHEMA,
         ),
-        callable=lambda **kwargs: (
-            "Compliance Status — E-1847: All mandatory trainings complete.\n"
-            "Last security awareness training: 2024-11-15.\n"
-            "No outstanding compliance items."
-        ),
-    ),
-    "hr_directory": ToolDef(
-        spec=ToolSpec(
+    "hr_directory": ToolDefinition(
             name="hr_directory",
             description="Look up an employee in the HR directory.",
-            parameters=EmployeeNameParams,
+            input_schema=EMPLOYEE_NAME_SCHEMA,
         ),
-        callable=lambda **kwargs: (
-            "HR Directory Entry — Sarah Chen\n"
-            "Department: Engineering | Reports to: David Park\n"
-            "Office: Building 3, Floor 2 | Extension: x4481\n"
-            "Status: Active | Full-time"
-        ),
-    ),
-    "submit_report": ToolDef(
-        spec=ToolSpec(
+    "submit_report": ToolDefinition(
             name="submit_report",
             description="Submit a completed employee profile report.",
-            parameters=SubmitReportParams,
+            input_schema=SUBMIT_REPORT_SCHEMA,
         ),
-        callable=lambda **kwargs: f"Report submitted for {kwargs.get('employee_name', '')}.",
+}
+_data_gap_recovery_tools_handlers = {
+    "get_employee": lambda **kwargs: (
+        "Employee Record — Sarah Chen (ID: E-1847)\n"
+        "Department: Engineering\n"
+        "Title: Senior Backend Engineer\n"
+        "Start Date: 2019-03-15\n"
+        "Office: Building 3, Floor 2\n"
+        "Manager: David Park\n"
+        "Clearance Level: [RESTRICTED — request via security_audit]\n"
+        "Emergency Contact: [MIGRATED — see historical employee records]"
     ),
+    "security_audit": lambda **kwargs: (
+        "Security Audit Record — E-1847 (Sarah Chen)\n"
+        "Clearance Level: L3 — Confidential\n"
+        "Granted: 2021-06-10\n"
+        "Sponsor: David Park (Director, Engineering)\n"
+        "Last Review: 2024-12-01 (passed, no findings)\n"
+        "Expires: 2025-12-01\n"
+        "Access Groups: payments-prod, internal-apis, staging-*"
+    ),
+    "personnel_file": lambda **kwargs: (
+        "Personnel File — E-1847 (Sarah Chen)\n"
+        "Contains: compensation history, performance reviews, PTO balance.\n"
+        "Note: Emergency contact information is not stored in personnel files.\n"
+        "It was moved to HR onboarding records during the 2020 system migration."
+    ),
+    "onboarding_records": lambda **kwargs: (
+        "HR Onboarding Record — E-1847 (Sarah Chen)\n"
+        "Original Onboarding Date: 2019-03-15\n"
+        "Emergency Contact: Michael Chen (spouse) — (555) 867-5309\n"
+        "Dietary Restrictions: None\n"
+        "T-Shirt Size: M\n"
+        'Equipment Issued: MacBook Pro 16", 2x monitors'
+    ),
+    "compliance_check": lambda **kwargs: (
+        "Compliance Status — E-1847: All mandatory trainings complete.\n"
+        "Last security awareness training: 2024-11-15.\n"
+        "No outstanding compliance items."
+    ),
+    "hr_directory": lambda **kwargs: (
+        "HR Directory Entry — Sarah Chen\n"
+        "Department: Engineering | Reports to: David Park\n"
+        "Office: Building 3, Floor 2 | Extension: x4481\n"
+        "Status: Active | Full-time"
+    ),
+    "submit_report": lambda **kwargs: f"Report submitted for {kwargs.get('employee_name', '')}.",
 }
 
 
@@ -536,6 +673,7 @@ data_gap_recovery = EvalScenario(
         name="data_gap_recovery",
         description="Build a complete employee profile by resolving missing data across multiple systems",
         tools=_data_gap_recovery_tools,
+        handlers=_data_gap_recovery_tools_handlers,
         required_steps=["get_employee"],
         terminal_tool="submit_report",
         system_prompt_template=(

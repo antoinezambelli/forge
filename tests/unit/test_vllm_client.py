@@ -1,31 +1,30 @@
-"""Tests for forge.clients.vllm — VLLMClient with mocked HTTP."""
+from forge.core.messages import RichMessage, ReasoningPart
+from forge.core.codecs import argument_value
+from tests.canonical import send, send_stream, calls as reply_calls, visible, reasoning
 
+"""Tests for forge.clients.vllm — VLLMClient with mocked HTTP."""
 import json
 from copy import deepcopy
 from unittest.mock import AsyncMock, MagicMock
-
 import httpx
 import pytest
-from pydantic import BaseModel, Field
-
-from forge.clients.base import ChunkType
+from forge.clients.base import format_tool, ChunkType
 from forge.clients.vllm import VLLMClient
-from forge.core.workflow import TextResponse, ToolCall, ToolSpec
+from forge.proxy.handler import _extract_tool_definitions
+from forge.core.workflow import ToolDefinition
 from forge.errors import BackendError
 
-
 pytestmark = pytest.mark.usefixtures("mock_httpx_client_constructor")
+CITY_SCHEMA = {
+    "properties": {"city": {"description": "City name", "title": "City", "type": "string"}},
+    "required": ["city"],
+    "title": "CityParams",
+    "type": "object",
+}
 
 
-# ── helpers ────────────────────────────────────────────────────
-
-
-class CityParams(BaseModel):
-    city: str = Field(description="City name")
-
-
-def _make_spec(name: str = "get_weather") -> ToolSpec:
-    return ToolSpec(name=name, description=f"Get {name}", parameters=CityParams)
+def _make_spec(name: str = "get_weather") -> ToolDefinition:
+    return ToolDefinition(name=name, description=f"Get {name}", input_schema=CITY_SCHEMA)
 
 
 def _make_client(*, think: bool = True) -> VLLMClient:
@@ -43,7 +42,7 @@ def _mock_response(data: dict, status_code: int = 200) -> MagicMock:
     resp.status_code = status_code
     if status_code >= 400:
         resp.raise_for_status.side_effect = httpx.HTTPStatusError(
-            "error", request=MagicMock(), response=resp,
+            "error", request=MagicMock(), response=resp
         )
     else:
         resp.raise_for_status = MagicMock()
@@ -61,11 +60,7 @@ def _tool_call_response(
         "role": "assistant",
         "content": content,
         "tool_calls": [
-            {
-                "id": "call_1",
-                "type": "function",
-                "function": {"name": name, "arguments": args},
-            }
+            {"id": "call_1", "type": "function", "function": {"name": name, "arguments": args}}
         ],
     }
     if reasoning is not None:
@@ -86,13 +81,9 @@ def _text_response(content: str = "hi", reasoning: str | None = None) -> dict:
     }
 
 
-# ── constructor / identity derivation ──────────────────────────
-
-
 class TestConstructor:
     def test_directory_path_derives_sampling_key_from_dirname(self) -> None:
         c = VLLMClient(model_path="/models/gemma-4-26B-A4B-it-AWQ-4bit")
-        # model is the wire id (the path verbatim); sampling_key is the stem.
         assert c.model == "/models/gemma-4-26B-A4B-it-AWQ-4bit"
         assert c.sampling_key == "gemma-4-26B-A4B-it-AWQ-4bit"
 
@@ -113,123 +104,105 @@ class TestConstructor:
     def test_kwarg_only_after_model_path(self) -> None:
         """All params after model_path must be keyword-only."""
         with pytest.raises(TypeError):
-            VLLMClient("/models/x", "http://other:8000")  # type: ignore[misc]
-
-
-# ── send (non-streaming) ──────────────────────────────────────
+            VLLMClient("/models/x", "http://other:8000")
 
 
 class TestSend:
     @pytest.mark.asyncio
     async def test_custom_direct_api_base_is_literal_on_wire(self) -> None:
-        client = VLLMClient(
-            model_path="model", base_url="https://gateway.example/deploy/api",
-        )
+        client = VLLMClient(model_path="model", base_url="https://gateway.example/deploy/api")
         client._http = AsyncMock()
+        client._http.headers = {}
         client._http.post.return_value = _mock_response(_text_response("ok"))
-        await client.send([{"role": "user", "content": "test"}])
-        assert client._http.post.await_args.args[0] == (
-            "https://gateway.example/deploy/api/chat/completions"
+        await send(client, [{"role": "user", "content": "test"}])
+        assert (
+            client._http.post.await_args.args[0]
+            == "https://gateway.example/deploy/api/chat/completions"
         )
 
     @pytest.mark.asyncio
     async def test_returns_tool_call(self) -> None:
         client = _make_client()
         client._http.post.return_value = _mock_response(_tool_call_response())
-        result = await client.send(
-            [{"role": "user", "content": "weather in paris?"}],
-            tools=[_make_spec()],
+        result = await send(
+            client, [{"role": "user", "content": "weather in paris?"}], tools=[_make_spec()]
         )
-        assert client._http.post.await_args.args[0] == (
-            "http://test:8000/v1/chat/completions"
-        )
-        assert isinstance(result, list)
-        assert result[0].tool == "get_weather"
-        assert result[0].args == {"city": "Paris"}
-        assert result[0].reasoning is None
+        assert client._http.post.await_args.args[0] == "http://test:8000/v1/chat/completions"
+        assert isinstance(result, RichMessage)
+        assert reply_calls(result)[0].name == "get_weather"
+        assert argument_value(reply_calls(result)[0]) == {"city": "Paris"}
+        assert reasoning(result) == ""
 
     @pytest.mark.asyncio
     async def test_returns_text_response(self) -> None:
         client = _make_client()
         client._http.post.return_value = _mock_response(_text_response("PONG"))
-        result = await client.send([{"role": "user", "content": "ping"}])
-        assert isinstance(result, TextResponse)
-        assert result.content == "PONG"
+        result = await send(client, [{"role": "user", "content": "ping"}])
+        assert isinstance(result, RichMessage)
+        assert visible(result) == "PONG"
 
     @pytest.mark.asyncio
     async def test_arguments_parsed_from_json_string(self) -> None:
         """vLLM tool_calls.function.arguments arrives as a JSON-encoded string."""
         client = _make_client()
         client._http.post.return_value = _mock_response(
-            _tool_call_response(args='{"city": "Paris", "units": "metric"}'),
+            _tool_call_response(args='{"city": "Paris", "units": "metric"}')
         )
-        result = await client.send(
-            [{"role": "user", "content": "x"}], tools=[_make_spec()],
-        )
-        assert isinstance(result, list)
-        assert result[0].args == {"city": "Paris", "units": "metric"}
+        result = await send(client, [{"role": "user", "content": "x"}], tools=[_make_spec()])
+        assert isinstance(result, RichMessage)
+        assert argument_value(reply_calls(result)[0]) == {"city": "Paris", "units": "metric"}
 
     @pytest.mark.asyncio
     async def test_reasoning_field_captured(self) -> None:
         """vLLM 0.21 returns reasoning in `reasoning` field, not reasoning_content."""
         client = _make_client(think=True)
         client._http.post.return_value = _mock_response(
-            _tool_call_response(reasoning="I should check the weather first."),
+            _tool_call_response(reasoning="I should check the weather first.")
         )
-        result = await client.send(
-            [{"role": "user", "content": "x"}], tools=[_make_spec()],
-        )
-        assert isinstance(result, list)
-        assert result[0].reasoning == "I should check the weather first."
+        result = await send(client, [{"role": "user", "content": "x"}], tools=[_make_spec()])
+        assert isinstance(result, RichMessage)
+        assert reasoning(result) == "I should check the weather first."
 
     @pytest.mark.asyncio
     async def test_think_false_discards_reasoning(self) -> None:
         client = _make_client(think=False)
-        client._http.post.return_value = _mock_response(
-            _tool_call_response(reasoning="thought"),
-        )
-        result = await client.send(
-            [{"role": "user", "content": "x"}], tools=[_make_spec()],
-        )
-        assert isinstance(result, list)
-        assert result[0].reasoning is None
+        client._http.post.return_value = _mock_response(_tool_call_response(reasoning="thought"))
+        result = await send(client, [{"role": "user", "content": "x"}], tools=[_make_spec()])
+        assert isinstance(result, RichMessage)
+        assert reasoning(result) == ""
 
     @pytest.mark.asyncio
     async def test_extracts_think_tags_from_content_with_tool_call(self) -> None:
         """#110: thinking inline in content (no `reasoning` field) is captured."""
         client = _make_client(think=True)
         client._http.post.return_value = _mock_response(
-            _tool_call_response(content="<think>check the weather first</think>"),
+            _tool_call_response(content="<think>check the weather first</think>")
         )
-        result = await client.send(
-            [{"role": "user", "content": "x"}], tools=[_make_spec()],
-        )
-        assert isinstance(result, list)
-        assert result[0].reasoning == "check the weather first"
+        result = await send(client, [{"role": "user", "content": "x"}], tools=[_make_spec()])
+        assert isinstance(result, RichMessage)
+        assert reasoning(result) == "check the weather first"
 
     @pytest.mark.asyncio
     async def test_reasoning_field_preferred_over_content_tags(self) -> None:
         """Structured `reasoning` field wins over <think> tags in content."""
         client = _make_client(think=True)
         client._http.post.return_value = _mock_response(
-            _tool_call_response(reasoning="structured", content="<think>inline</think>"),
+            _tool_call_response(reasoning="structured", content="<think>inline</think>")
         )
-        result = await client.send(
-            [{"role": "user", "content": "x"}], tools=[_make_spec()],
-        )
-        assert isinstance(result, list)
-        assert result[0].reasoning == "structured"
+        result = await send(client, [{"role": "user", "content": "x"}], tools=[_make_spec()])
+        assert isinstance(result, RichMessage)
+        assert reasoning(result) == "structured"
 
     @pytest.mark.asyncio
     async def test_think_tags_stripped_from_text_response(self) -> None:
         """A bare text reply has <think> tags stripped from its content."""
         client = _make_client()
         client._http.post.return_value = _mock_response(
-            _text_response("<think>pondering</think>The answer is 42."),
+            _text_response("<think>pondering</think>The answer is 42.")
         )
-        result = await client.send([{"role": "user", "content": "x"}])
-        assert isinstance(result, TextResponse)
-        assert result.content == "The answer is 42."
+        result = await send(client, [{"role": "user", "content": "x"}])
+        assert isinstance(result, RichMessage)
+        assert visible(result) == "The answer is 42."
 
     @pytest.mark.asyncio
     async def test_thinking_only_text_response_empty_after_strip(self) -> None:
@@ -240,21 +213,21 @@ class TestSend:
         """
         client = _make_client()
         client._http.post.return_value = _mock_response(
-            _text_response("<think>just thinking, no answer yet</think>"),
+            _text_response("<think>just thinking, no answer yet</think>")
         )
-        result = await client.send([{"role": "user", "content": "x"}])
-        assert isinstance(result, TextResponse)
-        assert result.content == ""
+        result = await send(client, [{"role": "user", "content": "x"}])
+        assert isinstance(result, RichMessage)
+        assert visible(result) == ""
 
     @pytest.mark.asyncio
     async def test_usage_recorded(self) -> None:
         client = _make_client()
         client._http.post.return_value = _mock_response(
             _tool_call_response(
-                usage={"prompt_tokens": 100, "completion_tokens": 20, "total_tokens": 120},
-            ),
+                usage={"prompt_tokens": 100, "completion_tokens": 20, "total_tokens": 120}
+            )
         )
-        await client.send([{"role": "user", "content": "x"}], tools=[_make_spec()])
+        await send(client, [{"role": "user", "content": "x"}], tools=[_make_spec()])
         usage = client.last_usage[0]
         assert usage.prompt_tokens == 100
         assert usage.completion_tokens == 20
@@ -263,16 +236,14 @@ class TestSend:
     @pytest.mark.asyncio
     async def test_sampling_overrides_applied_per_call(self) -> None:
         client = _make_client()
-        client.temperature = 1.0  # instance default
+        client.temperature = 1.0
         client._http.post.return_value = _mock_response(_text_response())
-        await client.send(
-            [{"role": "user", "content": "x"}],
-            sampling={"temperature": 0.0, "seed": 42},
+        await send(
+            client, [{"role": "user", "content": "x"}], sampling={"temperature": 0.0, "seed": 42}
         )
         body = client._http.post.call_args.kwargs["json"]
         assert body["temperature"] == 0.0
         assert body["seed"] == 42
-        # Instance value not mutated
         assert client.temperature == 1.0
 
     @pytest.mark.asyncio
@@ -280,14 +251,14 @@ class TestSend:
         client = _make_client()
         client._http.post.return_value = _mock_response({"error": "bad"}, status_code=500)
         with pytest.raises(BackendError):
-            await client.send([{"role": "user", "content": "x"}])
+            await send(client, [{"role": "user", "content": "x"}])
 
     @pytest.mark.asyncio
     async def test_read_timeout_raises_backend_error(self) -> None:
         client = _make_client()
         client._http.post.side_effect = httpx.ReadTimeout("timeout")
         with pytest.raises(BackendError):
-            await client.send([{"role": "user", "content": "x"}])
+            await send(client, [{"role": "user", "content": "x"}])
 
     @pytest.mark.asyncio
     async def test_empty_choices_raises_backend_error(self) -> None:
@@ -295,15 +266,13 @@ class TestSend:
         client = _make_client()
         client._http.post.return_value = _mock_response({"choices": [], "usage": {}})
         with pytest.raises(BackendError, match="no choices"):
-            await client.send([{"role": "user", "content": "x"}])
+            await send(client, [{"role": "user", "content": "x"}])
 
     @pytest.mark.asyncio
     async def test_tools_send_with_auto_tool_choice(self) -> None:
         client = _make_client()
         client._http.post.return_value = _mock_response(_tool_call_response())
-        await client.send(
-            [{"role": "user", "content": "x"}], tools=[_make_spec()],
-        )
+        await send(client, [{"role": "user", "content": "x"}], tools=[_make_spec()])
         body = client._http.post.call_args.kwargs["json"]
         assert body["tool_choice"] == "auto"
         assert len(body["tools"]) == 1
@@ -313,7 +282,7 @@ class TestSend:
     async def test_no_tools_omits_tools_param(self) -> None:
         client = _make_client()
         client._http.post.return_value = _mock_response(_text_response())
-        await client.send([{"role": "user", "content": "x"}])
+        await send(client, [{"role": "user", "content": "x"}])
         body = client._http.post.call_args.kwargs["json"]
         assert "tools" not in body
         assert "tool_choice" not in body
@@ -337,32 +306,32 @@ class TestSend:
             "tools": [{"stale": True}],
         }
         passthrough_before = deepcopy(passthrough)
-        raw_tools = [{
-            "type": "function",
-            "function": {
-                "name": "custom",
-                "parameters": {"type": "object", "x-provider": "kept"},
-            },
-        }]
-
-        await client.send(
+        raw_tools = [
+            {
+                "type": "function",
+                "function": {
+                    "name": "custom",
+                    "parameters": {"type": "object", "x-provider": "kept"},
+                },
+            }
+        ]
+        await send(
+            client,
             messages,
-            tools=[_make_spec()],
             sampling={"temperature": 0.25},
             passthrough=passthrough,
-            raw_openai_tools=raw_tools,
+            tools=_extract_tool_definitions(raw_tools),
         )
-
         body = client._http.post.call_args.kwargs["json"]
         assert body["model"] == client.model
-        assert body["messages"] is messages
+        assert body["messages"] == messages
         assert body["stream"] is False
         assert "stream_options" not in body
         assert body["max_tokens"] == 321
         assert body["stop"] == ["END"]
-        assert body["provider_extension"] is nested_extension
+        assert body["provider_extension"] == nested_extension
         assert body["temperature"] == 0.25
-        assert body["tools"] is raw_tools
+        assert body["tools"] == [format_tool(t) for t in _extract_tool_definitions(raw_tools)]
         assert body["tool_choice"] == "none"
         assert passthrough == passthrough_before
 
@@ -370,14 +339,12 @@ class TestSend:
     async def test_authoritative_empty_raw_tools_does_not_default_choice(self) -> None:
         client = _make_client()
         client._http.post.return_value = _mock_response(_text_response())
-
-        await client.send(
+        await send(
+            client,
             [{"role": "user", "content": "x"}],
-            tools=[_make_spec()],
+            tools=[],
             passthrough={"tools": [{"stale": True}]},
-            raw_openai_tools=[],
         )
-
         body = client._http.post.call_args.kwargs["json"]
         assert body["tools"] == []
         assert "tool_choice" not in body
@@ -386,21 +353,17 @@ class TestSend:
     async def test_no_tool_source_removes_stale_tools_but_keeps_choice(self) -> None:
         client = _make_client()
         client._http.post.return_value = _mock_response(_text_response())
-
-        await client.send(
+        await send(
+            client,
             [{"role": "user", "content": "x"}],
             passthrough={
                 "tools": [{"stale": True}],
                 "tool_choice": {"type": "function", "function": {"name": "later"}},
             },
         )
-
         body = client._http.post.call_args.kwargs["json"]
         assert "tools" not in body
         assert body["tool_choice"]["function"]["name"] == "later"
-
-
-# ── send_stream ──────────────────────────────────────────────
 
 
 class _MockStreamResponse:
@@ -420,6 +383,9 @@ class _MockStreamResponse:
         for line in self._lines:
             yield line
 
+    async def aread(self):
+        return "".join([line async for line in self.aiter_lines()]).encode()
+
 
 def _sse(payload: dict) -> str:
     return f"data: {json.dumps(payload)}"
@@ -429,31 +395,33 @@ class TestSendStream:
     @pytest.mark.asyncio
     async def test_yields_text_delta_then_final(self) -> None:
         client = _make_client()
-        client._http.stream.return_value = _MockStreamResponse([
-            _sse({"choices": [{"delta": {"content": "PO"}}]}),
-            _sse({"choices": [{"delta": {"content": "NG"}}]}),
-            "data: [DONE]",
-        ])
+        client._http.stream.return_value = _MockStreamResponse(
+            [
+                _sse({"choices": [{"delta": {"content": "PO"}}]}),
+                _sse({"choices": [{"delta": {"content": "NG"}}]}),
+                "data: [DONE]",
+            ]
+        )
         chunks = []
-        async for chunk in client.send_stream([{"role": "user", "content": "x"}]):
+        async for chunk in send_stream(client, [{"role": "user", "content": "x"}]):
             chunks.append(chunk)
         assert client._http.stream.call_args.args[:2] == (
-            "POST", "http://test:8000/v1/chat/completions",
+            "POST",
+            "http://test:8000/v1/chat/completions",
         )
         deltas = [c for c in chunks if c.type == ChunkType.TEXT_DELTA]
         finals = [c for c in chunks if c.type == ChunkType.FINAL]
         assert [c.content for c in deltas] == ["PO", "NG"]
         assert len(finals) == 1
-        assert isinstance(finals[0].response, TextResponse)
-        assert finals[0].response.content == "PONG"
+        assert isinstance(finals[0].response, RichMessage)
+        assert visible(finals[0].response) == "PONG"
 
     @pytest.mark.asyncio
     async def test_passthrough_raw_tools_and_stream_state_are_applied(self) -> None:
         client = _make_client()
-        client._http.stream.return_value = _MockStreamResponse([
-            _sse({"choices": [{"delta": {"content": "ok"}}]}),
-            "data: [DONE]",
-        ])
+        client._http.stream.return_value = _MockStreamResponse(
+            [_sse({"choices": [{"delta": {"content": "ok"}}]}), "data: [DONE]"]
+        )
         nested_extension = {"priority": 7}
         passthrough = {
             "model": "caller-alias",
@@ -465,45 +433,66 @@ class TestSendStream:
         }
         passthrough_before = deepcopy(passthrough)
         raw_tools = [{"type": "function", "function": {"name": "raw"}}]
-
-        async for _ in client.send_stream(
+        async for _ in send_stream(
+            client,
             [{"role": "user", "content": "x"}],
             passthrough=passthrough,
-            raw_openai_tools=raw_tools,
+            tools=_extract_tool_definitions(raw_tools),
         ):
             pass
-
         body = client._http.stream.call_args.kwargs["json"]
         assert body["model"] == client.model
         assert body["stream"] is True
         assert body["stream_options"] == {"include_usage": True}
         assert body["max_tokens"] == 222
-        assert body["provider_extension"] is nested_extension
-        assert body["tools"] is raw_tools
+        assert body["provider_extension"] == nested_extension
+        assert body["tools"] == [format_tool(t) for t in _extract_tool_definitions(raw_tools)]
         assert body["tool_choice"] == "required"
         assert passthrough == passthrough_before
 
     @pytest.mark.asyncio
     async def test_yields_tool_call_delta_then_final(self) -> None:
         client = _make_client()
-        client._http.stream.return_value = _MockStreamResponse([
-            _sse({"choices": [{"delta": {
-                "tool_calls": [{
-                    "index": 0,
-                    "function": {"name": "get_weather", "arguments": '{"city": '}
-                }],
-            }}]}),
-            _sse({"choices": [{"delta": {
-                "tool_calls": [{
-                    "index": 0,
-                    "function": {"arguments": '"Paris"}'}
-                }],
-            }}]}),
-            "data: [DONE]",
-        ])
+        client._http.stream.return_value = _MockStreamResponse(
+            [
+                _sse(
+                    {
+                        "choices": [
+                            {
+                                "delta": {
+                                    "tool_calls": [
+                                        {
+                                            "index": 0,
+                                            "function": {
+                                                "name": "get_weather",
+                                                "arguments": '{"city": ',
+                                            },
+                                        }
+                                    ]
+                                }
+                            }
+                        ]
+                    }
+                ),
+                _sse(
+                    {
+                        "choices": [
+                            {
+                                "delta": {
+                                    "tool_calls": [
+                                        {"index": 0, "function": {"arguments": '"Paris"}'}}
+                                    ]
+                                }
+                            }
+                        ]
+                    }
+                ),
+                "data: [DONE]",
+            ]
+        )
         chunks = []
-        async for chunk in client.send_stream(
-            [{"role": "user", "content": "x"}], tools=[_make_spec()],
+        async for chunk in send_stream(
+            client, [{"role": "user", "content": "x"}], tools=[_make_spec()]
         ):
             chunks.append(chunk)
         tc_deltas = [c for c in chunks if c.type == ChunkType.TOOL_CALL_DELTA]
@@ -511,139 +500,176 @@ class TestSendStream:
         assert len(tc_deltas) == 2
         assert len(finals) == 1
         result = finals[0].response
-        assert isinstance(result, list)
-        assert result[0].tool == "get_weather"
-        assert result[0].args == {"city": "Paris"}
+        assert isinstance(result, RichMessage)
+        assert reply_calls(result)[0].name == "get_weather"
+        assert argument_value(reply_calls(result)[0]) == {"city": "Paris"}
 
     @pytest.mark.asyncio
     async def test_malformed_accumulated_args_kept_as_raw_args(self) -> None:
-        # Streaming/non-streaming parity: once all fragments are accumulated,
-        # an unparseable arguments string rides through on the ToolCall as raw
-        # (non-dict) args so ResponseValidator routes it to the tool-error
-        # channel — it must not raise out of the stream.
         client = _make_client()
-        client._http.stream.return_value = _MockStreamResponse([
-            _sse({"choices": [{"delta": {
-                "tool_calls": [{
-                    "index": 0,
-                    "function": {"name": "get_weather", "arguments": '{"city": '}
-                }],
-            }}]}),
-            _sse({"choices": [{"delta": {"content": "let me try again"}}]}),
-            "data: [DONE]",
-        ])
+        client._http.stream.return_value = _MockStreamResponse(
+            [
+                _sse(
+                    {
+                        "choices": [
+                            {
+                                "delta": {
+                                    "tool_calls": [
+                                        {
+                                            "index": 0,
+                                            "function": {
+                                                "name": "get_weather",
+                                                "arguments": '{"city": ',
+                                            },
+                                        }
+                                    ]
+                                }
+                            }
+                        ]
+                    }
+                ),
+                _sse({"choices": [{"delta": {"content": "let me try again"}}]}),
+                "data: [DONE]",
+            ]
+        )
         chunks = []
-        async for chunk in client.send_stream(
-            [{"role": "user", "content": "x"}], tools=[_make_spec()],
+        async for chunk in send_stream(
+            client, [{"role": "user", "content": "x"}], tools=[_make_spec()]
         ):
             chunks.append(chunk)
         finals = [c for c in chunks if c.type == ChunkType.FINAL]
         assert len(finals) == 1
         result = finals[0].response
-        assert isinstance(result, list)
-        assert result[0].tool == "get_weather"
-        assert result[0].args == '{"city": '
+        assert isinstance(result, RichMessage)
+        assert reply_calls(result)[0].name == "get_weather"
+        assert argument_value(reply_calls(result)[0]) == '{"city": '
 
     @pytest.mark.asyncio
     async def test_accumulates_reasoning_across_deltas(self) -> None:
         client = _make_client(think=True)
-        client._http.stream.return_value = _MockStreamResponse([
-            _sse({"choices": [{"delta": {"reasoning": "Let me "}}]}),
-            _sse({"choices": [{"delta": {"reasoning": "think... "}}]}),
-            _sse({"choices": [{"delta": {
-                "tool_calls": [{
-                    "index": 0,
-                    "function": {"name": "get_weather", "arguments": '{"city": "P"}'}
-                }],
-            }}]}),
-            "data: [DONE]",
-        ])
+        client._http.stream.return_value = _MockStreamResponse(
+            [
+                _sse({"choices": [{"delta": {"reasoning": "Let me "}}]}),
+                _sse({"choices": [{"delta": {"reasoning": "think... "}}]}),
+                _sse(
+                    {
+                        "choices": [
+                            {
+                                "delta": {
+                                    "tool_calls": [
+                                        {
+                                            "index": 0,
+                                            "function": {
+                                                "name": "get_weather",
+                                                "arguments": '{"city": "P"}',
+                                            },
+                                        }
+                                    ]
+                                }
+                            }
+                        ]
+                    }
+                ),
+                "data: [DONE]",
+            ]
+        )
         chunks = []
-        async for chunk in client.send_stream(
-            [{"role": "user", "content": "x"}], tools=[_make_spec()],
+        async for chunk in send_stream(
+            client, [{"role": "user", "content": "x"}], tools=[_make_spec()]
         ):
             chunks.append(chunk)
         finals = [c for c in chunks if c.type == ChunkType.FINAL]
         result = finals[0].response
-        assert isinstance(result, list)
-        assert result[0].reasoning == "Let me think... "
+        assert isinstance(result, RichMessage)
+        assert reasoning(result) == "Let me think... "
 
     @pytest.mark.asyncio
     async def test_stream_extracts_think_tags_from_content_with_tool_call(self) -> None:
         """#110 (streaming): inline <think> in streamed content (no reasoning
         deltas) is captured on the FINAL tool call."""
         client = _make_client(think=True)
-        client._http.stream.return_value = _MockStreamResponse([
-            _sse({"choices": [{"delta": {"content": "<think>inline "}}]}),
-            _sse({"choices": [{"delta": {"content": "plan</think>"}}]}),
-            _sse({"choices": [{"delta": {
-                "tool_calls": [{
-                    "index": 0,
-                    "function": {"name": "get_weather", "arguments": '{"city": "P"}'}
-                }],
-            }}]}),
-            "data: [DONE]",
-        ])
+        client._http.stream.return_value = _MockStreamResponse(
+            [
+                _sse({"choices": [{"delta": {"content": "<think>inline "}}]}),
+                _sse({"choices": [{"delta": {"content": "plan</think>"}}]}),
+                _sse(
+                    {
+                        "choices": [
+                            {
+                                "delta": {
+                                    "tool_calls": [
+                                        {
+                                            "index": 0,
+                                            "function": {
+                                                "name": "get_weather",
+                                                "arguments": '{"city": "P"}',
+                                            },
+                                        }
+                                    ]
+                                }
+                            }
+                        ]
+                    }
+                ),
+                "data: [DONE]",
+            ]
+        )
         chunks = []
-        async for chunk in client.send_stream(
-            [{"role": "user", "content": "x"}], tools=[_make_spec()],
+        async for chunk in send_stream(
+            client, [{"role": "user", "content": "x"}], tools=[_make_spec()]
         ):
             chunks.append(chunk)
         result = [c for c in chunks if c.type == ChunkType.FINAL][0].response
-        assert isinstance(result, list)
-        assert result[0].reasoning == "inline plan"
+        assert isinstance(result, RichMessage)
+        assert reasoning(result) == "inline plan"
 
     @pytest.mark.asyncio
     async def test_stream_strips_think_tags_from_text_response(self) -> None:
         """A streamed bare text reply has <think> tags stripped from FINAL."""
         client = _make_client()
-        client._http.stream.return_value = _MockStreamResponse([
-            _sse({"choices": [{"delta": {"content": "<think>pondering</think>"}}]}),
-            _sse({"choices": [{"delta": {"content": "The answer is 42."}}]}),
-            "data: [DONE]",
-        ])
+        client._http.stream.return_value = _MockStreamResponse(
+            [
+                _sse({"choices": [{"delta": {"content": "<think>pondering</think>"}}]}),
+                _sse({"choices": [{"delta": {"content": "The answer is 42."}}]}),
+                "data: [DONE]",
+            ]
+        )
         chunks = []
-        async for chunk in client.send_stream([{"role": "user", "content": "x"}]):
+        async for chunk in send_stream(client, [{"role": "user", "content": "x"}]):
             chunks.append(chunk)
         result = [c for c in chunks if c.type == ChunkType.FINAL][0].response
-        assert isinstance(result, TextResponse)
-        assert result.content == "The answer is 42."
+        assert isinstance(result, RichMessage)
+        assert visible(result) == "The answer is 42."
 
     @pytest.mark.asyncio
     async def test_non_200_raises_backend_error(self) -> None:
         client = _make_client()
-        client._http.stream.return_value = _MockStreamResponse(
-            ["bad gateway"], status_code=502,
-        )
+        client._http.stream.return_value = _MockStreamResponse(["bad gateway"], status_code=502)
         with pytest.raises(BackendError):
-            async for _ in client.send_stream([{"role": "user", "content": "x"}]):
+            async for _ in send_stream(client, [{"role": "user", "content": "x"}]):
                 pass
-
-
-# ── get_context_length ─────────────────────────────────────────
 
 
 class TestGetContextLength:
     @pytest.mark.asyncio
     async def test_exact_matches_model_in_multi_entry_catalog(self) -> None:
         client = _make_client()
-        client._http.get.return_value = _mock_response({
-            "data": [
-                {"id": "other", "max_model_len": 8192},
-                {
-                    "id": "/models/gemma-4-26B-A4B-it-AWQ-4bit",
-                    "max_model_len": 113000,
-                },
-            ],
-        })
+        client._http.get.return_value = _mock_response(
+            {
+                "data": [
+                    {"id": "other", "max_model_len": 8192},
+                    {"id": "/models/gemma-4-26B-A4B-it-AWQ-4bit", "max_model_len": 113000},
+                ]
+            }
+        )
         assert await client.get_context_length() == 113000
 
     @pytest.mark.asyncio
     async def test_missing_exact_model_returns_none(self) -> None:
         client = _make_client()
-        client._http.get.return_value = _mock_response({
-            "data": [{"id": "other", "max_model_len": 8192}],
-        })
+        client._http.get.return_value = _mock_response(
+            {"data": [{"id": "other", "max_model_len": 8192}]}
+        )
         assert await client.get_context_length() is None
 
     @pytest.mark.asyncio
@@ -655,27 +681,23 @@ class TestGetContextLength:
     @pytest.mark.asyncio
     async def test_context_lookup_is_independent_of_invalid_first_identity(self) -> None:
         client = _make_client()
-        client._http.get.return_value = _mock_response({
-            "data": [
-                {"max_model_len": 8192},
-                {
-                    "id": "/models/gemma-4-26B-A4B-it-AWQ-4bit",
-                    "max_model_len": 113000,
-                },
-            ],
-        })
+        client._http.get.return_value = _mock_response(
+            {
+                "data": [
+                    {"max_model_len": 8192},
+                    {"id": "/models/gemma-4-26B-A4B-it-AWQ-4bit", "max_model_len": 113000},
+                ]
+            }
+        )
         assert await client.get_context_length() == 113000
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("window", [None, 0, -1, True, "113000", 1.5])
     async def test_unusable_exact_window_returns_none(self, window: object) -> None:
         client = _make_client()
-        client._http.get.return_value = _mock_response({
-            "data": [{
-                "id": "/models/gemma-4-26B-A4B-it-AWQ-4bit",
-                "max_model_len": window,
-            }],
-        })
+        client._http.get.return_value = _mock_response(
+            {"data": [{"id": "/models/gemma-4-26B-A4B-it-AWQ-4bit", "max_model_len": window}]}
+        )
         assert await client.get_context_length() is None
 
     @pytest.mark.asyncio
@@ -686,16 +708,13 @@ class TestGetContextLength:
             await client.get_context_length()
 
 
-# ── get_served_model_name ──────────────────────────────────────
-
-
 class TestGetServedModelName:
     @pytest.mark.asyncio
     async def test_returns_first_model_id(self) -> None:
         client = _make_client()
-        client._http.get.return_value = _mock_response({
-            "data": [{"id": "local-primary", "max_model_len": 262144}],
-        })
+        client._http.get.return_value = _mock_response(
+            {"data": [{"id": "local-primary", "max_model_len": 262144}]}
+        )
         assert await client.get_served_model_name() == "local-primary"
         client._http.get.assert_awaited_once_with("http://test:8000/v1/models")
 
@@ -712,12 +731,6 @@ class TestGetServedModelName:
         assert await client.get_served_model_name() is None
 
 
-# ── removed proxy discovery helper ─────────────────────────────
-
-
-# ── edge cases ─────────────────────────────────────────────────
-
-
 class TestSendInstanceSampling:
     @pytest.mark.asyncio
     async def test_instance_sampling_applied_without_override(self) -> None:
@@ -726,7 +739,7 @@ class TestSendInstanceSampling:
         client.temperature = 0.5
         client.top_p = 0.85
         client._http.post.return_value = _mock_response(_text_response())
-        await client.send([{"role": "user", "content": "x"}])
+        await send(client, [{"role": "user", "content": "x"}])
         body = client._http.post.call_args.kwargs["json"]
         assert body["temperature"] == 0.5
         assert body["top_p"] == 0.85
@@ -737,15 +750,17 @@ class TestSendStreamEdgeCases:
     async def test_ignores_comment_and_empty_lines(self) -> None:
         """SSE comment lines (`:keepalive`) and empty lines are skipped."""
         client = _make_client()
-        client._http.stream.return_value = _MockStreamResponse([
-            "",
-            ":keepalive",
-            _sse({"choices": [{"delta": {"content": "OK"}}]}),
-            "",
-            "data: [DONE]",
-        ])
+        client._http.stream.return_value = _MockStreamResponse(
+            [
+                "",
+                ":keepalive",
+                _sse({"choices": [{"delta": {"content": "OK"}}]}),
+                "",
+                "data: [DONE]",
+            ]
+        )
         chunks = []
-        async for chunk in client.send_stream([{"role": "user", "content": "x"}]):
+        async for chunk in send_stream(client, [{"role": "user", "content": "x"}]):
             chunks.append(chunk)
         deltas = [c for c in chunks if c.type == ChunkType.TEXT_DELTA]
         assert [c.content for c in deltas] == ["OK"]
@@ -755,57 +770,20 @@ class TestSendStreamEdgeCases:
         """When stream_options.include_usage=True, vLLM emits a final chunk
         with `choices: []` and a `usage` block."""
         client = _make_client()
-        client._http.stream.return_value = _MockStreamResponse([
-            _sse({"choices": [{"delta": {"content": "hi"}}]}),
-            _sse({
-                "choices": [],
-                "usage": {
-                    "prompt_tokens": 50, "completion_tokens": 3, "total_tokens": 53,
-                },
-            }),
-            "data: [DONE]",
-        ])
-        async for _ in client.send_stream([{"role": "user", "content": "x"}]):
+        client._http.stream.return_value = _MockStreamResponse(
+            [
+                _sse({"choices": [{"delta": {"content": "hi"}}]}),
+                _sse(
+                    {
+                        "choices": [],
+                        "usage": {"prompt_tokens": 50, "completion_tokens": 3, "total_tokens": 53},
+                    }
+                ),
+                "data: [DONE]",
+            ]
+        )
+        async for _ in send_stream(client, [{"role": "user", "content": "x"}]):
             pass
         usage = client.last_usage[0]
         assert usage.prompt_tokens == 50
         assert usage.completion_tokens == 3
-
-
-class TestParseToolCalls:
-    @staticmethod
-    def _call(arguments: object) -> object:
-        return VLLMClient._parse_tool_calls(
-            [{"function": {"name": "lookup", "arguments": arguments}}],
-            reasoning=None,
-        )
-
-    def test_argument_shapes_forward_shared_decoder_results(self) -> None:
-        cases = [
-            ("json string", '{"city": "Paris"}', {"city": "Paris"}),
-            ("decoded dict", {"city": "Paris"}, {"city": "Paris"}),
-            ("empty string", "", {}),
-            ("malformed json", '{"city": ', '{"city": '),
-            ("unexpected type", 123, 123),
-        ]
-        for case, raw, expected in cases:
-            assert self._call(raw) == [ToolCall(tool="lookup", args=expected)], case
-
-    def test_missing_function_is_defensive(self) -> None:
-        """A broken tool-call entry (no "function") must not KeyError."""
-        assert VLLMClient._parse_tool_calls(
-            [{}], reasoning=None,
-        ) == [ToolCall(tool="", args={})]
-
-    def test_reasoning_attached_to_first_call_only(self) -> None:
-        result = VLLMClient._parse_tool_calls(
-            [
-                {"function": {"name": "a", "arguments": "{}"}},
-                {"function": {"name": "b", "arguments": "{}"}},
-            ],
-            reasoning="because",
-        )
-        assert result == [
-            ToolCall(tool="a", args={}, reasoning="because"),
-            ToolCall(tool="b", args={}, reasoning=None),
-        ]

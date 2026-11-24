@@ -2,23 +2,17 @@
 
 from __future__ import annotations
 
-import json
 from collections.abc import AsyncIterator, Iterator, Mapping
 from contextlib import contextmanager
 from contextvars import ContextVar
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Protocol, runtime_checkable
 
-from forge.core.workflow import LLMResponse, ToolSpec
+from forge.core.messages import ConversationState, RichMessage
+from forge.core.workflow import ToolDefinition
+from forge.core.reasoning import DEFAULT_REASONING_REPLAY, ReasoningReplay
 from forge.errors import MultipleCredentialsError
-
-# Verbatim OpenAI-shape payloads forwarded by the proxy. The proxy hands the
-# client the user's original ``tools`` array so the backend sees the exact
-# schema the client authored, instead of forge's reconstructed ToolSpec.
-RawOpenAITools = list[dict[str, Any]]
-RawOpenAIMessages = list[dict[str, Any]]
-
 
 # ── Auth credential helpers ──────────────────────────────────────────
 #
@@ -106,8 +100,7 @@ def redact_auth_headers(headers: Mapping[str, str] | None) -> dict[str, str]:
     if not headers:
         return {}
     return {
-        k: ("***" if k.lower() in AUTH_HEADER_NAMES else v)
-        for k, v in headers.items()
+        k: ("***" if k.lower() in AUTH_HEADER_NAMES else v) for k, v in headers.items()
     }
 
 
@@ -122,8 +115,11 @@ def auth_credential_token(name: str, value: str) -> str:
     yields ``''`` — i.e. the header is present but carries no credential, so it
     must not be counted or forwarded as one.
     """
-    if name.lower() == "authorization" and value[: len(BEARER_PREFIX)].lower() == BEARER_PREFIX:
-        return value[len(BEARER_PREFIX):].strip()
+    if (
+        name.lower() == "authorization"
+        and value[: len(BEARER_PREFIX)].lower() == BEARER_PREFIX
+    ):
+        return value[len(BEARER_PREFIX) :].strip()
     return value.strip()
 
 
@@ -208,7 +204,8 @@ class _UsageCapture:
 
 
 _active_usage_capture: ContextVar[_UsageCapture | None] = ContextVar(
-    "forge_active_usage_capture", default=None,
+    "forge_active_usage_capture",
+    default=None,
 )
 
 
@@ -234,63 +231,17 @@ def _record_captured_usage(usage: TokenUsage) -> None:
 
 # Both Ollama and llama-server use the OpenAI tool schema format today.
 # If a backend diverges, move this back into the relevant client module.
-def format_tool(spec: ToolSpec) -> dict[str, Any]:
-    """Convert a ToolSpec into the OpenAI-compatible tool schema."""
+def format_tool(spec: ToolDefinition) -> dict[str, Any]:
+    """Convert a ToolDefinition into the OpenAI-compatible tool schema."""
     return {
         "type": "function",
         "function": {
+            **spec.extra_fields,
             "name": spec.name,
             "description": spec.description,
-            "parameters": spec.get_json_schema(),
+            "parameters": spec.input_schema,
         },
     }
-
-
-def flatten_content_to_text(content: Any) -> str:
-    """Flatten OpenAI multi-part ``content`` blocks into a plain string.
-
-    OpenAI allows ``content`` as a list of parts (e.g.
-    ``[{"type": "text", "text": "..."}]``). Text parts and bare-string parts
-    are joined with newlines; non-text dict blocks (images, audio, …) are
-    dropped — forge is text-only on this path today. A string passes through
-    unchanged; ``None`` (and any other shape) degrades to ``""``/``str()``.
-    """
-    if isinstance(content, list):
-        parts: list[str] = []
-        for block in content:
-            if isinstance(block, dict) and block.get("type") == "text":
-                parts.append(block.get("text", ""))
-            elif isinstance(block, str):
-                parts.append(block)
-        return "\n".join(parts)
-    if content is None:
-        return ""
-    return content if isinstance(content, str) else str(content)
-
-
-def decode_tool_args(raw: Any) -> Any:
-    """Decode a tool-call ``arguments`` payload, fail-loud.
-
-    JSON-string args are parsed; on malformed JSON the raw string is returned
-    unchanged (a non-dict). ``ResponseValidator``'s args-shape check then routes
-    it through the tool-error channel instead of crashing the parser or coercing
-    to ``{}`` — so a structural arg failure rides the same lane as a runtime
-    tool error rather than a trailing retry nudge.
-
-    Non-string payloads (an already-decoded dict from Ollama / the Anthropic
-    SDK, or any other shape) pass through untouched for the validator to judge.
-    A missing or empty payload is a no-arg call (``{}``).
-    """
-    if raw is None:
-        return {}
-    if not isinstance(raw, str):
-        return raw
-    if not raw:
-        return {}
-    try:
-        return json.loads(raw)
-    except json.JSONDecodeError:
-        return raw
 
 
 class ChunkType(str, Enum):
@@ -308,129 +259,51 @@ class StreamChunk:
 
     Consumers (UI, logging) process TEXT_DELTA and TOOL_CALL_DELTA as they
     arrive. The runner ignores all chunks except FINAL, which carries the
-    resolved response. On RETRY, consumers should discard the partial output
+    assistant RichMessage. On RETRY, consumers should discard the partial output
     from the failed attempt.
     """
 
     type: ChunkType
     content: str = ""
-    response: LLMResponse | None = None
+    response: RichMessage | None = None
+
+
+@dataclass
+class RequestMetadata:
+    """Per-call routing, sampling, request extras, credentials and replay policy."""
+
+    model: Any = None
+    sampling: dict[str, Any] | None = None
+    extra_fields: dict[str, Any] = field(default_factory=dict)
+    extra_headers: dict[str, str] | None = None
+    source_protocol: str = "openai"
+    reasoning_replay: ReasoningReplay = DEFAULT_REASONING_REPLAY
+
+
+@dataclass
+class InferenceRequest:
+    """Complete disposable rendered send, including resolved transport metadata."""
+
+    payload: dict[str, Any]
+    url: str
+    headers: dict[str, str] | None = None
+    tool_names: tuple[str, ...] = ()
 
 
 @runtime_checkable
 class LLMClient(Protocol):
-    """Interface that client adapters implement.
-
-    The client is responsible for:
-    1. Sending messages to the LLM backend
-    2. Parsing the response into ToolCall or TextResponse
-    3. Handling native FC or prompt-injected calling internally
-    4. Optionally streaming partial responses via send_stream()
-
-    The client does NOT retry. Retry logic lives in the WorkflowRunner.
-    """
-
     api_format: str
-    """Wire format for Message.to_api_dict(): 'ollama' or 'openai'."""
-
     model: str | None
-    """The adapter's configured backend identity.
 
-    Depending on the adapter, this may be a wire-model pin, a fallback used
-    only when a request omits ``model``, an identity adopted from backend
-    discovery, or ``None`` for a request-routed client. Distinct from any
-    sampling-registry lookup key a client also derives.
-    """
-
-    async def send(
+    def render_request(
         self,
-        messages: list[dict[str, str]],
-        tools: list[ToolSpec] | None = None,
-        sampling: dict[str, Any] | None = None,
-        passthrough: dict[str, Any] | None = None,
-        inbound_anthropic_body: dict[str, Any] | None = None,
-        raw_openai_tools: RawOpenAITools | None = None,
-        extra_headers: dict[str, str] | None = None,
-    ) -> LLMResponse:
-        """Send messages and return a parsed response.
-
-        Returns list[ToolCall] if the model produced valid tool invocations.
-        Returns TextResponse if the model produced text (reasoning, refusal,
-        or malformed output that couldn't be parsed as a tool call).
-
-        The runner inspects the response and decides whether to retry.
-
-        Args:
-            messages: API-format messages to send.
-            tools: Tool specs to include with the request.
-            sampling: Optional per-call sampling overrides
-                (``temperature``, ``top_p``, ``top_k``, ``min_p``,
-                ``repeat_penalty``, ``presence_penalty``, ``seed``).
-                Per-call values win over instance state for this call only;
-                the client's instance fields are not mutated.
-            passthrough: Optional dict of inbound body fields forge doesn't
-                own. The client merges these into the outbound body before
-                overlaying its own fields (model, messages, tools, sampling).
-                Used by the proxy to preserve user intent (max_tokens, stop,
-                tool_choice, etc.) without forge having to enumerate every
-                supported field. None = no extras to merge.
-            inbound_anthropic_body: Path-1 only — when set, the AnthropicClient
-                will send this body verbatim (bypassing its deconstruct/rebuild
-                path) to preserve block-level Anthropic fields like
-                ``cache_control``. The shared inference primitive clears this
-                kwarg after a Forge mutation; in Proxy, which is permanently
-                ``NoCompact``, retries are the applicable mutation. Other
-                clients accept and ignore it. See ADR-015.
-            raw_openai_tools: Proxy-only raw OpenAI ``tools`` array. Compatible
-                generic llama/OpenAI and vLLM clean paths may send it as-is to
-                avoid schema drift. Adapters or protocols that require another
-                wire shape convert, rebuild, or ignore it; retries use parsed
-                ``ToolSpec`` values instead.
-            extra_headers: Per-call HTTP headers, primarily the one credential
-                forge forwards to the backend (proxy: a relocated inbound auth
-                header; WorkflowRunner: a rotating SSO token). Applied per call
-                over the construction headers (request wins). If the client
-                already holds a static auth credential, supplying an auth
-                header here raises ``MultipleCredentialsError`` — at most one
-                credential reaches the backend. None = no per-call headers.
-        """
-        ...
-
-    async def send_stream(
-        self,
-        messages: list[dict[str, str]],
-        tools: list[ToolSpec] | None = None,
-        sampling: dict[str, Any] | None = None,
-        passthrough: dict[str, Any] | None = None,
-        inbound_anthropic_body: dict[str, Any] | None = None,
-        raw_openai_tools: RawOpenAITools | None = None,
-        extra_headers: dict[str, str] | None = None,
-    ) -> AsyncIterator[StreamChunk]:
-        """Send messages and yield streaming chunks.
-
-        Yields TEXT_DELTA or TOOL_CALL_DELTA chunks as they arrive.
-        The final chunk has type FINAL and carries the resolved LLMResponse
-        (same list[ToolCall] | TextResponse as send() would return).
-
-        The runner forwards chunks to its on_chunk callback for UI/logging,
-        then inspects the FINAL chunk and decides whether to retry.
-
-        Args:
-            messages: API-format messages to send.
-            tools: Tool specs to include with the request.
-            sampling: Optional per-call sampling overrides (see ``send``).
-                Per-call values win over instance state without mutating self.
-            passthrough: Optional inbound-body extras dict (see ``send``).
-            inbound_anthropic_body: Optional path-1 verbatim body (see ``send``).
-            raw_openai_tools: Optional verbatim OpenAI tools array (see ``send``).
-            extra_headers: Optional per-call credential header (see ``send``).
-        """
-        ...
-
-    async def get_context_length(self) -> int | None:
-        """Query the backend for its configured context window size."""
-        ...
-
-    async def aclose(self) -> None:
-        """Release held network resources (e.g. the httpx connection pool)."""
-        ...
+        state: ConversationState,
+        tools: list[ToolDefinition] | None,
+        metadata: RequestMetadata,
+        *,
+        stream: bool = False,
+    ) -> InferenceRequest: ...
+    async def send(self, request: InferenceRequest) -> RichMessage: ...
+    def send_stream(self, request: InferenceRequest) -> AsyncIterator[StreamChunk]: ...
+    async def get_context_length(self) -> int | None: ...
+    async def aclose(self) -> None: ...
